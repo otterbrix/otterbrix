@@ -140,6 +140,7 @@ namespace components::table {
         void clear_updates();
         void fetch_updates(uint64_t vector_index,
                            vector::vector_t& result,
+                           uint64_t result_offset,
                            uint64_t scan_count,
                            bool allow_updates,
                            bool scan_committed);

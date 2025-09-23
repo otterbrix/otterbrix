@@ -5,6 +5,7 @@
 
 #include "collection.hpp"
 #include "row_version_manager.hpp"
+#include "vector/vector_operations.hpp"
 
 namespace components::table {
 
@@ -93,8 +94,7 @@ namespace components::table {
     bool row_group_t::initialize_scan(collection_scan_state& state) {
         auto& column_ids = state.column_ids();
         state.row_group = this;
-        state.vector_index = 0;
-        state.max_row_group_row = start > state.max_row ? 0 : std::min<uint64_t>(count, state.max_row - start);
+        state.max_row_group_row += start > state.max_row ? 0 : std::min<uint64_t>(count, state.max_row - start);
         if (state.max_row_group_row == 0) {
             return false;
         }
@@ -203,6 +203,7 @@ namespace components::table {
     bool row_group_t::check_zonemap_segments(collection_scan_state& state) { return true; }
 
     void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
+                                      uint64_t vector_index,
                                       vector::indexing_vector_t& indexing,
                                       const table_filter_t* filter,
                                       uint64_t& approved_tuple_count) {
@@ -211,7 +212,7 @@ namespace components::table {
         for (uint64_t i = 0; i < approved_tuple_count; i++) {
             auto idx = indexing.get_index(i);
             new_indexing.set_index(result_count, idx);
-            result_count += check_predicate(idx, filter);
+            result_count += check_predicate(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY, filter);
         }
         indexing = new_indexing;
         approved_tuple_count = result_count;
@@ -219,8 +220,8 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        const bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
-                                   TYPE != table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED;
+        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
+                                       TYPE != table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         while (true) {
@@ -250,6 +251,7 @@ namespace components::table {
             } else {
                 count = max_count;
             }
+            validate_chunk_capacity(result, result.size() + count);
 
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
@@ -269,9 +271,10 @@ namespace components::table {
                         }
                     }
                 }
+                state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
             } else {
                 uint64_t approved_tuple_count = count;
-                vector::indexing_vector_t indexing(result.resource());
+                vector::indexing_vector_t indexing(result.resource(), result.capacity());
                 if (count != max_count) {
                     indexing = state.valid_indexing;
                 } else {
@@ -279,10 +282,13 @@ namespace components::table {
                 }
                 if (filter) {
                     assert(ALLOW_UPDATES);
-                    filter_indexing(collection_->resource(), indexing, filter, approved_tuple_count);
+                    filter_indexing(collection_->resource(),
+                                    state.vector_index,
+                                    indexing,
+                                    filter,
+                                    approved_tuple_count);
                 }
                 if (approved_tuple_count == 0) {
-                    result.reset();
                     for (uint64_t i = 0; i < column_ids.size(); i++) {
                         auto& col_idx = column_ids[i];
                         if (col_idx.is_row_id_column()) {
@@ -307,11 +313,20 @@ namespace components::table {
                     } else {
                         auto& col_data = get_column(column);
                         if (TYPE == table_scan_type::REGULAR) {
+                            vector::vector_t select_vector(result.resource(), result.data[i].type(), max_count);
+                            auto prev_offset = state.column_scans[i].result_offset;
+                            state.column_scans[i].result_offset = 0;
                             col_data.select(state.vector_index,
                                             state.column_scans[i],
-                                            result.data[i],
+                                            select_vector,
                                             indexing,
                                             approved_tuple_count);
+                            state.column_scans[i].result_offset = prev_offset;
+                            vector::vector_ops::copy(select_vector,
+                                                     result.data[i],
+                                                     approved_tuple_count,
+                                                     0,
+                                                     state.column_scans[i].result_offset);
                         } else {
                             col_data.select_committed(state.vector_index,
                                                       state.column_scans[i],
@@ -325,9 +340,18 @@ namespace components::table {
 
                 assert(approved_tuple_count > 0);
                 count = approved_tuple_count;
+                state.valid_indexing = indexing;
             }
-            result.set_cardinality(count);
+            for (uint64_t i = 0; i < count; i++) {
+                types::logical_value_t index{static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY +
+                                                                  state.valid_indexing.get_index(i))};
+                result.row_ids.set_value(result.size() + i, std::move(index));
+            }
+            result.set_cardinality(result.size() + count);
             state.vector_index++;
+            for (auto& column_state : state.column_scans) {
+                column_state.result_offset += count;
+            }
             break;
         }
     }
@@ -416,7 +440,7 @@ namespace components::table {
             auto& col_data = get_column(column);
             assert(col_data.type().type() == update_chunk.data[i].type().type());
             if (offset > 0) {
-                vector::vector_t sliced_vector(update_chunk.data[i], offset, offset + count);
+                vector::vector_t sliced_vector(update_chunk.data[i], offset, count);
                 sliced_vector.flatten(count);
                 col_data.update(column, sliced_vector, ids + offset, count);
             } else {
@@ -458,7 +482,7 @@ namespace components::table {
     public:
         version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, uint64_t base_row)
             : info(info)
-            , current_vesrion(current_version)
+            , current_version(current_version)
             , table(table)
             , current_chunk(storage::INVALID_INDEX)
             , count(0)
@@ -468,7 +492,7 @@ namespace components::table {
         row_group_t& info;
         data_table_t& table;
         uint64_t current_chunk;
-        uint64_t current_vesrion;
+        uint64_t current_version;
         int64_t rows[vector::DEFAULT_VECTOR_CAPACITY];
         uint64_t count;
         uint64_t base_row;
@@ -485,7 +509,7 @@ namespace components::table {
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
             assert(uint64_t(ids[i]) >= start && uint64_t(ids[i]) < start + this->count);
-            del_state.delete_row(ids[i] - static_cast<int64_t>(start));
+            del_state.delete_row(ids[i]);
         }
         del_state.flush();
         return del_state.delete_count;
@@ -513,7 +537,7 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        return indexing_vector(0, temp_indexing, count);
+        return indexing_vector(index, temp_indexing, count);
     }
 
     uint64_t

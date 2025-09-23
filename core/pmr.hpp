@@ -40,6 +40,8 @@ namespace core::pmr {
             ptr_->deallocate(target, size_ * sizeof(T), align_);
         }
         std::pmr::memory_resource* resource() const noexcept { return ptr_; }
+        size_t size() const noexcept { return size_; }
+        size_t align() const noexcept { return align_; }
 
     private:
         std::pmr::memory_resource* ptr_;

@@ -21,7 +21,9 @@ namespace components::vector {
                                      types::complex_logical_type type,
                                      size_t capacity)
         : type_(vector_buffer_type::STANDARD)
-        , data_(new (resource->allocate(capacity * type.size(), type.align())) std::byte[capacity * type.size()],
+        , data_(type.size() == 0 ? nullptr
+                                 : new (resource->allocate(capacity * type.size(), type.align()))
+                                       std::byte[capacity * type.size()],
                 core::pmr::array_deleter_t(resource, capacity * type.size(), type.align())) {}
 
     string_vector_buffer_t::string_vector_buffer_t(std::pmr::memory_resource* resource)
@@ -129,7 +131,7 @@ namespace components::vector {
     }
 
     array_vector_buffer_t::array_vector_buffer_t(std::unique_ptr<vector_t> vector, uint64_t size, uint64_t capacity)
-        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY)
+        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY, capacity * size)
         , nested_data_(std::move(vector))
         , underlying_size_(size)
         , size_(capacity) {}
@@ -137,7 +139,9 @@ namespace components::vector {
     array_vector_buffer_t::array_vector_buffer_t(std::pmr::memory_resource* resource,
                                                  const types::complex_logical_type& array_type,
                                                  uint64_t capacity)
-        : vector_buffer_t(resource, vector_buffer_type::ARRAY)
+        : vector_buffer_t(resource,
+                          vector_buffer_type::ARRAY,
+                          capacity * static_cast<types::array_logical_type_extension*>(array_type.extension())->size())
         , nested_data_(std::make_unique<vector_t>(
               resource,
               array_type.child_type(),
@@ -149,8 +153,8 @@ namespace components::vector {
         : vector_buffer_t(vector.resource(), vector_buffer_type::VECTOR_CHILD)
         , data_(std::move(vector)) {}
 
-    vector_t& child_vector_buffer_t::data() noexcept { return data_; }
+    vector_t& child_vector_buffer_t::nested_data() noexcept { return data_; }
 
-    const vector_t& child_vector_buffer_t::data() const noexcept { return data_; }
+    const vector_t& child_vector_buffer_t::nested_data() const noexcept { return data_; }
 
 } // namespace components::vector

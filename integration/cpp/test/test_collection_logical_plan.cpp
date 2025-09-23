@@ -670,7 +670,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                   std::move(expr)),
                     {std::move(update_expr)},
                     false);
-                update->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), data));
+                update->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
                 auto cur = dispatcher->execute_plan(session, update, params);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == 10);

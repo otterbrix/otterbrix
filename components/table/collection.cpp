@@ -267,9 +267,9 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(static_cast<uint64_t>(ids[pos]));
-            int64_t base_id = static_cast<int64_t>(row_group->start +
-                                                   ((static_cast<uint64_t>(ids[pos]) - row_group->start) /
-                                                    vector::DEFAULT_VECTOR_CAPACITY * vector::DEFAULT_VECTOR_CAPACITY));
+            int64_t base_id = static_cast<int64_t>(
+                row_group->start + (static_cast<uint64_t>(ids[pos]) - row_group->start) /
+                                       vector::DEFAULT_VECTOR_CAPACITY * vector::DEFAULT_VECTOR_CAPACITY);
             auto max_id = std::min<int64_t>(base_id + vector::DEFAULT_VECTOR_CAPACITY,
                                             static_cast<int64_t>(row_group->start + row_group->count));
             for (pos++; pos < updates.size(); pos++) {
@@ -288,12 +288,26 @@ namespace components::table {
     void collection_t::update_column(vector::vector_t& row_ids,
                                      const std::vector<uint64_t>& column_path,
                                      vector::data_chunk_t& updates) {
-        auto first_id = row_ids.value(0).value<int64_t>();
-        if (first_id >= MAX_ROW_ID) {
-            throw std::logic_error("Cannot update a column-path on transaction local data");
-        }
-        auto row_group = row_groups_->get_segment(static_cast<uint64_t>(first_id));
-        row_group->update_column(updates, row_ids, column_path);
+        uint64_t pos = 0;
+        do {
+            uint64_t start = pos;
+            auto row_group = row_groups_->get_segment(row_ids.data<int64_t>()[pos]);
+            int64_t base_id = static_cast<int64_t>(
+                row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY *
+                                       vector::DEFAULT_VECTOR_CAPACITY);
+            auto max_id = std::min<int64_t>(base_id + vector::DEFAULT_VECTOR_CAPACITY,
+                                            static_cast<int64_t>(row_group->start + row_group->count));
+            for (pos++; pos < updates.size(); pos++) {
+                assert(row_ids.data<int64_t>()[pos] >= 0);
+                if (row_ids.data<int64_t>()[pos] < base_id) {
+                    break;
+                }
+                if (row_ids.data<int64_t>()[pos] >= max_id) {
+                    break;
+                }
+            }
+            row_group->update(updates, row_ids.data<int64_t>(), start, pos - start, column_path);
+        } while (pos < updates.size());
     }
 
     std::vector<column_segment_info> collection_t::get_column_segment_info() {

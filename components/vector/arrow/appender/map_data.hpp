@@ -38,7 +38,7 @@ namespace components::vector::arrow::appender {
             std::vector<uint64_t> child_indices;
             arrow_list_data_t<BUFTYPE>::append_offsets(append_data, format, from, to, child_indices);
 
-            indexing_vector_t child_sel(input.resource(), child_indices.data());
+            indexing_vector_t child_indexing(input.resource(), child_indices.data());
             auto& key_vector = input.entries().at(0);
             auto& value_vector = input.entries().at(1);
             auto list_size = child_indices.size();
@@ -48,9 +48,9 @@ namespace components::vector::arrow::appender {
             auto& value_data = *struct_data.child_data[1];
 
             vector_t key_vector_copy(key_vector->resource(), key_vector->type());
-            key_vector_copy.slice(*key_vector, child_sel, list_size);
+            key_vector_copy.slice(*key_vector, child_indexing, list_size);
             vector_t value_vector_copy(value_vector->resource(), value_vector->type());
-            value_vector_copy.slice(*value_vector, child_sel, list_size);
+            value_vector_copy.slice(*value_vector, child_indexing, list_size);
             key_data.append_vector(key_data, key_vector_copy, 0, list_size, list_size);
             value_data.append_vector(value_data, value_vector_copy, 0, list_size, list_size);
 

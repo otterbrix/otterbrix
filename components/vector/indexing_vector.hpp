@@ -42,6 +42,7 @@ namespace components::vector {
         uint64_t& operator[](uint64_t index) const;
         bool is_valid() const noexcept;
         std::pmr::memory_resource* resource() const { return resource_; }
+        uint64_t capacity() const;
 
     private:
         std::pmr::memory_resource* resource_;

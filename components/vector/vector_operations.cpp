@@ -564,7 +564,7 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset,
               uint64_t copy_count) {
-        indexing_vector_t owned_sel(source.resource());
+        indexing_vector_t owned_indexing(source.resource(), 0, copy_count);
         const indexing_vector_t* indexing_ptr = &indexing;
 
         const vector_t* source_ptr = &source;
@@ -574,11 +574,11 @@ namespace components::vector::vector_ops {
                 case vector_type::DICTIONARY: {
                     // dictionary vector: merge indexing vectors
                     auto& child = source_ptr->child();
-                    auto& dict_sel = source_ptr->indexing();
+                    auto& dict_indexing = source_ptr->indexing();
                     // merge the indexing vectors and verify the child
-                    auto new_buffer = dict_sel.slice(source_ptr->resource(), *indexing_ptr, source_count);
-                    owned_sel = indexing_vector_t(new_buffer);
-                    indexing_ptr = &owned_sel;
+                    auto new_buffer = dict_indexing.slice(source_ptr->resource(), *indexing_ptr, source_count);
+                    owned_indexing = indexing_vector_t(new_buffer);
+                    indexing_ptr = &owned_indexing;
                     source_ptr = &child;
                     break;
                 }
@@ -591,7 +591,7 @@ namespace components::vector::vector_ops {
                     return;
                 }
                 case vector_type::CONSTANT:
-                    indexing_ptr = zero_indexing_vector(source_ptr->resource(), copy_count, owned_sel);
+                    indexing_ptr = zero_indexing_vector(source_ptr->resource(), copy_count, owned_indexing);
                     finished = true;
                     break;
                 case vector_type::FLAT:
@@ -750,19 +750,20 @@ namespace components::vector::vector_ops {
 
                 auto& source_child = source_ptr->entry();
                 auto& target_child = target.entry();
-                auto array_size = source_ptr->type().size();
+                auto array_size =
+                    reinterpret_cast<types::array_logical_type_extension*>(source_ptr->type().extension())->size();
 
-                indexing_vector_t child_sel(source_ptr->resource(), source_count * array_size);
+                indexing_vector_t child_indexing(source_ptr->resource(), source_count * array_size);
                 for (uint64_t i = 0; i < copy_count; i++) {
                     auto source_idx = indexing_ptr->get_index(source_offset + i);
                     for (uint64_t j = 0; j < array_size; j++) {
-                        child_sel.set_index((source_offset * array_size) + (i * array_size + j),
-                                            source_idx * array_size + j);
+                        child_indexing.set_index((source_offset * array_size) + (i * array_size + j),
+                                                 source_idx * array_size + j);
                     }
                 }
                 copy(source_child,
                      target_child,
-                     child_sel,
+                     child_indexing,
                      source_count * array_size,
                      source_offset * array_size,
                      target_offset * array_size);
@@ -802,13 +803,13 @@ namespace components::vector::vector_ops {
                         }
                     }
                     uint64_t source_child_size = child_rows.size();
-                    indexing_vector_t child_sel(source_ptr->resource(), child_rows.data());
+                    indexing_vector_t child_indexing(source_ptr->resource(), child_rows.data());
 
                     uint64_t old_target_child_len =
                         static_cast<list_vector_buffer_t*>(target.auxiliary().get())->size();
 
                     static_cast<list_vector_buffer_t*>(target.auxiliary().get())
-                        ->append(source_child, child_sel, source_child_size);
+                        ->append(source_child, child_indexing, source_child_size);
 
                     for (uint64_t i = 0; i < copy_count; i++) {
                         auto source_idx = indexing_ptr->get_index(source_offset + i);
@@ -852,7 +853,7 @@ namespace components::vector::vector_ops {
               uint64_t target_offset) {
         copy(source,
              target,
-             *incremental_indexing_vector(source.resource()),
+             indexing_vector_t(source.resource(), 0, source_count),
              source_count,
              source_offset,
              target_offset);

@@ -26,9 +26,8 @@ namespace components::table::operators {
                 name_index_map_right.emplace(types_right[i].alias(), i);
             }
 
-            vector::vector_t ids(left_->output()->resource(),
-                                 logical_type::BIGINT,
-                                 chunk_left.size() * chunk_right.size());
+            auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
+            vector::vector_t ids(left_->output()->resource(), logical_type::BIGINT, ids_capacity);
 
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -41,11 +40,14 @@ namespace components::table::operators {
                                            name_index_map_right,
                                            i,
                                            j)) {
-                        ids.set_value(index++, types::logical_value_t{static_cast<int64_t>(i)});
+                        ids.data<int64_t>()[index++] = i;
+                        if (index >= ids_capacity) {
+                            ids.resize(ids_capacity, ids_capacity * 2);
+                            ids_capacity *= 2;
+                        }
                     }
                 }
             }
-            ids.resize(chunk_left.size() * chunk_right.size(), index);
             auto state = context_->table_storage().table().initialize_delete({});
             context_->table_storage().table().delete_rows(*state, ids, index);
             for (size_t i = 0; i < index; i++) {

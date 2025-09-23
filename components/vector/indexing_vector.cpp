@@ -81,7 +81,7 @@ namespace components::vector {
     std::shared_ptr<indexing_data> indexing_vector_t::slice(std::pmr::memory_resource* resource,
                                                             const indexing_vector_t& indexing,
                                                             uint64_t count) const {
-        auto data = std::make_unique<indexing_data>(resource, count);
+        auto data = std::make_shared<indexing_data>(resource, count);
         auto result_ptr = data->data.get();
         for (uint64_t i = 0; i < count; i++) {
             result_ptr[i] = get_index(indexing.get_index(i));
@@ -92,5 +92,7 @@ namespace components::vector {
     uint64_t& indexing_vector_t::operator[](uint64_t index) const { return indexing_[index]; }
 
     bool indexing_vector_t::is_valid() const noexcept { return indexing_; }
+
+    uint64_t indexing_vector_t::capacity() const { return data_->data.get_deleter().size(); }
 
 } // namespace components::vector

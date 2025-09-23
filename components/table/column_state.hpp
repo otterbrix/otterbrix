@@ -185,6 +185,7 @@ namespace components::table {
         bool segment_checked = false;
         std::vector<std::unique_ptr<storage::buffer_handle_t>> previous_states;
         uint64_t last_offset = 0;
+        uint64_t result_offset = 0;
         std::vector<bool> scan_child_column;
 
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);

@@ -13,6 +13,8 @@ namespace components::vector {
 
     constexpr uint64_t INVALID_ID = uint64_t(-1);
 
+    static constexpr bool is_power_of_two(uint64_t v) { return (v & (v - 1)) == 0; }
+
     static constexpr uint64_t next_power_of_two(uint64_t value) {
         assert(value != std::numeric_limits<uint64_t>::max());
         if (value == 0) {

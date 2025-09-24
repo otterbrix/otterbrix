@@ -77,6 +77,7 @@ namespace components::table {
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_vec = result.entry();
         auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        state.child_states[1].result_offset = state.result_offset * size;
         child_column->scan_count(state.child_states[1], child_vec, count * size);
         return scan_count;
     }

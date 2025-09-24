@@ -104,11 +104,13 @@ namespace components::table {
             result_mask.set(result_idx, info_data[i]);
         }
     }
-    static void merge_validity_info(update_info_t& current, vector::validity_mask_t& result_mask) {
+
+    static void
+    merge_validity_info(update_info_t& current, uint64_t result_offset, vector::validity_mask_t& result_mask) {
         auto tuples = current.tuples();
         auto info_data = current.data<bool>();
         for (uint64_t i = 0; i < current.N; i++) {
-            result_mask.set(tuples[i], info_data[i]);
+            result_mask.set(tuples[i] + result_offset, info_data[i]);
         }
     }
 
@@ -230,7 +232,7 @@ namespace components::table {
         return false;
     }
 
-    void update_segment_t::fetch_updates(uint64_t vector_index, vector::vector_t& result) {
+    void update_segment_t::fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result) {
         auto lock_handle = std::shared_lock(m_);
         auto node = update_node(vector_index);
         if (!node.is_set()) {
@@ -238,10 +240,10 @@ namespace components::table {
         }
         assert(result.get_vector_type() == vector::vector_type::FLAT);
         auto pin = node.pin();
-        fetch_update(pin.update_info(), result);
+        fetch_update(pin.update_info(), result_offset, result);
     }
 
-    void update_segment_t::fetch_committed(uint64_t vector_index, vector::vector_t& result) {
+    void update_segment_t::fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result) {
         auto lock_handle = std::shared_lock(m_);
         auto node = update_node(vector_index);
         if (!node.is_set()) {
@@ -249,7 +251,7 @@ namespace components::table {
         }
         assert(result.get_vector_type() == vector::vector_type::FLAT);
         auto pin = node.pin();
-        fetch_committed(pin.update_info(), result);
+        fetch_committed(pin.update_info(), result_offset, result);
     }
 
     void update_segment_t::fetch_committed_range(uint64_t start_row, uint64_t count, vector::vector_t& result) {
@@ -294,7 +296,7 @@ namespace components::table {
             return;
         }
 
-        vector::indexing_vector_t indexing(update.resource());
+        vector::indexing_vector_t indexing(update.resource(), 0, count);
         count = sort_indexing_vector(update.resource(), indexing, count, ids);
         assert(count > 0);
 
@@ -483,9 +485,10 @@ namespace components::table {
         }
     }
 
-    void update_segment_t::fetch_committed_validity(update_info_t& info, vector::vector_t& result) {
+    void
+    update_segment_t::fetch_committed_validity(update_info_t& info, uint64_t result_offset, vector::vector_t& result) {
         auto& result_mask = result.validity();
-        merge_validity_info(info, result_mask);
+        merge_validity_info(info, result_offset, result_mask);
     }
 
     void update_segment_t::merge_validity_loop(update_info_t& base_info,
@@ -517,10 +520,11 @@ namespace components::table {
         merge_update_info_range_validity(info, start, end, result_offset, result_mask);
     }
 
-    void update_segment_t::update_merge_validity(update_info_t& info, vector::vector_t& result) {
+    void
+    update_segment_t::update_merge_validity(update_info_t& info, uint64_t result_offset, vector::vector_t& result) {
         auto& result_mask = result.validity();
         update_info_t::update_for_transaction(info, [&](update_info_t* current) {
-            merge_validity_info(*current, result_mask);
+            merge_validity_info(*current, result_offset, result_mask);
         });
     }
 

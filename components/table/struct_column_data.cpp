@@ -79,6 +79,7 @@ namespace components::table {
                 target_vector.set_null(true);
                 continue;
             }
+            state.child_states[i + 1].result_offset = state.result_offset;
             sub_columns[i]->scan(vector_index, state.child_states[i + 1], target_vector, target_count);
         }
         return scan_count;

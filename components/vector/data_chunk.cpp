@@ -247,4 +247,24 @@ namespace components::vector {
         }
     }
 
+    void data_chunk_t::resize(uint64_t new_size) {
+        if (new_size > count_) {
+            new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
+        }
+        for (auto& column : data) {
+            column.resize(capacity_, new_size);
+        }
+        row_ids.resize(capacity_, new_size);
+        capacity_ = new_size;
+        if (count_ > new_size) {
+            count_ = new_size;
+        }
+    }
+
+    void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size) {
+        if (filled_size >= chunk.capacity()) {
+            chunk.resize(filled_size);
+        }
+    }
+
 } // namespace components::vector

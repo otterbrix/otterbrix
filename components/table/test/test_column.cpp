@@ -25,6 +25,8 @@ TEST_CASE("column") {
             , array(std::move(array)) {}
     };
 
+    // column_segments are supposed to be maxed at DEFAULT_VECTOR_CAPACITY
+    // higher amount is not guarantied to behave correctly
     constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY;
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;

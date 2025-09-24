@@ -33,11 +33,11 @@ namespace components::vector::arrow::appender {
             append_data.add_validity(format, from, to);
             append_offsets(append_data, format, from, to, child_indices);
 
-            indexing_vector_t child_sel(input.resource(), child_indices.data());
+            indexing_vector_t child_indexing(input.resource(), child_indices.data());
             auto& child = input.entry();
             auto child_size = child_indices.size();
             vector_t child_copy(child.resource(), child.type());
-            child_copy.slice(child, child_sel, child_size);
+            child_copy.slice(child, child_indexing, child_size);
             append_data.child_data[0]->append_vector(*append_data.child_data[0], child_copy, 0, child_size, child_size);
             append_data.row_count += size;
         }
@@ -59,7 +59,7 @@ namespace components::vector::arrow::appender {
                                    unified_vector_format& format,
                                    uint64_t from,
                                    uint64_t to,
-                                   std::vector<uint64_t>& child_sel) {
+                                   std::vector<uint64_t>& child_indexing) {
             uint64_t size = to - from;
             auto& main_buffer = append_data.main_buffer();
 
@@ -93,7 +93,7 @@ namespace components::vector::arrow::appender {
                 offset_data[offset_idx] = last_offset;
 
                 for (uint64_t k = 0; k < list_length; k++) {
-                    child_sel.push_back(static_cast<uint32_t>(data[source_idx].offset + k));
+                    child_indexing.push_back(static_cast<uint32_t>(data[source_idx].offset + k));
                 }
             }
         }

@@ -147,8 +147,11 @@ namespace services {
                              make_cursor(resource(), error_code_t::collection_dropped));
         } else {
             if (collection->uses_datatable()) {
-                components::vector::data_chunk_t chunk(resource(), collection->table_storage().table().copy_types());
-                chunk.set_cardinality(collection->table_storage().table().calculate_size());
+                size_t size = collection->table_storage().table().calculate_size();
+                components::vector::data_chunk_t chunk(resource(),
+                                                       collection->table_storage().table().copy_types(),
+                                                       size);
+                chunk.set_cardinality(size);
                 actor_zeta::send(current_message()->sender(),
                                  address(),
                                  handler_id(collection::route::size_finish),

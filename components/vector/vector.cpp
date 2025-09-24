@@ -59,7 +59,7 @@ namespace components::vector {
         : vector_type_(other.vector_type_)
         , type_(other.type())
         , validity_(other.resource(), count) {
-        slice(other, offset, count);
+        slice(other, offset, offset + count);
     }
 
     vector_t::vector_t(std::pmr::memory_resource* resource,
@@ -252,13 +252,11 @@ namespace components::vector {
         vector_t child_vector(*this);
         auto internal_type = type_.type();
         if (internal_type == types::logical_type::STRUCT) {
-            child_vector.auxiliary_ = std::make_unique<struct_vector_buffer_t>(*this, indexing, count);
+            child_vector.auxiliary_ = std::make_shared<struct_vector_buffer_t>(*this, indexing, count);
         }
-        auto child_ref = std::make_unique<child_vector_buffer_t>(std::move(child_vector));
-        auto dict_buffer = std::make_unique<dictionary_vector_buffer_t>(indexing);
         vector_type_ = vector_type::DICTIONARY;
-        buffer_ = std::move(dict_buffer);
-        auxiliary_ = std::move(child_ref);
+        buffer_ = std::make_shared<dictionary_vector_buffer_t>(indexing);
+        auxiliary_ = std::make_shared<child_vector_buffer_t>(std::move(child_vector));
     }
 
     void vector_t::slice(const indexing_vector_t& indexing, uint64_t count, indexing_cache_t& cache) {
@@ -321,7 +319,7 @@ namespace components::vector {
             }
             case vector_buffer_type::ARRAY: {
                 auto* vector_array_buffer = static_cast<array_vector_buffer_t*>(auxiliary_.get());
-                auto new_multiplier = vector_array_buffer->size() * multiplier;
+                auto new_multiplier = vector_array_buffer->array_size() * multiplier;
                 auto& child = vector_array_buffer->nested_data();
                 child.find_resize_infos(resize_infos, new_multiplier);
                 break;
@@ -369,7 +367,7 @@ namespace components::vector {
             return;
         }
         if (!buffer_) {
-            buffer_ = std::make_unique<vector_buffer_t>(resource(), vector_buffer_type::STANDARD);
+            buffer_ = std::make_unique<vector_buffer_t>(resource(), 0);
         }
 
         std::vector<resize_info_t> resize_infos;
@@ -737,13 +735,13 @@ namespace components::vector {
     vector_t& vector_t::child() {
         assert(vector_type_ == vector_type::DICTIONARY);
         assert(auxiliary_);
-        return static_cast<child_vector_buffer_t*>(auxiliary_.get())->data();
+        return static_cast<child_vector_buffer_t*>(auxiliary_.get())->nested_data();
     }
 
     const vector_t& vector_t::child() const {
         assert(vector_type_ == vector_type::DICTIONARY);
         assert(auxiliary_);
-        return static_cast<child_vector_buffer_t*>(auxiliary_.get())->data();
+        return static_cast<child_vector_buffer_t*>(auxiliary_.get())->nested_data();
     }
 
     indexing_vector_t& vector_t::indexing() {
@@ -781,7 +779,7 @@ namespace components::vector {
     }
 
     template<typename T>
-    static void TemplatedFlattenConstantVector(std::byte* data, std::byte* old_data, uint64_t count) {
+    static void templated_flatten_constant_vector(std::byte* data, std::byte* old_data, uint64_t count) {
         T constant;
         std::memcpy(&constant, old_data, sizeof(T));
         auto output = (T*) data;
@@ -801,7 +799,6 @@ namespace components::vector {
                 break;
             }
             case vector_type::CONSTANT: {
-                ;
                 auto old_buffer = std::move(buffer_);
                 auto old_data = data_;
                 buffer_ = std::make_unique<vector_buffer_t>(resource(),
@@ -817,49 +814,49 @@ namespace components::vector {
                 }
                 switch (type_.type()) {
                     case types::logical_type::BOOLEAN:
-                        TemplatedFlattenConstantVector<bool>(data_, old_data, count);
+                        templated_flatten_constant_vector<bool>(data_, old_data, count);
                         break;
                     case types::logical_type::TINYINT:
-                        TemplatedFlattenConstantVector<int8_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<int8_t>(data_, old_data, count);
                         break;
                     case types::logical_type::SMALLINT:
-                        TemplatedFlattenConstantVector<int16_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<int16_t>(data_, old_data, count);
                         break;
                     case types::logical_type::INTEGER:
-                        TemplatedFlattenConstantVector<int32_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<int32_t>(data_, old_data, count);
                         break;
                     case types::logical_type::BIGINT:
-                        TemplatedFlattenConstantVector<int64_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<int64_t>(data_, old_data, count);
                         break;
                     case types::logical_type::UTINYINT:
-                        TemplatedFlattenConstantVector<uint8_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<uint8_t>(data_, old_data, count);
                         break;
                     case types::logical_type::USMALLINT:
-                        TemplatedFlattenConstantVector<uint16_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<uint16_t>(data_, old_data, count);
                         break;
                     case types::logical_type::UINTEGER:
-                        TemplatedFlattenConstantVector<uint32_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<uint32_t>(data_, old_data, count);
                         break;
                     case types::logical_type::UBIGINT:
-                        TemplatedFlattenConstantVector<uint64_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<uint64_t>(data_, old_data, count);
                         break;
                     // case types::logical_type::HUGEINT:
-                    // TemplatedFlattenConstantVector<int128_t>(data_, old_data, count);
+                    // templated_flatten_constant_vector<int128_t>(data_, old_data, count);
                     // break;
                     // case types::logical_type::UHUGEINT:
-                    // TemplatedFlattenConstantVector<uint128_t>(data_, old_data, count);
+                    // templated_flatten_constant_vector<uint128_t>(data_, old_data, count);
                     // break;
                     case types::logical_type::FLOAT:
-                        TemplatedFlattenConstantVector<float>(data_, old_data, count);
+                        templated_flatten_constant_vector<float>(data_, old_data, count);
                         break;
                     case types::logical_type::DOUBLE:
-                        TemplatedFlattenConstantVector<double>(data_, old_data, count);
+                        templated_flatten_constant_vector<double>(data_, old_data, count);
                         break;
                     case types::logical_type::STRING_LITERAL:
-                        TemplatedFlattenConstantVector<std::string_view>(data_, old_data, count);
+                        templated_flatten_constant_vector<std::string_view>(data_, old_data, count);
                         break;
                     case types::logical_type::LIST: {
-                        TemplatedFlattenConstantVector<types::list_entry_t>(data_, old_data, count);
+                        templated_flatten_constant_vector<types::list_entry_t>(data_, old_data, count);
                         break;
                     }
                     case types::logical_type::ARRAY: {
@@ -893,8 +890,8 @@ namespace components::vector {
                         break;
                     }
                     case types::logical_type::STRUCT: {
-                        auto normalified_buffer = std::make_unique<struct_vector_buffer_t>(resource());
-                        auto& new_children = normalified_buffer->entries();
+                        auto normalized_buffer = std::make_unique<struct_vector_buffer_t>(resource());
+                        auto& new_children = normalized_buffer->entries();
                         auto& child_entries = entries();
 
                         for (auto& child : child_entries) {
@@ -903,7 +900,7 @@ namespace components::vector {
                             vector->flatten(count);
                             new_children.push_back(std::move(vector));
                         }
-                        auxiliary_ = std::unique_ptr<vector_buffer_t>(normalified_buffer.release());
+                        auxiliary_ = std::unique_ptr<vector_buffer_t>(normalized_buffer.release());
                         break;
                     }
                     default:
@@ -959,8 +956,8 @@ namespace components::vector {
                     child_vector.flatten(indexing(), count);
                     auto new_aux = std::make_unique<child_vector_buffer_t>(std::move(child_vector));
 
-                    format.data = new_aux->data().data_;
-                    format.validity = new_aux->data().validity_;
+                    format.data = new_aux->nested_data().data_;
+                    format.validity = new_aux->nested_data().validity_;
                     auxiliary_ = std::move(new_aux);
                 }
                 break;

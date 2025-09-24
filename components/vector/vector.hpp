@@ -89,8 +89,6 @@ namespace components::vector {
 
     class vector_t {
     public:
-        friend class cache_vector_buffer_t;
-
         explicit vector_t(std::pmr::memory_resource* resource,
                           types::complex_logical_type type,
                           uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
@@ -207,8 +205,8 @@ namespace components::vector {
     public:
         explicit child_vector_buffer_t(vector_t vector);
 
-        vector_t& data() noexcept;
-        const vector_t& data() const noexcept;
+        vector_t& nested_data() noexcept;
+        const vector_t& nested_data() const noexcept;
 
     private:
         vector_t data_;

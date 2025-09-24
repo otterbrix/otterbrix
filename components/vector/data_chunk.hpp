@@ -19,6 +19,7 @@ namespace components::vector {
         vector_t row_ids;
 
         uint64_t size() const { return count_; }
+        uint64_t capacity() const { return capacity_; }
         uint64_t column_count() const { return data.size(); }
         void set_cardinality(uint64_t count) {
             assert(count <= capacity_);
@@ -69,6 +70,7 @@ namespace components::vector {
 
         void hash(vector_t& result);
         void hash(std::vector<uint64_t>& column_ids, vector_t& result);
+        void resize(uint64_t new_size);
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> types() const;
         size_t column_index(std::string_view key) const;
@@ -80,4 +82,7 @@ namespace components::vector {
         uint64_t count_ = 0;
         uint64_t capacity_ = DEFAULT_VECTOR_CAPACITY;
     };
+
+    void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
+
 } // namespace components::vector

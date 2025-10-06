@@ -198,6 +198,7 @@ TEST_CASE("delete one test") {
                                                       {database_name, collection_name},
                                                       make_compare_expression(&resource,
                                                                               compare_type::eq,
+                                                                              side_t::left,
                                                                               components::expressions::key_t{"count"},
                                                                               core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
@@ -237,6 +238,7 @@ TEST_CASE("delete many test") {
                                                       {database_name, collection_name},
                                                       make_compare_expression(&resource,
                                                                               compare_type::eq,
+                                                                              side_t::left,
                                                                               components::expressions::key_t{"count"},
                                                                               core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
@@ -276,6 +278,7 @@ TEST_CASE("update one test") {
                                                       {database_name, collection_name},
                                                       make_compare_expression(&resource,
                                                                               compare_type::eq,
+                                                                              side_t::left,
                                                                               components::expressions::key_t{"count"},
                                                                               core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
@@ -329,6 +332,7 @@ TEST_CASE("update many test") {
                                                       {database_name, collection_name},
                                                       make_compare_expression(&resource,
                                                                               compare_type::eq,
+                                                                              side_t::left,
                                                                               components::expressions::key_t{"count"},
                                                                               core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);

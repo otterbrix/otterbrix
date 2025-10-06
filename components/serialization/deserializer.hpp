@@ -28,7 +28,7 @@ namespace components::serializer {
         virtual expressions::scalar_type deserialize_scalar_type(size_t index) = 0;
         virtual expressions::sort_order deserialize_sort_order(size_t index) = 0;
         virtual expressions::update_expr_type deserialize_update_expr_type(size_t index) = 0;
-        virtual expressions::update_expr_get_value_t::side_t deserialize_update_expr_side(size_t index) = 0;
+        virtual expressions::side_t deserialize_expr_side(size_t index) = 0;
         virtual logical_plan::index_type deserialize_index_type(size_t index) = 0;
         virtual logical_plan::join_type deserialize_join_type(size_t index) = 0;
         virtual core::parameter_id_t deserialize_param_id(size_t index) = 0;
@@ -71,7 +71,7 @@ namespace components::serializer {
         expressions::scalar_type deserialize_scalar_type(size_t index) override;
         expressions::sort_order deserialize_sort_order(size_t index) override;
         expressions::update_expr_type deserialize_update_expr_type(size_t index) override;
-        expressions::update_expr_get_value_t::side_t deserialize_update_expr_side(size_t index) override;
+        expressions::side_t deserialize_expr_side(size_t index) override;
         logical_plan::index_type deserialize_index_type(size_t index) override;
         logical_plan::join_type deserialize_join_type(size_t index) override;
         core::parameter_id_t deserialize_param_id(size_t index) override;
@@ -105,7 +105,7 @@ namespace components::serializer {
         expressions::scalar_type deserialize_scalar_type(size_t index) override;
         expressions::sort_order deserialize_sort_order(size_t index) override;
         expressions::update_expr_type deserialize_update_expr_type(size_t index) override;
-        expressions::update_expr_get_value_t::side_t deserialize_update_expr_side(size_t index) override;
+        expressions::side_t deserialize_expr_side(size_t index) override;
         logical_plan::index_type deserialize_index_type(size_t index) override;
         logical_plan::join_type deserialize_join_type(size_t index) override;
         core::parameter_id_t deserialize_param_id(size_t index) override;

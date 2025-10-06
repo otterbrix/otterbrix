@@ -70,6 +70,13 @@ namespace components::expressions {
         asc = 1
     };
 
+    enum class side_t : uint8_t
+    {
+        undefined = 0,
+        left,
+        right
+    };
+
     template<class OStream>
     OStream& operator<<(OStream& stream, const compare_type& type) {
         if (type == compare_type::union_and) {

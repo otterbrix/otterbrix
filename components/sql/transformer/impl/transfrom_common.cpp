@@ -101,6 +101,8 @@ namespace components::sql::transform::impl {
                     return make_compare_expression(
                         params->parameters().resource(),
                         get_compare_type(strVal(node->name->lst.front().data)),
+                        // TODO: deduce expression side
+                        side_t::undefined,
                         components::expressions::key_t{key_left},
                         params->add_parameter(get_value(node->rexpr, params->parameters().tape()).first));
                 } else {
@@ -108,6 +110,8 @@ namespace components::sql::transform::impl {
                     return make_compare_expression(
                         params->parameters().resource(),
                         get_compare_type(strVal(node->name->lst.back().data)),
+                        // TODO: deduce expression side
+                        side_t::undefined,
                         components::expressions::key_t{key},
                         params->add_parameter(get_value(node->lexpr, params->parameters().tape()).first));
                 }

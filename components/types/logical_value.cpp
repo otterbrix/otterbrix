@@ -445,7 +445,6 @@ namespace components::types {
                     return cast_as(promoted_type) == rhs.cast_as(promoted_type);
                 }
             }
-            assert(false && "can not compare types");
             return false;
         } else {
             switch (type_.type()) {
@@ -459,7 +458,6 @@ namespace components::types {
                     return std::get<int32_t>(value_) == std::get<int32_t>(rhs.value_);
                 case logical_type::BIGINT:
                     return std::get<int64_t>(value_) == std::get<int64_t>(rhs.value_);
-                // TODO: use proper floating comparasing
                 case logical_type::FLOAT:
                     return is_equals(std::get<float>(value_), std::get<float>(rhs.value_));
                 case logical_type::DOUBLE:
@@ -484,7 +482,6 @@ namespace components::types {
                     return *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_) ==
                            *std::get<std::unique_ptr<std::vector<logical_value_t>>>(rhs.value_);
                 default:
-                    assert(false && "unrecognized type");
                     return false;
             }
         }
@@ -499,7 +496,6 @@ namespace components::types {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());
                 return cast_as(promoted_type) < rhs.cast_as(promoted_type);
             }
-            assert(false && "can not compare types");
             return false;
         } else {
             switch (type_.type()) {
@@ -529,7 +525,6 @@ namespace components::types {
                     return *std::get<std::unique_ptr<std::string>>(value_) <
                            *std::get<std::unique_ptr<std::string>>(rhs.value_);
                 default:
-                    assert(false && "unrecognized type");
                     return false;
             }
         }

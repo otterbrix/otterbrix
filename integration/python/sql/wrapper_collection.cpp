@@ -126,9 +126,9 @@ namespace otterbrix {
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
-                    calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key_str},
-                        components::expressions::update_expr_get_value_t::side_t::to);
+                    calculate_expr->left() =
+                        new components::expressions::update_expr_get_value_t(components::expressions::key_t{key_str},
+                                                                             components::expressions::side_t::left);
                     auto id = params->add_parameter(components::document::value_t(*value->get_mut()));
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
                     updates.back()->left() = std::move(calculate_expr);
@@ -178,9 +178,9 @@ namespace otterbrix {
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
-                    calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key_str},
-                        components::expressions::update_expr_get_value_t::side_t::to);
+                    calculate_expr->left() =
+                        new components::expressions::update_expr_get_value_t(components::expressions::key_t{key_str},
+                                                                             components::expressions::side_t::left);
                     auto id = params->add_parameter(components::document::value_t(*value->get_mut()));
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
                     updates.back()->left() = std::move(calculate_expr);

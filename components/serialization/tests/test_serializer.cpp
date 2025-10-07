@@ -24,10 +24,16 @@ TEST_CASE("serialization") {
 
     {
         auto expr_and = make_compare_union_expression(&resource, compare_type::union_and);
-        expr_and->append_child(
-            make_compare_expression(&resource, compare_type::gt, key{"some key"}, core::parameter_id_t{1}));
-        expr_and->append_child(
-            make_compare_expression(&resource, compare_type::lt, key{"some other key"}, core::parameter_id_t{2}));
+        expr_and->append_child(make_compare_expression(&resource,
+                                                       compare_type::gt,
+                                                       side_t::left,
+                                                       key{"some key"},
+                                                       core::parameter_id_t{1}));
+        expr_and->append_child(make_compare_expression(&resource,
+                                                       compare_type::lt,
+                                                       side_t::right,
+                                                       key{"some other key"},
+                                                       core::parameter_id_t{2}));
 
         {
             json_serializer_t serializer(&resource);
@@ -35,9 +41,9 @@ TEST_CASE("serialization") {
             expr_and->serialize(&serializer);
             serializer.end_array();
             auto res = serializer.result();
-            REQUIRE(res == R"_([[17,10,null,null,0,[)_"
-                           R"_([17,3,"some key",null,1,[]],)_"
-                           R"_([17,4,"some other key",null,2,[]]]]])_");
+            REQUIRE(res == R"_([[17,10,0,null,null,0,[)_"
+                           R"_([17,3,1,"some key",null,1,[]],)_"
+                           R"_([17,4,2,null,"some other key",2,[]]]]])_");
             json_deserializer_t deserializer(res);
             deserializer.advance_array(0);
             auto type = deserializer.current_type();
@@ -113,13 +119,15 @@ TEST_CASE("serialization") {
     {
         auto tape = std::make_unique<components::document::impl::base_document>(&resource);
         auto new_value = [&](auto value) { return components::document::value_t{tape.get(), value}; };
-        auto node_delete = make_node_delete_many(
-            &resource,
-            {database_name, collection_name},
-            make_node_match(
-                &resource,
-                {database_name, collection_name},
-                make_compare_expression(&resource, compare_type::gt, key{"count"}, core::parameter_id_t{1})));
+        auto node_delete = make_node_delete_many(&resource,
+                                                 {database_name, collection_name},
+                                                 make_node_match(&resource,
+                                                                 {database_name, collection_name},
+                                                                 make_compare_expression(&resource,
+                                                                                         compare_type::gt,
+                                                                                         side_t::left,
+                                                                                         key{"count"},
+                                                                                         core::parameter_id_t{1})));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, new_value(90));
         {
@@ -131,7 +139,7 @@ TEST_CASE("serialization") {
             auto res = serializer.result();
             REQUIRE(res == R"_([[5,["database","collection"],)_"
                            R"_([[12,["database","collection"],)_"
-                           R"_([17,3,"count",null,1,[]]],)_"
+                           R"_([17,3,1,"count",null,1,[]]],)_"
                            R"_([11,["database","collection"],-1]]],)_"
                            R"_([22,[[1,90]]]])_");
             json_deserializer_t deserializer(res);

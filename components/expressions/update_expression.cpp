@@ -220,7 +220,7 @@ namespace components::expressions {
 
     const key_t& update_expr_get_value_t::key() const noexcept { return key_; }
 
-    update_expr_get_value_t::side_t update_expr_get_value_t::side() const noexcept { return side_; }
+    side_t update_expr_get_value_t::side() const noexcept { return side_; }
 
     bool update_expr_get_value_t::operator==(const update_expr_get_value_t& rhs) const {
         return left_ == rhs.left_ && key_ == rhs.key_ && side_ == rhs.side_;
@@ -236,8 +236,8 @@ namespace components::expressions {
     }
 
     update_expr_ptr update_expr_get_value_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        return {new update_expr_get_value_t(deserializer->deserialize_key(2),
-                                            (deserializer->deserialize_update_expr_side(3)))};
+        return {
+            new update_expr_get_value_t(deserializer->deserialize_key(2), (deserializer->deserialize_expr_side(3)))};
     }
 
     bool update_expr_get_value_t::execute_impl(document::document_ptr& to,
@@ -246,16 +246,16 @@ namespace components::expressions {
                                                const logical_plan::storage_parameters*) {
         if (side_ == side_t::undefined) {
             if (to->is_exists(key_.as_string())) {
-                side_ = side_t::to;
+                side_ = side_t::left;
             } else if (from->is_exists(key_.as_string())) {
-                side_ = side_t::from;
+                side_ = side_t::right;
             } else {
                 output_ = document::value_t{tape, nullptr};
             }
         }
-        if (side_ == side_t::from) {
+        if (side_ == side_t::right) {
             output_ = from->get_value(key_.as_string());
-        } else if (side_ == side_t::to) {
+        } else if (side_ == side_t::left) {
             output_ = to->get_value(key_.as_string());
         }
         return false;
@@ -271,7 +271,7 @@ namespace components::expressions {
             // TODO: deduce which side to use
             assert(false);
         }
-        if (side_ == side_t::from) {
+        if (side_ == side_t::right) {
             size_t index = -1;
             switch (key_.which()) {
                 case key_t::type::string:
@@ -286,7 +286,7 @@ namespace components::expressions {
             }
             assert(index < from.column_count());
             output_ = from.data[index].value(row_from);
-        } else if (side_ == side_t::to) {
+        } else if (side_ == side_t::left) {
             size_t index = -1;
             switch (key_.which()) {
                 case key_t::type::string:

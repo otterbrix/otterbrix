@@ -235,6 +235,22 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
+    INFO("two join predicates, with const") {
+        auto session = otterbrix::session_id_t();
+        {
+            std::stringstream query;
+            query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
+                  << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1 << ".key_1"
+                  << " = " << database_name << "." << collection_name_2 + ".key AND " << database_name << "."
+                  << collection_name_2 << ".key"
+                  << " > "
+                  << "75;";
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 13);
+        }
+    }
+
     INFO("self join ") {
         auto session = otterbrix::session_id_t();
         {

@@ -14,6 +14,7 @@ namespace components::collection::operators::predicates {
     }
 
     predicate_ptr create_predicate(const expressions::compare_expression_ptr& expr) {
+        // TODO: use schema to deduce expr side, if it is not set, before this
         auto result = create_simple_predicate(expr);
         if (result) {
             return result;

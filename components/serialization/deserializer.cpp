@@ -125,8 +125,8 @@ namespace components::serializer {
         return static_cast<expressions::update_expr_type>(working_tree_.top()->at(index).as_int64());
     }
 
-    expressions::update_expr_get_value_t::side_t json_deserializer_t::deserialize_update_expr_side(size_t index) {
-        return static_cast<expressions::update_expr_get_value_t::side_t>(working_tree_.top()->at(index).as_int64());
+    expressions::side_t json_deserializer_t::deserialize_expr_side(size_t index) {
+        return static_cast<expressions::side_t>(working_tree_.top()->at(index).as_int64());
     }
 
     logical_plan::index_type json_deserializer_t::deserialize_index_type(size_t index) {
@@ -240,8 +240,8 @@ namespace components::serializer {
         return static_cast<expressions::update_expr_type>(working_tree_.top()->ptr[index].via.u64);
     }
 
-    expressions::update_expr_get_value_t::side_t msgpack_deserializer_t::deserialize_update_expr_side(size_t index) {
-        return static_cast<expressions::update_expr_get_value_t::side_t>(working_tree_.top()->ptr[index].via.u64);
+    expressions::side_t msgpack_deserializer_t::deserialize_expr_side(size_t index) {
+        return static_cast<expressions::side_t>(working_tree_.top()->ptr[index].via.u64);
     }
 
     logical_plan::index_type msgpack_deserializer_t::deserialize_index_type(size_t index) {

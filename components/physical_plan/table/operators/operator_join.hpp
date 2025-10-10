@@ -19,7 +19,8 @@ namespace components::table::operators {
         expressions::compare_expression_ptr expression_;
         std::unordered_map<std::string, size_t> name_index_map_left_;
         std::unordered_map<std::string, size_t> name_index_map_right_;
-        std::unordered_map<std::string, size_t> name_index_map_res_;
+        std::vector<size_t> indices_left_;
+        std::vector<size_t> indices_right_;
 
         bool check_predicate_(pipeline::context_t* context, size_t row_left, size_t row_right) const;
         void on_execute_impl(pipeline::context_t* context) final;

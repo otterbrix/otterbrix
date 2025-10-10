@@ -44,6 +44,7 @@ set(${PROJECT_NAME}_SOURCES
         collection/operators/operator_sort.cpp
         collection/operators/operator_join.cpp
 
+        table/operators/aggregate/aggregate_helpers.cpp
         table/operators/aggregate/operator_aggregate.cpp
         table/operators/aggregate/operator_count.cpp
         table/operators/aggregate/operator_min.cpp

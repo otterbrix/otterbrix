@@ -1,4 +1,5 @@
 #include "operator_max.hpp"
+#include "aggregate_helpers.hpp"
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators::aggregate {
@@ -21,13 +22,7 @@ namespace components::table::operators::aggregate {
                     max_.set_alias(key_result_);
                     return max_;
                 } else {
-                    max_ = it->value(0);
-                }
-                for (size_t i = 1; i < chunk.size(); i++) {
-                    auto val = it->value(i);
-                    if (max_ < val) {
-                        std::swap(max_, val);
-                    }
+                    max_ = impl::max(*it, chunk.size());
                 }
                 max_.set_alias(key_result_);
                 return max_;

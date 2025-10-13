@@ -16,7 +16,7 @@ namespace components::table::operators {
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
             auto types_left = chunk_left.types();
-            auto types_right = chunk_left.types();
+            auto types_right = chunk_right.types();
             std::unordered_map<std::string, size_t> name_index_map_left;
             for (size_t i = 0; i < types_left.size(); i++) {
                 name_index_map_left.emplace(types_left[i].alias(), i);
@@ -72,11 +72,9 @@ namespace components::table::operators {
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (predicate->check(chunk, i)) {
                     if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        ids.set_value(
-                            index++,
-                            types::logical_value_t{static_cast<int64_t>(chunk.data.front().indexing().get_index(i))});
+                        ids.data<int64_t>()[index++] = chunk.data.front().indexing().get_index(i);
                     } else {
-                        ids.set_value(index++, chunk.row_ids.value(i));
+                        ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
                     }
                 }
             }

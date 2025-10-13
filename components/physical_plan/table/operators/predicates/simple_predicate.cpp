@@ -241,7 +241,7 @@ namespace components::table::operators::predicates {
         }
 
         template<typename COMP, typename LEFT_TYPE>
-        simple_predicate::check_function_t create_binary_comporator_inner_switch(types::physical_type type_right,
+        simple_predicate::check_function_t create_binary_comparator_inner_switch(types::physical_type type_right,
                                                                                  size_t column_index_left,
                                                                                  size_t column_index_right,
                                                                                  bool one_sided) {
@@ -455,61 +455,61 @@ namespace components::table::operators::predicates {
 
             switch (types_left.at(column_index_left).to_physical_type()) {
                 case types::physical_type::BOOL:
-                    return create_binary_comporator_inner_switch<COMP, bool>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, bool>(type_right,
                                                                              column_index_left,
                                                                              column_index_right,
                                                                              one_sided);
                 case types::physical_type::UINT8:
-                    return create_binary_comporator_inner_switch<COMP, uint8_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, uint8_t>(type_right,
                                                                                 column_index_left,
                                                                                 column_index_right,
                                                                                 one_sided);
                 case types::physical_type::INT8:
-                    return create_binary_comporator_inner_switch<COMP, int8_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, int8_t>(type_right,
                                                                                column_index_left,
                                                                                column_index_right,
                                                                                one_sided);
                 case types::physical_type::UINT16:
-                    return create_binary_comporator_inner_switch<COMP, uint16_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, uint16_t>(type_right,
                                                                                  column_index_left,
                                                                                  column_index_right,
                                                                                  one_sided);
                 case types::physical_type::INT16:
-                    return create_binary_comporator_inner_switch<COMP, int16_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, int16_t>(type_right,
                                                                                 column_index_left,
                                                                                 column_index_right,
                                                                                 one_sided);
                 case types::physical_type::UINT32:
-                    return create_binary_comporator_inner_switch<COMP, uint32_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, uint32_t>(type_right,
                                                                                  column_index_left,
                                                                                  column_index_right,
                                                                                  one_sided);
                 case types::physical_type::INT32:
-                    return create_binary_comporator_inner_switch<COMP, int32_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, int32_t>(type_right,
                                                                                 column_index_left,
                                                                                 column_index_right,
                                                                                 one_sided);
                 case types::physical_type::UINT64:
-                    return create_binary_comporator_inner_switch<COMP, uint64_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, uint64_t>(type_right,
                                                                                  column_index_left,
                                                                                  column_index_right,
                                                                                  one_sided);
                 case types::physical_type::INT64:
-                    return create_binary_comporator_inner_switch<COMP, int64_t>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, int64_t>(type_right,
                                                                                 column_index_left,
                                                                                 column_index_right,
                                                                                 one_sided);
                 // case types::physical_type::UINT128:
-                //    return create_binary_comporator_inner_switch<COMP, types::uint128_t>(type_right, column_index_left, column_index_right, one_sided);
+                //    return create_binary_comparator_inner_switch<COMP, types::uint128_t>(type_right, column_index_left, column_index_right, one_sided);
                 // case types::physical_type::INT128:
-                //    return create_binary_comporator_inner_switch<COMP, types::int128_t>(type_right, column_index_left, column_index_right, one_sided);
+                //    return create_binary_comparator_inner_switch<COMP, types::int128_t>(type_right, column_index_left, column_index_right, one_sided);
                 case types::physical_type::FLOAT:
-                    return create_binary_comporator_inner_switch<COMP, float>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, float>(type_right,
                                                                               column_index_left,
                                                                               column_index_right,
                                                                               one_sided);
                 case types::physical_type::DOUBLE:
-                    return create_binary_comporator_inner_switch<COMP, double>(type_right,
+                    return create_binary_comparator_inner_switch<COMP, double>(type_right,
                                                                                column_index_left,
                                                                                column_index_right,
                                                                                one_sided);

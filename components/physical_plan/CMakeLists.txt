@@ -61,6 +61,9 @@ set(${PROJECT_NAME}_SOURCES
         #table/operators/merge/operator_or.cpp
         #table/operators/merge/operator_not.cpp
 
+        table/operators/predicates/predicate.cpp
+        table/operators/predicates/simple_predicate.cpp
+
         table/operators/scan/full_scan.cpp
         table/operators/scan/index_scan.cpp
         table/operators/scan/primary_key_scan.cpp
@@ -78,7 +81,6 @@ set(${PROJECT_NAME}_SOURCES
         table/operators/operator_join.cpp
 
         table/operators/transformation.cpp
-        table/operators/check_expr.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

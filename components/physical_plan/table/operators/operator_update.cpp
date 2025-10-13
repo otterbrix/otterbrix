@@ -1,5 +1,5 @@
 #include "operator_update.hpp"
-#include "check_expr.hpp"
+#include "predicates/predicate.hpp"
 
 #include <services/collection/collection.hpp>
 
@@ -51,17 +51,15 @@ namespace components::table::operators {
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types_left);
                 auto state = context_->table_storage().table().initialize_update({});
                 auto& out_chunk = output_->data_chunk();
+                auto predicate = comp_expr_ ? predicates::create_predicate(comp_expr_,
+                                                                           types_left,
+                                                                           types_right,
+                                                                           &pipeline_context->parameters)
+                                            : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
                     for (size_t j = 0; j < chunk_right.size(); j++) {
-                        if (check_expr_general(comp_expr_,
-                                               &pipeline_context->parameters,
-                                               chunk_left,
-                                               chunk_right,
-                                               name_index_map_left,
-                                               name_index_map_right,
-                                               i,
-                                               j)) {
+                        if (predicate->check(chunk_left, chunk_right, i, j)) {
                             out_chunk.row_ids.set_value(index, chunk_left.row_ids.value(i));
                             context_->index_engine()->delete_row(chunk_left, i, pipeline_context);
                             bool modified = false;
@@ -106,9 +104,12 @@ namespace components::table::operators {
                 modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 auto state = context_->table_storage().table().initialize_update({});
+                auto predicate =
+                    comp_expr_ ? predicates::create_predicate(comp_expr_, types, types, &pipeline_context->parameters)
+                               : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
-                    if (check_expr_general(comp_expr_, &pipeline_context->parameters, chunk, name_index_map, i)) {
+                    if (predicate->check(chunk, i)) {
                         if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                             out_chunk.row_ids.set_value(index,
                                                         types::logical_value_t{static_cast<int64_t>(

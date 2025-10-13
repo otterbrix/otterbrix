@@ -1,7 +1,5 @@
 #include "operator_join.hpp"
 
-#include "check_expr.hpp"
-
 #include <components/vector/vector_operations.hpp>
 #include <services/collection/collection.hpp>
 #include <vector>
@@ -14,19 +12,6 @@ namespace components::table::operators {
         : read_only_operator_t(context, operator_type::join)
         , join_type_(join_type)
         , expression_(std::move(expression)) {}
-
-    bool operator_join_t::check_predicate_(pipeline::context_t* context, size_t row_left, size_t row_right) const {
-        const auto& chunk_left = left_->output()->data_chunk();
-        const auto& chunk_right = right_->output()->data_chunk();
-        return check_expr_general(expression_,
-                                  &context->parameters,
-                                  chunk_left,
-                                  chunk_right,
-                                  name_index_map_left_,
-                                  name_index_map_right_,
-                                  row_left,
-                                  row_right);
-    }
 
     void operator_join_t::on_execute_impl(pipeline::context_t* context) {
         if (!left_ || !right_) {
@@ -78,21 +63,27 @@ namespace components::table::operators {
                 indices_right_.emplace_back(name_index_map_res.at(column.type().alias()));
             }
 
+            auto predicate = expression_ ? predicates::create_predicate(expression_,
+                                                                        chunk_left.types(),
+                                                                        chunk_right.types(),
+                                                                        &context->parameters)
+                                         : predicates::create_all_true_predicate(output_->resource());
+
             switch (join_type_) {
                 case type::inner:
-                    inner_join_(context);
+                    inner_join_(std::move(predicate), context);
                     break;
                 case type::full:
-                    outer_full_join_(context);
+                    outer_full_join_(std::move(predicate), context);
                     break;
                 case type::left:
-                    outer_left_join_(context);
+                    outer_left_join_(std::move(predicate), context);
                     break;
                 case type::right:
-                    outer_right_join_(context);
+                    outer_right_join_(std::move(predicate), context);
                     break;
                 case type::cross:
-                    cross_join_(context);
+                    cross_join_(std::move(predicate), context);
                     break;
                 default:
                     break;
@@ -105,7 +96,7 @@ namespace components::table::operators {
         }
     }
 
-    void operator_join_t::inner_join_(pipeline::context_t* context) {
+    void operator_join_t::inner_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -116,7 +107,7 @@ namespace components::table::operators {
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (check_predicate_(context, i, j)) {
+                if (predicate->check(chunk_left, chunk_right, i, j)) {
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
                     ++res_count;
@@ -146,7 +137,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_full_join_(pipeline::context_t* context) {
+    void operator_join_t::outer_full_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -160,7 +151,7 @@ namespace components::table::operators {
             bool visited_left = false;
             size_t right_index = 0;
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (check_predicate_(context, i, j)) {
+                if (predicate->check(chunk_left, chunk_right, i, j)) {
                     visited_left = true;
                     visited_right[right_index] = true;
                     copy_indices_left.emplace_back(i);
@@ -206,7 +197,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_left_join_(pipeline::context_t* context) {
+    void operator_join_t::outer_left_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -218,7 +209,7 @@ namespace components::table::operators {
         for (size_t i = 0; i < chunk_left.size(); i++) {
             bool visited_left = false;
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (check_predicate_(context, i, j)) {
+                if (predicate->check(chunk_left, chunk_right, i, j)) {
                     visited_left = true;
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
@@ -254,7 +245,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_right_join_(pipeline::context_t* context) {
+    void operator_join_t::outer_right_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -266,7 +257,7 @@ namespace components::table::operators {
         for (size_t i = 0; i < chunk_right.size(); i++) {
             bool visited_right = false;
             for (size_t j = 0; j < chunk_left.size(); j++) {
-                if (check_predicate_(context, i, j)) {
+                if (predicate->check(chunk_left, chunk_right, i, j)) {
                     visited_right = true;
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
@@ -302,7 +293,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::cross_join_(pipeline::context_t* context) {
+    void operator_join_t::cross_join_(predicates::predicate_ptr, pipeline::context_t* context) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();

@@ -7,9 +7,10 @@ namespace components::collection::operators::predicates {
 
     class simple_predicate : public predicate {
     public:
-        simple_predicate(std::function<bool(const document::document_ptr&,
-                                            const document::document_ptr&,
-                                            const logical_plan::storage_parameters*)> func);
+        using check_function_t = std::function<bool(const document::document_ptr&,
+                                                    const document::document_ptr&,
+                                                    const logical_plan::storage_parameters*)>;
+        explicit simple_predicate(check_function_t func);
         simple_predicate(std::vector<predicate_ptr>&& nested, expressions::compare_type nested_type);
 
     private:
@@ -17,9 +18,7 @@ namespace components::collection::operators::predicates {
                         const document::document_ptr& document_right,
                         const logical_plan::storage_parameters* parameters) final;
 
-        std::function<
-            bool(const document::document_ptr&, const document::document_ptr&, const logical_plan::storage_parameters*)>
-            func_;
+        check_function_t func_;
         std::vector<predicate_ptr> nested_;
         expressions::compare_type nested_type_ = expressions::compare_type::invalid;
     };

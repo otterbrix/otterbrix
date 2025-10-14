@@ -46,10 +46,13 @@ namespace components::table::operators::predicates {
                                                                           const vector::data_chunk_t& chunk_right,
                                                                           size_t index_left,
                                                                           size_t index_right) {
+                        assert(column_index < chunk_left.column_count());
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<bool>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<bool>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<bool>()[index_right], val);
                         }
                     };
@@ -60,8 +63,10 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<uint8_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<uint8_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<uint8_t>()[index_right], val);
                         }
                     };
@@ -72,8 +77,10 @@ namespace components::table::operators::predicates {
                                                                          size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<int8_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<int8_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<int8_t>()[index_right], val);
                         }
                     };
@@ -84,8 +91,10 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<uint16_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<uint16_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<uint16_t>()[index_right], val);
                         }
                     };
@@ -96,8 +105,10 @@ namespace components::table::operators::predicates {
                                                                          size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<int16_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<int16_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<int16_t>()[index_right], val);
                         }
                     };
@@ -108,8 +119,10 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<uint32_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<uint32_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<uint32_t>()[index_right], val);
                         }
                     };
@@ -120,8 +133,10 @@ namespace components::table::operators::predicates {
                                                                          size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<int32_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<int32_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<int32_t>()[index_right], val);
                         }
                     };
@@ -132,8 +147,10 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<uint64_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<uint64_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<uint64_t>()[index_right], val);
                         }
                     };
@@ -144,8 +161,10 @@ namespace components::table::operators::predicates {
                                                                          size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<int64_t>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<int64_t>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<int64_t>()[index_right], val);
                         }
                     };
@@ -156,8 +175,10 @@ namespace components::table::operators::predicates {
                 //                                                            size_t index_right) {
                 //          COMP comp{};
                 //          if (side == expressions::side_t::left) {
-                //              comp(chunk_left.data.at(column_index).data<types::uint128_t>()[index_left], val);
+                //              assert(column_index < chunk_left.column_count());
+                //              return comp(chunk_left.data.at(column_index).data<types::uint128_t>()[index_left], val);
                 //          } else {
+                //              assert(column_index < chunk_right.column_count());
                 //              return comp(chunk_right.data.at(column_index).data<types::uint128_t>()[index_right], val);
                 //          }
                 // };
@@ -168,8 +189,10 @@ namespace components::table::operators::predicates {
                 //                                                            size_t index_right) {
                 //          COMP comp{};
                 //          if (side == expressions::side_t::left) {
-                //              comp(chunk_left.data.at(column_index).data<types::int128_t>()[index_left], val);
+                //              assert(column_index < chunk_left.column_count());
+                //              return comp(chunk_left.data.at(column_index).data<types::int128_t>()[index_left], val);
                 //          } else {
+                //              assert(column_index < chunk_right.column_count());
                 //              return comp(chunk_right.data.at(column_index).data<types::int128_t>()[index_right], val);
                 //          }
                 // };
@@ -180,8 +203,10 @@ namespace components::table::operators::predicates {
                                                                            size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<float>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<float>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<float>()[index_right], val);
                         }
                     };
@@ -192,8 +217,10 @@ namespace components::table::operators::predicates {
                                                                             size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<double>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<double>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<double>()[index_right], val);
                         }
                     };
@@ -204,8 +231,10 @@ namespace components::table::operators::predicates {
                                                                             size_t index_right) {
                         COMP comp{};
                         if (side == expressions::side_t::left) {
-                            comp(chunk_left.data.at(column_index).data<std::string_view>()[index_left], val);
+                            assert(column_index < chunk_left.column_count());
+                            return comp(chunk_left.data.at(column_index).data<std::string_view>()[index_left], val);
                         } else {
+                            assert(column_index < chunk_right.column_count());
                             return comp(chunk_right.data.at(column_index).data<std::string_view>()[index_right], val);
                         }
                     };
@@ -229,10 +258,12 @@ namespace components::table::operators::predicates {
                                                                     size_t index_left,
                                                                     size_t index_right) {
                 if (side == expressions::side_t::left) {
+                    assert(column_index < chunk_left.column_count());
                     return std::regex_match(
                         chunk_left.data.at(column_index).data<std::string_view>()[index_left].data(),
                         std::regex(fmt::format(".*{}.*", val)));
                 } else {
+                    assert(column_index < chunk_right.column_count());
                     return std::regex_match(
                         chunk_right.data.at(column_index).data<std::string_view>()[index_right].data(),
                         std::regex(fmt::format(".*{}.*", val)));
@@ -253,9 +284,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<bool>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<bool>()[index_right]);
                         }
@@ -267,9 +302,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<uint8_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<uint8_t>()[index_right]);
                         }
@@ -281,9 +320,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<int8_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<int8_t>()[index_right]);
                         }
@@ -295,9 +338,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<uint16_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<uint16_t>()[index_right]);
                         }
@@ -309,9 +356,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<int16_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<int16_t>()[index_right]);
                         }
@@ -323,9 +374,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<uint32_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<uint32_t>()[index_right]);
                         }
@@ -337,9 +392,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<int32_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<int32_t>()[index_right]);
                         }
@@ -351,9 +410,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<uint64_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<uint64_t>()[index_right]);
                         }
@@ -365,9 +428,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<int64_t>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<int64_t>()[index_right]);
                         }
@@ -379,9 +446,13 @@ namespace components::table::operators::predicates {
                 //                                                   size_t index_right) {
                 //     COMP comp{};
                 //     if (one_sided) {
+                //          assert(column_index_left < chunk_left.column_count());
+                //          assert(column_index_right < chunk_left.column_count());
                 //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                 //                      chunk_left.data.at(column_index_right).data<types::uint128_t>()[index_left]);
                 //     } else {
+                //          assert(column_index_left < chunk_left.column_count());
+                //          assert(column_index_right < chunk_right.column_count());
                 //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                 //                      chunk_right.data.at(column_index_right).data<types::uint128_t>()[index_right]);
                 //     }
@@ -393,9 +464,13 @@ namespace components::table::operators::predicates {
                 //                                                   size_t index_right) {
                 //     COMP comp{};
                 //     if (one_sided) {
+                //          assert(column_index_left < chunk_left.column_count());
+                //          assert(column_index_right < chunk_left.column_count());
                 //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                 //                      chunk_left.data.at(column_index_right).data<types::int128_t>()[index_left]);
                 //     } else {
+                //          assert(column_index_left < chunk_left.column_count());
+                //          assert(column_index_right < chunk_right.column_count());
                 //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                 //                      chunk_right.data.at(column_index_right).data<types::int128_t>()[index_right]);
                 //     }
@@ -407,9 +482,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<float>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<float>()[index_right]);
                         }
@@ -421,9 +500,13 @@ namespace components::table::operators::predicates {
                                                                               size_t index_right) {
                         COMP comp{};
                         if (one_sided) {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_left.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_left.data.at(column_index_right).data<double>()[index_left]);
                         } else {
+                            assert(column_index_left < chunk_left.column_count());
+                            assert(column_index_right < chunk_right.column_count());
                             return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
                                         chunk_right.data.at(column_index_right).data<double>()[index_right]);
                         }

@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 # Get the absolute path to the toolchain file
-toolchain_file = Path("conan_toolchain.cmake").resolve()
+toolchain_file = Path("./cmake-build/build/Release/generators/conan_toolchain.cmake").resolve()
 
 setup(
     name="otterbrix",
@@ -21,7 +21,7 @@ setup(
     extras_require={"test": ["pytest"]},
     cmake_args=[
         f"-DCMAKE_TOOLCHAIN_FILE={toolchain_file}",  # Pass toolchain file here
-        # "-DCMAKE_TOOLCHAIN_FILE=_skbuild/linux-x86_64-3.8/cmake-build/conan_toolchain.cmake",
+        # "-DCMAKE_TOOLCHAIN_FILE=_skbuild/linux-x86_64-3.8/cmake-build/build/Release/generators",
         "-DCMAKE_BUILD_TYPE=Release",
     ],
 )

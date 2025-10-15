@@ -10,7 +10,7 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [tool.scikit-build]
-cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=cmake-build/build/Release/generators/conan_toolchain.cmake"]
+cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=./cmake-build/build/Release/generators"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

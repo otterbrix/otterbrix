@@ -81,8 +81,10 @@ jobs:
           mkdir -p $(echo "./$(python3 get_path.py )")
           conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python3 get_path.py )")
           
+          echo !!!
+          echo "./$(python3 get_path.py )"
           pwd
-          ls
+          ls -alh -R
 
       - name: Build wheel
         run: |

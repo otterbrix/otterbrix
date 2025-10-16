@@ -28,7 +28,7 @@ jobs:
     steps:
       - id: setVariables
         run: |
-          echo 'matrix=["3.7", "3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
+          echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
 
   build-wheel:
     name: Build native wheel
@@ -39,29 +39,19 @@ jobs:
       matrix:
         PYTHON_VERSION: ${{ fromJson(needs.build-info.outputs.python-versions) }}
 
-    container: ${{ matrix.PYTHON_VERSION == '3.7' && 'quay.io/pypa/manylinux2014_x86_64' || 'quay.io/pypa/manylinux_2_28_x86_64' }}
+    container: quay.io/pypa/manylinux_2_28_x86_64
 
     steps:
-      - name: Checkout code (safe for glibc)
-        uses: actions/checkout@v4
-        if: matrix.PYTHON_VERSION == '3.7'
-        with:
-          clean: true
-        container:
-          image: quay.io/pypa/manylinux_2_28_x86_64
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-        if: matrix.PYTHON_VERSION != '3.7'
+      - uses: actions/checkout@v4
 
       - name: Set env
         run: |
           export PYTHON_SHORT_VERSION=$(echo '${{ matrix.PYTHON_VERSION }}' | tr -d '.')
-          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV
-          export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp$(if [[ $PYTHON_SHORT_VERSION =~ ^3[67]$ ]]; then echo $PYTHON_SHORT_VERSION'm'; else echo $PYTHON_SHORT_VERSION; fi )
+          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV 
+          export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp${PYTHON_SHORT_VERSION}
           export PATH=$PYTHON_PATH:$PYTHON_PATH/bin:$PATH
-          echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
+          echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV 
+          echo "PATH=${PATH}" >> $GITHUB_ENV 
 
       - name: Install system packages
         run: |
@@ -112,18 +102,7 @@ jobs:
             rm ${whl};
           done
 
-      # Upload artifact workaround for Node 20 + CentOS7
-      - name: Upload artifact (safe for glibc)
-        if: matrix.PYTHON_VERSION == '3.7'
-        uses: actions/upload-artifact@v4
-        container:
-          image: quay.io/pypa/manylinux_2_28_x86_64
-        with:
-          name: artifact-wheel-${{ env.PYTHON_SHORT_VERSION }}
-          path: ./work/dist/otterbrix*cp${{ env.PYTHON_SHORT_VERSION }}*.whl
-
-      - name: Upload artifact
-        if: matrix.PYTHON_VERSION != '3.7'
+      - name: Save library
         uses: actions/upload-artifact@v4
         with:
           name: artifact-wheel-${{ env.PYTHON_SHORT_VERSION }}

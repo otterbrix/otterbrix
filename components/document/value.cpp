@@ -170,11 +170,6 @@ namespace components::document {
 
     const impl::element* value_t::get_element() const noexcept { return &element_; }
 
-    template<typename, typename = void>
-    constexpr bool has_operator = false;
-    template<typename T>
-    constexpr bool has_operator<T, std::void_t<decltype(std::declval<T>().operator())>> = true;
-
     template<typename OP, typename GET>
     value_t op(const value_t& value, impl::base_document* tape, GET getter_function) {
         OP operation{};

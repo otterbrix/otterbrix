@@ -1,5 +1,6 @@
 #include "simple_predicate.hpp"
 #include <components/physical_plan/base/operators/operator.hpp>
+#include <components/types/operations_helper.hpp>
 #include <fmt/format.h>
 #include <regex>
 
@@ -28,46 +29,90 @@ namespace components::table::operators::predicates {
             return column_index;
         }
 
-        template<typename COMP, typename TYPE, typename VALUE>
-        simple_predicate::check_function_t
-        create_unary_comparator(size_t column_index, expressions::side_t side, VALUE&& val) {
-            return [column_index, val, side](const vector::data_chunk_t& chunk_left,
-                                             const vector::data_chunk_t& chunk_right,
-                                             size_t index_left,
-                                             size_t index_right) {
-                assert(column_index < chunk_left.column_count());
-                COMP comp{};
-                if (side == expressions::side_t::left) {
-                    assert(column_index < chunk_left.column_count());
-                    return comp(chunk_left.data.at(column_index).data<TYPE>()[index_left], val);
-                } else {
-                    assert(column_index < chunk_right.column_count());
-                    return comp(chunk_right.data.at(column_index).data<TYPE>()[index_right], val);
-                }
-            };
-        }
+        // simple check if types are comparable, otherwise we will return an exception
+        template<typename, typename, typename = void>
+        struct has_less_operator : std::false_type {};
 
-        template<typename COMP, typename LEFT_TYPE, typename RIGHT_TYPE>
-        simple_predicate::check_function_t
-        create_binary_comparator(size_t column_index_left, size_t column_index_right, bool one_sided) {
-            return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                      const vector::data_chunk_t& chunk_right,
-                                                                      size_t index_left,
-                                                                      size_t index_right) {
-                COMP comp{};
-                if (one_sided) {
-                    assert(column_index_left < chunk_left.column_count());
-                    assert(column_index_right < chunk_left.column_count());
-                    return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                chunk_left.data.at(column_index_right).data<RIGHT_TYPE>()[index_left]);
-                } else {
-                    assert(column_index_left < chunk_left.column_count());
-                    assert(column_index_right < chunk_right.column_count());
-                    return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                chunk_right.data.at(column_index_right).data<RIGHT_TYPE>()[index_right]);
-                }
-            };
-        }
+        template<typename T, typename U>
+        struct has_less_operator<T, U, std::void_t<decltype(std::declval<T>() < std::declval<U>())>>
+            : std::true_type {};
+
+        template<typename T = void>
+        struct create_binary_comparator_t;
+        template<typename T = void>
+        struct create_unary_comparator_t;
+
+        template<>
+        struct create_unary_comparator_t<void> {
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<has_less_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&& comp,
+                            size_t column_index,
+                            expressions::side_t side,
+                            const logical_plan::expr_value_t& value) const -> simple_predicate::check_function_t {
+                return [comp, column_index, side, &value](const vector::data_chunk_t& chunk_left,
+                                                          const vector::data_chunk_t& chunk_right,
+                                                          size_t index_left,
+                                                          size_t index_right) {
+                    assert(column_index < chunk_left.column_count());
+                    if (side == expressions::side_t::left) {
+                        assert(column_index < chunk_left.column_count());
+                        return comp(chunk_left.data.at(column_index).data<LeftType>()[index_left],
+                                    value.as<RightType>());
+                    } else {
+                        assert(column_index < chunk_right.column_count());
+                        return comp(chunk_right.data.at(column_index).data<LeftType>()[index_right],
+                                    value.as<RightType>());
+                    }
+                };
+            }
+            // SFINAE unable to compare types
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<!has_less_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, size_t, expressions::side_t, const logical_plan::expr_value_t&) const
+                -> simple_predicate::check_function_t {
+                throw std::runtime_error("invalid expression in create_unary_comparator");
+            }
+        };
+
+        template<>
+        struct create_binary_comparator_t<void> {
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<has_less_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&& comp, size_t column_index_left, size_t column_index_right, bool one_sided) const
+                -> simple_predicate::check_function_t {
+                return [comp, column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
+                                                                                const vector::data_chunk_t& chunk_right,
+                                                                                size_t index_left,
+                                                                                size_t index_right) {
+                    if (one_sided) {
+                        assert(column_index_left < chunk_left.column_count());
+                        assert(column_index_right < chunk_left.column_count());
+                        return comp(chunk_left.data.at(column_index_left).data<LeftType>()[index_left],
+                                    chunk_left.data.at(column_index_right).data<RightType>()[index_left]);
+                    } else {
+                        assert(column_index_left < chunk_left.column_count());
+                        assert(column_index_right < chunk_right.column_count());
+                        return comp(chunk_left.data.at(column_index_left).data<LeftType>()[index_left],
+                                    chunk_right.data.at(column_index_right).data<RightType>()[index_right]);
+                    }
+                };
+            }
+            // SFINAE unable to compare types
+            template<typename LeftType,
+                     typename RightType,
+                     typename... Args,
+                     std::enable_if_t<!has_less_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
+                throw std::runtime_error("invalid expression in create_binary_comparator");
+            }
+        };
 
         // by this point compare_expression is unmodifiable, so we have to pass side explicitly
         template<typename COMP>
@@ -81,38 +126,15 @@ namespace components::table::operators::predicates {
                 get_column_index(side == expressions::side_t::left ? expr->key_left() : expr->key_right(), types);
             const auto& expr_val = parameters->parameters.at(expr->value());
 
-            switch (types.at(column_index).to_physical_type()) {
-                case types::physical_type::BOOL:
-                    return create_unary_comparator<COMP, bool>(column_index, side, expr_val.as_bool());
-                case types::physical_type::UINT8:
-                    return create_unary_comparator<COMP, uint8_t>(column_index, side, expr_val.as_unsigned());
-                case types::physical_type::INT8:
-                    return create_unary_comparator<COMP, int8_t>(column_index, side, expr_val.as_int());
-                case types::physical_type::UINT16:
-                    return create_unary_comparator<COMP, uint16_t>(column_index, side, expr_val.as_unsigned());
-                case types::physical_type::INT16:
-                    return create_unary_comparator<COMP, int16_t>(column_index, side, expr_val.as_int());
-                case types::physical_type::UINT32:
-                    return create_unary_comparator<COMP, uint32_t>(column_index, side, expr_val.as_unsigned());
-                case types::physical_type::INT32:
-                    return create_unary_comparator<COMP, int32_t>(column_index, side, expr_val.as_int());
-                case types::physical_type::UINT64:
-                    return create_unary_comparator<COMP, uint64_t>(column_index, side, expr_val.as_unsigned());
-                case types::physical_type::INT64:
-                    return create_unary_comparator<COMP, int64_t>(column_index, side, expr_val.as_int());
-                // case types::physical_type::UINT128:
-                //    return create_unary_comparator<COMP, types::uint128_t>(column_index, side, expr_val.as_int128());
-                // case types::physical_type::INT128:
-                //    return create_unary_comparator<COMP, types::int128_t>(column_index, side, expr_val.as_int128());
-                case types::physical_type::FLOAT:
-                    return create_unary_comparator<COMP, float>(column_index, side, expr_val.as_float());
-                case types::physical_type::DOUBLE:
-                    return create_unary_comparator<COMP, double>(column_index, side, expr_val.as_double());
-                case types::physical_type::STRING:
-                    return create_unary_comparator<COMP, std::string_view>(column_index, side, expr_val.as_string());
-                default:
-                    throw std::runtime_error("invalid expression in create_unary_comparator");
-            }
+            auto type_left = types.at(column_index).to_physical_type();
+            auto type_right = expr_val.physical_type();
+
+            return types::double_simple_physical_type_switch<create_unary_comparator_t>(type_left,
+                                                                                        type_right,
+                                                                                        COMP{},
+                                                                                        column_index,
+                                                                                        side,
+                                                                                        expr_val);
         }
 
         simple_predicate::check_function_t
@@ -143,65 +165,6 @@ namespace components::table::operators::predicates {
             };
         }
 
-        template<typename COMP, typename LEFT_TYPE>
-        simple_predicate::check_function_t create_binary_comparator_inner_switch(types::physical_type type_right,
-                                                                                 size_t column_index_left,
-                                                                                 size_t column_index_right,
-                                                                                 bool one_sided) {
-            switch (type_right) {
-                case types::physical_type::BOOL:
-                    return create_binary_comparator<COMP, LEFT_TYPE, bool>(column_index_left,
-                                                                           column_index_right,
-                                                                           one_sided);
-                case types::physical_type::UINT8:
-                    return create_binary_comparator<COMP, LEFT_TYPE, uint8_t>(column_index_left,
-                                                                              column_index_right,
-                                                                              one_sided);
-                case types::physical_type::INT8:
-                    return create_binary_comparator<COMP, LEFT_TYPE, int8_t>(column_index_left,
-                                                                             column_index_right,
-                                                                             one_sided);
-                case types::physical_type::UINT16:
-                    return create_binary_comparator<COMP, LEFT_TYPE, uint16_t>(column_index_left,
-                                                                               column_index_right,
-                                                                               one_sided);
-                case types::physical_type::INT16:
-                    return create_binary_comparator<COMP, LEFT_TYPE, int16_t>(column_index_left,
-                                                                              column_index_right,
-                                                                              one_sided);
-                case types::physical_type::UINT32:
-                    return create_binary_comparator<COMP, LEFT_TYPE, uint32_t>(column_index_left,
-                                                                               column_index_right,
-                                                                               one_sided);
-                case types::physical_type::INT32:
-                    return create_binary_comparator<COMP, LEFT_TYPE, int32_t>(column_index_left,
-                                                                              column_index_right,
-                                                                              one_sided);
-                case types::physical_type::UINT64:
-                    return create_binary_comparator<COMP, LEFT_TYPE, uint64_t>(column_index_left,
-                                                                               column_index_right,
-                                                                               one_sided);
-                case types::physical_type::INT64:
-                    return create_binary_comparator<COMP, LEFT_TYPE, int64_t>(column_index_left,
-                                                                              column_index_right,
-                                                                              one_sided);
-                // case types::physical_type::UINT128:
-                //    return create_binary_comparator<COMP, LEFT_TYPE, types::uint128_t>(column_index_left, column_index_right, one_sided);
-                // case types::physical_type::INT128:
-                //    return create_binary_comparator<COMP, LEFT_TYPE, types::int128_t>(column_index_left, column_index_right, one_sided);
-                case types::physical_type::FLOAT:
-                    return create_binary_comparator<COMP, LEFT_TYPE, float>(column_index_left,
-                                                                            column_index_right,
-                                                                            one_sided);
-                case types::physical_type::DOUBLE:
-                    return create_binary_comparator<COMP, LEFT_TYPE, double>(column_index_left,
-                                                                             column_index_right,
-                                                                             one_sided);
-                default:
-                    throw std::runtime_error("invalid expression in create_binary_comparator");
-            }
-        }
-
         template<typename COMP>
         simple_predicate::check_function_t
         create_binary_comparator(const expressions::compare_expression_ptr& expr,
@@ -210,85 +173,23 @@ namespace components::table::operators::predicates {
             bool one_sided = false;
             size_t column_index_left = get_column_index(expr->key_left(), types_left);
             size_t column_index_right = get_column_index(expr->key_right(), types_right);
+            types::physical_type type_left = types_left.at(column_index_left).to_physical_type();
             types::physical_type type_right;
             if (column_index_right == -1) {
                 // one-sided expr
                 column_index_right = get_column_index(expr->key_right(), types_left);
                 one_sided = true;
                 type_right = types_left.at(column_index_right).to_physical_type();
-                assert(types_left.at(column_index_left).to_physical_type() == type_right);
             } else {
                 type_right = types_right.at(column_index_right).to_physical_type();
-                assert(types_left.at(column_index_left).to_physical_type() == type_right);
             }
 
-            switch (types_left.at(column_index_left).to_physical_type()) {
-                case types::physical_type::BOOL:
-                    return create_binary_comparator_inner_switch<COMP, bool>(type_right,
-                                                                             column_index_left,
-                                                                             column_index_right,
-                                                                             one_sided);
-                case types::physical_type::UINT8:
-                    return create_binary_comparator_inner_switch<COMP, uint8_t>(type_right,
-                                                                                column_index_left,
-                                                                                column_index_right,
-                                                                                one_sided);
-                case types::physical_type::INT8:
-                    return create_binary_comparator_inner_switch<COMP, int8_t>(type_right,
-                                                                               column_index_left,
-                                                                               column_index_right,
-                                                                               one_sided);
-                case types::physical_type::UINT16:
-                    return create_binary_comparator_inner_switch<COMP, uint16_t>(type_right,
-                                                                                 column_index_left,
-                                                                                 column_index_right,
-                                                                                 one_sided);
-                case types::physical_type::INT16:
-                    return create_binary_comparator_inner_switch<COMP, int16_t>(type_right,
-                                                                                column_index_left,
-                                                                                column_index_right,
-                                                                                one_sided);
-                case types::physical_type::UINT32:
-                    return create_binary_comparator_inner_switch<COMP, uint32_t>(type_right,
-                                                                                 column_index_left,
-                                                                                 column_index_right,
-                                                                                 one_sided);
-                case types::physical_type::INT32:
-                    return create_binary_comparator_inner_switch<COMP, int32_t>(type_right,
-                                                                                column_index_left,
-                                                                                column_index_right,
-                                                                                one_sided);
-                case types::physical_type::UINT64:
-                    return create_binary_comparator_inner_switch<COMP, uint64_t>(type_right,
-                                                                                 column_index_left,
-                                                                                 column_index_right,
-                                                                                 one_sided);
-                case types::physical_type::INT64:
-                    return create_binary_comparator_inner_switch<COMP, int64_t>(type_right,
-                                                                                column_index_left,
-                                                                                column_index_right,
-                                                                                one_sided);
-                // case types::physical_type::UINT128:
-                //    return create_binary_comparator_inner_switch<COMP, types::uint128_t>(type_right, column_index_left, column_index_right, one_sided);
-                // case types::physical_type::INT128:
-                //    return create_binary_comparator_inner_switch<COMP, types::int128_t>(type_right, column_index_left, column_index_right, one_sided);
-                case types::physical_type::FLOAT:
-                    return create_binary_comparator_inner_switch<COMP, float>(type_right,
-                                                                              column_index_left,
-                                                                              column_index_right,
-                                                                              one_sided);
-                case types::physical_type::DOUBLE:
-                    return create_binary_comparator_inner_switch<COMP, double>(type_right,
-                                                                               column_index_left,
-                                                                               column_index_right,
-                                                                               one_sided);
-                case types::physical_type::STRING:
-                    return create_binary_comparator<COMP, std::string_view, std::string_view>(column_index_left,
-                                                                                              column_index_right,
-                                                                                              one_sided);
-                default:
-                    throw std::runtime_error("invalid expression in create_binary_comparator");
-            }
+            return types::double_simple_physical_type_switch<create_binary_comparator_t>(type_left,
+                                                                                         type_right,
+                                                                                         COMP{},
+                                                                                         column_index_left,
+                                                                                         column_index_right,
+                                                                                         one_sided);
         }
 
         simple_predicate::check_function_t

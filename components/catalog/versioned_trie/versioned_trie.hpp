@@ -189,8 +189,9 @@ namespace components::catalog {
 
         iterator erase(iterator first, iterator last) {
             auto retval = last;
-            if (first == last)
+            if (first == last) {
                 return retval;
+            }
             --last;
             while (last != first) {
                 erase(last--);
@@ -216,13 +217,14 @@ namespace components::catalog {
         template<typename KeyIter, typename Sentinel>
         match_result extend_subsequence_impl(match_result prev, KeyIter& first, Sentinel last) const {
             if (to_node_ptr(prev.node) == &header_) {
-                if (header_.empty())
+                if (header_.empty()) {
                     return prev;
+                }
                 prev.node = header_.child(0);
             }
 
             if (first == last) {
-                prev.match = !!to_node_ptr(prev.node)->has_versions();
+                prev.match = to_node_ptr(prev.node)->has_versions();
                 prev.leaf = to_node_ptr(prev.node)->empty();
                 return prev;
             }
@@ -231,8 +233,9 @@ namespace components::catalog {
             size_type size = prev.size;
             while (first != last) {
                 auto const it = node->find(*first, comp_);
-                if (it == node->end())
+                if (it == node->end()) {
                     break;
+                }
                 ++first;
                 ++size;
                 node = it->get();
@@ -247,8 +250,9 @@ namespace components::catalog {
                 retval.node = node = node->parent();
                 --retval.size;
             }
-            if (!!node->has_versions())
+            if (node->has_versions()) {
                 retval.match = true;
+            }
             return retval;
         }
 

@@ -9,7 +9,7 @@ namespace components::catalog {
         : id_(id)
         , error_()
         , transaction_list_(transactions)
-        , ns_storage_(ns_storage) {
+        , ns_storage_ptr_(ns_storage) {
         transaction_ = std::unique_ptr<metadata_transaction>(new metadata_transaction(resource));
     }
 
@@ -17,7 +17,7 @@ namespace components::catalog {
         : id_(table_id(resource, table_namespace_t{}, ""))
         , error_(std::move(error))
         , transaction_list_()
-        , ns_storage_(nullptr) {
+        , ns_storage_ptr_(nullptr) {
         transaction_ = std::unique_ptr<metadata_transaction>(new metadata_transaction(resource, error_));
     }
 
@@ -33,7 +33,7 @@ namespace components::catalog {
         , id_(std::move(other.id_))
         , error_(std::move(other.error_))
         , transaction_list_(std::move(other.transaction_list_))
-        , ns_storage_(other.ns_storage_)
+        , ns_storage_ptr_(other.ns_storage_ptr_)
         , transaction_(std::move(other.transaction_)) {
         other.is_aborted_ = true;
     }
@@ -49,7 +49,7 @@ namespace components::catalog {
             id_ = std::move(other.id_);
             error_ = std::move(other.error_);
             transaction_list_ = std::move(other.transaction_list_);
-            ns_storage_ = other.ns_storage_;
+            ns_storage_ptr_ = other.ns_storage_ptr_;
             transaction_ = std::move(other.transaction_);
 
             other.is_aborted_ = true;
@@ -70,10 +70,10 @@ namespace components::catalog {
             error_ = catalog_error(transaction_mistake_t::COMMIT_FAILED, "Transaction list has been destroyed!");
         }
 
-        if (!error_ && !!ns_storage_) {
+        if (!error_ && ns_storage_ptr_) {
             auto list = transaction_list_.lock();
             error_ = transaction_->commit([&](metadata_diff&& diff) {
-                auto& info = ns_storage_->get_namespace_info(id_.get_namespace()).tables;
+                auto& info = ns_storage_ptr_->get_namespace_info(id_.get_namespace()).tables;
 
                 if (auto it = info.find(id_.table_name()); it != info.end()) {
                     auto new_diff = diff.apply(it->second);

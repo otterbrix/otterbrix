@@ -268,9 +268,9 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        vector::vector_t max_row_id_vec(resource_, types::logical_value_t(static_cast<int64_t>(MAX_ROW_ID)));
-        vector::vector_t row_ids_slice(resource_, types::logical_type::BIGINT);
-        vector::data_chunk_t updates_slice(resource_, data.types());
+        vector::vector_t max_row_id_vec(resource_, types::logical_value_t(static_cast<int64_t>(MAX_ROW_ID)), count);
+        vector::vector_t row_ids_slice(resource_, types::logical_type::BIGINT, count);
+        vector::data_chunk_t updates_slice(resource_, data.types(), count);
         vector::indexing_vector_t sel_local_update(resource_, count);
         vector::indexing_vector_t sel_global_update(resource_, count);
 

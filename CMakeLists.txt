@@ -106,7 +106,7 @@ find_package(actor-zeta REQUIRED)
 
 # conan
 #############################################################################################
-# ccahe
+# ccache
 
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
@@ -116,7 +116,7 @@ if(CCACHE_FOUND)
     set(ENV{CCACHE_COMMENTS} "1")
 endif(CCACHE_FOUND)
 
-# ccahe
+# ccache
 #############################################################################################
 # wasm
 if(WASM_BUILD)

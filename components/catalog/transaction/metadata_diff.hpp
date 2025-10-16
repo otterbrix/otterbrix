@@ -1,5 +1,7 @@
-#include "../table_metadata.hpp"
+#pragma once
+
 #include "schema_diff.hpp"
+#include <components/catalog/table_metadata.hpp>
 
 namespace components::catalog {
     struct metadata_diff {

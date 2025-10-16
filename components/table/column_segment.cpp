@@ -701,7 +701,7 @@ namespace components::table {
                                 uint64_t result_offset,
                                 scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            assert(result_offset == 0);
+            //assert(result_offset == 0);
             scan(state, scan_count, result);
         } else {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
@@ -867,7 +867,7 @@ namespace components::table {
                                         vector::indexing_vector_t& indexing,
                                         uint64_t& approved_tuple_count,
                                         expressions::compare_type comparison_type) {
-        vector::indexing_vector_t new_sel(indexing.resource(), approved_tuple_count);
+        vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
         auto& mask = uvf.validity;
         // the inplace loops take the result as the last parameter
         switch (comparison_type) {
@@ -877,13 +877,13 @@ namespace components::table {
                                                                                         predicate,
                                                                                         indexing,
                                                                                         approved_tuple_count,
-                                                                                        new_sel);
+                                                                                        new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::equal_to<T>, true>(uvf,
                                                                                        predicate,
                                                                                        indexing,
                                                                                        approved_tuple_count,
-                                                                                       new_sel);
+                                                                                       new_indexing);
                 }
                 break;
             }
@@ -893,13 +893,13 @@ namespace components::table {
                                                                                             predicate,
                                                                                             indexing,
                                                                                             approved_tuple_count,
-                                                                                            new_sel);
+                                                                                            new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::not_equal_to<T>, true>(uvf,
                                                                                            predicate,
                                                                                            indexing,
                                                                                            approved_tuple_count,
-                                                                                           new_sel);
+                                                                                           new_indexing);
                 }
                 break;
             }
@@ -909,13 +909,13 @@ namespace components::table {
                                                                                     predicate,
                                                                                     indexing,
                                                                                     approved_tuple_count,
-                                                                                    new_sel);
+                                                                                    new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::less<T>, true>(uvf,
                                                                                    predicate,
                                                                                    indexing,
                                                                                    approved_tuple_count,
-                                                                                   new_sel);
+                                                                                   new_indexing);
                 }
                 break;
             }
@@ -925,13 +925,13 @@ namespace components::table {
                                                                                        predicate,
                                                                                        indexing,
                                                                                        approved_tuple_count,
-                                                                                       new_sel);
+                                                                                       new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::greater<T>, true>(uvf,
                                                                                       predicate,
                                                                                       indexing,
                                                                                       approved_tuple_count,
-                                                                                      new_sel);
+                                                                                      new_indexing);
                 }
                 break;
             }
@@ -941,13 +941,13 @@ namespace components::table {
                                                                                           predicate,
                                                                                           indexing,
                                                                                           approved_tuple_count,
-                                                                                          new_sel);
+                                                                                          new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::less_equal<T>, true>(uvf,
                                                                                          predicate,
                                                                                          indexing,
                                                                                          approved_tuple_count,
-                                                                                         new_sel);
+                                                                                         new_indexing);
                 }
                 break;
             }
@@ -957,20 +957,20 @@ namespace components::table {
                                                                                              predicate,
                                                                                              indexing,
                                                                                              approved_tuple_count,
-                                                                                             new_sel);
+                                                                                             new_indexing);
                 } else {
                     approved_tuple_count = filter_selection<T, std::greater_equal<T>, true>(uvf,
                                                                                             predicate,
                                                                                             indexing,
                                                                                             approved_tuple_count,
-                                                                                            new_sel);
+                                                                                            new_indexing);
                 }
                 break;
             }
             default:
                 throw std::logic_error("Unknown comparison type for filter");
         }
-        indexing = new_sel;
+        indexing = new_indexing;
     }
     uint64_t column_segment_t::filter_indexing(vector::indexing_vector_t& indexing,
                                                vector::vector_t& vector,

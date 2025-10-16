@@ -4,12 +4,14 @@
 #include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
-#include <filesystem>
+#include <math.h>
 
 TEST_CASE("data_table_t") {
     using namespace components::types;
     using namespace components::vector;
     using namespace components::table;
+
+    auto resource = std::pmr::synchronized_pool_resource();
 
     struct test_struct {
         bool flag;
@@ -24,7 +26,10 @@ TEST_CASE("data_table_t") {
             , array(std::move(array)) {}
     };
 
-    constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY;
+    // set test_size to some uneven multiple of DEFAULT_VECTOR_CAPACITY
+    // ideally it should be a much bigger than DEFAULT_VECTOR_CAPACITY
+    constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY * M_PI_2;
+    static_assert(test_size % 2 == 0 && "for data_table_t test it is required to have an even test size");
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;
     constexpr size_t str_index_length = 10;
@@ -39,21 +44,15 @@ TEST_CASE("data_table_t") {
     };
 
     std::vector<complex_logical_type> fields;
-    fields.emplace_back(logical_type::BOOLEAN);
-    fields.back().set_alias("flag");
-    fields.emplace_back(logical_type::INTEGER);
-    fields.back().set_alias("number");
-    fields.emplace_back(logical_type::STRING_LITERAL);
-    fields.back().set_alias("name");
-    fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT));
-    fields.back().set_alias("array");
-    complex_logical_type struct_type = complex_logical_type::create_struct(fields);
-    struct_type.set_alias("test_struct");
+    fields.emplace_back(logical_type::BOOLEAN, "flag");
+    fields.emplace_back(logical_type::INTEGER, "number");
+    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
+    complex_logical_type struct_type = complex_logical_type::create_struct(fields, "test_struct");
 
     core::filesystem::local_file_system_t fs;
-    auto buffer_pool =
-        storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-    auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+    auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
     auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
 
     std::vector<column_definition_t> columns;
@@ -79,12 +78,11 @@ TEST_CASE("data_table_t") {
         test_data.emplace_back((bool) (i % 2), i, std::move(s), std::move(arr));
     }
 
-    auto data_table =
-        std::make_unique<data_table_t>(std::pmr::get_default_resource(), block_manager, std::move(columns));
+    auto data_table = std::make_unique<data_table_t>(&resource, block_manager, std::move(columns));
 
     INFO("Append") {
         // set up a DataChunks
-        data_chunk_t chunk(std::pmr::get_default_resource(), data_table->copy_types(), test_size);
+        data_chunk_t chunk(&resource, data_table->copy_types(), test_size);
         chunk.set_cardinality(test_size);
         for (size_t i = 0; i < test_size; i++) {
             // UBIGINT
@@ -146,7 +144,7 @@ TEST_CASE("data_table_t") {
             }
         }
 
-        table_append_state state(std::pmr::get_default_resource());
+        table_append_state state(&resource);
         data_table->append_lock(state);
         data_table->initialize_append(state);
         data_table->append(chunk, state);
@@ -159,11 +157,11 @@ TEST_CASE("data_table_t") {
         for (int64_t i = 0; i < 7; i++) {
             column_indices.emplace_back(i);
         }
-        vector_t rows(std::pmr::get_default_resource(), logical_type::BIGINT);
+        vector_t rows(&resource, logical_type::BIGINT, test_size);
         for (int64_t i = 0; i < test_size; i++) {
             rows.set_value(i, logical_value_t(i));
         }
-        data_chunk_t result(std::pmr::get_default_resource(), data_table->copy_types());
+        data_chunk_t result(&resource, data_table->copy_types(), test_size);
         data_table->fetch(result, column_indices, rows, test_size, state);
 
         for (size_t i = 0; i < test_size; i++) {
@@ -250,8 +248,8 @@ TEST_CASE("data_table_t") {
         for (int64_t i = 0; i < data_table->column_count(); i++) {
             column_indices.emplace_back(i);
         }
-        table_scan_state state(std::pmr::get_default_resource());
-        data_chunk_t result(std::pmr::get_default_resource(), data_table->copy_types());
+        table_scan_state state(&resource);
+        data_chunk_t result(&resource, data_table->copy_types(), test_size);
         data_table->initialize_scan(state, column_indices);
         data_table->scan(result, state);
 
@@ -339,7 +337,7 @@ TEST_CASE("data_table_t") {
         for (int64_t i = 0; i < data_table->column_count(); i++) {
             column_indices.emplace_back(i);
         }
-        table_scan_state state(std::pmr::get_default_resource());
+        table_scan_state state(&resource);
         std::pair<uint64_t, uint64_t> row_range{uint64_t(test_size * 0.25f), uint64_t(test_size * 0.75f)};
         auto conj_and = std::make_unique<conjunction_and_filter_t>();
         conj_and->child_filters.emplace_back(
@@ -350,7 +348,7 @@ TEST_CASE("data_table_t") {
             std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
                                                 logical_value_t{generate_string(row_range.second)},
                                                 1));
-        data_chunk_t result(std::pmr::get_default_resource(), data_table->copy_types());
+        data_chunk_t result(&resource, data_table->copy_types(), row_range.second - row_range.first);
         data_table->initialize_scan(state, column_indices, conj_and.get());
         data_table->scan(result, state);
 
@@ -433,7 +431,7 @@ TEST_CASE("data_table_t") {
         }
     }
     INFO("Delete") {
-        vector_t v(std::pmr::get_default_resource(), logical_type::BIGINT, test_size / 2);
+        vector_t v(&resource, logical_type::BIGINT, test_size / 2);
         for (size_t i = 0; i < test_size; i += 2) {
             v.set_value(i / 2, logical_value_t(int64_t(i)));
         }
@@ -447,8 +445,8 @@ TEST_CASE("data_table_t") {
         for (int64_t i = 0; i < data_table->column_count(); i++) {
             column_indices.emplace_back(i);
         }
-        table_scan_state state(std::pmr::get_default_resource());
-        data_chunk_t result(std::pmr::get_default_resource(), data_table->copy_types());
+        table_scan_state state(&resource);
+        data_chunk_t result(&resource, data_table->copy_types(), test_size / 2);
         data_table->initialize_scan(state, column_indices);
         data_table->scan(result, state);
 
@@ -535,7 +533,7 @@ TEST_CASE("data_table_t") {
         }
     }
 
-    INFO("Extention") {
+    INFO("Extension") {
         std::unique_ptr<data_table_t> extended_table;
 
         {
@@ -547,8 +545,8 @@ TEST_CASE("data_table_t") {
             // Update values in new column
             // Since row mask is applied to every column at once, in update we have to fill whole column
             // or manually calculate ids where set is needed
-            vector_t v(std::pmr::get_default_resource(), logical_type::BIGINT, test_size / 2);
-            data_chunk_t chunk(std::pmr::get_default_resource(), {logical_type::SMALLINT}, test_size / 2);
+            vector_t v(&resource, logical_type::BIGINT, test_size / 2);
+            data_chunk_t chunk(&resource, {logical_type::SMALLINT}, test_size / 2);
             chunk.set_cardinality(test_size / 2);
             for (size_t i = 0; i < test_size / 2; i++) {
                 v.set_value(i, logical_value_t(int64_t(i * 2 + 1)));
@@ -556,15 +554,15 @@ TEST_CASE("data_table_t") {
             }
             extended_table->update_column(v, {7}, chunk);
         }
-        // Scan after extention
+        // Scan after extension
         {
             std::vector<storage_index_t> column_indices;
             column_indices.reserve(extended_table->column_count());
             for (int64_t i = 0; i < extended_table->column_count(); i++) {
                 column_indices.emplace_back(i);
             }
-            table_scan_state state(std::pmr::get_default_resource());
-            data_chunk_t result(std::pmr::get_default_resource(), extended_table->copy_types());
+            table_scan_state state(&resource);
+            data_chunk_t result(&resource, extended_table->copy_types());
             extended_table->initialize_scan(state, column_indices);
             extended_table->scan(result, state);
 
@@ -665,8 +663,8 @@ TEST_CASE("data_table_t") {
             for (int64_t i = 0; i < short_table->column_count(); i++) {
                 column_indices.emplace_back(i);
             }
-            table_scan_state state(std::pmr::get_default_resource());
-            data_chunk_t result(std::pmr::get_default_resource(), short_table->copy_types());
+            table_scan_state state(&resource);
+            data_chunk_t result(&resource, short_table->copy_types());
             short_table->initialize_scan(state, column_indices);
             short_table->scan(result, state);
 

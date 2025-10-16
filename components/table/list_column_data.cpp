@@ -81,30 +81,34 @@ namespace components::table {
         }
         assert(!updates_);
 
+        // set state.result_offset to 0, so scan won`t go out of bounds
+        auto prev_state_result_offset = state.result_offset;
+        state.result_offset = 0;
         vector::vector_t offset_vector(result.resource(), types::logical_type::UBIGINT, count);
         uint64_t scan_count = scan_vector(state, offset_vector, count, scan_vector_type::SCAN_FLAT_VECTOR);
         assert(scan_count > 0);
         validity.scan_count(state.child_states[0], result, count);
+        state.result_offset = prev_state_result_offset;
 
         vector::unified_vector_format offsets(result.resource(), result.size());
         offset_vector.to_unified_format(scan_count, offsets);
         auto data = offsets.get_data<uint64_t>();
-        auto last_entry = data[offsets.referenced_indexing->get_index(scan_count - 1)];
 
         auto result_data = result.data<types::list_entry_t>();
+        auto last_entry = result_data[state.result_offset == 0 ? 0 : state.result_offset - 1];
         auto base_offset = state.last_offset;
         uint64_t current_offset = 0;
         for (uint64_t i = 0; i < scan_count; i++) {
             auto offset_index = offsets.referenced_indexing->get_index(i);
-            result_data[i].offset = current_offset;
-            result_data[i].length = data[offset_index] - current_offset - base_offset;
-            current_offset += result_data[i].length;
+            result_data[i + state.result_offset].offset = current_offset + last_entry.offset + last_entry.length;
+            result_data[i + state.result_offset].length = data[offset_index] - current_offset;
+            current_offset += result_data[i + state.result_offset].length;
         }
 
-        assert(last_entry >= base_offset);
-        uint64_t child_scan_count = last_entry - base_offset;
-        result.reserve(child_scan_count);
+        uint64_t child_scan_count = current_offset;
+        result.reserve(child_scan_count + base_offset);
 
+        auto prev_size = result.size();
         if (child_scan_count > 0) {
             auto& child_entry = result.entry();
             if (child_entry.type().to_physical_type() != types::physical_type::STRUCT &&
@@ -113,11 +117,13 @@ namespace components::table {
                     child_column->start() + child_column->max_entry()) {
                 throw std::runtime_error("list_column_data_t::scan_count - internal list scan offset is out of range");
             }
+            state.child_states[1].result_offset = prev_size;
+            result.reserve(prev_size + child_scan_count);
             child_column->scan_count(state.child_states[1], child_entry, child_scan_count);
         }
-        state.last_offset = last_entry;
+        state.last_offset = current_offset;
 
-        result.set_list_size(child_scan_count);
+        result.set_list_size(child_scan_count + prev_size);
         return scan_count;
     }
 
@@ -125,7 +131,10 @@ namespace components::table {
         validity.skip(state.child_states[0], count);
 
         vector::vector_t offset_vector(resource_, types::logical_type::UBIGINT, count);
+        auto prev_offset = state.result_offset;
+        state.result_offset = 0;
         uint64_t scan_count = scan_vector(state, offset_vector, count, scan_vector_type::SCAN_FLAT_VECTOR);
+        state.result_offset = prev_offset;
         assert(scan_count > 0);
 
         vector::unified_vector_format offsets(resource_, count);
@@ -199,7 +208,7 @@ namespace components::table {
         }
 
         vector::unified_vector_format uvf(resource_, vector.size());
-        uvf.referenced_indexing = vector::incremental_indexing_vector();
+        uvf.referenced_indexing = vector::incremental_indexing_vector(vector.resource());
         uvf.data = reinterpret_cast<std::byte*>(append_offsets.get());
 
         if (child_count > 0) {

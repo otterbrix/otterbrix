@@ -25,7 +25,7 @@ namespace components::table::operators {
             for (size_t i = 0; i < types.size(); i++) {
                 name_index_map.emplace(types[i].alias(), i);
             }
-            output_ = base::operators::make_operator_data(left_->output()->resource(), types);
+            output_ = base::operators::make_operator_data(left_->output()->resource(), types, chunk.size());
             auto& out_chunk = output_->data_chunk();
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (check_expr_general(expression_, &pipeline_context->parameters, chunk, name_index_map, i)) {

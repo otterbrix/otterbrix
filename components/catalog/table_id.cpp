@@ -1,9 +1,4 @@
-#include "components/catalog/table_id.hpp"
-
-#include <sstream>
-#include <stdexcept>
-#include <string_view>
-#include <utility>
+#include "table_id.hpp"
 
 namespace components::catalog {
     namespace {

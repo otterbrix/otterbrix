@@ -55,6 +55,8 @@ namespace components::types {
                                           const std::vector<logical_value_t>& values);
         static logical_value_t create_list(const complex_logical_type& type,
                                            const std::vector<logical_value_t>& values);
+        static logical_value_t
+        create_union(std::vector<complex_logical_type> types, uint8_t tag, logical_value_t value);
 
         static logical_value_t sum(const logical_value_t& value1, const logical_value_t& value2);
         static logical_value_t subtract(const logical_value_t& value1, const logical_value_t& value2);
@@ -373,52 +375,52 @@ inline void to_msgpack_(const components::types::logical_value_t& value, msgpack
         }
         case components::types::logical_type::UTINYINT: {
             o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.boolean = value.value<uint8_t>();
+            o.via.u64 = value.value<uint8_t>();
             break;
         }
         case components::types::logical_type::USMALLINT: {
             o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.boolean = value.value<uint16_t>();
+            o.via.u64 = value.value<uint16_t>();
             break;
         }
         case components::types::logical_type::UINTEGER: {
             o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.boolean = value.value<uint32_t>();
+            o.via.u64 = value.value<uint32_t>();
             break;
         }
         case components::types::logical_type::UBIGINT: {
             o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.boolean = value.value<uint64_t>();
+            o.via.u64 = value.value<uint64_t>();
             break;
         }
         case components::types::logical_type::TINYINT: {
             o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.boolean = value.value<int8_t>();
+            o.via.i64 = value.value<int8_t>();
             break;
         }
         case components::types::logical_type::SMALLINT: {
             o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.boolean = value.value<int16_t>();
+            o.via.i64 = value.value<int16_t>();
             break;
         }
         case components::types::logical_type::INTEGER: {
             o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.boolean = value.value<int32_t>();
+            o.via.i64 = value.value<int32_t>();
             break;
         }
         case components::types::logical_type::BIGINT: {
             o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.boolean = value.value<int64_t>();
+            o.via.i64 = value.value<int64_t>();
             break;
         }
         case components::types::logical_type::FLOAT: {
             o.type = msgpack::type::FLOAT32;
-            o.via.boolean = value.value<float>();
+            o.via.f64 = value.value<float>();
             break;
         }
         case components::types::logical_type::DOUBLE: {
             o.type = msgpack::type::FLOAT64;
-            o.via.boolean = value.value<double>();
+            o.via.f64 = value.value<double>();
             break;
         }
         case components::types::logical_type::STRING_LITERAL: {

@@ -6,16 +6,19 @@ namespace components::vector {
         : data(new (resource->allocate(count * sizeof(uint64_t), alignof(uint64_t))) uint64_t[count],
                core::pmr::array_deleter_t(resource, count, alignof(uint64_t))) {}
 
-    indexing_vector_t::indexing_vector_t(uint64_t* indexing) noexcept
-        : data_(nullptr)
+    indexing_vector_t::indexing_vector_t(std::pmr::memory_resource* resource, uint64_t* indexing) noexcept
+        : resource_(resource)
+        , data_(nullptr)
         , indexing_(indexing) {}
 
     indexing_vector_t::indexing_vector_t(std::pmr::memory_resource* resource, uint64_t count)
-        : data_(std::make_shared<indexing_data>(resource, count))
+        : resource_(resource)
+        , data_(std::make_shared<indexing_data>(resource, count))
         , indexing_(data_->data.get()) {}
 
     indexing_vector_t::indexing_vector_t(std::pmr::memory_resource* resource, uint64_t start, uint64_t count)
-        : data_(std::make_shared<indexing_data>(resource, count))
+        : resource_(resource)
+        , data_(std::make_shared<indexing_data>(resource, count))
         , indexing_(data_->data.get()) {
         for (uint64_t i = 0; i < count; i++) {
             set_index(i, start + i);
@@ -23,27 +26,32 @@ namespace components::vector {
     }
 
     indexing_vector_t::indexing_vector_t(std::shared_ptr<indexing_data> data) noexcept
-        : data_(std::move(data))
+        : resource_(data->data.get_deleter().resource())
+        , data_(std::move(data))
         , indexing_(data_->data.get()) {}
 
     indexing_vector_t::indexing_vector_t(const indexing_vector_t& other) {
+        resource_ = other.resource_;
         data_ = other.data_;
         indexing_ = other.indexing_;
     }
 
     indexing_vector_t& indexing_vector_t::operator=(const indexing_vector_t& other) {
+        resource_ = other.resource_;
         data_ = other.data_;
         indexing_ = other.indexing_;
         return *this;
     }
 
     indexing_vector_t::indexing_vector_t(indexing_vector_t&& other) noexcept {
+        resource_ = other.resource_;
         indexing_ = other.indexing_;
         other.indexing_ = nullptr;
         data_ = std::move(other.data_);
     }
 
     indexing_vector_t& indexing_vector_t::operator=(indexing_vector_t&& other) noexcept {
+        resource_ = other.resource_;
         indexing_ = other.indexing_;
         other.indexing_ = nullptr;
         data_ = std::move(other.data_);
@@ -73,7 +81,7 @@ namespace components::vector {
     std::shared_ptr<indexing_data> indexing_vector_t::slice(std::pmr::memory_resource* resource,
                                                             const indexing_vector_t& indexing,
                                                             uint64_t count) const {
-        auto data = std::make_unique<indexing_data>(resource, count);
+        auto data = std::make_shared<indexing_data>(resource, count);
         auto result_ptr = data->data.get();
         for (uint64_t i = 0; i < count; i++) {
             result_ptr[i] = get_index(indexing.get_index(i));
@@ -84,5 +92,7 @@ namespace components::vector {
     uint64_t& indexing_vector_t::operator[](uint64_t index) const { return indexing_[index]; }
 
     bool indexing_vector_t::is_valid() const noexcept { return indexing_; }
+
+    uint64_t indexing_vector_t::capacity() const { return data_->data.get_deleter().size(); }
 
 } // namespace components::vector

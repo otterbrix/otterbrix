@@ -52,7 +52,7 @@ namespace components::catalog {
     cursor::cursor_t_ptr schema::find_field(field_id_t id) const {
         size_t idx = find_idx_by_id(id);
 
-        if (!!error_) {
+        if (static_cast<bool>(error_)) {
             return cursor::make_cursor(resource_, cursor::error_code_t::schema_error, error_.what());
         }
 
@@ -62,7 +62,7 @@ namespace components::catalog {
     cursor::cursor_t_ptr schema::find_field(const std::pmr::string& name) const {
         size_t idx = find_idx_by_name(name);
 
-        if (!!error_) {
+        if (static_cast<bool>(error_)) {
             return cursor::make_cursor(resource_, cursor::error_code_t::schema_error, error_.what());
         }
 
@@ -72,7 +72,7 @@ namespace components::catalog {
     std::optional<schema::field_description_cref>
     schema::get_field_description(components::catalog::field_id_t id) const {
         size_t idx = find_idx_by_id(id);
-        if (!!error_) {
+        if (static_cast<bool>(error_)) {
             return {};
         }
 
@@ -81,7 +81,7 @@ namespace components::catalog {
 
     std::optional<schema::field_description_cref> schema::get_field_description(const std::pmr::string& name) const {
         size_t idx = find_idx_by_name(name);
-        if (!!error_) {
+        if (static_cast<bool>(error_)) {
             return {};
         }
 
@@ -99,6 +99,8 @@ namespace components::catalog {
     field_id_t schema::highest_field_id() const { return highest_; }
 
     const catalog_error& schema::error() const { return error_; }
+
+    types::complex_logical_type schema::schema_struct() const { return schema_struct_; }
 
     size_t schema::find_idx_by_id(field_id_t id) const {
         if (auto it = id_to_struct_idx_.find(id); it != id_to_struct_idx_.end()) {

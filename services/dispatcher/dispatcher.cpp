@@ -770,6 +770,10 @@ namespace services::dispatcher {
                                           collection::handler_id(collection::route::size),
                                           this,
                                           &manager_dispatcher_t::size))
+        , schema_(actor_zeta::make_behavior(resource(),
+                                            collection::handler_id(collection::route::schema),
+                                            this,
+                                            &manager_dispatcher_t::get_schema))
         , close_cursor_(actor_zeta::make_behavior(resource(),
                                                   collection::handler_id(collection::route::close_cursor),
                                                   this,
@@ -810,6 +814,10 @@ namespace services::dispatcher {
                 }
                 case collection::handler_id(collection::route::size): {
                     size_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::schema): {
+                    schema_(msg);
                     break;
                 }
                 case collection::handler_id(collection::route::close_cursor): {
@@ -884,9 +892,39 @@ namespace services::dispatcher {
                          current_message()->sender());
     }
 
+    void manager_dispatcher_t::get_schema(const components::session::session_id_t& session,
+                                          const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids) {
+        auto& catalog = const_cast<components::catalog::catalog&>(current_catalog());
+        std::pmr::vector<complex_logical_type> schemas;
+        schemas.reserve(ids.size());
+
+        for (const auto& [db, coll] : ids) {
+            table_id id(resource(), {db, coll});
+            if (catalog.table_exists(id)) {
+                schemas.push_back(catalog.get_table_schema(id).schema_struct());
+                continue;
+            }
+
+            if (catalog.table_computes(id)) {
+                schemas.push_back(catalog.get_computing_table_schema(id).latest_types_struct());
+                continue;
+            }
+
+            schemas.push_back(logical_type::INVALID);
+        }
+
+        actor_zeta::send(current_message()->sender(),
+                         address(),
+                         collection::handler_id(collection::route::schema_finish),
+                         session,
+                         make_cursor(resource(), std::move(schemas)));
+    }
+
     void manager_dispatcher_t::close_cursor(const components::session::session_id_t&) {}
 
-    const components::catalog::catalog& manager_dispatcher_t::catalog() { return dispatchers_[0]->current_catalog(); }
+    const components::catalog::catalog& manager_dispatcher_t::current_catalog() {
+        return dispatchers_[0]->current_catalog();
+    }
 
     auto manager_dispatcher_t::dispatcher() -> actor_zeta::address_t { return dispatchers_[0]->address(); }
 

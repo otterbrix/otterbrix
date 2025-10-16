@@ -29,7 +29,7 @@ jobs:
           run: |
             apt update && apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https  cmake
             
-            pip install conan==2.15.0 pytest==6.2.5
+            pip install conan==2.20.0 pytest==6.2.5
             conan profile detect --force
             conan remote add otterbrix http://conan.otterbrix.com --insert 0
             

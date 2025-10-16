@@ -22,18 +22,13 @@ TEST_CASE("vector") {
     auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
 
     std::vector<components::types::complex_logical_type> fields;
-    fields.emplace_back(components::types::logical_type::BOOLEAN);
-    fields.back().set_alias("flag");
-    fields.emplace_back(components::types::logical_type::INTEGER);
-    fields.back().set_alias("number");
-    fields.emplace_back(components::types::logical_type::STRING_LITERAL);
-    fields.back().set_alias("name");
+    fields.emplace_back(components::types::logical_type::BOOLEAN, "flag");
+    fields.emplace_back(components::types::logical_type::INTEGER, "number");
+    fields.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
     fields.emplace_back(
-        components::types::complex_logical_type::create_list(components::types::logical_type::USMALLINT));
-    fields.back().set_alias("array");
+        components::types::complex_logical_type::create_list(components::types::logical_type::USMALLINT, "array"));
     components::types::complex_logical_type struct_type =
-        components::types::complex_logical_type::create_struct(fields);
-    struct_type.set_alias("test_struct");
+        components::types::complex_logical_type::create_struct(fields, "test_struct");
 
     INFO("sixed size") {
         components::vector::vector_t v(std::pmr::get_default_resource(),

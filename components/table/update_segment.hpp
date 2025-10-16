@@ -157,8 +157,8 @@ namespace components::table {
         bool has_updates(uint64_t vector_index);
         bool has_updates(uint64_t start_row_idx, uint64_t end_row_idx);
 
-        void fetch_updates(uint64_t vector_index, vector::vector_t& result);
-        void fetch_committed(uint64_t vector_index, vector::vector_t& result);
+        void fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
+        void fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
         void fetch_committed_range(uint64_t start_row, uint64_t count, vector::vector_t& result);
         void update(uint64_t column_index,
                     vector::vector_t& update,
@@ -212,8 +212,8 @@ namespace components::table {
                                            const vector::indexing_vector_t& indexing);
 
         template<typename T>
-        static void templated_fetch_committed(update_info_t& info, vector::vector_t& result);
-        static void fetch_committed_validity(update_info_t& info, vector::vector_t& result);
+        static void templated_fetch_committed(update_info_t& info, uint64_t result_offset, vector::vector_t& result);
+        static void fetch_committed_validity(update_info_t& info, uint64_t result_offset, vector::vector_t& result);
 
         static void merge_validity_loop(update_info_t& base_info,
                                         const vector::vector_t& base_data,
@@ -234,8 +234,8 @@ namespace components::table {
                                                    uint64_t result_offset,
                                                    vector::vector_t& result);
         template<typename T>
-        static void update_merge_fetch(update_info_t& info, vector::vector_t& result);
-        static void update_merge_validity(update_info_t& info, vector::vector_t& result);
+        static void update_merge_fetch(update_info_t& info, uint64_t result_offset, vector::vector_t& result);
+        static void update_merge_validity(update_info_t& info, uint64_t result_offset, vector::vector_t& result);
         template<class T>
         static void merge_update_info(update_info_t& current, T* result_data);
         template<typename T>
@@ -665,9 +665,8 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            auto idx = indexing.get_index(i);
+            auto idx = indexing.get_index(i) + base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
-            ;
         }
 
         auto base_array_data = base_data.data<T>();
@@ -684,8 +683,9 @@ namespace components::table {
     }
 
     template<typename T>
-    void update_segment_t::templated_fetch_committed(update_info_t& info, vector::vector_t& result) {
-        auto result_data = result.data<T>();
+    void
+    update_segment_t::templated_fetch_committed(update_info_t& info, uint64_t result_offset, vector::vector_t& result) {
+        auto result_data = result.data<T>() + result_offset;
         merge_update_info<T>(info, result_data);
     }
 
@@ -710,8 +710,8 @@ namespace components::table {
     }
 
     template<typename T>
-    void update_segment_t::update_merge_fetch(update_info_t& info, vector::vector_t& result) {
-        auto result_data = result.data<T>();
+    void update_segment_t::update_merge_fetch(update_info_t& info, uint64_t result_offset, vector::vector_t& result) {
+        auto result_data = result.data<T>() + result_offset;
         update_info_t::update_for_transaction(info, [&](update_info_t* current) {
             merge_update_info<T>(*current, result_data);
         });
@@ -722,10 +722,12 @@ namespace components::table {
         auto tuples = current.tuples();
         auto info_data = current.data<T>();
         if (current.N == vector::DEFAULT_VECTOR_CAPACITY) {
-            std::memcpy(result_data, info_data, sizeof(T) * current.N);
+            std::memcpy(result_data + current.vector_index * vector::DEFAULT_VECTOR_CAPACITY,
+                        info_data,
+                        sizeof(T) * current.N);
         } else {
             for (uint64_t i = 0; i < current.N; i++) {
-                result_data[tuples[i]] = info_data[i];
+                result_data[tuples[i] + current.vector_index * vector::DEFAULT_VECTOR_CAPACITY] = info_data[i];
             }
         }
     }

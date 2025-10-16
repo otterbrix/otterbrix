@@ -131,17 +131,14 @@ namespace components::sql::transform {
                 std::string key = strVal(ref->fields->lst.back().data);
                 if (ref->fields->lst.size() == 1) {
                     // can`t check table here
-                    return {new update_expr_get_value_t(expressions::key_t{key},
-                                                        update_expr_get_value_t::side_t::undefined)};
+                    return {new update_expr_get_value_t(expressions::key_t{key}, side_t::undefined)};
                 } else if (ref->fields->lst.size() == 2) {
                     // just table
                     std::string table = strVal(ref->fields->lst.front().data);
                     if (table == to.collection) {
-                        return {
-                            new update_expr_get_value_t(expressions::key_t{key}, update_expr_get_value_t::side_t::to)};
+                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::left)};
                     } else if (table == from.collection) {
-                        return {new update_expr_get_value_t(expressions::key_t{key},
-                                                            update_expr_get_value_t::side_t::from)};
+                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::right)};
                     } else {
                         throw parser_exception_t("incorrect column path in UPDATE call", "");
                     }
@@ -152,11 +149,9 @@ namespace components::sql::transform {
                     collection_full_name_t check_table{strVal(ref->fields->lst.front().data),
                                                        strVal((++ref->fields->lst.begin())->data)};
                     if (check_table == to) {
-                        return {
-                            new update_expr_get_value_t(expressions::key_t{key}, update_expr_get_value_t::side_t::to)};
+                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::left)};
                     } else if (check_table == from) {
-                        return {new update_expr_get_value_t(expressions::key_t{key},
-                                                            update_expr_get_value_t::side_t::from)};
+                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::right)};
                     } else {
                         throw parser_exception_t("incorrect column path in UPDATE call", "");
                     }

@@ -108,7 +108,7 @@ namespace components::table::operators {
                     for (const auto& column : chunk_right.data) {
                         chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
             }
         }
@@ -136,7 +136,7 @@ namespace components::table::operators {
                     for (const auto& column : chunk_right.data) {
                         chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
                 right_index++;
                 if (!visited_left) {
@@ -148,7 +148,7 @@ namespace components::table::operators {
                                             res_index,
                                             types::logical_value_t{nullptr});
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
             }
         }
@@ -164,7 +164,7 @@ namespace components::table::operators {
             for (const auto& column : chunk_right.data) {
                 chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(i));
             }
-            ++res_index;
+            vector::validate_chunk_capacity(chunk_res, ++res_index);
         }
     }
 
@@ -185,7 +185,7 @@ namespace components::table::operators {
                     for (const auto& column : chunk_right.data) {
                         chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
                 if (!visited_left) {
                     for (const auto& column : chunk_left.data) {
@@ -196,7 +196,7 @@ namespace components::table::operators {
                                             res_index,
                                             types::logical_value_t{nullptr});
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
             }
         }
@@ -219,7 +219,7 @@ namespace components::table::operators {
                     for (const auto& column : chunk_right.data) {
                         chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
                 if (!visited_right) {
                     for (const auto& column : chunk_left.data) {
@@ -230,7 +230,7 @@ namespace components::table::operators {
                     for (const auto& column : chunk_right.data) {
                         chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                     }
-                    ++res_index;
+                    vector::validate_chunk_capacity(chunk_res, ++res_index);
                 }
             }
         }
@@ -250,7 +250,7 @@ namespace components::table::operators {
                 for (const auto& column : chunk_right.data) {
                     chunk_res.set_value(name_index_map_res_.at(column.type().alias()), res_index, column.value(j));
                 }
-                ++res_index;
+                vector::validate_chunk_capacity(chunk_res, ++res_index);
             }
         }
     }

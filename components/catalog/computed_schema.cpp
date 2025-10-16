@@ -53,7 +53,7 @@ namespace components::catalog {
         retval.reserve(existing_versions_.size());
         for (const auto& [name, entry] : existing_versions_) {
             auto& v = entry.get();
-            if (auto id = v.latest_version_id(); !!id && v.get_version(*id).is_alive()) {
+            if (auto id = v.latest_version_id(); static_cast<bool>(id) && v.get_version(*id).is_alive()) {
                 retval.push_back(v.get_version(id.value()).value);
                 retval.back().set_alias(name.c_str());
             }

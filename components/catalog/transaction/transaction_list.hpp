@@ -1,4 +1,6 @@
-#include "catalog/table_id.hpp"
+#pragma once
+
+#include <components/catalog/table_id.hpp>
 
 #include <unordered_set>
 

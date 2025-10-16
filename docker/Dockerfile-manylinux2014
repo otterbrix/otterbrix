@@ -4,7 +4,7 @@ ENV PYTHONFAULTHANDLER=1
 
 RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip devtoolset-10-binutils devtoolset-10-gcc devtoolset-10-gcc-c++
 
-RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 cmake && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 

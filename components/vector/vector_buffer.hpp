@@ -13,6 +13,8 @@ namespace components::vector {
 
     constexpr uint64_t INVALID_ID = uint64_t(-1);
 
+    static constexpr bool is_power_of_two(uint64_t v) { return (v & (v - 1)) == 0; }
+
     static constexpr uint64_t next_power_of_two(uint64_t value) {
         assert(value != std::numeric_limits<uint64_t>::max());
         if (value == 0) {
@@ -42,6 +44,36 @@ namespace components::vector {
         ARRAY
     };
 
+    enum class vector_auxiliary_type : uint8_t
+    {
+        ARROW
+    };
+
+    struct vector_auxiliary_data_t {
+        explicit vector_auxiliary_data_t(vector_auxiliary_type type)
+            : type_(type) {}
+        virtual ~vector_auxiliary_data_t() = default;
+
+        vector_auxiliary_type type_;
+
+    public:
+        template<class TARGET>
+        TARGET& cast() {
+            if (type_ != TARGET::TYPE) {
+                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+            }
+            return reinterpret_cast<TARGET&>(*this);
+        }
+
+        template<class TARGET>
+        const TARGET& cast() const {
+            if (type_ != TARGET::TYPE) {
+                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+            }
+            return reinterpret_cast<const TARGET&>(*this);
+        }
+    };
+
     class vector_buffer_t {
     public:
         explicit vector_buffer_t(std::pmr::memory_resource* resource, size_t data_size);
@@ -64,8 +96,13 @@ namespace components::vector {
         }
         vector_buffer_type type() const noexcept { return type_; }
 
+        void set_auxiliary(std::unique_ptr<vector_auxiliary_data_t> data) { aux_data = std::move(data); }
+        vector_auxiliary_data_t* get_auxiliary() noexcept { return aux_data.get(); }
+        const vector_auxiliary_data_t* get_auxiliary() const noexcept { return aux_data.get(); }
+
     protected:
         vector_buffer_type type_;
+        std::unique_ptr<vector_auxiliary_data_t> aux_data;
         std::unique_ptr<std::byte[], core::pmr::array_deleter_t> data_;
     };
 

@@ -48,7 +48,7 @@ namespace components::table {
 
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
 
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
         auto child_count = (row_idx - start_) * size;
 
         assert(child_count <= child_column->max_entry());
@@ -76,14 +76,15 @@ namespace components::table {
     uint64_t array_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_vec = result.entry();
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        state.child_states[1].result_offset = state.result_offset * size;
         child_column->scan_count(state.child_states[1], child_vec, count * size);
         return scan_count;
     }
 
     void array_column_data_t::skip(column_scan_state& state, uint64_t count) {
         validity.skip(state.child_states[0], count);
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
         child_column->skip(state.child_states[1], count * size);
     }
 
@@ -107,7 +108,7 @@ namespace components::table {
 
         validity.append(state.child_appends[0], vector, count);
         auto& child_vec = vector.entry();
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
         child_column->append(state.child_appends[1], child_vec, count * size);
 
         count_ += count;
@@ -115,7 +116,7 @@ namespace components::table {
 
     void array_column_data_t::revert_append(int64_t start_row) {
         validity.revert_append(start_row);
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
         child_column->revert_append(start_row * size);
 
         count_ = start_row - start_;
@@ -155,7 +156,7 @@ namespace components::table {
 
         auto child_state = std::make_unique<column_scan_state>();
         child_state->initialize(child_type);
-        auto size = static_cast<types::array_logical_type_extention*>(type_.extention())->size();
+        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
         const auto child_offset = start_ + (static_cast<uint64_t>(row_id) - start_) * size;
 
         child_column->initialize_scan_with_offset(*child_state, child_offset);

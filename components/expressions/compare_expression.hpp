@@ -18,6 +18,7 @@ namespace components::expressions {
 
         compare_expression_t(std::pmr::memory_resource* resource,
                              compare_type type,
+                             side_t side,
                              const key_t& key,
                              core::parameter_id_t);
         compare_expression_t(std::pmr::memory_resource* resource,
@@ -26,6 +27,7 @@ namespace components::expressions {
                              const key_t& key_right);
 
         compare_type type() const;
+        side_t side() const;
         const key_t& key_left() const;
         const key_t& key_right() const;
         core::parameter_id_t value() const;
@@ -40,6 +42,7 @@ namespace components::expressions {
 
     private:
         compare_type type_;
+        side_t side_;
         key_t key_left_;
         key_t key_right_;
         core::parameter_id_t value_;
@@ -53,6 +56,7 @@ namespace components::expressions {
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,
                                                    compare_type type,
+                                                   side_t side,
                                                    const key_t& key,
                                                    core::parameter_id_t id);
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,

@@ -22,7 +22,7 @@ namespace components::base::operators {
 
     operator_raw_data_t::operator_raw_data_t(const vector::data_chunk_t& chunk)
         : read_only_operator_t(nullptr, operator_type::raw_data) {
-        output_ = make_operator_data(chunk.resource(), chunk.types());
+        output_ = make_operator_data(chunk.resource(), chunk.types(), chunk.size());
         chunk.copy(output_->data_chunk(), 0);
     }
 

@@ -15,7 +15,7 @@ namespace components::catalog {
         , savepoints_(resource) {}
 
     bool metadata_transaction::ensure_active() {
-        if (!!error_) {
+        if (static_cast<bool>(error_)) {
             return false;
         }
 

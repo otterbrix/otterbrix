@@ -59,15 +59,7 @@ namespace components::collection::operators::predicates {
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            return document_left->compare(expr->key_left().as_string(), it->second) ==
-                                   types::compare_t::equals;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -76,20 +68,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp == types::compare_t::equals;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::equals;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        return document_right->compare(expr->key_right().as_string(), it->second) ==
+                               types::compare_t::equals;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::equals;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        return document_right->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::equals;
+                    }
+                    return false;
                 })};
             case compare_type::ne:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            return document_left->compare(expr->key_left().as_string(), it->second) !=
-                                   types::compare_t::equals;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -98,20 +103,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp != types::compare_t::equals;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) !=
+                               types::compare_t::equals;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        return document_right->compare(expr->key_right().as_string(), it->second) !=
+                               types::compare_t::equals;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) !=
+                               types::compare_t::equals;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        return document_right->compare(expr->key_left().as_string(), it->second) !=
+                               types::compare_t::equals;
+                    }
+                    return false;
                 })};
             case compare_type::gt:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            return document_left->compare(expr->key_left().as_string(), it->second) ==
-                                   types::compare_t::more;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -120,20 +138,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp == types::compare_t::more;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::more;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        return document_right->compare(expr->key_right().as_string(), it->second) ==
+                               types::compare_t::more;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::more;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        return document_right->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::more;
+                    }
+                    return false;
                 })};
             case compare_type::gte:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                            return comp == types::compare_t::equals || comp == types::compare_t::more;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -142,20 +173,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp == types::compare_t::equals || comp == types::compare_t::more;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        auto comp = document_right->compare(expr->key_right().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        auto comp = document_right->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                    }
+                    return false;
                 })};
             case compare_type::lt:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            return document_left->compare(expr->key_left().as_string(), it->second) ==
-                                   types::compare_t::less;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -164,20 +208,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp == types::compare_t::less;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::less;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        return document_right->compare(expr->key_right().as_string(), it->second) ==
+                               types::compare_t::less;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        return document_left->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::less;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        return document_right->compare(expr->key_left().as_string(), it->second) ==
+                               types::compare_t::less;
+                    }
+                    return false;
                 })};
             case compare_type::lte:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                            return comp == types::compare_t::equals || comp == types::compare_t::less;
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         auto comp =
                             document_right
                                 ? document_left->compare(expr->key_left().as_string(),
@@ -186,22 +243,33 @@ namespace components::collection::operators::predicates {
                                                          document_left->get_value(expr->key_right().as_string()));
                         return comp == types::compare_t::equals || comp == types::compare_t::less;
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        auto comp = document_right->compare(expr->key_right().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        auto comp = document_right->compare(expr->key_left().as_string(), it->second);
+                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                    }
+                    return false;
                 })};
             case compare_type::regex:
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (expr->key_right().is_null()) {
-                        auto it = parameters->parameters.find(expr->value());
-                        if (it == parameters->parameters.end()) {
-                            return false;
-                        } else {
-                            return document_left->type_by_key(expr->key_left().as_string()) ==
-                                       types::logical_type::STRING_LITERAL &&
-                                   std::regex_match(document_left->get_string(expr->key_left().as_string()).data(),
-                                                    std::regex(fmt::format(".*{}.*", it->second.as_string())));
-                        }
-                    } else {
+                    if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
                         return document_right
                                    ? document_left->type_by_key(expr->key_left().as_string()) ==
                                              types::logical_type::STRING_LITERAL &&
@@ -219,6 +287,35 @@ namespace components::collection::operators::predicates {
                                                              document_right->get_value(expr->key_right().as_string())
                                                                  .as_string())));
                     }
+                    auto it = parameters->parameters.find(expr->value());
+                    if (it == parameters->parameters.end()) {
+                        return false;
+                    }
+                    if (expr->side() == expressions::side_t::left) {
+                        return document_left->type_by_key(expr->key_left().as_string()) ==
+                                   types::logical_type::STRING_LITERAL &&
+                               std::regex_match(document_left->get_string(expr->key_left().as_string()).data(),
+                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                    }
+                    if (expr->side() == expressions::side_t::right) {
+                        return document_right->type_by_key(expr->key_right().as_string()) ==
+                                   types::logical_type::STRING_LITERAL &&
+                               std::regex_match(document_right->get_string(expr->key_right().as_string()).data(),
+                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                    }
+                    if (document_left->is_exists(expr->key_left().as_string())) {
+                        return document_left->type_by_key(expr->key_left().as_string()) ==
+                                   types::logical_type::STRING_LITERAL &&
+                               std::regex_match(document_left->get_string(expr->key_left().as_string()).data(),
+                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                    }
+                    if (document_right->is_exists(expr->key_left().as_string())) {
+                        return document_right->type_by_key(expr->key_left().as_string()) ==
+                                   types::logical_type::STRING_LITERAL &&
+                               std::regex_match(document_right->get_string(expr->key_left().as_string()).data(),
+                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                    }
+                    return false;
                 })};
             case compare_type::all_true:
                 return {new simple_predicate([](const document::document_ptr&,

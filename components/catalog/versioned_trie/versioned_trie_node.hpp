@@ -44,7 +44,9 @@ namespace components::catalog {
         }
 
         versioned_trie_node(versioned_trie_node&& other)
-            : parent_(nullptr) {
+            : keys_(other.resource_)
+            , children_(other.resource_)
+            , parent_(nullptr) {
             swap(other);
         }
 
@@ -55,6 +57,7 @@ namespace components::catalog {
             temp.swap(*this);
             return *this;
         }
+
         versioned_trie_node& operator=(versioned_trie_node&& rhs) {
             assert(parent_ == nullptr && "Move assignments of trie_node_ts are defined only for the "
                                          "header node.");
@@ -69,13 +72,13 @@ namespace components::catalog {
         versioned_trie_node* min_child() const { return children_.front().get(); }
         versioned_trie_node* max_child() const { return children_.back().get(); }
 
-        bool has_versions() const { return !!value_.latest_version_id(); }
+        bool has_versions() const { return static_cast<bool>(value_.latest_version_id()); }
         bool has_live_versions() const { return value_.has_alive_versions(); }
         bool empty() const { return children_.size() == 0; }
         std::size_t size() const { return children_.size(); }
 
-        bool min_value() const { return !!children_.front()->value_.latest_version_id(); }
-        bool max_value() const { return !!children_.back()->value_.latest_version_id(); }
+        bool min_value() const { return static_cast<bool>(children_.front()->value_.latest_version_id()); }
+        bool max_value() const { return static_cast<bool>(children_.back()->value_.latest_version_id()); }
 
         const_iterator begin() const { return children_.begin(); }
         const_iterator end() const { return children_.end(); }

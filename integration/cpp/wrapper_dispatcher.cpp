@@ -31,6 +31,10 @@ namespace otterbrix {
                                                  collection::handler_id(collection::route::size_finish),
                                                  this,
                                                  &wrapper_dispatcher_t::size_finish))
+        , schema_finish_(actor_zeta::make_behavior(resource(),
+                                                   collection::handler_id(collection::route::schema_finish),
+                                                   this,
+                                                   &wrapper_dispatcher_t::schema_finish))
         , manager_dispatcher_(manager_dispatcher)
         , transformer_(mr)
         , log_(log.clone())
@@ -51,6 +55,10 @@ namespace otterbrix {
                 }
                 case collection::handler_id(collection::route::size_finish): {
                     size_finish_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::schema_finish): {
+                    schema_finish_(msg);
                     break;
                 }
             }
@@ -290,6 +298,19 @@ namespace otterbrix {
         return execute_plan(session, node, params);
     }
 
+    auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,
+                                          const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
+        -> components::cursor::cursor_t_ptr {
+        trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
+        session_id_t approved_session = init(session);
+        actor_zeta::send(manager_dispatcher_,
+                         address(),
+                         collection::handler_id(collection::route::schema),
+                         approved_session,
+                         ids);
+        return wait_result(approved_session);
+    }
+
     auto wrapper_dispatcher_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* {
         assert("wrapper_dispatcher_t::executor_impl");
         return nullptr;
@@ -318,6 +339,14 @@ namespace otterbrix {
         trace(log_, "wrapper_dispatcher_t::size_finish session: {} {}", session.data(), size);
         std::unique_lock<std::mutex> lk(output_mtx_);
         size_store_ = size;
+        notify(session);
+    }
+
+    auto wrapper_dispatcher_t::schema_finish(const components::session::session_id_t& session,
+                                             components::cursor::cursor_t_ptr cursor) -> void {
+        trace(log_, "wrapper_dispatcher_t::schema_finish session: {} {}", session.data(), cursor->is_success());
+        std::unique_lock<std::mutex> lk(output_mtx_);
+        cursor_store_ = std::move(cursor);
         notify(session);
     }
 

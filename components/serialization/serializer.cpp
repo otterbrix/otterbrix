@@ -170,7 +170,7 @@ namespace components::serializer {
         working_tree_.top()->emplace_back(static_cast<uint8_t>(type));
     }
 
-    void json_serializer_t::append(std::string_view key, expressions::update_expr_get_value_t::side_t side) {
+    void json_serializer_t::append(std::string_view key, expressions::side_t side) {
         working_tree_.top()->emplace_back(static_cast<uint8_t>(side));
     }
 
@@ -286,7 +286,7 @@ namespace components::serializer {
         packer_.pack(static_cast<uint8_t>(type));
     }
 
-    void msgpack_serializer_t::append(std::string_view key, expressions::update_expr_get_value_t::side_t side) {
+    void msgpack_serializer_t::append(std::string_view key, expressions::side_t side) {
         packer_.pack(static_cast<uint8_t>(side));
     }
 

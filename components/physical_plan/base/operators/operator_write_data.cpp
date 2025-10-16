@@ -57,8 +57,8 @@ namespace components::base::operators {
             return lhs_type.type() < rhs_type.type();
         }
 
-        auto lhs_ext = lhs_type.extention();
-        auto rhs_ext = rhs_type.extention();
+        auto lhs_ext = lhs_type.extension();
+        auto rhs_ext = rhs_type.extension();
 
         if (lhs_ext == nullptr && rhs_ext == nullptr) {
             return false;
@@ -95,7 +95,7 @@ namespace components::base::operators {
             }
             return components::types::complex_logical_type(
                 components::types::logical_type::STRUCT,
-                std::make_unique<components::types::struct_logical_type_extention>(str, std::move(descriptions)));
+                std::make_unique<components::types::struct_logical_type_extension>(str, std::move(descriptions)));
         }
         if (json->is_mut()) {
             return json->get_mut()->logical_type();

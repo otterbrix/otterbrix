@@ -19,7 +19,7 @@ namespace components::vector {
 
     class indexing_vector_t {
     public:
-        explicit indexing_vector_t(uint64_t* indexing = nullptr) noexcept;
+        explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t* indexing = nullptr) noexcept;
         explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t count);
         explicit indexing_vector_t(std::pmr::memory_resource* resource, uint64_t start, uint64_t count);
         explicit indexing_vector_t(std::shared_ptr<indexing_data> data) noexcept;
@@ -41,14 +41,17 @@ namespace components::vector {
         slice(std::pmr::memory_resource* resource, const indexing_vector_t& indexing, uint64_t count) const;
         uint64_t& operator[](uint64_t index) const;
         bool is_valid() const noexcept;
-        std::pmr::memory_resource* resource() const { return data_->data.get_deleter().resource(); }
+        std::pmr::memory_resource* resource() const { return resource_; }
+        uint64_t capacity() const;
 
     private:
+        std::pmr::memory_resource* resource_;
         std::shared_ptr<indexing_data> data_;
         uint64_t* indexing_{nullptr};
     };
 
     static uint64_t ZERO_VECTOR[DEFAULT_VECTOR_CAPACITY] = {0};
-    inline static indexing_vector_t ZERO_INDEXING_VECTOR = indexing_vector_t(ZERO_VECTOR);
+    // nullptr as memory_resource* is questionable here, but i didn't find a better alternative
+    inline static indexing_vector_t ZERO_INDEXING_VECTOR = indexing_vector_t(nullptr, ZERO_VECTOR);
 
 } // namespace components::vector

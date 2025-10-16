@@ -20,8 +20,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-            brew install ninja cmake
-            python3 -m pip install --no-cache-dir conan==2.15.0  pytest==6.2.5 --break-system-packages
+            brew update && (brew list ninja || brew install ninja) && (brew list cmake || brew install cmake)
+            python3 -m pip install --no-cache-dir conan==2.20.0  pytest==6.2.5 --break-system-packages
 
       - name: conan installation and configuration
         run: |

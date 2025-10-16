@@ -12,7 +12,7 @@ namespace components::types {
     using uint128_t = absl::uint128;
 
     class logical_value_t;
-    class logical_type_extention;
+    class logical_type_extension;
 
     enum class compare_t
     {
@@ -354,8 +354,10 @@ namespace components::types {
 
     class complex_logical_type {
     public:
-        complex_logical_type(logical_type type = logical_type::NA);
-        complex_logical_type(logical_type type, std::unique_ptr<logical_type_extention> extention);
+        complex_logical_type(logical_type type = logical_type::NA, std::string alias = "");
+        complex_logical_type(logical_type type,
+                             std::unique_ptr<logical_type_extension> extension,
+                             std::string alias = "");
         complex_logical_type(const complex_logical_type& other);
         complex_logical_type(complex_logical_type&& other) noexcept = default;
         complex_logical_type& operator=(const complex_logical_type& other);
@@ -378,7 +380,7 @@ namespace components::types {
 
         const complex_logical_type& child_type() const;
         const std::vector<complex_logical_type>& child_types() const;
-        logical_type_extention* extention() const noexcept;
+        logical_type_extension* extension() const noexcept;
 
         template<typename T>
         static bool contains(const complex_logical_type& type, T&& predicate);
@@ -389,16 +391,20 @@ namespace components::types {
 
         static bool type_is_constant_size(logical_type type);
 
-        static complex_logical_type create_decimal(uint8_t width, uint8_t scale);
-        static complex_logical_type create_list(const complex_logical_type& internal_type);
-        static complex_logical_type create_array(const complex_logical_type& internal_type, size_t array_size);
+        static complex_logical_type create_decimal(uint8_t width, uint8_t scale, std::string alias = "");
+        static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");
+        static complex_logical_type
+        create_array(const complex_logical_type& internal_type, size_t array_size, std::string alias = "");
         static complex_logical_type create_map(const complex_logical_type& key_type,
-                                               const complex_logical_type& value_type);
-        static complex_logical_type create_struct(const std::vector<complex_logical_type>& fields);
+                                               const complex_logical_type& value_type,
+                                               std::string alias = "");
+        static complex_logical_type create_struct(const std::vector<complex_logical_type>& fields,
+                                                  std::string alias = "");
+        static complex_logical_type create_union(std::vector<complex_logical_type> fields, std::string alias = "");
 
     private:
         logical_type type_ = logical_type::NA;
-        std::unique_ptr<logical_type_extention> extention_ = nullptr; // for complex types
+        std::unique_ptr<logical_type_extension> extension_ = nullptr; // for complex types
     };
 
     struct list_entry_t {
@@ -428,10 +434,10 @@ namespace components::types {
         std::string doc;
     };
 
-    class logical_type_extention {
+    class logical_type_extension {
     public:
         // duplicates from logical_type, but declared separatly for clarity
-        enum class extention_type : uint8_t
+        enum class extension_type : uint8_t
         {
             GENERIC = 0,
             ARRAY = 1,
@@ -444,22 +450,22 @@ namespace components::types {
             FUNCTION = 8
         };
 
-        logical_type_extention() = default;
-        explicit logical_type_extention(extention_type t, std::string alias = "");
-        virtual ~logical_type_extention() = default;
+        logical_type_extension() = default;
+        explicit logical_type_extension(extension_type t, std::string alias = "");
+        virtual ~logical_type_extension() = default;
 
-        extention_type type() const noexcept { return type_; }
+        extension_type type() const noexcept { return type_; }
         const std::string& alias() const noexcept { return alias_; }
         void set_alias(const std::string& alias);
 
     protected:
-        extention_type type_ = extention_type::GENERIC;
+        extension_type type_ = extension_type::GENERIC;
         std::string alias_;
     };
 
-    class array_logical_type_extention : public logical_type_extention {
+    class array_logical_type_extension : public logical_type_extension {
     public:
-        explicit array_logical_type_extention(const complex_logical_type& type, uint64_t size);
+        explicit array_logical_type_extension(const complex_logical_type& type, uint64_t size);
 
         const complex_logical_type& internal_type() const noexcept { return items_type_; }
         size_t size() const noexcept { return size_; }
@@ -469,10 +475,10 @@ namespace components::types {
         uint64_t size_;
     };
 
-    class map_logical_type_extention : public logical_type_extention {
+    class map_logical_type_extension : public logical_type_extension {
     public:
-        map_logical_type_extention(const complex_logical_type& key, const complex_logical_type& value);
-        map_logical_type_extention(uint64_t key_id,
+        map_logical_type_extension(const complex_logical_type& key, const complex_logical_type& value);
+        map_logical_type_extension(uint64_t key_id,
                                    const types::complex_logical_type& key,
                                    uint64_t value_id,
                                    const types::complex_logical_type& value,
@@ -492,10 +498,10 @@ namespace components::types {
         bool value_required_;
     };
 
-    class list_logical_type_extention : public logical_type_extention {
+    class list_logical_type_extension : public logical_type_extension {
     public:
-        explicit list_logical_type_extention(complex_logical_type type);
-        list_logical_type_extention(uint64_t field_id, complex_logical_type type, bool required);
+        explicit list_logical_type_extension(complex_logical_type type);
+        list_logical_type_extension(uint64_t field_id, complex_logical_type type, bool required);
 
         const complex_logical_type& node() const noexcept { return type_; }
         uint64_t field_id() const noexcept { return field_id_; }
@@ -507,12 +513,12 @@ namespace components::types {
         bool required_;
     };
 
-    class struct_logical_type_extention : public logical_type_extention {
+    class struct_logical_type_extension : public logical_type_extension {
     public:
-        explicit struct_logical_type_extention(const std::vector<complex_logical_type>& fields);
+        explicit struct_logical_type_extension(const std::vector<complex_logical_type>& fields);
 
         // fields must be aliased
-        struct_logical_type_extention(const std::vector<types::complex_logical_type>& columns,
+        struct_logical_type_extension(const std::vector<types::complex_logical_type>& columns,
                                       std::vector<field_description> descriptions);
 
         const std::vector<complex_logical_type>& child_types() const { return fields_; }
@@ -523,9 +529,9 @@ namespace components::types {
         std::vector<field_description> descriptions_;
     };
 
-    class decimal_logical_type_extention : public logical_type_extention {
+    class decimal_logical_type_extension : public logical_type_extension {
     public:
-        explicit decimal_logical_type_extention(uint8_t width, uint8_t scale);
+        explicit decimal_logical_type_extension(uint8_t width, uint8_t scale);
 
         uint8_t width() const noexcept { return width_; }
         uint8_t scale() const noexcept { return scale_; }
@@ -535,9 +541,9 @@ namespace components::types {
         uint8_t scale_;
     };
 
-    class enum_logical_type_extention : public logical_type_extention {
+    class enum_logical_type_extension : public logical_type_extension {
     public:
-        explicit enum_logical_type_extention(std::vector<logical_value_t> entries);
+        explicit enum_logical_type_extension(std::vector<logical_value_t> entries);
 
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
@@ -545,18 +551,18 @@ namespace components::types {
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
     };
 
-    class user_logical_type_extention : public logical_type_extention {
+    class user_logical_type_extension : public logical_type_extension {
     public:
-        explicit user_logical_type_extention(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
+        explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
 
     private:
         std::string catalog_;
         std::vector<logical_value_t> user_type_modifiers_;
     };
 
-    class function_logical_type_extention : public logical_type_extention {
+    class function_logical_type_extension : public logical_type_extension {
     public:
-        explicit function_logical_type_extention(complex_logical_type return_type,
+        explicit function_logical_type_extension(complex_logical_type return_type,
                                                  std::vector<complex_logical_type> arguments);
 
     private:
@@ -584,8 +590,8 @@ namespace components::types {
             case logical_type::ARRAY:
                 return contains(type.child_type(), predicate);
             case logical_type::MAP:
-                return contains(static_cast<map_logical_type_extention*>(type.extention_.get())->key(), predicate) ||
-                       contains(static_cast<map_logical_type_extention*>(type.extention_.get())->value(), predicate);
+                return contains(static_cast<map_logical_type_extension*>(type.extension_.get())->key(), predicate) ||
+                       contains(static_cast<map_logical_type_extension*>(type.extension_.get())->value(), predicate);
             default:
                 return false;
         }

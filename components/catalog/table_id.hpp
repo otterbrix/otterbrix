@@ -1,8 +1,12 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+
 #include <memory_resource>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace components::catalog {

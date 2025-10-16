@@ -9,6 +9,18 @@ set(SOURCE_${PROJECT_NAME}
         vector_operations.cpp
         data_chunk.cpp
         validation.cpp
+
+        arrow/appender/bool_data.cpp
+        arrow/appender/fixed_size_list_data.cpp
+        arrow/appender/struct_data.cpp
+        arrow/scaner/arrow_type.cpp
+        arrow/scaner/arrow_type_info.cpp
+        arrow/scaner/arrow_type_extension.cpp
+        arrow/scaner/arrow_conversion.cpp
+        arrow/arrow_appender.cpp
+        arrow/arrow_converter.cpp
+        arrow/schema_metadata.cpp
+        arrow/arrow_wrapper.cpp
 )
 include_directories(${CMAKE_SOURCE_DIR})
 
@@ -24,6 +36,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::types
         otterbrix::string_heap
+        boost::boost
 )
 
 if (DEV_MODE)

@@ -36,7 +36,7 @@ namespace components::table::sort {
                     return false;
                 }
             }
-            return true;
+            return false;
         }
 
     private:

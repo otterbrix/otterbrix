@@ -28,6 +28,47 @@ namespace components::table::operators::predicates {
             return column_index;
         }
 
+        template<typename COMP, typename TYPE, typename VALUE>
+        simple_predicate::check_function_t
+        create_unary_comparator(size_t column_index, expressions::side_t side, VALUE&& val) {
+            return [column_index, val, side](const vector::data_chunk_t& chunk_left,
+                                             const vector::data_chunk_t& chunk_right,
+                                             size_t index_left,
+                                             size_t index_right) {
+                assert(column_index < chunk_left.column_count());
+                COMP comp{};
+                if (side == expressions::side_t::left) {
+                    assert(column_index < chunk_left.column_count());
+                    return comp(chunk_left.data.at(column_index).data<TYPE>()[index_left], val);
+                } else {
+                    assert(column_index < chunk_right.column_count());
+                    return comp(chunk_right.data.at(column_index).data<TYPE>()[index_right], val);
+                }
+            };
+        }
+
+        template<typename COMP, typename LEFT_TYPE, typename RIGHT_TYPE>
+        simple_predicate::check_function_t
+        create_binary_comparator(size_t column_index_left, size_t column_index_right, bool one_sided) {
+            return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
+                                                                      const vector::data_chunk_t& chunk_right,
+                                                                      size_t index_left,
+                                                                      size_t index_right) {
+                COMP comp{};
+                if (one_sided) {
+                    assert(column_index_left < chunk_left.column_count());
+                    assert(column_index_right < chunk_left.column_count());
+                    return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
+                                chunk_left.data.at(column_index_right).data<RIGHT_TYPE>()[index_left]);
+                } else {
+                    assert(column_index_left < chunk_left.column_count());
+                    assert(column_index_right < chunk_right.column_count());
+                    return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
+                                chunk_right.data.at(column_index_right).data<RIGHT_TYPE>()[index_right]);
+                }
+            };
+        }
+
         // by this point compare_expression is unmodifiable, so we have to pass side explicitly
         template<typename COMP>
         simple_predicate::check_function_t
@@ -38,206 +79,37 @@ namespace components::table::operators::predicates {
             assert(side != expressions::side_t::undefined);
             size_t column_index =
                 get_column_index(side == expressions::side_t::left ? expr->key_left() : expr->key_right(), types);
-            auto expr_val = parameters->parameters.at(expr->value());
+            const auto& expr_val = parameters->parameters.at(expr->value());
 
             switch (types.at(column_index).to_physical_type()) {
                 case types::physical_type::BOOL:
-                    return [column_index, val = expr_val.as_bool(), side](const vector::data_chunk_t& chunk_left,
-                                                                          const vector::data_chunk_t& chunk_right,
-                                                                          size_t index_left,
-                                                                          size_t index_right) {
-                        assert(column_index < chunk_left.column_count());
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<bool>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<bool>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, bool>(column_index, side, expr_val.as_bool());
                 case types::physical_type::UINT8:
-                    return [column_index, val = expr_val.as_unsigned(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<uint8_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<uint8_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, uint8_t>(column_index, side, expr_val.as_unsigned());
                 case types::physical_type::INT8:
-                    return [column_index, val = expr_val.as_int(), side](const vector::data_chunk_t& chunk_left,
-                                                                         const vector::data_chunk_t& chunk_right,
-                                                                         size_t index_left,
-                                                                         size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<int8_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<int8_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, int8_t>(column_index, side, expr_val.as_int());
                 case types::physical_type::UINT16:
-                    return [column_index, val = expr_val.as_unsigned(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<uint16_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<uint16_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, uint16_t>(column_index, side, expr_val.as_unsigned());
                 case types::physical_type::INT16:
-                    return [column_index, val = expr_val.as_int(), side](const vector::data_chunk_t& chunk_left,
-                                                                         const vector::data_chunk_t& chunk_right,
-                                                                         size_t index_left,
-                                                                         size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<int16_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<int16_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, int16_t>(column_index, side, expr_val.as_int());
                 case types::physical_type::UINT32:
-                    return [column_index, val = expr_val.as_unsigned(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<uint32_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<uint32_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, uint32_t>(column_index, side, expr_val.as_unsigned());
                 case types::physical_type::INT32:
-                    return [column_index, val = expr_val.as_int(), side](const vector::data_chunk_t& chunk_left,
-                                                                         const vector::data_chunk_t& chunk_right,
-                                                                         size_t index_left,
-                                                                         size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<int32_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<int32_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, int32_t>(column_index, side, expr_val.as_int());
                 case types::physical_type::UINT64:
-                    return [column_index, val = expr_val.as_unsigned(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<uint64_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<uint64_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, uint64_t>(column_index, side, expr_val.as_unsigned());
                 case types::physical_type::INT64:
-                    return [column_index, val = expr_val.as_int(), side](const vector::data_chunk_t& chunk_left,
-                                                                         const vector::data_chunk_t& chunk_right,
-                                                                         size_t index_left,
-                                                                         size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<int64_t>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<int64_t>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, int64_t>(column_index, side, expr_val.as_int());
                 // case types::physical_type::UINT128:
-                //    return [column_index, val = expr_val.as_int128(), side](const vector::data_chunk_t& chunk_left,
-                //                                                            const vector::data_chunk_t& chunk_right,
-                //                                                            size_t index_left,
-                //                                                            size_t index_right) {
-                //          COMP comp{};
-                //          if (side == expressions::side_t::left) {
-                //              assert(column_index < chunk_left.column_count());
-                //              return comp(chunk_left.data.at(column_index).data<types::uint128_t>()[index_left], val);
-                //          } else {
-                //              assert(column_index < chunk_right.column_count());
-                //              return comp(chunk_right.data.at(column_index).data<types::uint128_t>()[index_right], val);
-                //          }
-                // };
+                //    return create_unary_comparator<COMP, types::uint128_t>(column_index, side, expr_val.as_int128());
                 // case types::physical_type::INT128:
-                //    return [column_index, val = expr_val.as_int128(), side](const vector::data_chunk_t& chunk_left,
-                //                                                            const vector::data_chunk_t& chunk_right,
-                //                                                            size_t index_left,
-                //                                                            size_t index_right) {
-                //          COMP comp{};
-                //          if (side == expressions::side_t::left) {
-                //              assert(column_index < chunk_left.column_count());
-                //              return comp(chunk_left.data.at(column_index).data<types::int128_t>()[index_left], val);
-                //          } else {
-                //              assert(column_index < chunk_right.column_count());
-                //              return comp(chunk_right.data.at(column_index).data<types::int128_t>()[index_right], val);
-                //          }
-                // };
+                //    return create_unary_comparator<COMP, types::int128_t>(column_index, side, expr_val.as_int128());
                 case types::physical_type::FLOAT:
-                    return [column_index, val = expr_val.as_float(), side](const vector::data_chunk_t& chunk_left,
-                                                                           const vector::data_chunk_t& chunk_right,
-                                                                           size_t index_left,
-                                                                           size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<float>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<float>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, float>(column_index, side, expr_val.as_float());
                 case types::physical_type::DOUBLE:
-                    return [column_index, val = expr_val.as_double(), side](const vector::data_chunk_t& chunk_left,
-                                                                            const vector::data_chunk_t& chunk_right,
-                                                                            size_t index_left,
-                                                                            size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<double>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<double>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, double>(column_index, side, expr_val.as_double());
                 case types::physical_type::STRING:
-                    return [column_index, val = expr_val.as_string(), side](const vector::data_chunk_t& chunk_left,
-                                                                            const vector::data_chunk_t& chunk_right,
-                                                                            size_t index_left,
-                                                                            size_t index_right) {
-                        COMP comp{};
-                        if (side == expressions::side_t::left) {
-                            assert(column_index < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index).data<std::string_view>()[index_left], val);
-                        } else {
-                            assert(column_index < chunk_right.column_count());
-                            return comp(chunk_right.data.at(column_index).data<std::string_view>()[index_right], val);
-                        }
-                    };
+                    return create_unary_comparator<COMP, std::string_view>(column_index, side, expr_val.as_string());
                 default:
                     throw std::runtime_error("invalid expression in create_unary_comparator");
             }
@@ -278,239 +150,53 @@ namespace components::table::operators::predicates {
                                                                                  bool one_sided) {
             switch (type_right) {
                 case types::physical_type::BOOL:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<bool>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<bool>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, bool>(column_index_left,
+                                                                           column_index_right,
+                                                                           one_sided);
                 case types::physical_type::UINT8:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<uint8_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<uint8_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, uint8_t>(column_index_left,
+                                                                              column_index_right,
+                                                                              one_sided);
                 case types::physical_type::INT8:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<int8_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<int8_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, int8_t>(column_index_left,
+                                                                             column_index_right,
+                                                                             one_sided);
                 case types::physical_type::UINT16:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<uint16_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<uint16_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, uint16_t>(column_index_left,
+                                                                               column_index_right,
+                                                                               one_sided);
                 case types::physical_type::INT16:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<int16_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<int16_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, int16_t>(column_index_left,
+                                                                              column_index_right,
+                                                                              one_sided);
                 case types::physical_type::UINT32:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<uint32_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<uint32_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, uint32_t>(column_index_left,
+                                                                               column_index_right,
+                                                                               one_sided);
                 case types::physical_type::INT32:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<int32_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<int32_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, int32_t>(column_index_left,
+                                                                              column_index_right,
+                                                                              one_sided);
                 case types::physical_type::UINT64:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<uint64_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<uint64_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, uint64_t>(column_index_left,
+                                                                               column_index_right,
+                                                                               one_sided);
                 case types::physical_type::INT64:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<int64_t>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<int64_t>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, int64_t>(column_index_left,
+                                                                              column_index_right,
+                                                                              one_sided);
                 // case types::physical_type::UINT128:
-                //    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                //                                                   const vector::data_chunk_t& chunk_right,
-                //                                                   size_t index_left,
-                //                                                   size_t index_right) {
-                //     COMP comp{};
-                //     if (one_sided) {
-                //          assert(column_index_left < chunk_left.column_count());
-                //          assert(column_index_right < chunk_left.column_count());
-                //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                //                      chunk_left.data.at(column_index_right).data<types::uint128_t>()[index_left]);
-                //     } else {
-                //          assert(column_index_left < chunk_left.column_count());
-                //          assert(column_index_right < chunk_right.column_count());
-                //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                //                      chunk_right.data.at(column_index_right).data<types::uint128_t>()[index_right]);
-                //     }
-                // };
+                //    return create_binary_comparator<COMP, LEFT_TYPE, types::uint128_t>(column_index_left, column_index_right, one_sided);
                 // case types::physical_type::INT128:
-                //    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                //                                                   const vector::data_chunk_t& chunk_right,
-                //                                                   size_t index_left,
-                //                                                   size_t index_right) {
-                //     COMP comp{};
-                //     if (one_sided) {
-                //          assert(column_index_left < chunk_left.column_count());
-                //          assert(column_index_right < chunk_left.column_count());
-                //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                //                      chunk_left.data.at(column_index_right).data<types::int128_t>()[index_left]);
-                //     } else {
-                //          assert(column_index_left < chunk_left.column_count());
-                //          assert(column_index_right < chunk_right.column_count());
-                //          return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                //                      chunk_right.data.at(column_index_right).data<types::int128_t>()[index_right]);
-                //     }
-                // };
+                //    return create_binary_comparator<COMP, LEFT_TYPE, types::int128_t>(column_index_left, column_index_right, one_sided);
                 case types::physical_type::FLOAT:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<float>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<float>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, float>(column_index_left,
+                                                                            column_index_right,
+                                                                            one_sided);
                 case types::physical_type::DOUBLE:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_left.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<double>()[index_left]);
-                        } else {
-                            assert(column_index_left < chunk_left.column_count());
-                            assert(column_index_right < chunk_right.column_count());
-                            return comp(chunk_left.data.at(column_index_left).data<LEFT_TYPE>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<double>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, LEFT_TYPE, double>(column_index_left,
+                                                                             column_index_right,
+                                                                             one_sided);
                 default:
                     throw std::runtime_error("invalid expression in create_binary_comparator");
             }
@@ -597,19 +283,9 @@ namespace components::table::operators::predicates {
                                                                                column_index_right,
                                                                                one_sided);
                 case types::physical_type::STRING:
-                    return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                        COMP comp{};
-                        if (one_sided) {
-                            return comp(chunk_left.data.at(column_index_left).data<std::string_view>()[index_left],
-                                        chunk_left.data.at(column_index_right).data<std::string_view>()[index_left]);
-                        } else {
-                            return comp(chunk_left.data.at(column_index_left).data<std::string_view>()[index_left],
-                                        chunk_right.data.at(column_index_right).data<std::string_view>()[index_right]);
-                        }
-                    };
+                    return create_binary_comparator<COMP, std::string_view, std::string_view>(column_index_left,
+                                                                                              column_index_right,
+                                                                                              one_sided);
                 default:
                     throw std::runtime_error("invalid expression in create_binary_comparator");
             }
@@ -625,8 +301,6 @@ namespace components::table::operators::predicates {
             if (column_index_right == -1) {
                 // one-sided expr
                 column_index_right = get_column_index(expr->key_right(), types_left);
-                one_sided = true;
-            } else {
             }
 
             return [column_index_left, column_index_right, one_sided](const vector::data_chunk_t& chunk_left,

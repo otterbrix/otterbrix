@@ -1,4 +1,6 @@
-#include "../schema.hpp"
+#pragma once
+
+#include <components/catalog/schema.hpp>
 
 #include <bitset>
 #include <optional>

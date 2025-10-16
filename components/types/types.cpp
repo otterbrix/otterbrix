@@ -5,99 +5,109 @@
 
 namespace components::types {
 
-    complex_logical_type::complex_logical_type(logical_type type)
-        : type_(type) {}
+    complex_logical_type::complex_logical_type(logical_type type, std::string alias)
+        : type_(type) {
+        if (!alias.empty()) {
+            set_alias(alias);
+        }
+    }
 
-    complex_logical_type::complex_logical_type(logical_type type, std::unique_ptr<logical_type_extention> extention)
+    complex_logical_type::complex_logical_type(logical_type type,
+                                               std::unique_ptr<logical_type_extension> extension,
+                                               std::string alias)
         : type_(type)
-        , extention_(std::move(extention)) {}
+        , extension_(std::move(extension)) {
+        if (!alias.empty()) {
+            set_alias(alias);
+        }
+    }
 
     complex_logical_type::complex_logical_type(const complex_logical_type& other)
         : type_(other.type_) {
-        if (other.extention_) {
-            switch (other.extention_->type()) {
-                case logical_type_extention::extention_type::GENERIC:
-                    extention_ = std::make_unique<logical_type_extention>(*other.extention_.get());
+        if (other.extension_) {
+            switch (other.extension_->type()) {
+                case logical_type_extension::extension_type::GENERIC:
+                    extension_ = std::make_unique<logical_type_extension>(*other.extension_.get());
                     break;
-                case logical_type_extention::extention_type::ARRAY:
-                    extention_ = std::make_unique<array_logical_type_extention>(
-                        *static_cast<array_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::ARRAY:
+                    extension_ = std::make_unique<array_logical_type_extension>(
+                        *static_cast<array_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::MAP:
-                    extention_ = std::make_unique<map_logical_type_extention>(
-                        *static_cast<map_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::MAP:
+                    extension_ = std::make_unique<map_logical_type_extension>(
+                        *static_cast<map_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::LIST:
-                    extention_ = std::make_unique<list_logical_type_extention>(
-                        *static_cast<list_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::LIST:
+                    extension_ = std::make_unique<list_logical_type_extension>(
+                        *static_cast<list_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::STRUCT:
-                    extention_ = std::make_unique<struct_logical_type_extention>(
-                        *static_cast<struct_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::STRUCT:
+                    extension_ = std::make_unique<struct_logical_type_extension>(
+                        *static_cast<struct_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::DECIMAL:
-                    extention_ = std::make_unique<decimal_logical_type_extention>(
-                        *static_cast<decimal_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::DECIMAL:
+                    extension_ = std::make_unique<decimal_logical_type_extension>(
+                        *static_cast<decimal_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::ENUM:
-                    extention_ = std::make_unique<enum_logical_type_extention>(
-                        *static_cast<enum_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::ENUM:
+                    extension_ = std::make_unique<enum_logical_type_extension>(
+                        *static_cast<enum_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::USER:
-                    extention_ = std::make_unique<user_logical_type_extention>(
-                        *static_cast<user_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::USER:
+                    extension_ = std::make_unique<user_logical_type_extension>(
+                        *static_cast<user_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::FUNCTION:
-                    extention_ = std::make_unique<function_logical_type_extention>(
-                        *static_cast<function_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::FUNCTION:
+                    extension_ = std::make_unique<function_logical_type_extension>(
+                        *static_cast<function_logical_type_extension*>(other.extension_.get()));
                     break;
                 default:
-                    assert(false && "complex_logical_type copy: unimplemented extention type");
+                    assert(false && "complex_logical_type copy: unimplemented extension type");
             }
         }
     }
 
     complex_logical_type& complex_logical_type::operator=(const complex_logical_type& other) {
         type_ = other.type_;
-        if (other.extention_) {
-            switch (other.extention_->type()) {
-                case logical_type_extention::extention_type::GENERIC:
-                    extention_ = std::make_unique<logical_type_extention>(*other.extention_.get());
+        if (other.extension_) {
+            switch (other.extension_->type()) {
+                case logical_type_extension::extension_type::GENERIC:
+                    extension_ = std::make_unique<logical_type_extension>(*other.extension_.get());
                     break;
-                case logical_type_extention::extention_type::ARRAY:
-                    extention_ = std::make_unique<array_logical_type_extention>(
-                        *static_cast<array_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::ARRAY:
+                    extension_ = std::make_unique<array_logical_type_extension>(
+                        *static_cast<array_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::MAP:
-                    extention_ = std::make_unique<map_logical_type_extention>(
-                        *static_cast<map_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::MAP:
+                    extension_ = std::make_unique<map_logical_type_extension>(
+                        *static_cast<map_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::LIST:
-                    extention_ = std::make_unique<list_logical_type_extention>(
-                        *static_cast<list_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::LIST:
+                    extension_ = std::make_unique<list_logical_type_extension>(
+                        *static_cast<list_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::STRUCT:
-                    extention_ = std::make_unique<struct_logical_type_extention>(
-                        *static_cast<struct_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::STRUCT:
+                    extension_ = std::make_unique<struct_logical_type_extension>(
+                        *static_cast<struct_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::DECIMAL:
-                    extention_ = std::make_unique<decimal_logical_type_extention>(
-                        *static_cast<decimal_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::DECIMAL:
+                    extension_ = std::make_unique<decimal_logical_type_extension>(
+                        *static_cast<decimal_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::ENUM:
-                    extention_ = std::make_unique<enum_logical_type_extention>(
-                        *static_cast<enum_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::ENUM:
+                    extension_ = std::make_unique<enum_logical_type_extension>(
+                        *static_cast<enum_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::USER:
-                    extention_ = std::make_unique<user_logical_type_extention>(
-                        *static_cast<user_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::USER:
+                    extension_ = std::make_unique<user_logical_type_extension>(
+                        *static_cast<user_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extention::extention_type::FUNCTION:
-                    extention_ = std::make_unique<function_logical_type_extention>(
-                        *static_cast<function_logical_type_extention*>(other.extention_.get()));
+                case logical_type_extension::extension_type::FUNCTION:
+                    extension_ = std::make_unique<function_logical_type_extension>(
+                        *static_cast<function_logical_type_extension*>(other.extension_.get()));
                     break;
                 default:
-                    assert(false && "complex_logical_type copy: unimplemented extention type");
+                    assert(false && "complex_logical_type copy: unimplemented extension type");
             }
         }
         return *this;
@@ -105,8 +115,8 @@ namespace components::types {
 
     bool complex_logical_type::operator==(const complex_logical_type& rhs) const {
         return type_ == rhs.type_;
-        // TODO: also compare extentions
-        //return type_ == rhs.type_ && *extention_.get() == *rhs.extention_.get();
+        // TODO: also compare extensions
+        //return type_ == rhs.type_ && *extension_.get() == *rhs.extension_.get();
     }
 
     bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return !(*this == rhs); }
@@ -256,32 +266,32 @@ namespace components::types {
     }
 
     void complex_logical_type::set_alias(const std::string& alias) {
-        if (extention_) {
-            extention_->set_alias(alias);
+        if (extension_) {
+            extension_->set_alias(alias);
         } else {
-            extention_ =
-                std::make_unique<logical_type_extention>(logical_type_extention::extention_type::GENERIC, alias);
+            extension_ =
+                std::make_unique<logical_type_extension>(logical_type_extension::extension_type::GENERIC, alias);
         }
     }
 
     bool complex_logical_type::has_alias() const {
-        if (extention_ && !extention_->alias().empty()) {
+        if (extension_ && !extension_->alias().empty()) {
             return true;
         }
         return false;
     }
 
     const std::string& complex_logical_type::alias() const {
-        assert(extention_);
-        return extention_->alias();
+        assert(extension_);
+        return extension_->alias();
     }
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extention*>(extention_.get())->child_types()[index].alias();
+        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
     }
 
-    bool complex_logical_type::is_unnamed() const { return extention_->alias().empty(); }
+    bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
 
     bool complex_logical_type::is_nested() const {
         switch (type_) {
@@ -297,134 +307,155 @@ namespace components::types {
     const complex_logical_type& complex_logical_type::child_type() const {
         assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST);
         if (type_ == logical_type::ARRAY) {
-            return static_cast<array_logical_type_extention*>(extention_.get())->internal_type();
+            return static_cast<array_logical_type_extension*>(extension_.get())->internal_type();
         }
         if (type_ == logical_type::LIST) {
-            return static_cast<list_logical_type_extention*>(extention_.get())->node();
+            return static_cast<list_logical_type_extension*>(extension_.get())->node();
         }
 
         return logical_type::INVALID;
     }
 
-    logical_type_extention* complex_logical_type::extention() const noexcept { return extention_.get(); }
+    logical_type_extension* complex_logical_type::extension() const noexcept { return extension_.get(); }
 
     const std::vector<complex_logical_type>& complex_logical_type::child_types() const {
-        assert(extention_);
-        return static_cast<struct_logical_type_extention*>(extention_.get())->child_types();
+        assert(extension_);
+        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }
 
     bool complex_logical_type::type_is_constant_size(logical_type type) {
         return type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE;
     }
 
-    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale) {
+    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
         assert(width >= scale);
         return complex_logical_type(logical_type::DECIMAL,
-                                    std::make_unique<decimal_logical_type_extention>(width, scale));
+                                    std::make_unique<decimal_logical_type_extension>(width, scale),
+                                    std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_list(const complex_logical_type& internal_type) {
-        return complex_logical_type(logical_type::LIST, std::make_unique<list_logical_type_extention>(internal_type));
+    complex_logical_type complex_logical_type::create_list(const complex_logical_type& internal_type,
+                                                           std::string alias) {
+        return complex_logical_type(logical_type::LIST,
+                                    std::make_unique<list_logical_type_extension>(internal_type),
+                                    std::move(alias));
     }
 
     complex_logical_type complex_logical_type::create_array(const complex_logical_type& internal_type,
-                                                            size_t array_size) {
+                                                            size_t array_size,
+                                                            std::string alias) {
         return complex_logical_type(logical_type::ARRAY,
-                                    std::make_unique<array_logical_type_extention>(internal_type, array_size));
+                                    std::make_unique<array_logical_type_extension>(internal_type, array_size),
+                                    std::move(alias));
     }
 
     complex_logical_type complex_logical_type::create_map(const complex_logical_type& key_type,
-                                                          const complex_logical_type& value_type) {
+                                                          const complex_logical_type& value_type,
+                                                          std::string alias) {
         return complex_logical_type(logical_type::MAP,
-                                    std::make_unique<map_logical_type_extention>(key_type, value_type));
+                                    std::make_unique<map_logical_type_extension>(key_type, value_type),
+                                    std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_struct(const std::vector<complex_logical_type>& fields) {
-        return complex_logical_type(logical_type::STRUCT, std::make_unique<struct_logical_type_extention>(fields));
+    complex_logical_type complex_logical_type::create_struct(const std::vector<complex_logical_type>& fields,
+                                                             std::string alias) {
+        return complex_logical_type(logical_type::STRUCT,
+                                    std::make_unique<struct_logical_type_extension>(fields),
+                                    std::move(alias));
     }
-    logical_type_extention::logical_type_extention(extention_type t, std::string alias)
+
+    complex_logical_type complex_logical_type::create_union(std::vector<complex_logical_type> fields,
+                                                            std::string alias) {
+        // union types always have a hidden "tag" field in front
+        fields.emplace(fields.begin(), complex_logical_type{logical_type::UTINYINT});
+        return complex_logical_type(logical_type::UNION,
+                                    std::make_unique<struct_logical_type_extension>(fields),
+                                    std::move(alias));
+    }
+
+    logical_type_extension::logical_type_extension(extension_type t, std::string alias)
         : type_(t)
         , alias_(std::move(alias)) {}
 
-    void logical_type_extention::set_alias(const std::string& alias) { alias_ = alias; }
+    void logical_type_extension::set_alias(const std::string& alias) { alias_ = alias; }
 
-    array_logical_type_extention::array_logical_type_extention(const complex_logical_type& type, uint64_t size)
-        : logical_type_extention(extention_type::ARRAY)
+    array_logical_type_extension::array_logical_type_extension(const complex_logical_type& type, uint64_t size)
+        : logical_type_extension(extension_type::ARRAY)
         , items_type_(type)
         , size_(size) {}
 
-    map_logical_type_extention::map_logical_type_extention(const complex_logical_type& key,
+    map_logical_type_extension::map_logical_type_extension(const complex_logical_type& key,
                                                            const complex_logical_type& value)
-        : logical_type_extention(extention_type::MAP)
+        : logical_type_extension(extension_type::MAP)
         , key_(key)
         , value_(value)
         , key_id_(0)
         , value_id_(0)
         , value_required_(true) {}
 
-    map_logical_type_extention::map_logical_type_extention(uint64_t key_id,
+    map_logical_type_extension::map_logical_type_extension(uint64_t key_id,
                                                            const types::complex_logical_type& key,
                                                            uint64_t value_id,
                                                            const types::complex_logical_type& value,
                                                            bool value_required)
 
-        : logical_type_extention(extention_type::MAP)
+        : logical_type_extension(extension_type::MAP)
         , key_(key)
         , value_(value)
         , key_id_(key_id)
         , value_id_(value_id)
         , value_required_(value_required) {}
 
-    list_logical_type_extention::list_logical_type_extention(complex_logical_type type)
-        : logical_type_extention(extention_type::LIST)
+    list_logical_type_extension::list_logical_type_extension(complex_logical_type type)
+        : logical_type_extension(extension_type::LIST)
         , type_(std::move(type))
         , field_id_(0)
         , required_(true) {}
 
-    list_logical_type_extention::list_logical_type_extention(uint64_t field_id,
+    list_logical_type_extension::list_logical_type_extension(uint64_t field_id,
                                                              complex_logical_type type,
                                                              bool required)
-        : logical_type_extention(extention_type::LIST)
+        : logical_type_extension(extension_type::LIST)
         , type_(std::move(type))
         , field_id_(field_id)
         , required_(required) {}
 
-    struct_logical_type_extention::struct_logical_type_extention(const std::vector<complex_logical_type>& fields)
-        : logical_type_extention(extention_type::STRUCT)
+    struct_logical_type_extension::struct_logical_type_extension(const std::vector<complex_logical_type>& fields)
+        : logical_type_extension(extension_type::STRUCT)
         , fields_(fields)
         , descriptions_() {}
 
-    struct_logical_type_extention::struct_logical_type_extention(
+    struct_logical_type_extension::struct_logical_type_extension(
         const std::vector<types::complex_logical_type>& columns,
         std::vector<field_description> descriptions)
-        : logical_type_extention(extention_type::STRUCT)
+        : logical_type_extension(extension_type::STRUCT)
         , fields_(columns)
         , descriptions_(std::move(descriptions)) {
         assert(fields_.size() == descriptions_.size());
     }
 
-    decimal_logical_type_extention::decimal_logical_type_extention(uint8_t width, uint8_t scale)
-        : logical_type_extention(extention_type::DECIMAL)
+    decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
+        : logical_type_extension(extension_type::DECIMAL)
         , width_(width)
         , scale_(scale) {}
 
-    enum_logical_type_extention::enum_logical_type_extention(std::vector<logical_value_t> entries)
-        : logical_type_extention(extention_type::ENUM)
+    enum_logical_type_extension::enum_logical_type_extension(std::vector<logical_value_t> entries)
+        : logical_type_extension(extension_type::ENUM)
         , entries_(std::move(entries)) {}
 
-    user_logical_type_extention::user_logical_type_extention(std::string catalog,
+    user_logical_type_extension::user_logical_type_extension(std::string catalog,
                                                              std::vector<logical_value_t> user_type_modifiers)
-        : logical_type_extention(extention_type::USER)
+        : logical_type_extension(extension_type::USER)
         , catalog_(std::move(catalog))
         , user_type_modifiers_(std::move(user_type_modifiers)) {}
 
-    function_logical_type_extention::function_logical_type_extention(complex_logical_type return_type,
+    function_logical_type_extension::function_logical_type_extension(complex_logical_type return_type,
                                                                      std::vector<complex_logical_type> arguments)
-        : logical_type_extention(extention_type::FUNCTION)
+        : logical_type_extension(extension_type::FUNCTION)
         , return_type_(std::move(return_type))
         , argument_types_(std::move(arguments)) {}
 
-    bool operator==(const logical_type_extention& lhs, const logical_type_extention& rhs) {
+    bool operator==(const logical_type_extension& lhs, const logical_type_extension& rhs) {
         // TODO: check with inheritance
         return lhs.type() == rhs.type() && lhs.alias() == rhs.alias();
     }

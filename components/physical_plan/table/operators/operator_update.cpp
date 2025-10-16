@@ -50,7 +50,6 @@ namespace components::table::operators {
                 no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types_left);
                 auto state = context_->table_storage().table().initialize_update({});
-                vector::vector_t row_ids(context_->resource(), logical_type::BIGINT);
                 auto& out_chunk = output_->data_chunk();
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -63,7 +62,7 @@ namespace components::table::operators {
                                                name_index_map_right,
                                                i,
                                                j)) {
-                            row_ids.set_value(index, chunk_left.row_ids.value(i));
+                            out_chunk.row_ids.set_value(index, chunk_left.row_ids.value(i));
                             context_->index_engine()->delete_row(chunk_left, i, pipeline_context);
                             bool modified = false;
                             for (const auto& expr : updates_) {
@@ -75,15 +74,15 @@ namespace components::table::operators {
                                 no_modified_->append(i);
                             }
                             for (size_t k = 0; k < chunk_left.column_count(); k++) {
-                                out_chunk.data[k].set_value(index, chunk_left.data[k].value(i));
+                                out_chunk.set_value(k, index, chunk_left.value(k, i));
                             }
-                            ++index;
+                            vector::validate_chunk_capacity(out_chunk, ++index);
                             context_->index_engine()->insert_row(chunk_left, i, pipeline_context);
                         }
                     }
                 }
                 out_chunk.set_cardinality(index);
-                context_->table_storage().table().update(*state, row_ids, chunk_left);
+                context_->table_storage().table().update(*state, out_chunk.row_ids, chunk_left);
             }
         } else if (left_ && left_->output()) {
             if (left_->output()->size() == 0) {
@@ -107,17 +106,17 @@ namespace components::table::operators {
                 modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 auto state = context_->table_storage().table().initialize_update({});
-                vector::vector_t row_ids(context_->resource(), logical_type::BIGINT, chunk.size());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
                     if (check_expr_general(comp_expr_, &pipeline_context->parameters, chunk, name_index_map, i)) {
                         if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                            row_ids.set_value(index,
-                                              types::logical_value_t{
-                                                  static_cast<int64_t>(chunk.data.front().indexing().get_index(i))});
+                            out_chunk.row_ids.set_value(index,
+                                                        types::logical_value_t{static_cast<int64_t>(
+                                                            chunk.data.front().indexing().get_index(i))});
                         } else {
-                            row_ids.set_value(index, chunk.row_ids.value(i));
+                            out_chunk.row_ids.set_value(index, chunk.row_ids.value(i));
                         }
+
                         context_->index_engine()->delete_row(chunk, i, pipeline_context);
                         bool modified = false;
                         for (const auto& expr : updates_) {
@@ -129,15 +128,14 @@ namespace components::table::operators {
                             no_modified_->append(i);
                         }
                         for (size_t j = 0; j < chunk.column_count(); j++) {
-                            out_chunk.data[j].set_value(index, chunk.data[j].value(i));
+                            out_chunk.set_value(j, index, chunk.value(j, i));
                         }
+                        vector::validate_chunk_capacity(out_chunk, ++index);
                         context_->index_engine()->insert_row(chunk, i, pipeline_context);
-                        index++;
                     }
                 }
                 out_chunk.set_cardinality(index);
-                row_ids.resize(chunk.size(), index);
-                context_->table_storage().table().update(*state, row_ids, left_->output()->data_chunk());
+                context_->table_storage().table().update(*state, out_chunk.row_ids, left_->output()->data_chunk());
             }
         }
     }

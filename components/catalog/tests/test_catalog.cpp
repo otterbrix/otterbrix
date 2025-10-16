@@ -36,14 +36,10 @@ TEST_CASE("catalog::schema_test") {
         collection_full_name_t full{"db", "fields"};
 
         std::vector<complex_logical_type> fields;
-        fields.emplace_back(logical_type::BOOLEAN);
-        fields.back().set_alias("flag");
-        fields.emplace_back(logical_type::INTEGER);
-        fields.back().set_alias("number");
-        fields.emplace_back(logical_type::STRING_LITERAL);
-        fields.back().set_alias("name");
-        fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT));
-        fields.back().set_alias("array");
+        fields.emplace_back(logical_type::BOOLEAN, "flag");
+        fields.emplace_back(logical_type::INTEGER, "number");
+        fields.emplace_back(logical_type::STRING_LITERAL, "name");
+        fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
 
         std::vector<field_description> desc{{1}};
         auto sch = schema(&mr, create_struct(fields, n_field_descriptions<4>()));

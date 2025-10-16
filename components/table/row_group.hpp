@@ -110,6 +110,7 @@ namespace components::table {
         std::vector<std::shared_ptr<column_data_t>>& columns();
 
         void filter_indexing(std::pmr::memory_resource* resource,
+                             uint64_t vector_index,
                              vector::indexing_vector_t& indexing,
                              const table_filter_t* filter,
                              uint64_t& approved_tuple_count);

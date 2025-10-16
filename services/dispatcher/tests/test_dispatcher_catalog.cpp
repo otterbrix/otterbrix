@@ -95,8 +95,8 @@ struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
     }
 
     void execute_plan_finish(components::session::session_id_t& session, cursor_t_ptr result) {
-        if (!!assertion_) {
-            assertion_(result, const_cast<catalog&>(manager_dispatcher_->catalog()));
+        if (static_cast<bool>(assertion_)) {
+            assertion_(result, const_cast<catalog&>(manager_dispatcher_->current_catalog()));
         }
     }
 

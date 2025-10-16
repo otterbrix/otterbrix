@@ -415,12 +415,14 @@ namespace services::collection::executor {
                              collection->name().collection,
                              plan->output() ? std::move(plan->output()->data_chunk())
                                             : components::vector::data_chunk_t{resource(), {}});
-            components::vector::data_chunk_t chunk(resource(), {});
+            size_t size = 0;
             if (plan->modified()) {
-                chunk.set_cardinality(std::get<std::pmr::vector<size_t>>(plan->modified()->ids()).size());
+                size = std::get<std::pmr::vector<size_t>>(plan->modified()->ids()).size();
             } else {
-                chunk.set_cardinality(collection->table_storage().table().calculate_size());
+                size = collection->table_storage().table().calculate_size();
             }
+            components::vector::data_chunk_t chunk(resource(), {}, size);
+            chunk.set_cardinality(size);
             execute_sub_plan_finish_(session, make_cursor(resource(), std::move(chunk)));
         }
     }
@@ -439,8 +441,9 @@ namespace services::collection::executor {
                              collection->name().database,
                              collection->name().collection,
                              modified);
-            components::vector::data_chunk_t chunk(resource(), collection->table_storage().table().copy_types());
-            chunk.set_cardinality(plan->modified()->size());
+            size_t size = plan->modified()->size();
+            components::vector::data_chunk_t chunk(resource(), collection->table_storage().table().copy_types(), size);
+            chunk.set_cardinality(size);
             execute_sub_plan_finish_(session,
                                      make_cursor(resource(), std::move(chunk)),
                                      std::move(plan->modified()->updated_types_map()));

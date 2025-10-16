@@ -11,11 +11,32 @@ namespace components::table::operators {
                     const std::unordered_map<std::string, size_t>& str_index_map_right,
                     size_t row_left,
                     size_t row_right) {
-        auto val_left = chunk_left.data.at(str_index_map_left.at(expr->key_left().as_string())).value(row_left);
-        auto val_right =
-            expr->key_right().is_null()
-                ? parameters->parameters.at(expr->value()).as_logical_value()
-                : chunk_right.data.at(str_index_map_right.at(expr->key_right().as_string())).value(row_right);
+        types::logical_value_t val_left;
+        types::logical_value_t val_right;
+
+        // TODO: use schema to determine expr side before this
+        if (!expr->key_left().is_null() && !expr->key_right().is_null()) {
+            val_left = chunk_left.data.at(str_index_map_left.at(expr->key_left().as_string())).value(row_left);
+            val_right = chunk_right.data.at(str_index_map_right.at(expr->key_right().as_string())).value(row_right);
+        } else {
+            if (expr->side() == expressions::side_t::left) {
+                val_left = chunk_left.data.at(str_index_map_left.at(expr->key_left().as_string())).value(row_left);
+            } else if (expr->side() == expressions::side_t::right) {
+                val_left = chunk_right.data.at(str_index_map_right.at(expr->key_right().as_string())).value(row_right);
+            } else {
+                if (auto it = str_index_map_left.find(expr->key_left().as_string()); it != str_index_map_left.end()) {
+                    val_left = chunk_left.data.at(it->second).value(row_left);
+                } else if (auto it = str_index_map_right.find(expr->key_left().as_string());
+                           it != str_index_map_right.end()) {
+                    val_left = chunk_right.data.at(it->second).value(row_right);
+                } else {
+                    return false;
+                }
+            }
+            // param is always right
+            val_right = parameters->parameters.at(expr->value()).as_logical_value();
+        }
+
         COMP comp{};
         switch (val_left.type().to_physical_type()) {
             case types::physical_type::BOOL:

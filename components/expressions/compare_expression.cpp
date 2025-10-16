@@ -12,13 +12,24 @@ namespace components::expressions {
 
     compare_expression_t::compare_expression_t(std::pmr::memory_resource* resource,
                                                compare_type type,
+                                               side_t side,
                                                const key_t& key,
                                                core::parameter_id_t value)
         : expression_i(expression_group::compare)
         , type_(type)
-        , key_left_(key)
+        , side_(side)
         , value_(value)
-        , children_(resource) {}
+        , children_(resource) {
+        switch (side_) {
+            case side_t::undefined:
+            case side_t::left:
+                key_left_ = key;
+                break;
+            case side_t::right:
+                key_right_ = key;
+                break;
+        }
+    }
 
     compare_expression_t::compare_expression_t(std::pmr::memory_resource* resource,
                                                compare_type type,
@@ -26,11 +37,14 @@ namespace components::expressions {
                                                const key_t& key_right)
         : expression_i(expression_group::compare)
         , type_(type)
+        , side_(side_t::undefined)
         , key_left_(key_left)
         , key_right_(key_right)
         , children_(resource) {}
 
     compare_type compare_expression_t::type() const { return type_; }
+
+    side_t compare_expression_t::side() const { return side_; }
 
     const key_t& compare_expression_t::key_left() const { return key_left_; }
 
@@ -48,10 +62,11 @@ namespace components::expressions {
 
     expression_ptr compare_expression_t::deserialize(serializer::base_deserializer_t* deserializer) {
         auto type = deserializer->deserialize_compare_type(1);
-        auto key_left = deserializer->deserialize_key(2);
-        auto key_right = deserializer->deserialize_key(3);
-        auto param = deserializer->deserialize_param_id(4);
-        auto exprs = deserializer->deserialize_expressions(5);
+        auto side = deserializer->deserialize_expr_side(2);
+        auto key_left = deserializer->deserialize_key(3);
+        auto key_right = deserializer->deserialize_key(4);
+        auto param = deserializer->deserialize_param_id(5);
+        auto exprs = deserializer->deserialize_expressions(6);
 
         compare_expression_ptr res;
         if (is_union_compare_condition(type)) {
@@ -60,10 +75,14 @@ namespace components::expressions {
                 res->append_child(expr);
             }
         } else {
-            if (key_right.is_null()) {
-                res = make_compare_expression(deserializer->resource(), type, key_left, param);
-            } else {
+            if (side == side_t::undefined) {
                 res = make_compare_expression(deserializer->resource(), type, key_left, key_right);
+            } else {
+                if (side == side_t::left) {
+                    res = make_compare_expression(deserializer->resource(), type, side, key_left, param);
+                } else {
+                    res = make_compare_expression(deserializer->resource(), type, side, key_right, param);
+                }
             }
         }
         return res;
@@ -95,10 +114,14 @@ namespace components::expressions {
             }
             stream << "]";
         } else {
-            if (key_right().is_null()) {
-                stream << "\"" << key_left() << "\": {" << type() << ": #" << value().t << "}";
-            } else {
+            if (!key_left().is_null() && !key_right().is_null()) {
                 stream << "\"" << key_left() << "\": {" << type() << ": \"" << key_right() << "\"}";
+            } else {
+                if (key_right().is_null()) {
+                    stream << "\"" << key_left() << "\": {" << type() << ": #" << value().t << "}";
+                } else {
+                    stream << "\"" << key_right() << "\": {" << type() << ": #" << value().t << "}";
+                }
             }
         }
         return stream.str();
@@ -112,9 +135,10 @@ namespace components::expressions {
     }
 
     void compare_expression_t::serialize_impl(serializer::base_serializer_t* serializer) const {
-        serializer->start_array(6);
+        serializer->start_array(7);
         serializer->append("type", serializer::serialization_type::expression_compare);
         serializer->append("compare type", type_);
+        serializer->append("compare side", side_);
         serializer->append("key left", key_left_);
         serializer->append("key right", key_right_);
         serializer->append("value", value_);
@@ -124,9 +148,10 @@ namespace components::expressions {
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,
                                                    compare_type type,
+                                                   side_t side,
                                                    const key_t& key,
                                                    core::parameter_id_t id) {
-        return new compare_expression_t(resource, type, key, id);
+        return new compare_expression_t(resource, type, side, key, id);
     }
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,
@@ -138,12 +163,12 @@ namespace components::expressions {
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(!is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, side_t::undefined, key_t{}, core::parameter_id_t{0});
     }
 
     compare_expression_ptr make_compare_union_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, side_t::undefined, key_t{}, core::parameter_id_t{0});
     }
 
     compare_type get_compare_type(const std::string& key) {

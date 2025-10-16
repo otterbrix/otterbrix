@@ -10,7 +10,7 @@ namespace components::table::operators::aggregate {
 
     void operator_aggregate_t::set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view key) const {
         auto res_it = std::find_if(row.begin(), row.end(), [&](const types::logical_value_t& v) {
-            return !v.type().extention() ? false : v.type().alias() == key_impl();
+            return !v.type().extension() ? false : v.type().alias() == key_impl();
         });
         if (res_it == row.end()) {
             row.emplace_back(aggregate_result_);

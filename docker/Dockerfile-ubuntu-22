@@ -16,7 +16,7 @@ RUN apt update && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 cmake && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 

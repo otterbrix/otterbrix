@@ -14,7 +14,7 @@ namespace components::serializer {
 } // namespace components::serializer
 
 namespace components::logical_plan {
-    class storage_parameters;
+    struct storage_parameters;
 }
 
 namespace components::expressions {
@@ -138,12 +138,6 @@ namespace components::expressions {
 
     class update_expr_get_value_t final : public update_expr_t {
     public:
-        enum class side_t : uint8_t
-        {
-            to,
-            from,
-            undefined
-        };
         explicit update_expr_get_value_t(key_t key, side_t side);
 
         const key_t& key() const noexcept;

@@ -33,8 +33,6 @@ namespace components::table::operators {
 
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
-            output_ =
-                base::operators::make_operator_data(left_->output()->resource(), left_->output()->data_chunk().types());
             create_list_rows();
             calc_aggregate_values(pipeline_context);
             output_ = base::operators::make_operator_data(

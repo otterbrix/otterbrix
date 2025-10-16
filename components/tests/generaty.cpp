@@ -73,19 +73,13 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_re
 
     std::pmr::vector<complex_logical_type> types(resource);
 
-    types.emplace_back(logical_type::BIGINT);
-    types.back().set_alias("count");
-    types.emplace_back(logical_type::STRING_LITERAL);
-    types.back().set_alias("_id");
-    types.emplace_back(logical_type::STRING_LITERAL);
-    types.back().set_alias("countStr");
-    types.emplace_back(logical_type::DOUBLE);
-    types.back().set_alias("countDouble");
-    types.emplace_back(logical_type::BOOLEAN);
-    types.back().set_alias("countBool");
+    types.emplace_back(logical_type::BIGINT, "count");
+    types.emplace_back(logical_type::STRING_LITERAL, "_id");
+    types.emplace_back(logical_type::STRING_LITERAL, "countStr");
+    types.emplace_back(logical_type::DOUBLE, "countDouble");
+    types.emplace_back(logical_type::BOOLEAN, "countBool");
     // TODO: more complex types
-    // types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size));
-    // types.back().set_alias("countArray");
+    // types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "countArray"));
 
     components::vector::data_chunk_t chunk(resource, types, size);
     chunk.set_cardinality(size);

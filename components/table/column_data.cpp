@@ -67,7 +67,7 @@ namespace components::table {
         if (remaining_in_segment < scan_count) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
-        return scan_vector_type::SCAN_ENTIRE_VECTOR;
+        return scan_vector_type::SCAN_FLAT_VECTOR;
     }
 
     void column_data_t::initialize_scan(column_scan_state& state) {
@@ -76,7 +76,6 @@ namespace components::table {
         state.internal_index = state.row_index;
         state.initialized = false;
         state.scan_state.reset();
-        state.last_offset = 0;
     }
 
     void column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
@@ -252,7 +251,7 @@ namespace components::table {
 
     bool column_data_t::check_predicate(uint64_t row_id, const table_filter_t* filter) {
         auto segment = data_.get_segment(row_id);
-        if (updates_ && updates_->has_updates(row_id)) {
+        if (updates_ && updates_->has_updates((row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
             return updates_->check_row(row_id, filter);
         } else {
             return segment->check_predicate(row_id, filter);
@@ -282,7 +281,7 @@ namespace components::table {
                                vector::vector_t& update_vector,
                                int64_t* row_ids,
                                uint64_t update_count) {
-        vector::vector_t base_vector(resource_, type_);
+        vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
 
@@ -405,7 +404,7 @@ namespace components::table {
             assert(state.row_index >= state.current->start &&
                    state.row_index <= state.current->start + state.current->count);
             uint64_t scan_count = std::min(remaining, state.current->start + state.current->count - state.row_index);
-            uint64_t result_offset = initial_remaining - remaining;
+            uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
                 for (uint64_t i = 0; i < scan_count; i++) {
                     column_fetch_state fetch_state;
@@ -445,7 +444,8 @@ namespace components::table {
         auto scan_type = get_vector_scan_type(state, target_scan, result);
         auto scan_count = scan_vector(state, result, target_scan, scan_type);
         if (scan_type != scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            fetch_updates(vector_index, result, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
+            auto update_index = vector_index - start_ / vector::DEFAULT_VECTOR_CAPACITY;
+            fetch_updates(update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
         }
         return scan_count;
     }
@@ -457,6 +457,7 @@ namespace components::table {
 
     void column_data_t::fetch_updates(uint64_t vector_index,
                                       vector::vector_t& result,
+                                      uint64_t result_offset,
                                       uint64_t scan_count,
                                       bool allow_updates,
                                       bool scan_committed) {
@@ -469,9 +470,9 @@ namespace components::table {
         }
         result.flatten(scan_count);
         if (scan_committed) {
-            updates_->fetch_committed(vector_index, result);
+            updates_->fetch_committed(vector_index, result_offset, result);
         } else {
-            updates_->fetch_updates(vector_index, result);
+            updates_->fetch_updates(vector_index, result_offset, result);
         }
     }
 
@@ -497,7 +498,7 @@ namespace components::table {
 
     uint64_t column_data_t::vector_count(uint64_t vector_index) const {
         uint64_t current_row = vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-        return std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, count_ - current_row);
+        return std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, start_ + count_ - current_row);
     }
 
 } // namespace components::table

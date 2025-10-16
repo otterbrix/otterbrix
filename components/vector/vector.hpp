@@ -8,19 +8,20 @@ namespace components::vector {
 
     class vector_t;
 
-    static const indexing_vector_t* incremental_indexing_vector() {
-        static const indexing_vector_t INCREMENTAL_INDEXING_VECTOR(nullptr);
+    static const indexing_vector_t* incremental_indexing_vector(std::pmr::memory_resource* resource) {
+        static const indexing_vector_t INCREMENTAL_INDEXING_VECTOR(resource, nullptr);
         return &INCREMENTAL_INDEXING_VECTOR;
     }
 
-    static const indexing_vector_t* zero_indexing_vector() {
-        static const indexing_vector_t ZERO_INDEXING_VECTOR = indexing_vector_t(ZERO_VECTOR);
+    static const indexing_vector_t* zero_indexing_vector(std::pmr::memory_resource* resource) {
+        static const indexing_vector_t ZERO_INDEXING_VECTOR = indexing_vector_t(resource, ZERO_VECTOR);
         return &ZERO_INDEXING_VECTOR;
     }
 
-    static const indexing_vector_t* zero_indexing_vector(uint64_t count, indexing_vector_t& owned_indexing) {
+    static const indexing_vector_t*
+    zero_indexing_vector(std::pmr::memory_resource* resource, uint64_t count, indexing_vector_t& owned_indexing) {
         if (count <= DEFAULT_VECTOR_CAPACITY) {
-            return zero_indexing_vector();
+            return zero_indexing_vector(resource);
         }
         owned_indexing.reset(count);
         for (uint64_t i = 0; i < count; i++) {
@@ -30,7 +31,6 @@ namespace components::vector {
     }
 
     struct unified_vector_format {
-        unified_vector_format();
         unified_vector_format(std::pmr::memory_resource* resource, uint64_t capacity);
         unified_vector_format(const unified_vector_format& other) = delete;
         unified_vector_format& operator=(const unified_vector_format& other) = delete;
@@ -89,8 +89,6 @@ namespace components::vector {
 
     class vector_t {
     public:
-        friend class cache_vector_buffer_t;
-
         explicit vector_t(std::pmr::memory_resource* resource,
                           types::complex_logical_type type,
                           uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
@@ -207,8 +205,8 @@ namespace components::vector {
     public:
         explicit child_vector_buffer_t(vector_t vector);
 
-        vector_t& data() noexcept;
-        const vector_t& data() const noexcept;
+        vector_t& nested_data() noexcept;
+        const vector_t& nested_data() const noexcept;
 
     private:
         vector_t data_;

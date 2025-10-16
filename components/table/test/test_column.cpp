@@ -25,6 +25,8 @@ TEST_CASE("column") {
             , array(std::move(array)) {}
     };
 
+    // column_segments are supposed to be maxed at DEFAULT_VECTOR_CAPACITY
+    // higher amount is not guarantied to behave correctly
     constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY;
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;
@@ -49,14 +51,10 @@ TEST_CASE("column") {
     };
 
     std::vector<complex_logical_type> fields;
-    fields.emplace_back(logical_type::BOOLEAN);
-    fields.back().set_alias("flag");
-    fields.emplace_back(logical_type::INTEGER);
-    fields.back().set_alias("number");
-    fields.emplace_back(logical_type::STRING_LITERAL);
-    fields.back().set_alias("name");
-    fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT));
-    fields.back().set_alias("array");
+    fields.emplace_back(logical_type::BOOLEAN, "flag");
+    fields.emplace_back(logical_type::INTEGER, "number");
+    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct(fields);
     struct_type.set_alias("test_struct");
     INFO("fixed size") {

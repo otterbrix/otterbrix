@@ -22,7 +22,7 @@ namespace components::catalog {
                                                          const types::complex_logical_type& value,
                                                          bool value_required = true);
 
-    types::map_logical_type_extention& to_map(const types::complex_logical_type& type);
-    types::struct_logical_type_extention& to_struct(const types::complex_logical_type& type);
-    types::list_logical_type_extention& to_list(const types::complex_logical_type& type);
+    types::map_logical_type_extension& to_map(const types::complex_logical_type& type);
+    types::struct_logical_type_extension& to_struct(const types::complex_logical_type& type);
+    types::list_logical_type_extension& to_list(const types::complex_logical_type& type);
 } // namespace components::catalog

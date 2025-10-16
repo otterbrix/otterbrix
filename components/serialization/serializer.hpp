@@ -78,7 +78,7 @@ namespace components::serializer {
         virtual void append(std::string_view key, expressions::scalar_type type) = 0;
         virtual void append(std::string_view key, expressions::sort_order order) = 0;
         virtual void append(std::string_view key, expressions::update_expr_type type) = 0;
-        virtual void append(std::string_view key, expressions::update_expr_get_value_t::side_t side) = 0;
+        virtual void append(std::string_view key, expressions::side_t side) = 0;
 
         void append(std::string_view key, const std::pmr::vector<logical_plan::node_ptr>& nodes);
         void append(std::string_view key, const std::pmr::vector<document::document_ptr>& documents);
@@ -125,7 +125,7 @@ namespace components::serializer {
         void append(std::string_view key, expressions::scalar_type type) override;
         void append(std::string_view key, expressions::sort_order order) override;
         void append(std::string_view key, expressions::update_expr_type type) override;
-        void append(std::string_view key, expressions::update_expr_get_value_t::side_t side) override;
+        void append(std::string_view key, expressions::side_t side) override;
         void append(std::string_view key, const std::string& str) override;
         void append(std::string_view key, const document::document_ptr& doc) override;
         void append(std::string_view key, const document::value_t& val) override;
@@ -158,7 +158,7 @@ namespace components::serializer {
         void append(std::string_view key, expressions::scalar_type type) override;
         void append(std::string_view key, expressions::sort_order order) override;
         void append(std::string_view key, expressions::update_expr_type type) override;
-        void append(std::string_view key, expressions::update_expr_get_value_t::side_t side) override;
+        void append(std::string_view key, expressions::side_t side) override;
         void append(std::string_view key, const std::string& str) override;
         void append(std::string_view key, const document::document_ptr& doc) override;
         void append(std::string_view key, const document::value_t& val) override;

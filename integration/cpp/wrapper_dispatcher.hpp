@@ -10,6 +10,7 @@
 
 #include <core/spinlock/spinlock.hpp>
 
+#include <components/catalog/table_id.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/document/document.hpp>
 #include <components/expressions/update_expression.hpp>
@@ -93,6 +94,10 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
 
+        auto get_schema(const session_id_t& session,
+                        const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
+            -> components::cursor::cursor_t_ptr;
+
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
         auto make_type() const noexcept -> const char* const;
@@ -105,10 +110,12 @@ namespace otterbrix {
         actor_zeta::behavior_t load_finish_;
         actor_zeta::behavior_t execute_plan_finish_;
         actor_zeta::behavior_t size_finish_;
+        actor_zeta::behavior_t schema_finish_;
         /// async method
         auto load_finish(const session_id_t& session) -> void;
         auto execute_plan_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
         auto size_finish(const session_id_t& session, size_t size) -> void;
+        auto schema_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
 
         // due to hashing, incoming session can be unusable, and has to be replaced
         session_id_t init(const session_id_t& session);

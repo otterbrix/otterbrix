@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 using components::expressions::compare_type;
+using components::expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
@@ -95,13 +96,16 @@ constexpr int kDocuments = 100;
         REQUIRE(c->size() == kDocuments);                                                                              \
     } while (false)
 
-#define CHECK_FIND(KEY, COMPARE, VALUE, COUNT)                                                                         \
+#define CHECK_FIND(KEY, COMPARE, SIDE, VALUE, COUNT)                                                                   \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan =                                                                                                    \
             components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});   \
-        auto expr =                                                                                                    \
-            components::expressions::make_compare_expression(dispatcher->resource(), COMPARE, key{KEY}, id_par{1});    \
+        auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
+                                                                     COMPARE,                                          \
+                                                                     SIDE,                                             \
+                                                                     key{KEY},                                         \
+                                                                     id_par{1});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
                                                                      {database_name, collection_name},                 \
                                                                      std::move(expr)));                                \
@@ -111,7 +115,7 @@ constexpr int kDocuments = 100;
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
-#define CHECK_FIND_COUNT(COMPARE, VALUE, COUNT) CHECK_FIND("count", COMPARE, VALUE, COUNT)
+#define CHECK_FIND_COUNT(COMPARE, SIDE, VALUE, COUNT) CHECK_FIND("count", COMPARE, SIDE, VALUE, COUNT)
 
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
@@ -143,6 +147,7 @@ TEST_CASE("integration::test_index::base") {
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
             auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                          compare_type::eq,
+                                                                         side_t::left,
                                                                          key{"count"},
                                                                          id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
@@ -153,12 +158,12 @@ TEST_CASE("integration::test_index::base") {
             auto c = dispatcher->find(session, plan, params);
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, new_value(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, new_value(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, new_value(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, new_value(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, new_value(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, new_value(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, new_value(10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, new_value(10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, new_value(10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, new_value(10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, new_value(10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, new_value(10), 10);
     }
 }
 
@@ -185,12 +190,12 @@ TEST_CASE("integration::test_index::save_load") {
         auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
 
         CHECK_FIND_ALL();
-        CHECK_FIND_COUNT(compare_type::eq, new_value(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, new_value(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, new_value(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, new_value(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, new_value(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, new_value(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, new_value(10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, new_value(10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, new_value(10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, new_value(10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, new_value(10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, new_value(10), 10);
     }
 }
 
@@ -302,12 +307,12 @@ TEST_CASE("integration::test_index::no_type base check") {
     }
 
     INFO("find") {
-        CHECK_FIND_COUNT(compare_type::eq, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, 10, 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
     }
 }
 
@@ -338,11 +343,11 @@ TEST_CASE("integration::test_index::no_type save_load") {
         dispatcher->load();
 
         CHECK_FIND_ALL();
-        CHECK_FIND_COUNT(compare_type::eq, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, 10, 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
     }
 }

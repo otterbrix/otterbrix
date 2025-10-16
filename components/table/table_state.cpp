@@ -178,9 +178,7 @@ namespace components::table {
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
         while (row_group) {
             row_group->scan(*this, result);
-            if (result.size() > 0) {
-                return true;
-            } else if (max_row <= row_group->start + row_group->count) {
+            if (max_row <= row_group->start + row_group->count) {
                 row_group = nullptr;
                 return false;
             } else {

@@ -1,8 +1,9 @@
 #pragma once
 
-#include "../namespace_storage.hpp"
-#include "../table_metadata.hpp"
 #include "metadata_diff.hpp"
+#include <components/catalog/namespace_storage.hpp>
+#include <components/catalog/table_metadata.hpp>
+
 #include <map>
 
 namespace components::catalog {
@@ -53,7 +54,7 @@ namespace components::catalog {
                     error_ = fun(std::move(metadata_diff_));
                 }
 
-                state_ = (!!error_) ? State::ABORTED : State::COMMITTED;
+                state_ = static_cast<bool>(error_) ? State::ABORTED : State::COMMITTED;
             }
             return error_;
         }

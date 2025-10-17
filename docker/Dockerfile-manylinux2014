@@ -33,7 +33,7 @@ RUN cp integration/python/otterbrix/* .
 RUN   PYBIN=(/opt/python/*/bin) && \
       for BIN in "${PYBIN[@]}";  do  \
       if [[  ${BIN} == *"cp311"* ]]; then \
-          ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build==0.16.4  && \
+          ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build  && \
           mkdir -p $(echo "./$(${BIN}/python3 get_path.py )") && \
           conan install . -s build_type=Release -g CMakeDeps -if=$(echo "./$(${BIN}/python3 get_path.py )") && \
           ${BIN}/python3 setup.py bdist_wheel  --verbose -DDEV_MODE=ON && \

@@ -16,7 +16,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         absl::numeric
         absl::int128
-        Boost::json
+        #Boost::json
         otterbrix::document
         otterbrix::vector
 )

@@ -26,16 +26,10 @@ set(otterbrix_LIBS
         otterbrix::b_plus_tree
 )
 
-#SET(PYTHON_EXECUTABLE python3)
-#find_package(Python COMPONENTS Interpreter Development REQUIRED)
-#find_package(pybind11 REQUIRED)
-#find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
-#find_package(Python3 COMPONENTS Development)
+set(PYBIND11_FINDPYTHON ON)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
-#include_directories(${Python3_INCLUDE_DIRS})
-
-#include_directories(${PROJECT_SOURCE_DIR})
 
 pybind11_add_module(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_sql_sources})
 

@@ -55,6 +55,7 @@ jobs:
 
       - name: Install system packages
         run: |
+          update-alternatives --set python /usr/bin/python3.8
           yum install -y ninja-build python3-pip python3-devel wget unzip zip
 
       - name: Set env conan dependencies

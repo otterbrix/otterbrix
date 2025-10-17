@@ -25,13 +25,13 @@ struct void_callback_t<void> {
     template<typename TestValueType,
              typename CheckValueType,
              std::enable_if_t<has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const {
+    auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const {
         REQUIRE(test_value.template value<TestValueType>() == check_value);
     }
     template<typename TestValueType,
              typename CheckValueType,
              std::enable_if_t<!has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t&, CheckValueType&&) const {
+    auto operator()(const logical_value_t&, CheckValueType&&) const {
         throw std::logic_error("given types do not have an == operator");
     }
 };
@@ -41,13 +41,13 @@ struct bool_callback_t<void> {
     template<typename TestValueType,
              typename CheckValueType,
              std::enable_if_t<has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const -> bool {
+    auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const -> bool {
         return test_value.template value<TestValueType>() == check_value;
     }
     template<typename TestValueType,
              typename CheckValueType,
              std::enable_if_t<!has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t&, CheckValueType&&) const -> bool {
+    auto operator()(const logical_value_t&, CheckValueType&&) const -> bool {
         throw std::logic_error("given types do not have an == operator");
         return false;
     }
@@ -58,14 +58,14 @@ struct double_void_callback_t<void> {
     template<typename LeftTestValueType,
              typename RightTestValueType,
              std::enable_if_t<has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const {
+    auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const {
         REQUIRE(left_test_value.template value<LeftTestValueType>() ==
                 right_test_value.template value<RightTestValueType>());
     }
     template<typename LeftTestValueType,
              typename RightTestValueType,
              std::enable_if_t<!has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t&, const logical_value_t&) const {
+    auto operator()(const logical_value_t&, const logical_value_t&) const {
         throw std::logic_error("given types do not have an == operator");
     }
 };
@@ -75,15 +75,14 @@ struct double_bool_callback_t<void> {
     template<typename LeftTestValueType,
              typename RightTestValueType,
              std::enable_if_t<has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const
-        -> bool {
+    auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const -> bool {
         return left_test_value.template value<LeftTestValueType>() ==
                right_test_value.template value<RightTestValueType>();
     }
     template<typename LeftTestValueType,
              typename RightTestValueType,
              std::enable_if_t<!has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
-    constexpr auto operator()(const logical_value_t&, const logical_value_t&) const -> bool {
+    auto operator()(const logical_value_t&, const logical_value_t&) const -> bool {
         throw std::logic_error("given types do not have an == operator");
         return false;
     }

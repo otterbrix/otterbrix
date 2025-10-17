@@ -28,7 +28,8 @@ jobs:
     steps:
       - id: setVariables
         run: |
-          echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
+          #echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
+          echo 'matrix=["3.8", "3.9"]' >> $GITHUB_OUTPUT
 
   build-wheel:
     name: Build native wheel
@@ -55,8 +56,6 @@ jobs:
 
       - name: Install system packages
         run: |
-          add-apt-repository ppa:deadsnakes/ppa
-          apt update
           yum install -y ninja-build python${{ matrix.PYTHON_VERSION }} python3-pip python3-devel wget unzip zip
 
       - name: Set env conan dependencies

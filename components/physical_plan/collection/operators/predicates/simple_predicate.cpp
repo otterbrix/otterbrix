@@ -5,9 +5,7 @@
 
 namespace components::collection::operators::predicates {
 
-    simple_predicate::simple_predicate(std::function<bool(const document::document_ptr&,
-                                                          const document::document_ptr&,
-                                                          const logical_plan::storage_parameters*)> func)
+    simple_predicate::simple_predicate(check_function_t func)
         : func_(std::move(func)) {}
 
     simple_predicate::simple_predicate(std::vector<predicate_ptr>&& nested, expressions::compare_type nested_type)

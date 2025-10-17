@@ -1,4 +1,5 @@
 #include "operator_min.hpp"
+#include "aggregate_helpers.hpp"
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators::aggregate {
@@ -21,13 +22,7 @@ namespace components::table::operators::aggregate {
                     min_.set_alias(key_result_);
                     return min_;
                 } else {
-                    min_ = it->value(0);
-                }
-                for (size_t i = 1; i < chunk.size(); i++) {
-                    auto val = it->value(i);
-                    if (min_ > val) {
-                        std::swap(min_, val);
-                    }
+                    min_ = impl::min(*it, chunk.size());
                 }
                 min_.set_alias(key_result_);
                 return min_;

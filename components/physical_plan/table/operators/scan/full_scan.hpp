@@ -7,18 +7,18 @@
 
 namespace components::table::operators {
 
-    std::unique_ptr<table::table_filter_t> transform_predicate(const expressions::compare_expression_ptr& exresssion);
+    std::unique_ptr<table::table_filter_t> transform_predicate(const expressions::compare_expression_ptr& expression);
 
     class full_scan final : public read_only_operator_t {
     public:
         full_scan(services::collection::context_collection_t* collection,
-                  const expressions::compare_expression_ptr& exresssion,
+                  const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit);
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) final;
 
-        expressions::compare_expression_ptr exresssion_;
+        expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
     };
 

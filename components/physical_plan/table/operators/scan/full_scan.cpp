@@ -6,17 +6,17 @@
 namespace components::table::operators {
 
     std::unique_ptr<table::table_filter_t>
-    transform_predicate(const expressions::compare_expression_ptr& exresssion,
+    transform_predicate(const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type> types,
                         const logical_plan::storage_parameters* parameters) {
-        if (!exresssion || exresssion->type() == expressions::compare_type::all_true) {
+        if (!expression || expression->type() == expressions::compare_type::all_true) {
             return nullptr;
         }
-        switch (exresssion->type()) {
+        switch (expression->type()) {
             case expressions::compare_type::union_and: {
                 auto filter = std::make_unique<table::conjunction_and_filter_t>();
-                filter->child_filters.reserve(exresssion->children().size());
-                for (const auto& child : exresssion->children()) {
+                filter->child_filters.reserve(expression->children().size());
+                for (const auto& child : expression->children()) {
                     filter->child_filters.emplace_back(
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
@@ -26,8 +26,8 @@ namespace components::table::operators {
             }
             case expressions::compare_type::union_or: {
                 auto filter = std::make_unique<table::conjunction_or_filter_t>();
-                filter->child_filters.reserve(exresssion->children().size());
-                for (const auto& child : exresssion->children()) {
+                filter->child_filters.reserve(expression->children().size());
+                for (const auto& child : expression->children()) {
                     filter->child_filters.emplace_back(
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
@@ -39,22 +39,22 @@ namespace components::table::operators {
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             default: {
                 auto it = std::find_if(types.begin(), types.end(), [&](const types::complex_logical_type& type) {
-                    return type.alias() == exresssion->key_left().as_string();
+                    return type.alias() == expression->key_left().as_string();
                 });
                 assert(it != types.end());
                 return std::make_unique<table::constant_filter_t>(
-                    exresssion->type(),
-                    parameters->parameters.at(exresssion->value()).as_logical_value(),
+                    expression->type(),
+                    parameters->parameters.at(expression->value()).as_logical_value(),
                     it - types.begin());
             }
         }
     }
 
     full_scan::full_scan(services::collection::context_collection_t* context,
-                         const expressions::compare_expression_ptr& exresssion,
+                         const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
         : read_only_operator_t(context, operator_type::match)
-        , exresssion_(exresssion)
+        , expression_(expression)
         , limit_(limit) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
@@ -71,9 +71,9 @@ namespace components::table::operators {
         for (int64_t i = 0; i < context_->table_storage().table().column_count(); i++) {
             column_indices.emplace_back(i);
         }
-        table::table_scan_state state(std::pmr::get_default_resource());
+        table::table_scan_state state(context_->resource());
         auto filter =
-            transform_predicate(exresssion_, types, pipeline_context ? &pipeline_context->parameters : nullptr);
+            transform_predicate(expression_, types, pipeline_context ? &pipeline_context->parameters : nullptr);
         context_->table_storage().table().initialize_scan(state, column_indices, filter.get());
         // TODO: check limit inside scan
         context_->table_storage().table().scan(output_->data_chunk(), state);

@@ -1,4 +1,5 @@
 #include "operator_sum.hpp"
+#include "aggregate_helpers.hpp"
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators::aggregate {
@@ -16,12 +17,7 @@ namespace components::table::operators::aggregate {
                 return v.type().alias() == key_.as_string();
             });
             if (it != chunk.data.end()) {
-                // TODO: sum physical values from vector insted of creating values
-                types::logical_value_t sum_(it->type());
-                for (size_t i = 0; i < chunk.size(); i++) {
-                    // TODO: handle non summable types
-                    sum_ = types::logical_value_t::sum(sum_, it->value(i));
-                }
+                types::logical_value_t sum_ = impl::sum(*it, chunk.size());
                 sum_.set_alias(key_result_);
                 return sum_;
             }

@@ -44,6 +44,7 @@ set(${PROJECT_NAME}_SOURCES
         collection/operators/operator_sort.cpp
         collection/operators/operator_join.cpp
 
+        table/operators/aggregate/aggregate_helpers.cpp
         table/operators/aggregate/operator_aggregate.cpp
         table/operators/aggregate/operator_count.cpp
         table/operators/aggregate/operator_min.cpp
@@ -59,6 +60,9 @@ set(${PROJECT_NAME}_SOURCES
         #table/operators/merge/operator_and.cpp
         #table/operators/merge/operator_or.cpp
         #table/operators/merge/operator_not.cpp
+
+        table/operators/predicates/predicate.cpp
+        table/operators/predicates/simple_predicate.cpp
 
         table/operators/scan/full_scan.cpp
         table/operators/scan/index_scan.cpp
@@ -77,7 +81,6 @@ set(${PROJECT_NAME}_SOURCES
         table/operators/operator_join.cpp
 
         table/operators/transformation.cpp
-        table/operators/check_expr.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

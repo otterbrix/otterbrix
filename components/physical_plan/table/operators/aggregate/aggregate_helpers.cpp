@@ -4,200 +4,123 @@
 
 namespace components::table::operators::aggregate::impl {
 
-    template<typename T>
-    types::logical_value_t sum(const T* array, size_t count) {
-        auto raw_sum = T();
-        for (size_t i = 0; i < count; i++) {
-            raw_sum += array[i];
+    template<typename T = void>
+    struct sum_operator_t;
+    template<typename T = void>
+    struct min_operator_t;
+    template<typename T = void>
+    struct max_operator_t;
+
+    template<>
+    struct sum_operator_t<void> {
+        template<typename T>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            auto raw_sum = T();
+            for (size_t i = 0; i < count; i++) {
+                raw_sum += v.data<T>()[i];
+            }
+            return types::logical_value_t{raw_sum};
         }
-        return types::logical_value_t{raw_sum};
-    }
-
-    template<typename T, typename U>
-    types::logical_value_t sum(const U* array, size_t count) {
-        auto raw_sum = T();
-        for (size_t i = 0; i < count; i++) {
-            raw_sum += T(array[i]);
+        template<typename T, typename U>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            auto raw_sum = T();
+            for (size_t i = 0; i < count; i++) {
+                raw_sum += T(v.data<U>()[i]);
+            }
+            return types::logical_value_t{raw_sum};
         }
-        return types::logical_value_t{raw_sum};
-    }
+    };
 
-    template<typename T>
-    types::logical_value_t min(const T* array, size_t count) {
-        return types::logical_value_t{*std::min_element(array, array + count)};
-    }
+    template<>
+    struct min_operator_t<void> {
+        template<typename T>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            return types::logical_value_t{*std::min_element(v.data<T>(), v.data<T>() + count)};
+        }
+        template<typename T, typename U>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            return types::logical_value_t{T(*std::min_element(v.data<U>(), v.data<U>() + count))};
+        }
+    };
 
-    template<typename T, typename U>
-    types::logical_value_t min(const U* array, size_t count) {
-        return types::logical_value_t{T(*std::min_element(array, array + count))};
-    }
-    template<typename T>
-    types::logical_value_t max(const T* array, size_t count) {
-        return types::logical_value_t{*std::max_element(array, array + count)};
-    }
+    template<>
+    struct max_operator_t<void> {
+        template<typename T>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            return types::logical_value_t{*std::max_element(v.data<T>(), v.data<T>() + count)};
+        }
+        template<typename T, typename U>
+        auto operator()(const vector::vector_t& v, size_t count) const {
+            return types::logical_value_t{T(*std::max_element(v.data<U>(), v.data<U>() + count))};
+        }
+    };
 
-    template<typename T, typename U>
-    types::logical_value_t max(const U* array, size_t count) {
-        return types::logical_value_t{T(*std::max_element(array, array + count))};
-    }
-
-    types::logical_value_t sum(const vector::vector_t& v, size_t count) {
+    template<template<typename...> class OP>
+    types::logical_value_t operator_switch(const vector::vector_t& v, size_t count) {
+        OP op{};
         switch (v.type().type()) {
             case types::logical_type::BOOLEAN:
-                return sum(v.data<bool>(), count);
+                return op.template operator()<bool>(v, count);
             case types::logical_type::TINYINT:
-                return sum(v.data<int8_t>(), count);
+                return op.template operator()<int8_t>(v, count);
             case types::logical_type::SMALLINT:
-                return sum(v.data<int16_t>(), count);
+                return op.template operator()<int16_t>(v, count);
             case types::logical_type::INTEGER:
-                return sum(v.data<int32_t>(), count);
+                return op.template operator()<int32_t>(v, count);
             case types::logical_type::BIGINT:
-                return sum(v.data<int64_t>(), count);
+                return op.template operator()<int64_t>(v, count);
             case types::logical_type::HUGEINT:
-                return sum(v.data<types::int128_t>(), count);
+                return op.template operator()<types::int128_t>(v, count);
             case types::logical_type::UTINYINT:
-                return sum(v.data<uint8_t>(), count);
+                return op.template operator()<uint8_t>(v, count);
             case types::logical_type::USMALLINT:
-                return sum(v.data<uint16_t>(), count);
+                return op.template operator()<uint16_t>(v, count);
             case types::logical_type::UINTEGER:
-                return sum(v.data<uint32_t>(), count);
+                return op.template operator()<uint32_t>(v, count);
             case types::logical_type::UBIGINT:
-                return sum(v.data<uint64_t>(), count);
+                return op.template operator()<uint64_t>(v, count);
             case types::logical_type::UHUGEINT:
-                return sum(v.data<types::uint128_t>(), count);
+                return op.template operator()<types::uint128_t>(v, count);
             case types::logical_type::TIMESTAMP_SEC:
-                return sum<std::chrono::seconds, int64_t>(v.data<int64_t>(), count);
+                return op.template operator()<std::chrono::seconds, int64_t>(v, count);
             case types::logical_type::TIMESTAMP_MS:
-                return sum<std::chrono::milliseconds, int64_t>(v.data<int64_t>(), count);
+                return op.template operator()<std::chrono::milliseconds, int64_t>(v, count);
             case types::logical_type::TIMESTAMP_US:
-                return sum<std::chrono::microseconds, int64_t>(v.data<int64_t>(), count);
+                return op.template operator()<std::chrono::microseconds, int64_t>(v, count);
             case types::logical_type::TIMESTAMP_NS:
-                return sum<std::chrono::nanoseconds, int64_t>(v.data<int64_t>(), count);
+                return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case types::logical_type::DECIMAL: {
                 // stored as int64_t, but this won't result in a proper type
-                auto int_sum = sum(v.data<int64_t>(), count);
+                // intermediate logical_value_t could be avoided, but convenient for templates
+                auto int_sum = op.template operator()<int64_t>(v, count);
                 int_sum = types::logical_value_t::create_decimal(
-                    int_sum.value<int64_t>(),
+                    int_sum.template value<int64_t>(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->width(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->scale());
                 return int_sum;
             }
             case types::logical_type::FLOAT:
-                return sum(v.data<float>(), count);
+                return op.template operator()<float>(v, count);
             case types::logical_type::DOUBLE:
-                return sum(v.data<double>(), count);
+                return op.template operator()<double>(v, count);
             case types::logical_type::STRING_LITERAL:
-                return sum<std::string, std::string_view>(v.data<std::string_view>(), count);
+                return op.template operator()<std::string, std::string_view>(v, count);
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
         return types::logical_value_t(nullptr);
     }
 
+    types::logical_value_t sum(const vector::vector_t& v, size_t count) {
+        return operator_switch<sum_operator_t>(v, count);
+    }
+
     types::logical_value_t min(const vector::vector_t& v, size_t count) {
-        switch (v.type().type()) {
-            case types::logical_type::BOOLEAN:
-                return min(v.data<bool>(), count);
-            case types::logical_type::TINYINT:
-                return min(v.data<int8_t>(), count);
-            case types::logical_type::SMALLINT:
-                return min(v.data<int16_t>(), count);
-            case types::logical_type::INTEGER:
-                return min(v.data<int32_t>(), count);
-            case types::logical_type::BIGINT:
-                return min(v.data<int64_t>(), count);
-            case types::logical_type::HUGEINT:
-                return min(v.data<types::int128_t>(), count);
-            case types::logical_type::UTINYINT:
-                return min(v.data<uint8_t>(), count);
-            case types::logical_type::USMALLINT:
-                return min(v.data<uint16_t>(), count);
-            case types::logical_type::UINTEGER:
-                return min(v.data<uint32_t>(), count);
-            case types::logical_type::UBIGINT:
-                return min(v.data<uint64_t>(), count);
-            case types::logical_type::UHUGEINT:
-                return min(v.data<types::uint128_t>(), count);
-            case types::logical_type::TIMESTAMP_SEC:
-                return min<std::chrono::seconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_MS:
-                return min<std::chrono::milliseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_US:
-                return min<std::chrono::microseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_NS:
-                return min<std::chrono::nanoseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::DECIMAL: {
-                // stored as int64_t, but this won't result in a proper type
-                auto int_sum = min(v.data<int64_t>(), count);
-                int_sum = types::logical_value_t::create_decimal(
-                    int_sum.value<int64_t>(),
-                    static_cast<types::decimal_logical_type_extension*>(v.type().extension())->width(),
-                    static_cast<types::decimal_logical_type_extension*>(v.type().extension())->scale());
-                return int_sum;
-            }
-            case types::logical_type::FLOAT:
-                return min(v.data<float>(), count);
-            case types::logical_type::DOUBLE:
-                return min(v.data<double>(), count);
-            case types::logical_type::STRING_LITERAL:
-                return min<std::string, std::string_view>(v.data<std::string_view>(), count);
-            default:
-                throw std::runtime_error("operators::aggregate::min unable to process given types");
-        }
-        return types::logical_value_t(nullptr);
+        return operator_switch<min_operator_t>(v, count);
     }
 
     types::logical_value_t max(const vector::vector_t& v, size_t count) {
-        switch (v.type().type()) {
-            case types::logical_type::BOOLEAN:
-                return max(v.data<bool>(), count);
-            case types::logical_type::TINYINT:
-                return max(v.data<int8_t>(), count);
-            case types::logical_type::SMALLINT:
-                return max(v.data<int16_t>(), count);
-            case types::logical_type::INTEGER:
-                return max(v.data<int32_t>(), count);
-            case types::logical_type::BIGINT:
-                return max(v.data<int64_t>(), count);
-            case types::logical_type::HUGEINT:
-                return max(v.data<types::int128_t>(), count);
-            case types::logical_type::UTINYINT:
-                return max(v.data<uint8_t>(), count);
-            case types::logical_type::USMALLINT:
-                return max(v.data<uint16_t>(), count);
-            case types::logical_type::UINTEGER:
-                return max(v.data<uint32_t>(), count);
-            case types::logical_type::UBIGINT:
-                return max(v.data<uint64_t>(), count);
-            case types::logical_type::UHUGEINT:
-                return max(v.data<types::uint128_t>(), count);
-            case types::logical_type::TIMESTAMP_SEC:
-                return max<std::chrono::seconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_MS:
-                return max<std::chrono::milliseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_US:
-                return max<std::chrono::microseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::TIMESTAMP_NS:
-                return max<std::chrono::nanoseconds, int64_t>(v.data<int64_t>(), count);
-            case types::logical_type::DECIMAL: {
-                // stored as int64_t, but this won't result in a proper type
-                auto int_sum = max(v.data<int64_t>(), count);
-                int_sum = types::logical_value_t::create_decimal(
-                    int_sum.value<int64_t>(),
-                    static_cast<types::decimal_logical_type_extension*>(v.type().extension())->width(),
-                    static_cast<types::decimal_logical_type_extension*>(v.type().extension())->scale());
-                return int_sum;
-            }
-            case types::logical_type::FLOAT:
-                return max(v.data<float>(), count);
-            case types::logical_type::DOUBLE:
-                return max(v.data<double>(), count);
-            case types::logical_type::STRING_LITERAL:
-                return max<std::string, std::string_view>(v.data<std::string_view>(), count);
-            default:
-                throw std::runtime_error("operators::aggregate::max unable to process given types");
-        }
-        return types::logical_value_t(nullptr);
+        return operator_switch<max_operator_t>(v, count);
     }
 
 } // namespace components::table::operators::aggregate::impl

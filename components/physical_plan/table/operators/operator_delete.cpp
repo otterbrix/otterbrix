@@ -1,5 +1,5 @@
 #include "operator_delete.hpp"
-#include "check_expr.hpp"
+#include "predicates/predicate.hpp"
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators {
@@ -16,7 +16,7 @@ namespace components::table::operators {
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
             auto types_left = chunk_left.types();
-            auto types_right = chunk_left.types();
+            auto types_right = chunk_right.types();
             std::unordered_map<std::string, size_t> name_index_map_left;
             for (size_t i = 0; i < types_left.size(); i++) {
                 name_index_map_left.emplace(types_left[i].alias(), i);
@@ -28,18 +28,16 @@ namespace components::table::operators {
 
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
             vector::vector_t ids(left_->output()->resource(), logical_type::BIGINT, ids_capacity);
+            auto predicate = compare_expression_ ? predicates::create_predicate(compare_expression_,
+                                                                                types_left,
+                                                                                types_right,
+                                                                                &pipeline_context->parameters)
+                                                 : predicates::create_all_true_predicate(output_->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
                 for (size_t j = 0; j < chunk_right.size(); j++) {
-                    if (check_expr_general(compare_expression_,
-                                           &pipeline_context->parameters,
-                                           chunk_left,
-                                           chunk_right,
-                                           name_index_map_left,
-                                           name_index_map_right,
-                                           i,
-                                           j)) {
+                    if (predicate->check(chunk_left, chunk_right, i, j)) {
                         ids.data<int64_t>()[index++] = i;
                         if (index >= ids_capacity) {
                             ids.resize(ids_capacity, ids_capacity * 2);
@@ -65,16 +63,18 @@ namespace components::table::operators {
             }
 
             vector::vector_t ids(left_->output()->resource(), logical_type::BIGINT, chunk.size());
+            auto predicate =
+                compare_expression_
+                    ? predicates::create_predicate(compare_expression_, types, types, &pipeline_context->parameters)
+                    : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk.size(); i++) {
-                if (check_expr_general(compare_expression_, &pipeline_context->parameters, chunk, name_index_map, i)) {
+                if (predicate->check(chunk, i)) {
                     if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        ids.set_value(
-                            index++,
-                            types::logical_value_t{static_cast<int64_t>(chunk.data.front().indexing().get_index(i))});
+                        ids.data<int64_t>()[index++] = chunk.data.front().indexing().get_index(i);
                     } else {
-                        ids.set_value(index++, chunk.row_ids.value(i));
+                        ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
                     }
                 }
             }

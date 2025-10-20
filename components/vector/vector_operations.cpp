@@ -49,6 +49,10 @@ namespace components::vector::vector_ops {
             auto tdata = target.data<T>();
             for (uint64_t i = 0; i < copy_count; i++) {
                 auto source_idx = indexing.get_index(source_offset + i);
+                if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                    // there is a null written here, skip it
+                    continue;
+                }
                 tdata[target_offset + i] = ldata[source_idx];
             }
         }
@@ -719,6 +723,10 @@ namespace components::vector::vector_ops {
                 auto tdata = target.data<std::string_view>();
                 for (uint64_t i = 0; i < copy_count; i++) {
                     auto source_idx = indexing_ptr->get_index(source_offset + i);
+                    if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                        // there is a null written here, skip it
+                        continue;
+                    }
                     auto target_idx = target_offset + i;
                     if (tmask.row_is_valid(target_idx)) {
                         tdata[target_idx] =
@@ -756,6 +764,10 @@ namespace components::vector::vector_ops {
                 indexing_vector_t child_indexing(source_ptr->resource(), source_count * array_size);
                 for (uint64_t i = 0; i < copy_count; i++) {
                     auto source_idx = indexing_ptr->get_index(source_offset + i);
+                    if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                        // there is a null written here, skip it
+                        continue;
+                    }
                     for (uint64_t j = 0; j < array_size; j++) {
                         child_indexing.set_index((source_offset * array_size) + (i * array_size + j),
                                                  source_idx * array_size + j);
@@ -781,6 +793,10 @@ namespace components::vector::vector_ops {
                         break;
                     }
                     auto source_idx = indexing_ptr->get_index(source_offset);
+                    if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                        // there is a null written here, skip it
+                        break;
+                    }
                     auto& source_entry = sdata[source_idx];
                     uint64_t source_child_size = source_entry.length + source_entry.offset;
 
@@ -796,6 +812,10 @@ namespace components::vector::vector_ops {
                     for (uint64_t i = 0; i < copy_count; ++i) {
                         if (tmask.row_is_valid(target_offset + i)) {
                             auto source_idx = indexing_ptr->get_index(source_offset + i);
+                            if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                                // there is a null written here, skip it
+                                continue;
+                            }
                             auto& source_entry = sdata[source_idx];
                             for (uint64_t j = 0; j < source_entry.length; ++j) {
                                 child_rows.emplace_back(source_entry.offset + j);
@@ -813,6 +833,10 @@ namespace components::vector::vector_ops {
 
                     for (uint64_t i = 0; i < copy_count; i++) {
                         auto source_idx = indexing_ptr->get_index(source_offset + i);
+                        if (source_idx == std::numeric_limits<uint64_t>::max()) {
+                            // there is a null written here, skip it
+                            continue;
+                        }
                         auto& source_entry = sdata[source_idx];
                         auto& target_entry = tdata[target_offset + i];
 

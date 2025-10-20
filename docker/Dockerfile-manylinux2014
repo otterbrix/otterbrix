@@ -4,7 +4,8 @@ ENV PYTHONFAULTHANDLER=1
 
 RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip devtoolset-10-binutils devtoolset-10-gcc devtoolset-10-gcc-c++
 
-RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --upgrade pip && \
+       pip3 install --no-cache-dir setuptools scikit-build conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -51,14 +52,14 @@ RUN for whl in dist/otterbrix*.whl; do \
         rm ${whl}; \
     done
 
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 
 RUN apt update && \
     apt upgrade -y && \
     apt install -y \
         python3-pip \
         python3-venv && \
-    pip3 install --no-cache-dir pytest==6.2.5
+    pip3 install --break-system-packages --no-cache-dir pytest==6.2.5
 
 WORKDIR /app
 

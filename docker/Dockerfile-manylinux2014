@@ -16,7 +16,8 @@ RUN conan install . --build missing  \
     --build fmt \
     --build spdlog  \
     -s build_type=Release \
-    -s compiler.cppstd=gnu17
+    -s compiler.cppstd=gnu17 \
+    -s compiler.libcxx=libstdc++11
 
 COPY ./integration ./integration
 COPY ./cmake ./cmake
@@ -36,7 +37,7 @@ RUN   PYBIN=(/opt/python/*/bin) && \
       if [[  ${BIN} == *"cp311"* ]]; then \
           ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build  && \
           mkdir -p $(echo "./$(${BIN}/python3 get_path.py )") && \
-          conan install . -s build_type=Release -s compiler.cppstd=gnu17 -of=$(echo "./$(${BIN}/python3 get_path.py )") && \
+          conan install . -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -of=$(echo "./$(${BIN}/python3 get_path.py )") && \
           ${BIN}/python3 setup.py bdist_wheel  --verbose -DDEV_MODE=ON && \
           #${BIN}/python3 -m pip install --no-index --find-links . dist/otterbrix-*.whl  && \
           cd $(echo "./$(${BIN}/python3 get_path.py )") && \

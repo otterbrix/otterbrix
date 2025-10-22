@@ -1,8 +1,8 @@
-FROM quay.io/pypa/manylinux2014_x86_64 as build_wheel
+FROM quay.io/pypa/manylinux_2_28_x86_64 as build_wheel
 
 ENV PYTHONFAULTHANDLER=1
 
-RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip devtoolset-10-binutils devtoolset-10-gcc devtoolset-10-gcc-c++
+RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip
 
 RUN    pip3 install --upgrade pip && \
        pip3 install --no-cache-dir setuptools wheel scikit-build conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
@@ -64,10 +64,10 @@ RUN apt update && \
 
 WORKDIR /app
 
-COPY --from=build_wheel /app/work/dist/otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl /app/otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+COPY --from=build_wheel /app/work/dist/otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /app/otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 COPY ./integration  ./integration
 
-RUN pip3 install ./otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+RUN pip3 install --break-system-packages ./otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 RUN python3 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
 RUN python3 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
 RUN pytest -v -s

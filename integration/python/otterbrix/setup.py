@@ -33,6 +33,6 @@ setup(
         f"-DCMAKE_TOOLCHAIN_FILE={path_to_generator}",  # Pass toolchain file here
         # "-DCMAKE_TOOLCHAIN_FILE=_skbuild/linux-x86_64-3.8/cmake-build/build/Release/generators",
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_CXX_FLAGS='-D_GLIBCXX_USE_CXX11_ABI=0'"
+        "-D_GLIBCXX_USE_CXX11_ABI=1"
     ],
 )

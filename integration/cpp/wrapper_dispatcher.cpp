@@ -292,7 +292,8 @@ namespace otterbrix {
                                                    const std::string& query) {
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         auto params = components::logical_plan::make_parameter_node(resource());
-        auto parse_result = raw_parser(query.c_str())->lst.front().data;
+        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         auto node =
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result), params.get());
         return execute_plan(session, node, params);

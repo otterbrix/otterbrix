@@ -40,6 +40,10 @@
 }
 
 %{
+
+#define YY_DECL int yylex(YYSTYPE *yylval_param, YYLTYPE *yylloc_param, std::pmr::memory_resource *resource, yyscan_t yyscanner)
+
+
 /* Avoid exit() on fatal scanner errors (a bit ugly -- see yy_fatal_error) */
 #undef fprintf
 #define fprintf(file, fmt, msg)  fprintf_to_ereport(fmt, msg)
@@ -92,7 +96,7 @@ static void addlitchar(unsigned char ychar, core_yyscan_t yyscanner);
 static char *litbufdup(core_yyscan_t yyscanner);
 static char *litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner);
 static unsigned char unescape_single_char(unsigned char c, core_yyscan_t yyscanner);
-static int	process_integer_literal(const char *token, YYSTYPE *lval);
+static int process_integer_literal(std::pmr::memory_resource* resource, const char *token, YYSTYPE *lval);
 static bool is_utf16_surrogate_first(pg_wchar c);
 static bool is_utf16_surrogate_second(pg_wchar c);
 static pg_wchar surrogate_pair_to_codepoint(pg_wchar first, pg_wchar second);
@@ -496,7 +500,7 @@ other			.
 					else
 					{
 						/* If NCHAR isn't a keyword, just return "n" */
-						yylval->str = pstrdup("n");
+						yylval->str = pstrdup(yyextra->resource, "n");
 						return IDENT;
 					}
 				}
@@ -662,7 +666,7 @@ other			.
 
 {dolqdelim}		{
 					SET_YYLLOC();
-					yyextra->dolqstart = pstrdup(yytext);
+					yyextra->dolqstart = pstrdup(yyextra->resource, yytext);
 					BEGIN(xdolq);
 					startlit();
 				}
@@ -788,7 +792,7 @@ other			.
 					/* throw back all but the initial u/U */
 					yyless(1);
 					/* and treat it as {identifier} */
-					ident = downcase_truncate_identifier(yytext, yyleng, true);
+					ident = downcase_truncate_identifier(yyextra->resource, yytext, yyleng, true);
 					yylval->str = ident;
 					return IDENT;
 				}
@@ -900,9 +904,9 @@ other			.
 
 					/* Convert "!=" operator to "<>" for compatibility */
 					if (strcmp(yytext, "!=") == 0)
-						yylval->str = pstrdup("<>");
+						yylval->str = pstrdup(yyextra->resource, "<>");
 					else
-						yylval->str = pstrdup(yytext);
+						yylval->str = pstrdup(yyextra->resource, yytext);
 					return Op;
 				}
 
@@ -914,22 +918,22 @@ other			.
 
 {integer}		{
 					SET_YYLLOC();
-					return process_integer_literal(yytext, yylval);
+					return process_integer_literal(yyextra->resource, yytext, yylval);
 				}
 {decimal}		{
 					SET_YYLLOC();
-					yylval->str = pstrdup(yytext);
+					yylval->str = pstrdup(yyextra->resource, yytext);
 					return FCONST;
 				}
 {decimalfail}	{
 					/* throw back the .., and treat as integer */
 					yyless(yyleng-2);
 					SET_YYLLOC();
-					return process_integer_literal(yytext, yylval);
+					return process_integer_literal(yyextra->resource, yytext, yylval);
 				}
 {real}			{
 					SET_YYLLOC();
-					yylval->str = pstrdup(yytext);
+					yylval->str = pstrdup(yyextra->resource, yytext);
 					return FCONST;
 				}
 {realfail1}		{
@@ -941,14 +945,14 @@ other			.
 					 */
 					yyless(yyleng-1);
 					SET_YYLLOC();
-					yylval->str = pstrdup(yytext);
+					yylval->str = pstrdup(yyextra->resource, yytext);
 					return FCONST;
 				}
 {realfail2}		{
 					/* throw back the [Ee][+-], and proceed as above */
 					yyless(yyleng-2);
 					SET_YYLLOC();
-					yylval->str = pstrdup(yytext);
+					yylval->str = pstrdup(yyextra->resource, yytext);
 					return FCONST;
 				}
 
@@ -973,7 +977,7 @@ other			.
 					 * No.  Convert the identifier to lower case, and truncate
 					 * if necessary.
 					 */
-					ident = downcase_truncate_identifier(yytext, yyleng, true);
+					ident = downcase_truncate_identifier(yyextra->resource, yytext, yyleng, true);
 					yylval->str = ident;
 					return IDENT;
 				}
@@ -1053,7 +1057,7 @@ scanner_yyerror(const char *message, core_yyscan_t yyscanner)
 		ereport(ERROR,
 				errcode(ERRCODE_SYNTAX_ERROR),
 				 /* translator: %s is typically the translation of "syntax error" */
-				 errmsg("%s at end of input", message)
+				 errmsg("%s at end of input", message),
 				 lexer_errposition());
 	}
 	else
@@ -1071,13 +1075,14 @@ scanner_yyerror(const char *message, core_yyscan_t yyscanner)
  * Called before any actual parsing is done
  */
 core_yyscan_t
-scanner_init(const char *str,
+scanner_init(std::pmr::memory_resource* resource, const char *str,
 			 core_yy_extra_type *yyext,
 			 const ScanKeyword *keywords,
 			 int num_keywords)
 {
 	Size		slen = strlen(str);
 	yyscan_t	scanner;
+	yyext->resource = resource;
 
 	if (yylex_init(&scanner) != 0)
 		elog(ERROR, "yylex_init() failed: %m");
@@ -1090,7 +1095,7 @@ scanner_init(const char *str,
 	/*
 	 * Make a scan buffer with special termination needed by flex.
 	 */
-	yyext->scanbuf = (char *) palloc(slen + 2);
+	yyext->scanbuf = (char *) palloc(yyext->resource, slen + 2);
 	yyext->scanbuflen = slen;
 	memcpy(yyext->scanbuf, str, slen);
 	yyext->scanbuf[slen] = yyext->scanbuf[slen + 1] = YY_END_OF_BUFFER_CHAR;
@@ -1098,7 +1103,7 @@ scanner_init(const char *str,
 
 	/* initialize literal buffer to a reasonable but expansible size */
 	yyext->literalalloc = 1024;
-	yyext->literalbuf = (char *) palloc(yyext->literalalloc);
+	yyext->literalbuf = (char *) palloc(yyext->resource, yyext->literalalloc);
 	yyext->literallen = 0;
 
 	return scanner;
@@ -1111,20 +1116,9 @@ scanner_init(const char *str,
 void
 scanner_finish(core_yyscan_t yyscanner)
 {
-	/*
-	 * We don't bother to call yylex_destroy(), because all it would do
-	 * is pfree a small amount of control storage.  It's cheaper to leak
-	 * the storage until the parsing context is destroyed.  The amount of
-	 * space involved is usually negligible compared to the output parse
-	 * tree anyway.
-	 *
-	 * We do bother to pfree the scanbuf and literal buffer, but only if they
-	 * represent a nontrivial amount of space.  The 8K cutoff is arbitrary.
-	 */
-	if (yyextra->scanbuflen >= 8192)
-		pfree(yyextra->scanbuf);
-	if (yyextra->literalalloc >= 8192)
-		pfree(yyextra->literalbuf);
+    pfree(yyextra->scanbuf);
+    pfree(yyextra->literalbuf);
+    yylex_destroy(yyscanner);
 }
 
 
@@ -1137,7 +1131,8 @@ addlit(char *ytext, int yleng, core_yyscan_t yyscanner)
 		do {
 			yyextra->literalalloc *= 2;
 		} while ((yyextra->literallen + yleng) >= yyextra->literalalloc);
-		yyextra->literalbuf = (char *) repalloc(yyextra->literalbuf,
+		yyextra->literalbuf = (char *) repalloc(yyextra->resource,
+		                                        yyextra->literalbuf,
 												yyextra->literalalloc);
 	}
 	/* append new data */
@@ -1153,7 +1148,8 @@ addlitchar(unsigned char ychar, core_yyscan_t yyscanner)
 	if ((yyextra->literallen + 1) >= yyextra->literalalloc)
 	{
 		yyextra->literalalloc *= 2;
-		yyextra->literalbuf = (char *) repalloc(yyextra->literalbuf,
+		yyextra->literalbuf = (char *) repalloc(yyextra->resource,
+		                                        yyextra->literalbuf,
 												yyextra->literalalloc);
 	}
 	/* append new data */
@@ -1171,14 +1167,14 @@ litbufdup(core_yyscan_t yyscanner)
 	int			llen = yyextra->literallen;
 	char	   *new_c;
 
-	new_c = reinterpret_cast<char*>(palloc(llen + 1));
+	new_c = reinterpret_cast<char*>(palloc(yyextra->resource, llen + 1));
 	memcpy(new_c, yyextra->literalbuf, llen);
 	new_c[llen] = '\0';
 	return new_c;
 }
 
 static int
-process_integer_literal(const char *token, YYSTYPE *lval)
+process_integer_literal(std::pmr::memory_resource* resource, const char *token, YYSTYPE *lval)
 {
 	long		val;
 	char	   *endptr;
@@ -1193,7 +1189,7 @@ process_integer_literal(const char *token, YYSTYPE *lval)
 		)
 	{
 		/* integer too large, treat it as a float */
-		lval->str = pstrdup(token);
+		lval->str = pstrdup(resource, token);
 		return FCONST;
 	}
 	lval->ival = val;
@@ -1293,7 +1289,7 @@ litbuf_udeescape(unsigned char escape, core_yyscan_t yyscanner)
 	 * This relies on the subtle assumption that a UTF-8 expansion
 	 * cannot be longer than its escaped representation.
 	 */
-	new_c = reinterpret_cast<char*>(palloc(yyextra->literallen + 1));
+	new_c = reinterpret_cast<char*>(palloc(yyextra->resource, yyextra->literallen + 1));
 
 	in = litbuf;
 	out = new_c;
@@ -1496,21 +1492,21 @@ check_escape_warning(core_yyscan_t yyscanner)
 void *
 core_yyalloc(yy_size_t bytes, core_yyscan_t yyscanner)
 {
-	return palloc(bytes);
+	return flex_malloc(bytes);
 }
 
 void *
 core_yyrealloc(void *ptr, yy_size_t bytes, core_yyscan_t yyscanner)
 {
 	if (ptr)
-		return repalloc(ptr, bytes);
+		return flex_realloc(ptr, bytes);
 	else
-		return palloc(bytes);
+		return flex_malloc(bytes);
 }
 
 void
 core_yyfree(void *ptr, core_yyscan_t yyscanner)
 {
 	if (ptr)
-		pfree(ptr);
+		flex_free(ptr);
 }

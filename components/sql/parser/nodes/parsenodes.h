@@ -3253,7 +3253,7 @@ typedef struct RetrieveStmt {
 //#include "makefuncs.h"
 
 //DefElem *
-//defWithOids(bool value)
+//defWithOids(resource, bool value)
 //{
-//   return makeDefElem("oids", (Node *) makeInteger(value));
+//   return makeDefElem(resource, "oids", (Node *) makeInteger(resource, value));
 //}

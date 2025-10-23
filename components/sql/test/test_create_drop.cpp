@@ -12,8 +12,7 @@ using namespace components::types;
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
-        auto create = linitial(raw_parser(QUERY));                                                                     \
+        auto create = linitial(raw_parser(&arena_resource, QUERY));                                                    \
         transform::transformer transformer(&resource);                                                                 \
         components::logical_plan::parameter_node_t agg(&resource);                                                     \
         bool exception_thrown = false;                                                                                 \
@@ -35,35 +34,37 @@ namespace {
 
 TEST_CASE("sql::database") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     components::sql::transform::transformer transformer(&resource);
     components::logical_plan::parameter_node_t statement(&resource);
 
     SECTION("create") {
-        auto create = raw_parser("CREATE DATABASE db_name")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE DATABASE db_name")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_database: db_name)_");
     }
 
     SECTION("create;") {
-        auto create = raw_parser("CREATE DATABASE db_name;")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE DATABASE db_name;")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_database: db_name)_");
     }
 
     SECTION("create; ") {
-        auto create = raw_parser("CREATE DATABASE db_name;          ")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE DATABASE db_name;          ")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_database: db_name)_");
     }
 
     SECTION("create; --") {
-        auto create = raw_parser("CREATE DATABASE db_name; -- comment")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE DATABASE db_name; -- comment")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_database: db_name)_");
     }
 
     SECTION("create; /*") {
-        auto create = raw_parser("CREATE DATABASE db_name; /* multiline\n"
+        auto create = raw_parser(&arena_resource,
+                                 "CREATE DATABASE db_name; /* multiline\n"
                                  "comments */")
                           ->lst.front()
                           .data;
@@ -72,13 +73,13 @@ TEST_CASE("sql::database") {
     }
 
     SECTION("create; /* mid */") {
-        auto create = raw_parser("CREATE /* comment */ DATABASE db_name;")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE /* comment */ DATABASE db_name;")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_database: db_name)_");
     }
 
     SECTION("drop") {
-        auto drop = raw_parser("DROP DATABASE db_name;")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP DATABASE db_name;")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_database: db_name)_");
     }
@@ -86,11 +87,12 @@ TEST_CASE("sql::database") {
 
 TEST_CASE("sql::table") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
     components::logical_plan::parameter_node_t statement(&resource);
 
     SECTION("create with uuid") {
-        auto create = raw_parser("CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
         REQUIRE(node->collection_full_name().unique_identifier == "uuid");
@@ -98,26 +100,26 @@ TEST_CASE("sql::table") {
     }
 
     SECTION("create with schema") {
-        auto create = raw_parser("CREATE TABLE db_name.schema.table_name()")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
         REQUIRE(node->collection_full_name().schema == "schema");
     }
 
     SECTION("create") {
-        auto create = raw_parser("CREATE TABLE db_name.table_name()")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.table_name()")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
     }
 
     SECTION("create without database") {
-        auto create = raw_parser("CREATE TABLE table_name()")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE TABLE table_name()")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_collection: .table_name)_");
     }
 
     SECTION("drop with uuid") {
-        auto drop = raw_parser("DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
         REQUIRE(node->collection_full_name().unique_identifier == "uuid");
@@ -125,26 +127,26 @@ TEST_CASE("sql::table") {
     }
 
     SECTION("drop with schema") {
-        auto drop = raw_parser("DROP TABLE db_name.schema.table_name")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
         REQUIRE(node->collection_full_name().schema == "schema");
     }
 
     SECTION("drop") {
-        auto drop = raw_parser("DROP TABLE db_name.table_name")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.table_name")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
     }
 
     SECTION("drop without database") {
-        auto drop = raw_parser("DROP TABLE table_name")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP TABLE table_name")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_collection: .table_name)_");
     }
 
     SECTION("typed columns") {
-        auto create = linitial(raw_parser("CREATE TABLE table_name(test integer, test1 string)"));
+        auto create = linitial(raw_parser(&arena_resource, "CREATE TABLE table_name(test integer, test1 string)"));
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         const auto& sch = data->schema();
@@ -159,7 +161,8 @@ TEST_CASE("sql::table") {
 
     SECTION("more typed columns") {
         auto create = linitial(
-            raw_parser("CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))"));
+            raw_parser(&arena_resource,
+                       "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))"));
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         const auto& sch = data->schema();
@@ -186,8 +189,8 @@ TEST_CASE("sql::table") {
     }
 
     SECTION("arrays & decimal") {
-        auto create =
-            linitial(raw_parser("CREATE TABLE table_name(t1 decimal(51, 3)[10], t2 int[100], t3 boolean[8])"));
+        auto create = linitial(
+            raw_parser(&arena_resource, "CREATE TABLE table_name(t1 decimal(51, 3)[10], t2 int[100], t3 boolean[8])"));
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         const auto& sch = data->schema();
@@ -224,7 +227,8 @@ TEST_CASE("sql::table") {
     }
 
     SECTION("float") {
-        auto create = linitial(raw_parser("CREATE TABLE table_name(t1 float, t2 double, t3 float[100])"));
+        auto create =
+            linitial(raw_parser(&arena_resource, "CREATE TABLE table_name(t1 float, t2 double, t3 float[100])"));
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
         const auto& sch = data->schema();
@@ -266,11 +270,13 @@ TEST_CASE("sql::table") {
 
 TEST_CASE("sql::index") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
     components::logical_plan::parameter_node_t statement(&resource);
 
     SECTION("create with uuid") {
-        auto create = raw_parser("CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
+        auto create =
+            raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
         REQUIRE(node->collection_full_name().unique_identifier == "uuid");
@@ -278,33 +284,34 @@ TEST_CASE("sql::index") {
     }
 
     SECTION("create with schema") {
-        auto create = raw_parser("CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
+        auto create =
+            raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
         REQUIRE(node->collection_full_name().schema == "schema");
     }
 
     SECTION("create") {
-        auto create = raw_parser("CREATE INDEX some_idx ON db.table (field);")->lst.front().data;
+        auto create = raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.table (field);")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(create), &statement);
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
     }
 
     SECTION("drop with uuid") {
-        auto drop = raw_parser("DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
         REQUIRE(node->collection_full_name().unique_identifier == "uuid");
         REQUIRE(node->collection_full_name().schema == "schema");
     }
     SECTION("drop with schema") {
-        auto drop = raw_parser("DROP INDEX db.schema.table.some_idx")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
         REQUIRE(node->collection_full_name().schema == "schema");
     }
     SECTION("drop") {
-        auto drop = raw_parser("DROP INDEX db.table.some_idx")->lst.front().data;
+        auto drop = raw_parser(&arena_resource, "DROP INDEX db.table.some_idx")->lst.front().data;
         auto node = transformer.transform(transform::pg_cell_to_node_cast(drop), &statement);
         REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
     }

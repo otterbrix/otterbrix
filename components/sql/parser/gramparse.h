@@ -61,10 +61,10 @@ typedef struct base_yy_extra_type {
 #define pg_yyget_extra(yyscanner) (*((base_yy_extra_type**) (yyscanner)))
 
 /* from parser.c */
-extern int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner);
+extern int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, std::pmr::memory_resource* resource, core_yyscan_t yyscanner);
 
 /* from gram.y */
 extern void parser_init(base_yy_extra_type* yyext);
-extern int base_yyparse(core_yyscan_t yyscanner);
+extern int base_yyparse(std::pmr::memory_resource* resource, core_yyscan_t yyscanner);
 
 #endif /* GRAMPARSE_H */

@@ -13,6 +13,7 @@
 */
 
 #pragma once
+#include <memory_resource>
 
 /*
  * Maximum length for identifiers (e.g. table names, column names,
@@ -26,7 +27,7 @@
 
 extern char* scanstr(const char* s);
 
-extern char* downcase_truncate_identifier(const char* ident, int len, bool warn);
+extern char* downcase_truncate_identifier(std::pmr::memory_resource* resource, const char* ident, int len, bool warn);
 
 extern void truncate_identifier(char* ident, int len, bool warn);
 

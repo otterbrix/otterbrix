@@ -8,6 +8,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
+#include <tests/generaty.hpp>
 
 using namespace components::serializer;
 using namespace components::logical_plan;
@@ -19,9 +20,46 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("serialization") {
+TEST_CASE("serialization::document") {
     auto resource = std::pmr::synchronized_pool_resource();
-
+    auto doc1 = gen_doc(10, &resource);
+    {
+        json_serializer_t serializer(&resource);
+        serializer.start_array(1);
+        serializer.append("doc", doc1);
+        serializer.end_array();
+        json_deserializer_t deserializer(serializer.result());
+        auto doc2 = deserializer.deserialize_document(0);
+        REQUIRE(doc1->count() == doc2->count());
+        REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
+        REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));
+        REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
+        REQUIRE(doc1->get_double("/countDouble") == Approx(doc2->get_double("/countDouble")));
+        REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
+        REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
+        REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
+        REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
+    }
+    {
+        msgpack_serializer_t serializer(&resource);
+        serializer.start_array(1);
+        serializer.append("doc", doc1);
+        serializer.end_array();
+        msgpack_deserializer_t deserializer(serializer.result());
+        auto doc2 = deserializer.deserialize_document(0);
+        REQUIRE(doc1->count() == doc2->count());
+        REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
+        REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));
+        REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
+        REQUIRE(doc1->get_double("/countDouble") == Approx(doc2->get_double("/countDouble")));
+        REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
+        REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
+        REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
+        REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
+    }
+}
+TEST_CASE("serialization::expressions") {
+    auto resource = std::pmr::synchronized_pool_resource();
     {
         auto expr_and = make_compare_union_expression(&resource, compare_type::union_and);
         expr_and->append_child(make_compare_expression(&resource,
@@ -116,74 +154,75 @@ TEST_CASE("serialization") {
             deserializer.pop_array();
         }
     }
+}
+TEST_CASE("serialization::logical_plan") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
+    auto new_value = [&](auto value) { return components::document::value_t{tape.get(), value}; };
+    auto node_delete = make_node_delete_many(&resource,
+                                             {database_name, collection_name},
+                                             make_node_match(&resource,
+                                                             {database_name, collection_name},
+                                                             make_compare_expression(&resource,
+                                                                                     compare_type::gt,
+                                                                                     side_t::left,
+                                                                                     key{"count"},
+                                                                                     core::parameter_id_t{1})));
+    auto params = make_parameter_node(&resource);
+    params->add_parameter(core::parameter_id_t{1}, new_value(90));
     {
-        auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-        auto new_value = [&](auto value) { return components::document::value_t{tape.get(), value}; };
-        auto node_delete = make_node_delete_many(&resource,
-                                                 {database_name, collection_name},
-                                                 make_node_match(&resource,
-                                                                 {database_name, collection_name},
-                                                                 make_compare_expression(&resource,
-                                                                                         compare_type::gt,
-                                                                                         side_t::left,
-                                                                                         key{"count"},
-                                                                                         core::parameter_id_t{1})));
-        auto params = make_parameter_node(&resource);
-        params->add_parameter(core::parameter_id_t{1}, new_value(90));
+        json_serializer_t serializer(&resource);
+        serializer.start_array(2);
+        node_delete->serialize(&serializer);
+        params->serialize(&serializer);
+        serializer.end_array();
+        auto res = serializer.result();
+        REQUIRE(res == R"_([[5,["database","collection"],)_"
+                       R"_([[12,["database","collection"],)_"
+                       R"_([17,3,1,"count",null,1,[]]],)_"
+                       R"_([11,["database","collection"],-1]]],)_"
+                       R"_([22,[[1,90]]]])_");
+        json_deserializer_t deserializer(res);
+        deserializer.advance_array(0);
         {
-            json_serializer_t serializer(&resource);
-            serializer.start_array(2);
-            node_delete->serialize(&serializer);
-            params->serialize(&serializer);
-            serializer.end_array();
-            auto res = serializer.result();
-            REQUIRE(res == R"_([[5,["database","collection"],)_"
-                           R"_([[12,["database","collection"],)_"
-                           R"_([17,3,1,"count",null,1,[]]],)_"
-                           R"_([11,["database","collection"],-1]]],)_"
-                           R"_([22,[[1,90]]]])_");
-            json_deserializer_t deserializer(res);
-            deserializer.advance_array(0);
-            {
-                auto type = deserializer.current_type();
-                assert(type == serialization_type::logical_node_delete);
-                auto deserialized_res = node_t::deserialize(&deserializer);
-                REQUIRE(node_delete->to_string() == deserialized_res->to_string());
-            }
-            deserializer.pop_array();
-            deserializer.advance_array(1);
-            {
-                auto type = deserializer.current_type();
-                assert(type == serialization_type::parameters);
-                auto deserialized_res = parameter_node_t::deserialize(&deserializer);
-                REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
-            }
-            deserializer.pop_array();
+            auto type = deserializer.current_type();
+            assert(type == serialization_type::logical_node_delete);
+            auto deserialized_res = node_t::deserialize(&deserializer);
+            REQUIRE(node_delete->to_string() == deserialized_res->to_string());
         }
+        deserializer.pop_array();
+        deserializer.advance_array(1);
         {
-            msgpack_serializer_t serializer(&resource);
-            serializer.start_array(2);
-            node_delete->serialize(&serializer);
-            params->serialize(&serializer);
-            serializer.end_array();
-            auto res = serializer.result();
-            msgpack_deserializer_t deserializer(res);
-            deserializer.advance_array(0);
-            {
-                auto type = deserializer.current_type();
-                assert(type == serialization_type::logical_node_delete);
-                auto deserialized_res = node_t::deserialize(&deserializer);
-                REQUIRE(node_delete->to_string() == deserialized_res->to_string());
-            }
-            deserializer.pop_array();
-            deserializer.advance_array(1);
-            {
-                auto type = deserializer.current_type();
-                assert(type == serialization_type::parameters);
-                auto deserialized_res = parameter_node_t::deserialize(&deserializer);
-                REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
-            }
-            deserializer.pop_array();
+            auto type = deserializer.current_type();
+            assert(type == serialization_type::parameters);
+            auto deserialized_res = parameter_node_t::deserialize(&deserializer);
+            REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
         }
+        deserializer.pop_array();
+    }
+    {
+        msgpack_serializer_t serializer(&resource);
+        serializer.start_array(2);
+        node_delete->serialize(&serializer);
+        params->serialize(&serializer);
+        serializer.end_array();
+        auto res = serializer.result();
+        msgpack_deserializer_t deserializer(res);
+        deserializer.advance_array(0);
+        {
+            auto type = deserializer.current_type();
+            assert(type == serialization_type::logical_node_delete);
+            auto deserialized_res = node_t::deserialize(&deserializer);
+            REQUIRE(node_delete->to_string() == deserialized_res->to_string());
+        }
+        deserializer.pop_array();
+        deserializer.advance_array(1);
+        {
+            auto type = deserializer.current_type();
+            assert(type == serialization_type::parameters);
+            auto deserialized_res = parameter_node_t::deserialize(&deserializer);
+            REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
+        }
+        deserializer.pop_array();
     }
 }

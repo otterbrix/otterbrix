@@ -244,6 +244,7 @@ namespace components::document {
         auto build_value = [&]() {
             auto element1 = mut_src_->next_element();
             builder_.build(value);
+            assert(element1.logical_type() != types::logical_type::UNKNOWN);
             return json_trie_node_element::create(element1, element_ind_->get_allocator());
         };
 

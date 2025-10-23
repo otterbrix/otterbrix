@@ -172,7 +172,7 @@ namespace components::document::json {
     }
 
     json_trie_node* json_trie_node::create_array(json_trie_node::allocator_type* allocator) {
-        return new (allocator->allocate(sizeof(json_trie_node)))
+        return new (allocator->allocate(sizeof(json_trie_node), alignof(json_trie_node)))
             json_trie_node(allocator, std::move(json_array(allocator)), ARRAY);
     }
 
@@ -182,7 +182,8 @@ namespace components::document::json {
     }
 
     json_trie_node* json_trie_node::create_deleter(json_trie_node::allocator_type* allocator) {
-        return new (allocator->allocate(sizeof(json_trie_node))) json_trie_node(allocator, DELETER);
+        return new (allocator->allocate(sizeof(json_trie_node), alignof(json_trie_node)))
+            json_trie_node(allocator, DELETER);
     }
 
     json_trie_node::allocator_type* json_trie_node::get_allocator() { return allocator_; }

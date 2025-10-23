@@ -337,7 +337,7 @@ namespace core::b_plus_tree {
         gap_tracker_t gap_tracker_{header_size, INVALID_SIZE};
 
         std::unique_ptr<filesystem::file_handle_t> file_;
-        std::vector<std::pair<std::pmr::string, std::pmr::string>> string_storage_;
+        std::vector<std::pair<std::unique_ptr<std::pmr::string>, std::unique_ptr<std::pmr::string>>> string_storage_;
     };
 
 } // namespace core::b_plus_tree

@@ -12,7 +12,7 @@ using namespace components::sql;
     SECTION(QUERY) {                                                                                                   \
         bool exception_thrown = false;                                                                                 \
         try {                                                                                                          \
-            auto select = linitial(raw_parser(QUERY));                                                                 \
+            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
         } catch (const parser_exception_t& e) {                                                                        \
             exception_thrown = true;                                                                                   \
             REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
@@ -22,8 +22,7 @@ using namespace components::sql;
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
-        auto select = linitial(raw_parser(QUERY));                                                                     \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
         transform::transformer transformer(&resource);                                                                 \
         components::logical_plan::parameter_node_t agg(&resource);                                                     \
         bool exception_thrown = false;                                                                                 \
@@ -42,6 +41,7 @@ using fields = std::vector<std::pair<std::string, v>>;
 
 TEST_CASE("sql::errors") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     TEST_PARSER_ERROR("INVALID QUERY", R"_(syntax error at or near "INVALID")_");
     TEST_PARSER_ERROR("CREATE DATABASE;", R"_(syntax error at or near ";")_");

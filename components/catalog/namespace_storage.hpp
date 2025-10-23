@@ -37,7 +37,8 @@ namespace components::catalog {
 
         struct namespace_info {
             namespace_info(std::pmr::memory_resource* resource)
-                : tables(resource) {}
+                : tables(resource)
+                , computing(resource) {}
 
             std::pmr::map<std::pmr::string, table_metadata> tables;
             std::pmr::map<std::pmr::string, computed_schema> computing;

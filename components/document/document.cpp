@@ -507,7 +507,7 @@ namespace components::document {
     }
 
     document_t::ptr document_t::document_from_json(const std::string& json, document_t::allocator_type* allocator) {
-        auto res = new (allocator->allocate(sizeof(document_t), alignof(document_t))) document_t(allocator, true);
+        auto res = make_document(allocator);
         auto tree = boost::json::parse(json);
         auto obj = res->element_ind_->as_object();
         for (auto& [key, val] : tree.get_object()) {
@@ -520,7 +520,7 @@ namespace components::document {
     document_t::ptr
     document_t::merge(document_t::ptr& document1, document_t::ptr& document2, document_t::allocator_type* allocator) {
         auto is_root = false;
-        auto res = new (allocator->allocate(sizeof(document_t))) document_t(allocator, is_root);
+        auto res = new (allocator->allocate(sizeof(document_t), alignof(document_t))) document_t(allocator, is_root);
         res->ancestors_.push_back(document1);
         res->ancestors_.push_back(document2);
         res->element_ind_.reset(
@@ -912,7 +912,7 @@ namespace components::document {
             }
         }
         assert(size > 0);
-        return {buffer.data(), buffer.data() + size, allocator}; // null terminator is not included
+        return {buffer.data(), size, allocator}; // null terminator is not included
     }
 
     document_ptr make_document(document_t::allocator_type* allocator) {

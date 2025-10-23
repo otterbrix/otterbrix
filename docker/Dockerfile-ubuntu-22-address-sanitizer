@@ -1,0 +1,62 @@
+FROM ubuntu:22.04 as builder
+
+ENV TZ=America/US
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONFAULTHANDLER=1
+
+RUN apt update && \
+    apt upgrade -y && \
+    apt install -y \
+        build-essential \
+        ninja-build \
+        python3-pip \
+        python3-venv \
+        python3-dev curl gnupg apt-transport-https \
+        zlib1g && \
+    apt clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 cmake && \
+       conan profile detect --force && \
+       conan remote add otterbrix http://conan.otterbrix.com
+
+RUN rm /bin/sh && ln -s /bin/bash /bin/sh
+
+WORKDIR /app/build
+COPY ./conanfile.py ./conanfile.py
+RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu17
+
+WORKDIR /app
+COPY ./integration ./integration
+COPY ./cmake ./cmake
+COPY ./components ./components
+COPY ./core ./core
+COPY ./services ./services
+COPY ./CMakeLists.txt ./CMakeLists.txt
+
+WORKDIR /app/build
+
+RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DSANITIZE_ADDRESS=ON && \
+    cmake --build . --target all -- -j $(nproc)
+
+RUN ctest -C Release -V --output-on-failure --timeout 60
+
+RUN cd integration/python/ && pytest -v -s
+
+# Multistage build is faster and resulting image will be smaller
+FROM mcr.microsoft.com/dotnet/sdk:7.0
+WORKDIR /app
+COPY --from=builder /app ./
+
+RUN cd integration/csharp && \
+    dotnet restore ./src/Duckstax.Otterbrix/Duckstax.Otterbrix.csproj && \
+    dotnet restore ./tests/Duckstax.Otterbrix.Tests/Duckstax.Otterbrix.Tests.csproj
+
+RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
+    mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
+    cp ./build/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
+    cp ./build/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so
+
+RUN cd integration/csharp && \
+    dotnet test -c Release

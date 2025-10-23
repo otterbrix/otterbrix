@@ -21,6 +21,7 @@
 
 #include "parser.h"
 #include "gramparse.h"
+#include "pg_functions.h"
 
 /*
 * raw_parser
@@ -28,13 +29,14 @@
 *
 * Returns a list of raw (un-analyzed) parse trees.
 */
-List* raw_parser(const char* str) {
+List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
     core_yyscan_t yyscanner;
     base_yy_extra_type yyextra;
+    yyextra.core_yy_extra.resource = resource;
     int yyresult;
 
     /* initialize the flex scanner */
-    yyscanner = scanner_init(str, &yyextra.core_yy_extra, ScanKeywords, NumScanKeywords);
+    yyscanner = scanner_init(resource, str, &yyextra.core_yy_extra, ScanKeywords, NumScanKeywords);
 
     /* base_yylex() only needs this much initialization */
     yyextra.have_lookahead = false;
@@ -43,7 +45,13 @@ List* raw_parser(const char* str) {
     parser_init(&yyextra);
 
     /* Parse! */
-    yyresult = base_yyparse(yyscanner);
+    try {
+        yyresult = base_yyparse(resource, yyscanner);
+    } catch (const parser_exception_t& e) {
+        // release scanner memory
+        scanner_finish(yyscanner);
+        throw e;
+    }
 
     /* Clean up (release memory) */
     scanner_finish(yyscanner);
@@ -71,7 +79,7 @@ List* raw_parser(const char* str) {
 * the core_YYSTYPE and YYSTYPE representations (which are really the
 * same thing anyway, but notationally they're different).
 */
-int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner) {
+int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, std::pmr::memory_resource* resource, core_yyscan_t yyscanner) {
     base_yy_extra_type* yyextra = pg_yyget_extra(yyscanner);
     int cur_token;
     int next_token;
@@ -85,7 +93,7 @@ int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner) {
         *llocp = yyextra->lookahead_yylloc;
         yyextra->have_lookahead = false;
     } else
-        cur_token = core_yylex(&(lvalp->core_yystype), llocp, yyscanner);
+        cur_token = core_yylex(&(lvalp->core_yystype), llocp, resource, yyscanner);
 
     /* Do we need to look ahead for a possible multiword token? */
     switch (cur_token) {
@@ -96,7 +104,7 @@ int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner) {
             */
             cur_yylval = lvalp->core_yystype;
             cur_yylloc = *llocp;
-            next_token = core_yylex(&(lvalp->core_yystype), llocp, yyscanner);
+            next_token = core_yylex(&(lvalp->core_yystype), llocp, resource, yyscanner);
             switch (next_token) {
                 case FIRST_P:
                     cur_token = NULLS_FIRST;
@@ -124,7 +132,7 @@ int base_yylex(YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner) {
             */
             cur_yylval = lvalp->core_yystype;
             cur_yylloc = *llocp;
-            next_token = core_yylex(&(lvalp->core_yystype), llocp, yyscanner);
+            next_token = core_yylex(&(lvalp->core_yystype), llocp, resource, yyscanner);
             switch (next_token) {
                 case TIME:
                     cur_token = WITH_TIME;

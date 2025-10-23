@@ -36,7 +36,7 @@ namespace components::document::json {
 
         json_trie_node& operator=(const json_trie_node&) = delete;
 
-        json_trie_node* make_deep_copy() const;
+        [[nodiscard]] json_trie_node* make_deep_copy() const;
 
         json_type type() const noexcept;
 
@@ -62,15 +62,16 @@ namespace components::document::json {
 
         bool equals(const json_trie_node* other, bool (*)(const impl::element*, const impl::element*)) const;
 
-        static json_trie_node* merge(json_trie_node* node1, json_trie_node* node2, allocator_type* allocator);
+        static [[nodiscard]] json_trie_node*
+        merge(json_trie_node* node1, json_trie_node* node2, allocator_type* allocator);
 
-        static json_trie_node* create(impl::element value, allocator_type* allocator);
+        static [[nodiscard]] json_trie_node* create(impl::element value, allocator_type* allocator);
 
-        static json_trie_node* create_array(allocator_type* allocator);
+        static [[nodiscard]] json_trie_node* create_array(allocator_type* allocator);
 
-        static json_trie_node* create_object(allocator_type* allocator);
+        static [[nodiscard]] json_trie_node* create_object(allocator_type* allocator);
 
-        static json_trie_node* create_deleter(allocator_type* allocator);
+        static [[nodiscard]] json_trie_node* create_deleter(allocator_type* allocator);
 
         allocator_type* get_allocator() override;
 

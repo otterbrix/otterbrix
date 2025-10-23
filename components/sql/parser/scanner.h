@@ -63,6 +63,7 @@ typedef union core_YYSTYPE {
 * allowing the calling parser to keep some fields of its own in YY_EXTRA.
 */
 typedef struct core_yy_extra_type {
+    std::pmr::memory_resource* resource;
     /*
     * The string the scanner is physically scanning.  We keep this mainly so
     * that we can cheaply compute the offset of the current token (yytext).
@@ -104,10 +105,14 @@ typedef struct core_yy_extra_type {
 typedef void* core_yyscan_t;
 
 /* Entry points in parser/scan.l */
-extern core_yyscan_t
-scanner_init(const char* str, core_yy_extra_type* yyext, const ScanKeyword* keywords, int num_keywords);
+extern core_yyscan_t scanner_init(std::pmr::memory_resource* resourec,
+                                  const char* str,
+                                  core_yy_extra_type* yyext,
+                                  const ScanKeyword* keywords,
+                                  int num_keywords);
 extern void scanner_finish(core_yyscan_t yyscanner);
-extern int core_yylex(core_YYSTYPE* lvalp, YYLTYPE* llocp, core_yyscan_t yyscanner);
+extern int
+core_yylex(core_YYSTYPE* lvalp, YYLTYPE* llocp, std::pmr::memory_resource* resource, core_yyscan_t yyscanner);
 extern int scanner_errposition(int location, core_yyscan_t yyscanner);
 extern void scanner_yyerror(const char* message, core_yyscan_t yyscanner);
 

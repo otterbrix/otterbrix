@@ -53,10 +53,11 @@ jobs:
           export PATH=$PYTHON_PATH:$PYTHON_PATH/bin:$PATH
           echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV 
           echo "PATH=${PATH}" >> $GITHUB_ENV 
+          echo "${PYTHON_PATH}/python3 --version" >> $GITHUB_ENV 
 
       - name: Install system packages
         run: |
-          yum install -y ninja-build python${{ matrix.PYTHON_VERSION }} python3-pip python3-devel wget unzip zip
+          yum install -y ninja-build python3-pip python3-devel wget unzip zip
 
       - name: Set env conan dependencies
         run: |
@@ -73,8 +74,8 @@ jobs:
 
       - name: Download and Install conan dependencies
         run: |
-          python3 -m pip install --user --retries=30 --upgrade pip
-          python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          ${PYTHON_PATH}/python3 -m pip install --user --retries=30 --upgrade pip
+          ${PYTHON_PATH}/python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python3 get_path.py )")

@@ -76,11 +76,11 @@ jobs:
           python${{ matrix.PYTHON_VERSION }} -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
-          mkdir -p $(echo "./$(python3 get_path.py )")
-          conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python3 get_path.py )")
+          mkdir -p $(echo "./$(python{{ matrix.PYTHON_VERSION }} get_path.py )")
+          conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python{{ matrix.PYTHON_VERSION }} get_path.py )")
           
           echo !!!
-          echo "./$(python3 get_path.py )"
+          echo "./$(python{{ matrix.PYTHON_VERSION }} get_path.py )"
           pwd
           ls -alh -R
 

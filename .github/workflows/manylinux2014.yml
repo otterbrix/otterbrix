@@ -28,8 +28,7 @@ jobs:
     steps:
       - id: setVariables
         run: |
-          #echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
-          echo 'matrix=["3.8", "3.9"]' >> $GITHUB_OUTPUT
+          echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
 
   build-wheel:
     name: Build native wheel
@@ -52,8 +51,7 @@ jobs:
           export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp${PYTHON_SHORT_VERSION}
           export PATH=$PYTHON_PATH:$PYTHON_PATH/bin:$PATH
           echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV 
-          echo "PATH=${PATH}" >> $GITHUB_ENV 
-          echo "${PYTHON_PATH}/python3 --version" >> $GITHUB_ENV 
+          echo "PATH=${PATH}" >> $GITHUB_ENV
 
       - name: Install system packages
         run: |
@@ -74,8 +72,8 @@ jobs:
 
       - name: Download and Install conan dependencies
         run: |
-          ${PYTHON_PATH}/python3 -m pip install --user --retries=30 --upgrade pip
-          ${PYTHON_PATH}/python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          $GITHUB_ENV/python3 -m pip install --user --retries=30 --upgrade pip
+          $GITHUB_ENV/python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python3 get_path.py )")

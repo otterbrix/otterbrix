@@ -72,8 +72,8 @@ jobs:
 
       - name: Download and Install conan dependencies
         run: |
-          python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 --upgrade pip
-          python${{ matrix.PYTHON_VERSION }} -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          python3 -m pip install --user --retries=30 --upgrade pip
+          python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python3 get_path.py )")
@@ -93,7 +93,7 @@ jobs:
           cp integration/python/otterbrix/pyproject.toml .
           touch MANIFEST.in
           
-          python3 setup.py bdist_wheel --verbose
+          python${{ matrix.PYTHON_VERSION }} setup.py bdist_wheel --verbose
 
       - name: Repair wheel
         run: |

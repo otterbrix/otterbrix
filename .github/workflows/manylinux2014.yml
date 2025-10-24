@@ -59,6 +59,7 @@ jobs:
 
       - name: Set env conan dependencies
         run: |
+          python3 -m ensurepip --upgrade
           pip3 install --user --retries=30 --upgrade pip
           pip3 install --user --retries=30 conan==2.15.0
 

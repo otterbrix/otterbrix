@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        operating-system: [ubuntu-20.04]
+        operating-system: [ubuntu-22.04]
         python-version: ${{ fromJson(needs.build-info.outputs.python-versions) }}
 
     steps:
@@ -166,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        operating-system: [ubuntu-20.04]
+        operating-system: [ubuntu-22.04]
         python-version: ${{ fromJson(needs.build-info.outputs.python-versions) }}
 
     steps:

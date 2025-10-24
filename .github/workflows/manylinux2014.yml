@@ -72,17 +72,12 @@ jobs:
 
       - name: Download and Install conan dependencies
         run: |
-          python3 -m pip install --user --retries=30 --upgrade pip
-          python3 -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          python3 -m pip3 install --user --retries=30 --upgrade pip
+          python3 -m pip3 install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python3 get_path.py )")
           conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python3 get_path.py )")
-          
-          echo !!!
-          echo "./$(python3 get_path.py )"
-          pwd
-          ls -alh -R
 
       - name: Build wheel
         run: |

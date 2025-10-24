@@ -11,7 +11,7 @@ class OtterbrixConan(ConanFile):
         self.requires("boost/1.87.0", override=True)
         self.requires("fmt/11.1.3@")
         self.requires("spdlog/1.15.1@")
-        self.requires("pybind11/2.10.0@")
+        self.requires("pybind11/2.13.6@")
         self.requires("msgpack-cxx/4.1.1@")
         self.requires("catch2/2.13.7@")
         self.requires("abseil/20230802.1@")
@@ -43,6 +43,8 @@ class OtterbrixConan(ConanFile):
         self.options["actor-zeta/*"].fPIC = True
         self.options["actor-zeta/*"].exceptions_disable = False
         self.options["actor-zeta/*"].rtti_disable = False
+        self.options["boost/*"].header_only = True
+
 
     def validate(self):
         if not check_min_cppstd(self, 17):
@@ -55,12 +57,12 @@ class OtterbrixConan(ConanFile):
         self.copy("*.so*", dst="build_tools", src="lib")
 
     def generate(self):
-        deps = CMakeDeps(self)
-        deps.generate()
-
         tc = CMakeToolchain(self)
         tc.variables["CMAKE_CXX_STANDARD"] = "17"
         tc.generate()
+
+        deps = CMakeDeps(self)
+        deps.generate()
 
     def build(self):
         cmake = CMake(self)

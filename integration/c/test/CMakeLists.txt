@@ -38,7 +38,7 @@ target_link_libraries(
         #CONAN_PKG::libcurl
         ZLIB::ZLIB
         BZip2::BZip2
-        libbacktrace::libbacktrace
+        #libbacktrace::libbacktrace
 
 )
 

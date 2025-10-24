@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)	# target_link_options()
+cmake_minimum_required(VERSION 3.23...3.28)	# target_link_options()
 
 # Highlight this module has been loaded.
 set(Sanitizers_FOUND TRUE)

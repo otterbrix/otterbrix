@@ -1,19 +1,18 @@
 name: manylinux2014
 
-#on:
-#  push:
-#    paths-ignore:
-#      - '**.md'
-#    tags:
-#      - '*'
-#    branches:
-#      - '**'
-#  pull_request:
-#    paths-ignore:
-#      - '**.md'
-#    branches:
-#      - '**'
-
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+    tags:
+      - '*'
+    branches:
+      - '**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+    branches:
+      - '**'
 
 env:
   BUILD_TYPE: Release
@@ -29,12 +28,12 @@ jobs:
     steps:
       - id: setVariables
         run: |
-          echo 'matrix=["3.7", "3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
+          echo 'matrix=["3.8", "3.9", "3.10", "3.11" ]' >> $GITHUB_OUTPUT
 
   build-wheel:
     name: Build native wheel
     runs-on: ubuntu-latest
-    needs: [build-info ]
+    needs: [build-info]
     strategy:
       fail-fast: true
       matrix:
@@ -49,10 +48,10 @@ jobs:
         run: |
           export PYTHON_SHORT_VERSION=$(echo '${{ matrix.PYTHON_VERSION }}' | tr -d '.')
           echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV 
-          export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp$(if [[ $PYTHON_SHORT_VERSION =~ ^3[67]$ ]]; then echo $PYTHON_SHORT_VERSION'm';else echo $PYTHON_SHORT_VERSION; fi )
+          export PYTHON_PATH=/opt/python/cp${PYTHON_SHORT_VERSION}-cp${PYTHON_SHORT_VERSION}
           export PATH=$PYTHON_PATH:$PYTHON_PATH/bin:$PATH
           echo "PYTHON_PATH=${PYTHON_PATH}" >> $GITHUB_ENV 
-          echo "PATH=${PATH}" >> $GITHUB_ENV 
+          echo "PATH=${PATH}" >> $GITHUB_ENV
 
       - name: Install system packages
         run: |
@@ -60,38 +59,39 @@ jobs:
 
       - name: Set env conan dependencies
         run: |
-          pip3 install --retries=30 conan==2.20.0 cmake
+          pip install --user --retries=30 --upgrade pip
+          pip install --user --retries=30 conan==2.15.0
+
+      - name: Add user local bin to PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Use conan
+        run: |
           conan profile detect --force
           conan remote add otterbrix http://conan.otterbrix.com
 
       - name: Download and Install conan dependencies
         run: |
-          pwd
-          ls
-          conan install conanfile.py --build missing  \
-          --build fmt \
-          --build spdlog  \
-          -s build_type=Release \
-          -s compiler.cppstd=gnu17 \
-          -g CMakeDeps -g CMakeToolchain
+          python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 --upgrade pip
+          python${{ matrix.PYTHON_VERSION }} -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          
+          cp integration/python/otterbrix/get_path.py .
+          mkdir -p $(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
+          conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
 
       - name: Build wheel
         run: |
           cp integration/python/otterbrix/setup.py .
           cp integration/python/otterbrix/pyproject.toml .
-          cp integration/python/otterbrix/get_path.py .
           touch MANIFEST.in
-
-          python3 -m pip install wheel setuptools scikit-build==0.16.6 pytest==6.2.5
-          mkdir -p $(echo "./$(python3 get_path.py )")
-          conan install conanfile.py --build missing -s build_type=Release -if=$(echo "./$(python3 get_path.py )")
-          ls
-          python3 setup.py bdist_wheel --verbose
+        
+          
+          python${{ matrix.PYTHON_VERSION }} setup.py bdist_wheel --verbose
 
       - name: Repair wheel
         run: |
           for whl in dist/otterbrix*.whl; do
-            auditwheel repair ${whl} -w ./work/dist/ 
+            auditwheel repair ${whl} -w ./work/dist/
             rm ${whl};
           done
 
@@ -104,17 +104,16 @@ jobs:
   test-wheel:
     name: Test wheel
     runs-on: ${{ matrix.operating-system }}
-    needs: [ build-wheel, build-info ]
+    needs: [build-wheel, build-info]
     strategy:
       fail-fast: true
       matrix:
-        operating-system: [ ubuntu-20.04 ]
+        operating-system: [ubuntu-22.04]
         python-version: ${{ fromJson(needs.build-info.outputs.python-versions) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
@@ -124,14 +123,13 @@ jobs:
       - name: Set env
         run: |
           export PYTHON_SHORT_VERSION=$(echo '${{ matrix.python-version }}' | tr -d '.')
-          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV 
+          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV
 
       - name: Install pytest
         run: |
-          sudo apt update 
+          sudo apt update
           sudo apt install -y python3-pip python3-venv
           pip3 install --retries=30 pytest==6.2.5
-
 
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -160,12 +158,12 @@ jobs:
   upload-wheel:
     name: Upload wheel
     runs-on: ${{ matrix.operating-system }}
-    needs: [ test-wheel, build-info ]
+    needs: [test-wheel, build-info]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
     strategy:
       fail-fast: false
       matrix:
-        operating-system: [ ubuntu-20.04 ]
+        operating-system: [ubuntu-22.04]
         python-version: ${{ fromJson(needs.build-info.outputs.python-versions) }}
 
     steps:
@@ -180,11 +178,11 @@ jobs:
       - name: Set env
         run: |
           export PYTHON_SHORT_VERSION=$(echo '${{ matrix.python-version }}' | tr -d '.')
-          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV 
+          echo "PYTHON_SHORT_VERSION=${PYTHON_SHORT_VERSION}" >> $GITHUB_ENV
 
       - name: Install pip3
         run: |
-          sudo apt update 
+          sudo apt update
           sudo apt install -y python3-pip
 
       - name: Download artifact
@@ -205,7 +203,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        working-directory: ./app
         run: |
           echo "Pretend to upload"
           twine upload --skip-existing *
-        working-directory: ./app

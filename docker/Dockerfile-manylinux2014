@@ -1,10 +1,11 @@
-FROM quay.io/pypa/manylinux2014_x86_64 as build_wheel
+FROM quay.io/pypa/manylinux_2_28_x86_64 as build_wheel
 
 ENV PYTHONFAULTHANDLER=1
 
-RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip devtoolset-10-binutils devtoolset-10-gcc devtoolset-10-gcc-c++
+RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip
 
-RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --upgrade pip && \
+       pip3 install --no-cache-dir setuptools wheel scikit-build conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -15,7 +16,8 @@ RUN conan install . --build missing  \
     --build fmt \
     --build spdlog  \
     -s build_type=Release \
-    -s compiler.cppstd=gnu17
+    -s compiler.cppstd=gnu17 \
+    -s compiler.libcxx=libstdc++11
 
 COPY ./integration ./integration
 COPY ./cmake ./cmake
@@ -32,10 +34,10 @@ RUN cp integration/python/otterbrix/* .
 
 RUN   PYBIN=(/opt/python/*/bin) && \
       for BIN in "${PYBIN[@]}";  do  \
-      if [[  ${BIN} == *"cp311"* ]]; then \
-          ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build==0.16.4  && \
+      if [[  ${BIN} == *"cp310"* ]]; then \
+          ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build  && \
           mkdir -p $(echo "./$(${BIN}/python3 get_path.py )") && \
-          conan install . -s build_type=Release -g CMakeDeps -if=$(echo "./$(${BIN}/python3 get_path.py )") && \
+          conan install . -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -of=$(echo "./$(${BIN}/python3 get_path.py )") && \
           ${BIN}/python3 setup.py bdist_wheel  --verbose -DDEV_MODE=ON && \
           #${BIN}/python3 -m pip install --no-index --find-links . dist/otterbrix-*.whl  && \
           cd $(echo "./$(${BIN}/python3 get_path.py )") && \
@@ -51,7 +53,7 @@ RUN for whl in dist/otterbrix*.whl; do \
         rm ${whl}; \
     done
 
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 RUN apt update && \
     apt upgrade -y && \
@@ -62,10 +64,10 @@ RUN apt update && \
 
 WORKDIR /app
 
-COPY --from=build_wheel /app/work/dist/otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl /app/otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+COPY --from=build_wheel /app/work/dist/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /app/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 COPY ./integration  ./integration
 
-RUN pip3 install ./otterbrix-0.4.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+RUN pip3 install ./otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 RUN python3 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
 RUN python3 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
 RUN pytest -v -s

@@ -7,10 +7,10 @@ requires = [
     "ninja; platform_system!='Windows'",
 ]
 
-build-backend = "scikit_build_core.build"
+build-backend = "setuptools.build_meta"
 
 [tool.scikit-build]
-cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake"]
+cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=./cmake-build/build/Release/generators"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

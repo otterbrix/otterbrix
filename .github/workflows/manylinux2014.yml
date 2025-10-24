@@ -59,9 +59,8 @@ jobs:
 
       - name: Set env conan dependencies
         run: |
-          python3 -m ensurepip --upgrade
-          pip3 install --user --retries=30 --upgrade pip
-          pip3 install --user --retries=30 conan==2.15.0
+          pip install --user --retries=30 --upgrade pip
+          pip install --user --retries=30 conan==2.15.0
 
       - name: Add user local bin to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -73,8 +72,8 @@ jobs:
 
       - name: Download and Install conan dependencies
         run: |
-          python3 -m pip3 install --user --retries=30 --upgrade pip
-          python3 -m pip3 install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          python${{ matrix.PYTHON_VERSION }} -m pip3 install --user --retries=30 --upgrade pip
+          python${{ matrix.PYTHON_VERSION }} -m pip3 install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python3 get_path.py )")

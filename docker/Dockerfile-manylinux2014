@@ -34,7 +34,7 @@ RUN cp integration/python/otterbrix/* .
 
 RUN   PYBIN=(/opt/python/*/bin) && \
       for BIN in "${PYBIN[@]}";  do  \
-      if [[  ${BIN} == *"cp311"* ]]; then \
+      if [[  ${BIN} == *"cp310"* ]]; then \
           ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build  && \
           mkdir -p $(echo "./$(${BIN}/python3 get_path.py )") && \
           conan install . -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -of=$(echo "./$(${BIN}/python3 get_path.py )") && \
@@ -53,27 +53,21 @@ RUN for whl in dist/otterbrix*.whl; do \
         rm ${whl}; \
     done
 
-FROM ubuntu:24.04
-
-RUN apt-get update && apt-get install -y software-properties-common curl gnupg2 && \
-    add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get update && \
-    apt-get install -y python3.11 python3.11-dev python3.11-venv && \
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+FROM ubuntu:22.04
 
 RUN apt update && \
     apt upgrade -y && \
     apt install -y \
         python3-pip \
         python3-venv && \
-    pip3 install --break-system-packages --no-cache-dir pytest==6.2.5
+    pip3 install --no-cache-dir pytest==6.2.5
 
 WORKDIR /app
 
-COPY --from=build_wheel /app/work/dist/otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /app/otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+COPY --from=build_wheel /app/work/dist/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /app/otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 COPY ./integration  ./integration
 
-RUN pip3 install --break-system-packages ./otterbrix-1.0.1a9-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-RUN python3.11 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
-RUN python3.11 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
+RUN pip3 install ./otterbrix-1.0.1a9-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+RUN python3 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+RUN python3 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
 RUN pytest -v -s

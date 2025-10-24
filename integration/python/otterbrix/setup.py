@@ -6,7 +6,7 @@ from pathlib import Path
 # Get the absolute path to the toolchain file
 
 file_name = "conan_toolchain.cmake"
-found_files = list(Path(skbuild.constants.SKBUILD_DIR()).rglob(file_name))
+found_files = list(Path(skbuild.constants.CMAKE_BUILD_DIR()).rglob(file_name))
 
 path_to_generator = None
 

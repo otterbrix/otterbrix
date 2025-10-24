@@ -81,9 +81,6 @@ jobs:
 
       - name: Build wheel
         run: |
-          pwd
-          ls
-          
           cp integration/python/otterbrix/setup.py .
           cp integration/python/otterbrix/pyproject.toml .
           touch MANIFEST.in

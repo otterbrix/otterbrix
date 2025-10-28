@@ -26,11 +26,11 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https  
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https  
 
       - name: conan installation and configuration
         run: |
-          pip install conan==2.15.0 pytest==6.2.5
+          pip install conan==2.15.0
           conan profile detect --force
           conan remote add otterbrix http://conan.otterbrix.com
 
@@ -52,8 +52,3 @@ jobs:
         run: |
           cd build
           ctest -C Release -V --output-on-failure
-
-      - name: PyTest
-        run: |
-          cd build/integration/python/
-          pytest

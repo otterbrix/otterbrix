@@ -45,7 +45,7 @@ jobs:
           CC: gcc
         run: |
           cd build
-          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DSANITIZE_ADDRESS=ON ..
+          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON ..
           cmake --build .
 
       - name: Test

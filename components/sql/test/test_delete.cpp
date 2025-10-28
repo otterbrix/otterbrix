@@ -5,19 +5,21 @@
 #include <components/sql/transformer/utils.hpp>
 
 using namespace components::sql;
+using namespace components::sql::transform;
 
 #define TEST_SIMPLE_DELETE(QUERY, RESULT, PARAMS)                                                                      \
     SECTION(QUERY) {                                                                                                   \
         auto resource = std::pmr::synchronized_pool_resource();                                                        \
         transform::transformer transformer(&resource);                                                                 \
-        components::logical_plan::parameter_node_t agg(&resource);                                                     \
         auto select = linitial(raw_parser(QUERY));                                                                     \
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                              \
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
+        auto node = result.node;                                                                                       \
+        auto agg = result.params;                                                                                      \
         REQUIRE(node->type() == components::logical_plan::node_type::delete_t);                                        \
         REQUIRE(node->to_string() == RESULT);                                                                          \
-        REQUIRE(agg.parameters().parameters.size() == PARAMS.size());                                                  \
+        REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
-            REQUIRE(agg.parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                 \
+            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
         }                                                                                                              \
     }
 

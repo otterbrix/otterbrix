@@ -25,10 +25,9 @@ using namespace components::sql;
         auto resource = std::pmr::synchronized_pool_resource();                                                        \
         auto select = linitial(raw_parser(QUERY));                                                                     \
         transform::transformer transformer(&resource);                                                                 \
-        components::logical_plan::parameter_node_t agg(&resource);                                                     \
         bool exception_thrown = false;                                                                                 \
         try {                                                                                                          \
-            auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                          \
+            auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                              \
         } catch (const parser_exception_t& e) {                                                                        \
             exception_thrown = true;                                                                                   \
             REQUIRE(std::string_view{e.what()} == RESULT);                                                             \

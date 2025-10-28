@@ -75,8 +75,8 @@ namespace otterbrix {
         wait(approved_session);
     }
 
-    auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
-        -> cursor_t_ptr {
+    auto wrapper_dispatcher_t::create_database(const session_id_t& session,
+                                               const database_name_t& database) -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_create_database(resource(), {database, {}});
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
@@ -290,12 +290,19 @@ namespace otterbrix {
 
     cursor_t_ptr wrapper_dispatcher_t::execute_sql(const components::session::session_id_t& session,
                                                    const std::string& query) {
+        using namespace components::sql::transform;
+
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
-        auto params = components::logical_plan::make_parameter_node(resource());
         auto parse_result = raw_parser(query.c_str())->lst.front().data;
-        auto node =
-            transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result), params.get());
-        return execute_plan(session, node, params);
+        if (auto result = transformer_.transform(pg_cell_to_node_cast(parse_result)).finalize();
+            std::holds_alternative<bind_error>(result)) {
+            return make_cursor(resource(),
+                               components::cursor::error_code_t::sql_parse_error,
+                               std::get<bind_error>(std::move(result)).what());
+        } else {
+            auto view = std::get<result_view>(std::move(result));
+            return execute_plan(session, std::move(view.node), std::move(view.params));
+        }
     }
 
     auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,

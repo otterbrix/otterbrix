@@ -1,43 +1,79 @@
-#include <components/sql/transformer/impl/transfrom_common.hpp>
-
 #include <components/logical_plan/node_function.hpp>
+#include <components/sql/transformer/transformer.hpp>
 
 using namespace components::expressions;
 
-namespace components::sql::transform::impl {
-    std::pair<document::value_t, std::string> get_value(Node* node, document::impl::base_document* tape) {
+namespace components::sql::transform {
+    std::string transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
                 bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return {document::value_t(tape, is_true), (is_true ? "true" : "false")};
+                return is_true ? "true" : "false";
+            }
+            case T_A_Const: {
+                auto value = &(pg_ptr_cast<A_Const>(node)->val);
+                switch (nodeTag(value)) {
+                    case T_String:
+                        return strVal(value);
+                    case T_Integer:
+                        return std::to_string(intVal(value));
+                    case T_Float:
+                        return strVal(value);
+                }
+            }
+            case T_ColumnRef:
+                return strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data);
+            case T_ParamRef:
+                return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
+        }
+        return {};
+    }
+
+    document::value_t transformer::get_value(Node* node, document::impl::base_document* tape) {
+        switch (nodeTag(node)) {
+            case T_TypeCast: {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
+                return document::value_t(tape, is_true);
             }
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
                     case T_String: {
                         std::string str = strVal(value);
-                        return {document::value_t(tape, str), str};
+                        return document::value_t(tape, str);
                     }
-                    case T_Integer: {
-                        int64_t int_value = intVal(value);
-                        return {document::value_t(tape, int_value), std::to_string(int_value)};
-                    }
-                    case T_Float: {
-                        return {document::value_t(tape, static_cast<float>(floatVal(value))), strVal(value)};
-                    }
+                    case T_Integer:
+                        return document::value_t(tape, intVal(value));
+                    case T_Float:
+                        return document::value_t(tape, static_cast<float>(floatVal(value)));
                 }
             }
-            case T_ColumnRef: {
-                std::string str = strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data);
-                return {document::value_t(tape, str), str};
-            }
+            case T_ColumnRef:
+                return document::value_t(tape, strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
         }
-        return {document::value_t(tape, nullptr), {}};
+        return document::value_t(tape, nullptr);
     }
 
-    compare_expression_ptr
-    transform_a_expr(logical_plan::parameter_node_t* params, A_Expr* node, logical_plan::node_ptr* func_node) {
+    core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {
+        if (nodeTag(node) == T_ParamRef) {
+            auto ref = pg_ptr_cast<ParamRef>(node);
+            if (auto it = parameter_map_.find(ref->number); it != parameter_map_.end()) {
+                return it->second;
+            } else {
+                auto id = params->add_parameter(document::value_t(params->parameters().tape(), nullptr));
+                parameter_map_.emplace(ref->number, id);
+                return id;
+            }
+        }
+
+        return params->add_parameter(get_value(node, params->parameters().tape()));
+    }
+
+    compare_expression_ptr transformer::transform_a_expr(logical_plan::parameter_node_t* params,
+                                                         A_Expr* node,
+                                                         logical_plan::node_ptr* func_node) {
         switch (node->kind) {
             case AEXPR_AND: // fall-through
             case AEXPR_OR: {
@@ -82,10 +118,6 @@ namespace components::sql::transform::impl {
                 return expr;
             }
             case AEXPR_OP: {
-                assert(nodeTag(node) == T_A_Indirection || nodeTag(node->lexpr) == T_ColumnRef ||
-                       nodeTag(node->rexpr) == T_ColumnRef || nodeTag(node->lexpr) == T_A_Const ||
-                       nodeTag(node->rexpr) == T_A_Const || nodeTag(node->lexpr) == T_TypeCast ||
-                       nodeTag(node->rexpr) == T_TypeCast);
                 if (nodeTag(node) == T_A_Indirection) {
                     return transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node));
                 }
@@ -98,22 +130,26 @@ namespace components::sql::transform::impl {
                                                        components::expressions::key_t{key_left},
                                                        components::expressions::key_t{key_right});
                     }
-                    return make_compare_expression(
-                        params->parameters().resource(),
-                        get_compare_type(strVal(node->name->lst.front().data)),
-                        // TODO: deduce expression side
-                        side_t::undefined,
-                        components::expressions::key_t{key_left},
-                        params->add_parameter(get_value(node->rexpr, params->parameters().tape()).first));
+                    return make_compare_expression(params->parameters().resource(),
+                                                   get_compare_type(strVal(node->name->lst.front().data)),
+                                                   // TODO: deduce expression side
+                                                   side_t::undefined,
+                                                   components::expressions::key_t{key_left},
+                                                   add_param_value(node->rexpr, params));
                 } else {
+                    if (nodeTag(node->rexpr) != T_ColumnRef) {
+                        throw parser_exception_t(
+                            {"Unsupported expression: at least one side must be a column reference"},
+                            {});
+                    }
+
                     auto key = strVal(pg_ptr_cast<ColumnRef>(node->rexpr)->fields->lst.back().data);
-                    return make_compare_expression(
-                        params->parameters().resource(),
-                        get_compare_type(strVal(node->name->lst.back().data)),
-                        // TODO: deduce expression side
-                        side_t::undefined,
-                        components::expressions::key_t{key},
-                        params->add_parameter(get_value(node->lexpr, params->parameters().tape()).first));
+                    return make_compare_expression(params->parameters().resource(),
+                                                   get_compare_type(strVal(node->name->lst.back().data)),
+                                                   // TODO: deduce expression side
+                                                   side_t::undefined,
+                                                   components::expressions::key_t{key},
+                                                   add_param_value(node->rexpr, params));
                 }
             }
             case AEXPR_NOT: {
@@ -142,8 +178,8 @@ namespace components::sql::transform::impl {
                 throw std::runtime_error("Unsupported node type: " + expr_kind_to_string(node->kind));
         }
     }
-    components::expressions::compare_expression_ptr transform_a_indirection(logical_plan::parameter_node_t* params,
-                                                                            A_Indirection* node) {
+    components::expressions::compare_expression_ptr
+    transformer::transform_a_indirection(logical_plan::parameter_node_t* params, A_Indirection* node) {
         if (node->arg->type == T_A_Expr) {
             return transform_a_expr(params, pg_ptr_cast<A_Expr>(node->arg));
         } else if (node->arg->type == T_A_Indirection) {
@@ -153,20 +189,20 @@ namespace components::sql::transform::impl {
         }
     }
 
-    logical_plan::node_ptr transform_function(RangeFunction& node, logical_plan::parameter_node_t* params) {
+    logical_plan::node_ptr transformer::transform_function(RangeFunction& node,
+                                                           logical_plan::parameter_node_t* params) {
         auto func_call = pg_ptr_cast<FuncCall>(pg_ptr_cast<List>(node.functions->lst.front().data)->lst.front().data);
         return transform_function(*func_call, params);
     }
 
-    logical_plan::node_ptr transform_function(FuncCall& node, logical_plan::parameter_node_t* params) {
+    logical_plan::node_ptr transformer::transform_function(FuncCall& node, logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node.funcname->lst.front().data);
         std::pmr::vector<core::parameter_id_t> args;
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
-            auto v = impl::get_value(pg_ptr_cast<Node>(arg.data), params->parameters().tape());
-            args.emplace_back(params->add_parameter(v.first));
+            args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
         }
         return logical_plan::make_node_function(params->parameters().resource(), std::move(funcname), std::move(args));
     }
 
-} // namespace components::sql::transform::impl
+} // namespace components::sql::transform

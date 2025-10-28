@@ -108,18 +108,16 @@ struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
     }
 
     void execute_sql(const std::string& query) {
-        auto params = components::logical_plan::make_parameter_node(resource());
         auto parse_result = linitial(raw_parser(query.c_str()));
-
-        auto node =
-            transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result), params.get());
+        auto view = std::get<components::sql::transform::result_view>(
+            transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         actor_zeta::send(manager_dispatcher_,
                          address(),
                          dispatcher::handler_id(dispatcher::route::execute_plan),
                          session_id_t{},
-                         std::move(node),
-                         std::move(params));
+                         std::move(view.node),
+                         std::move(view.params));
     }
 
 private:

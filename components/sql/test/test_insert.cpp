@@ -1,23 +1,22 @@
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
-#include <components/logical_plan/node_insert.hpp>
-#include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
 using namespace components::sql;
+using namespace components::sql::transform;
 
 TEST_CASE("sql::insert_into") {
     auto resource = std::pmr::synchronized_pool_resource();
     transform::transformer transformer(&resource);
 
     SECTION("insert into with TestDatabase") {
-        components::logical_plan::parameter_node_t agg(&resource);
         auto select =
             linitial(raw_parser("INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "testdatabase");
         REQUIRE(node->collection_name() == "testcollection");
@@ -32,9 +31,9 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into without TestDatabase") {
-        components::logical_plan::parameter_node_t agg(&resource);
         auto select = linitial(raw_parser("INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -49,10 +48,10 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into with quoted") {
-        components::logical_plan::parameter_node_t agg(&resource);
         auto select =
             linitial(raw_parser(R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -67,14 +66,14 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into multi-documents") {
-        components::logical_plan::parameter_node_t agg(&resource);
         auto select = linitial(raw_parser("INSERT INTO TestCollection (id, name, count) VALUES "
                                           "(1, 'Name1', 1), "
                                           "(2, 'Name2', 2), "
                                           "(3, 'Name3', 3), "
                                           "(4, 'Name4', 4), "
                                           "(5, 'Name5', 5);"));
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -94,12 +93,12 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert from select") {
-        components::logical_plan::parameter_node_t agg(&resource);
         auto select = linitial(raw_parser(R"_(INSERT INTO table2 (column1, column2, column3)
 SELECT column1, column2, column3
 FROM table1
 WHERE condition = true;)_"));
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "table2");

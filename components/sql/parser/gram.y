@@ -13994,7 +13994,7 @@ c_expr:		columnref								{ $$ = $1; }
 					ParamRef *p = makeNode(ParamRef);
 					p->number = $1;
 					p->location = @1;
-					if ($2)
+					if ($2 != NIL)
 					{
 						A_Indirection *n = makeNode(A_Indirection);
 						n->arg = (Node *) p;
@@ -14006,7 +14006,7 @@ c_expr:		columnref								{ $$ = $1; }
 				}
 			| '(' a_expr ')' opt_indirection
 				{
-					if ($4)
+					if ($4 != NIL)
 					{
 						A_Indirection *n = makeNode(A_Indirection);
 						n->arg = $2;

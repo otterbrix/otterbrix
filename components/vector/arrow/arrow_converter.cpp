@@ -25,12 +25,12 @@ namespace components::vector::arrow {
         *out_array = appender.finalize();
     }
 
-    std::unique_ptr<char> add_name(const std::string& name) {
-        auto name_ptr = std::make_unique<char>(name.size() + 1);
+    std::unique_ptr<char[]> add_name(const std::string& name) {
+        auto name_ptr = std::make_unique<char[]>(name.size() + 1);
         for (size_t i = 0; i < name.size(); i++) {
-            name_ptr.get()[i] = name[i];
+            name_ptr[i] = name[i];
         }
-        name_ptr.get()[name.size()] = '\0';
+        name_ptr[name.size()] = '\0';
         return name_ptr;
     }
 
@@ -39,9 +39,9 @@ namespace components::vector::arrow {
         std::vector<ArrowSchema*> children_ptrs;
         std::list<std::vector<ArrowSchema>> nested_children;
         std::list<std::vector<ArrowSchema*>> nested_children_ptr;
-        std::vector<std::unique_ptr<char>> owned_type_names;
-        std::vector<std::unique_ptr<char>> owned_column_names;
-        std::vector<std::unique_ptr<char>> metadata_info;
+        std::vector<std::unique_ptr<char[]>> owned_type_names;
+        std::vector<std::unique_ptr<char[]>> owned_column_names;
+        std::vector<std::unique_ptr<char[]>> metadata_info;
     };
 
     static void release_otterbrix_arrow_schema(ArrowSchema* schema) {

@@ -40,7 +40,7 @@ RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_to
     -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DSANITIZE_ADDRESS=ON && \
     cmake --build . --target all -- -j $(nproc)
 
-RUN ctest -C Release -V --output-on-failure --timeout 60
+RUN ctest -C Release -V --output-on-failure --timeout 120
 
 RUN cd integration/python/ && pytest -v -s
 

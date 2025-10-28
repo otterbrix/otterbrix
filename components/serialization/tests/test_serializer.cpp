@@ -159,15 +159,13 @@ TEST_CASE("serialization::logical_plan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return components::document::value_t{tape.get(), value}; };
-    auto node_delete = make_node_delete_many(&resource,
-                                             {database_name, collection_name},
-                                             make_node_match(&resource,
-                                                             {database_name, collection_name},
-                                                             make_compare_expression(&resource,
-                                                                                     compare_type::gt,
-                                                                                     side_t::left,
-                                                                                     key{"count"},
-                                                                                     core::parameter_id_t{1})));
+    auto node_delete = make_node_delete_many(
+        &resource,
+        {database_name, collection_name},
+        make_node_match(
+            &resource,
+            {database_name, collection_name},
+            make_compare_expression(&resource, compare_type::gt, side_t::left, key{"count"}, core::parameter_id_t{1})));
     auto params = make_parameter_node(&resource);
     params->add_parameter(core::parameter_id_t{1}, new_value(90));
     {

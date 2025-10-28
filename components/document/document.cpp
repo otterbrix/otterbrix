@@ -912,7 +912,7 @@ namespace components::document {
             }
         }
         assert(size > 0);
-        return {buffer.data(), size, allocator}; // null terminator is not included
+        return {buffer.data(), static_cast<size_t>(size), allocator}; // null terminator is not included
     }
 
     document_ptr make_document(document_t::allocator_type* allocator) {

@@ -17,6 +17,7 @@ message(STATUS "ARCH : ${CMAKE_SYSTEM_NAME}")
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBOOST_ASIO_HAS_MOVE -DEXCEPTIONS_DISABLE=OFF " CACHE STRING "compile flags" FORCE)
 
 option(DEV_MODE "developer mode" OFF)
+option(ENABLE_ASAN "address sanitizer" OFF)
 option(EXAMPLE "Example" OFF)
 option(ALLOW_BENCHMARK "Allow benchmark" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
@@ -77,6 +78,11 @@ endif ()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 find_package(Sanitizers REQUIRED)
 
+if (ENABLE_ASAN)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+endif()
+
 # TODO remove
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=thread")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
@@ -97,12 +103,23 @@ find_package(spdlog 1.15.1 REQUIRED)
 find_package(pybind11 2.10.0 REQUIRED)
 find_package(msgpack 4.1.1 REQUIRED)
 find_package(Catch2 2.13.7 REQUIRED)
-find_package(absl 20250814.0 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
 find_package(ZLIB 1.2.12 REQUIRED)
 find_package(BZip2 1.0.8 REQUIRED)
 find_package(magic_enum 0.8.1 REQUIRED)
 find_package(actor-zeta REQUIRED)
+
+if (ENABLE_ASAN)
+    # build abseil-cpp locally to avoid ABI issues
+    include(FetchContent)
+    FetchContent_Declare(
+            absl
+            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20250814.0.zip
+    )
+    FetchContent_MakeAvailable(absl)
+else()
+    find_package(absl 20250814.0 REQUIRED)
+endif()
 
 
 # conan

@@ -12,7 +12,7 @@ class OtterbrixConan(ConanFile):
         self.requires("fmt/11.1.3@")
         self.requires("spdlog/1.15.1@")
         self.requires("pybind11/2.13.6@")
-        self.requires("msgpack-cxx/7.0.0@")
+        self.requires("msgpack-cxx/4.1.1@")
         self.requires("catch2/2.13.7@")
         self.requires("abseil/20250814.0@")
         self.requires("benchmark/1.6.1@")

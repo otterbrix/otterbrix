@@ -15,10 +15,10 @@ namespace test {
         return enumerate(std::make_index_sequence<Size>());
     }
 
-    void create_single_column_table(const collection_full_name_t& name,
-                                    components::types::complex_logical_type log_t,
-                                    components::catalog::catalog& cat,
-                                    std::pmr::memory_resource* resource);
+    components::catalog::catalog_error create_single_column_table(const collection_full_name_t& name,
+                                                                  components::types::complex_logical_type log_t,
+                                                                  components::catalog::catalog& cat,
+                                                                  std::pmr::memory_resource* resource);
 
     components::types::logical_type front_cursor_type(components::cursor::cursor_t_ptr cursor);
 } // namespace test

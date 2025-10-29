@@ -10,10 +10,9 @@ using namespace components::expressions;
 
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS, FIELDS)                                                              \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
         transform::transformer transformer(&resource);                                                                 \
         components::logical_plan::parameter_node_t agg(&resource);                                                     \
-        auto select = linitial(raw_parser(QUERY));                                                                     \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
         auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                              \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg.parameters().parameters.size() == PARAMS.size());                                                  \
@@ -32,6 +31,7 @@ using fields = std::pmr::vector<update_expr_ptr>;
 
 TEST_CASE("sql::update") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -82,6 +82,7 @@ TEST_CASE("sql::update") {
 
 TEST_CASE("sql::update_where") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -139,6 +140,7 @@ TEST_CASE("sql::update_where") {
 
 TEST_CASE("sql::update_from") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 

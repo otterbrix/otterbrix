@@ -1,0 +1,54 @@
+name: ubuntu 22.04 address sanitizer
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  run:
+    name: Run
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        python-version: [3.8]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https  
+
+      - name: conan installation and configuration
+        run: |
+          pip install conan==2.15.0
+          conan profile detect --force
+          conan remote add otterbrix http://conan.otterbrix.com
+
+      - name: download dependencies
+        run: |
+          mkdir build && cd build
+          cp ../conanfile.py .
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu17
+
+      - name: build
+        env:
+          CC: gcc
+        run: |
+          cd build
+          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON ..
+          cmake --build .
+
+      - name: Test
+        run: |
+          cd build
+          ctest -C Release -V --output-on-failure

@@ -114,4 +114,5 @@ TEST_CASE("data_chunk to arrow") {
             REQUIRE(chunk.value(i, j) == res.value(i, j));
         }
     }
+    schema.release(&schema);
 }

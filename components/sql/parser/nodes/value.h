@@ -51,9 +51,9 @@ typedef struct Value {
 #define floatVal(v) atof(((Value*) (v))->val.str)
 #define strVal(v) ((reinterpret_cast<Value*>(v))->val.str)
 
-extern Value* makeInteger(long i);
-extern Value* makeFloat(char* numericStr);
-extern Value* makeString(char* str);
-extern Value* makeBitString(char* str);
+extern Value* makeInteger(std::pmr::memory_resource* resource, long i);
+extern Value* makeFloat(std::pmr::memory_resource* resource, char* numericStr);
+extern Value* makeString(std::pmr::memory_resource* resource, char* str);
+extern Value* makeBitString(std::pmr::memory_resource* resource, char* str);
 
 #endif /* VALUE_H */

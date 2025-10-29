@@ -13,10 +13,17 @@
 */
 #pragma once
 #include "parsenodes.h"
+#include <memory_resource>
 
-extern A_Expr* makeA_Expr(A_Expr_Kind kind, List* name, Node* lexpr, Node* rexpr, int location);
+extern A_Expr*
+makeA_Expr(std::pmr::memory_resource* resource, A_Expr_Kind kind, List* name, Node* lexpr, Node* rexpr, int location);
 
-extern A_Expr* makeSimpleA_Expr(A_Expr_Kind kind, char* name, Node* lexpr, Node* rexpr, int location);
+extern A_Expr* makeSimpleA_Expr(std::pmr::memory_resource* resource,
+                                A_Expr_Kind kind,
+                                char* name,
+                                Node* lexpr,
+                                Node* rexpr,
+                                int location);
 
 //extern Var *makeVar(Index varno,
 //                   AttrNumber varattno,
@@ -61,11 +68,11 @@ extern A_Expr* makeSimpleA_Expr(A_Expr_Kind kind, char* name, Node* lexpr, Node*
 //extern RelabelType *makeRelabelType(Expr *arg, Oid rtype, int32_t rtypmod,
 //                                   Oid rcollid, CoercionForm rformat);
 
-extern RangeVar* makeRangeVar(char* schemaname, char* relname, int location);
+extern RangeVar* makeRangeVar(std::pmr::memory_resource* resource, char* schemaname, char* relname, int location);
 
-extern TypeName* makeTypeName(char* typnam);
+extern TypeName* makeTypeName(std::pmr::memory_resource* resource, char* typnam);
 
-extern TypeName* makeTypeNameFromNameList(List* names);
+extern TypeName* makeTypeNameFromNameList(std::pmr::memory_resource* resource, List* names);
 //extern TypeName *makeTypeNameFromOid(Oid typeOid, int32_t typmod);
 
 //extern ColumnDef *makeColumnDef(const char *colname,
@@ -74,8 +81,12 @@ extern TypeName* makeTypeNameFromNameList(List* names);
 //extern FuncExpr *makeFuncExpr(Oid funcid, Oid rettype, List *args,
 //                             Oid funccollid, Oid inputcollid, CoercionForm fformat);
 
-extern FuncCall* makeFuncCall(List* name, List* args, int location);
+extern FuncCall* makeFuncCall(std::pmr::memory_resource* resource, List* name, List* args, int location);
 
-extern DefElem* makeDefElem(char* name, Node* arg);
+extern DefElem* makeDefElem(std::pmr::memory_resource* resource, char* name, Node* arg);
 
-extern DefElem* makeDefElemExtended(char* nameSpace, char* name, Node* arg, DefElemAction defaction);
+extern DefElem* makeDefElemExtended(std::pmr::memory_resource* resource,
+                                    char* nameSpace,
+                                    char* name,
+                                    Node* arg,
+                                    DefElemAction defaction);

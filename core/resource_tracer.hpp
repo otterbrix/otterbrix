@@ -5,12 +5,12 @@
 static inline size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
 
 template<class memory_pool_t>
-class MemoryTracoutesource : public memory_pool_t {
+class memory_tracer_t : public memory_pool_t {
 public:
-    MemoryTracoutesource()
+    memory_tracer_t()
         : memory_pool_t() {}
 
-    virtual ~MemoryTracoutesource() {
+    virtual ~memory_tracer_t() {
         std::cout << "total allocated bytes: " << allocated_ << std::endl;
         std::cout << "total deallocated bytes: " << deallocated_ << std::endl;
         std::cout << "missed pointers count: " << addresses_.size() << std::endl;
@@ -51,7 +51,7 @@ protected:
         if (it != addresses_.end()) {
             if (it->second != with_alignment) {
                 std::cout << "do_deallocate: region size error: allocated: " << it->second
-                          << "; requested to deallocate: " << bytes << std::endl;
+                          << "; requested to deallocate: " << with_alignment << std::endl;
             }
             addresses_.erase(it);
         } else {

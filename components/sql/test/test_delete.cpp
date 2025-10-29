@@ -8,10 +8,9 @@ using namespace components::sql;
 
 #define TEST_SIMPLE_DELETE(QUERY, RESULT, PARAMS)                                                                      \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
         transform::transformer transformer(&resource);                                                                 \
         components::logical_plan::parameter_node_t agg(&resource);                                                     \
-        auto select = linitial(raw_parser(QUERY));                                                                     \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
         auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                              \
         REQUIRE(node->type() == components::logical_plan::node_type::delete_t);                                        \
         REQUIRE(node->to_string() == RESULT);                                                                          \
@@ -26,6 +25,7 @@ using vec = std::vector<v>;
 
 TEST_CASE("sql::delete_from_where") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 

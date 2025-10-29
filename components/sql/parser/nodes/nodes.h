@@ -16,6 +16,9 @@
 #ifndef NODES_H
 #define NODES_H
 
+#include <cstring>
+#include <memory_resource>
+
 /*
 * The first field of every node is NodeTag. Each node created (with makeNode)
 * will have one of the following tags as the value of its first field.
@@ -591,7 +594,7 @@ typedef struct Node {
 *	  specified tag.
 *
 * !WARNING!: Avoid using newNode directly. You should be using the
-*	  macro makeNode.  eg. to create a Query node, use makeNode(Query)
+*	  macro makeNode.  eg. to create a Query node, use makeNode(resource, Query)
 *
 * Note: the size argument should always be a compile-time constant, so the
 * apparent risk of multiple evaluation doesn't matter in practice.
@@ -599,11 +602,12 @@ typedef struct Node {
 #ifdef __GNUC__
 
 /* With GCC, we can use a compound statement within an expression */
-#define newNode(size, tag)                                                                                             \
+#define newNode(_resource_, size, tag)                                                                                 \
     ({                                                                                                                 \
         Node* _result;                                                                                                 \
         AssertMacro((size) >= sizeof(Node)); /* need the tag, at least */                                              \
-        _result = reinterpret_cast<Node*>(palloc0fast(size));                                                          \
+        _result = reinterpret_cast<Node*>(_resource_->allocate(size));                                                 \
+        memset(_result, 0, size);                                                                                      \
         _result->type = (tag);                                                                                         \
         _result;                                                                                                       \
     })
@@ -617,14 +621,14 @@ typedef struct Node {
 */
 extern PGDLLIMPORT Node* newNodeMacroHolder;
 
-#define newNode(size, tag)                                                                                             \
+#define newNode(_resource_, size, tag)                                                                                 \
     (AssertMacro((size) >= sizeof(Node)), /* need the tag, at least */                                                 \
-     newNodeMacroHolder = reinterpret_cast<Node*>(palloc0fast(size)),                                                  \
-     newNodeMacroHolder->type = (tag),                                                                                 \
-     newNodeMacroHolder)
+     newNodeMacroHolder = reinterpret_cast<Node*>(resource->allocate(size)),                                           \
+     memset(newNodeMacroHolder, 0, size);                                                                              \
+     newNodeMacroHolder->type = (tag), newNodeMacroHolder)
 #endif /* __GNUC__ */
 
-#define makeNode(_type_) (reinterpret_cast<_type_*>(newNode(sizeof(_type_), T_##_type_)))
+#define makeNode(_resource_, _type_) (reinterpret_cast<_type_*>(newNode(_resource_, sizeof(_type_), T_##_type_)))
 #define NodeSetTag(nodeptr, t) (((Node*) (nodeptr))->type = (t))
 
 #define IsA(nodeptr, _type_) (nodeTag(nodeptr) == T_##_type_)
@@ -657,7 +661,7 @@ static inline Node* castNodeImpl(NodeTag type, void* ptr) {
 /*
 * nodes/copyfuncs.c
 */
-extern void* copyObject(const void* obj); // mdxn: used only once - gram.y 17070
+extern void* copyObject(std::pmr::memory_resource* resource, const void* obj); // mdxn: used only once - gram.y 17070
 
 /*
 * nodes/equalfuncs.c

@@ -12,10 +12,9 @@ using vec = std::vector<v>;
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS)                                                                      \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto resource = std::pmr::synchronized_pool_resource();                                                    \
             transform::transformer transformer(&resource);                                                             \
             components::logical_plan::parameter_node_t agg(&resource);                                                 \
-            auto select = linitial(raw_parser(QUERY));                                                                 \
+            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
             auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                          \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg.parameters().parameters.size() == PARAMS.size());                                              \
@@ -27,6 +26,7 @@ using vec = std::vector<v>;
 
 TEST_CASE("sql::select_from_where") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -135,6 +135,7 @@ TEST_CASE("sql::select_from_where") {
 
 TEST_CASE("sql::select_from_order_by") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -170,6 +171,7 @@ TEST_CASE("sql::select_from_order_by") {
 
 TEST_CASE("sql::select_from_fields") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 

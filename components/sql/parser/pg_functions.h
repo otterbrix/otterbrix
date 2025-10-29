@@ -50,14 +50,22 @@ const char* errhint(const char* msg);
 const char* errmsg_internal(const char* fmt, ...);
 const char* errdetail(const char* fmt, ...);
 int errposition(int cursorpos);
-char* psprintf(const char* fmt, ...);
+char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...);
 
 // memory mgmt
-char* pstrdup(const char* in);
-void* palloc(size_t n);
-void pfree(void* ptr);
-void* palloc0fast(size_t n);
-void* repalloc(void* ptr, size_t n);
+// allocation
+void* flex_malloc(size_t n);
+void* flex_realloc(void* ptr, size_t n);
+void flex_free(void* ptr);
+
+// arena allocations
+char* pstrdup(std::pmr::memory_resource* resource, const char* in);
+void* palloc(std::pmr::memory_resource* resource, size_t n);
+template<typename... Args>
+void pfree(Args&&...) { /* do nothing, since we use arena allocator */
+}
+void* palloc0fast(std::pmr::memory_resource* resource, size_t n);
+void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t n);
 
 std::string NameListToString(PGList* names); // mdxn: used only in ereport
 int exprLocation(const Node* expr);          // nodefuncs
@@ -68,7 +76,7 @@ bool pg_verifymbstr(const char* mbstr, int len, bool noError);
 int pg_mbstrlen_with_len(const char* mbstr, int len);
 int pg_mblen(const char* mbstr);
 
-DefElem* defWithOids(bool value);
+DefElem* defWithOids(std::pmr::memory_resource* resource, bool value);
 
 typedef unsigned int pg_wchar;
 unsigned char* unicode_to_utf8(pg_wchar c, unsigned char* utf8string);

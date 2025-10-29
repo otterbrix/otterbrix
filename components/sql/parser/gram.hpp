@@ -610,6 +610,6 @@ struct YYLTYPE {
 #define YYLTYPE_IS_TRIVIAL 1
 #endif
 
-int base_yyparse(core_yyscan_t yyscanner);
+int base_yyparse(std::pmr::memory_resource* resource, core_yyscan_t yyscanner);
 
 #endif /* !YY_BASE_YY_GRAM_HPP_INCLUDED  */

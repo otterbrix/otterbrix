@@ -54,7 +54,7 @@ json_trie_node* build_index(const msgpack::object& msg_object,
 
 const document_ptr components::document::msgpack_decoder_t::to_document(const msgpack::object& msg_object,
                                                                         std::pmr::memory_resource* resource) {
-    auto res = new (resource->allocate(sizeof(document_t))) document_t(resource);
+    auto res = make_document(resource);
     auto obj = res->element_ind_->as_object();
     for (auto& [key, val] : msg_object.via.map) {
         obj->set(build_index(key, res->builder_, res->mut_src_, resource),

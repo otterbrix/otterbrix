@@ -37,9 +37,11 @@ namespace components::catalog {
             , resource_(other.resource_) {
             children_.reserve(other.children_.size());
             for (auto const& node : other.children_) {
-                core::pmr::unique_ptr<versioned_trie_node> new_node(new versioned_trie_node(*node),
-                                                                    core::pmr::deleter_t(resource_));
-                children_.push_back(std::move(new_node));
+                auto size = sizeof(versioned_trie_node);
+                auto align = alignof(versioned_trie_node);
+                auto* buffer = resource_->allocate(size, align);
+                auto* target_ptr = new (buffer) versioned_trie_node(*node);
+                children_.push_back({target_ptr, core::pmr::deleter_t(resource_)});
             }
         }
 

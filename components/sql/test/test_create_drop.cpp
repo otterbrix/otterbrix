@@ -12,8 +12,7 @@ using namespace components::sql::transform;
 
 #define TEST_TRANSFORMER_OK(QUERY, EXPECTED)                                                                           \
     SECTION(QUERY) {                                                                                                   \
-        transform::transformer transformer(&resource);                                                                 \
-        auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                                               \
+        auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());             \
         auto node = result.node;                                                                                       \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
@@ -22,7 +21,6 @@ using namespace components::sql::transform;
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
         auto create = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        transform::transformer transformer(&resource);                                                                 \
         bool exception_thrown = false;                                                                                 \
         try {                                                                                                          \
             transformer.transform(pg_cell_to_node_cast(create));                                                       \
@@ -35,8 +33,7 @@ using namespace components::sql::transform;
 
 #define TEST_TRANSFORMER_EXPECT_SCHEMA(QUERY, CHECK_FN)                                                                \
     SECTION(QUERY) {                                                                                                   \
-        transform::transformer transformer(&resource);                                                                 \
-        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                                       \
+        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());             \
         auto node = result.node;                                                                                       \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
@@ -54,6 +51,7 @@ namespace {
 TEST_CASE("sql::database") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
 
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($create_database: db_name)_");
     TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($create_database: db_name)_");
@@ -211,7 +209,8 @@ TEST_CASE("sql::index") {
     transform::transformer transformer(&resource);
 
     SECTION("create with uuid") {
-        auto create = raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
+        auto create =
+            raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
         auto node = result.node;
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
@@ -220,7 +219,8 @@ TEST_CASE("sql::index") {
     }
 
     SECTION("create with schema") {
-        auto create = raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
+        auto create =
+            raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(create)).finalize());
         auto node = result.node;
         REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");

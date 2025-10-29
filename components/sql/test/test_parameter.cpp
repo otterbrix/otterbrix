@@ -19,9 +19,7 @@ using vec = std::vector<v>;
 #define TEST_PARAMS(QUERY, RESULT, BIND)                                                                               \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto resource = std::pmr::synchronized_pool_resource();                                                    \
-            transform::transformer transformer(&resource);                                                             \
-            auto select = linitial(raw_parser(QUERY));                                                                 \
+            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
             auto binder = transformer.transform(pg_cell_to_node_cast(select));                                         \
             for (auto i = 0ul; i < BIND.size(); ++i) {                                                                 \
                 binder.bind(i + 1, BIND.at(i));                                                                        \
@@ -39,9 +37,7 @@ using vec = std::vector<v>;
 
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, BIND, FIELDS)                                                                \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
-        transform::transformer transformer(&resource);                                                                 \
-        auto stmt = linitial(raw_parser(QUERY));                                                                       \
+        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));                                               \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
@@ -60,6 +56,8 @@ using vec = std::vector<v>;
 
 TEST_CASE("sql::select_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -78,6 +76,8 @@ TEST_CASE("sql::select_bind") {
 
 TEST_CASE("sql::update_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
     using fields = std::pmr::vector<update_expr_ptr>;
@@ -123,13 +123,14 @@ TEST_CASE("sql::update_bind") {
 
 TEST_CASE("sql::insert_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     SECTION("insert simple bind") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, name) VALUES ($1, $2);)_";
-        auto stmt = linitial(raw_parser(query));
-        transform::transformer transformer(&resource);
+        auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, new_value(42l));
         binder.bind(2, new_value(std::pmr::string("inserted")));
@@ -147,8 +148,7 @@ TEST_CASE("sql::insert_bind") {
 
     SECTION("insert with repeated param") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, parent_id) VALUES ($1, $1);)_";
-        auto stmt = linitial(raw_parser(query));
-        transform::transformer transformer(&resource);
+        auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, new_value(123l));
         auto result = std::get<result_view>(binder.finalize());
@@ -162,8 +162,8 @@ TEST_CASE("sql::insert_bind") {
     }
 
     SECTION("insert multi-bind") {
-        transform::transformer transformer(&resource);
-        auto select = linitial(raw_parser("INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
+        auto select = linitial(raw_parser(&arena_resource,
+                                          "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
                                           "($1, $2, $3), ($4, $5, $6);"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         auto result = std::get<result_view>(binder.bind(1, new_value(1ul))
@@ -195,10 +195,12 @@ TEST_CASE("sql::insert_bind") {
 
 TEST_CASE("sql::transform_result") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
     SECTION("not all bound") {
-        auto stmt = linitial(raw_parser("SELECT * FROM TestDatabase.TestCollection WHERE id = $1 AND name = $2;"));
+        auto stmt = linitial(
+            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1 AND name = $2;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, 42l);
         auto result = binder.finalize();
@@ -206,7 +208,7 @@ TEST_CASE("sql::transform_result") {
     }
 
     SECTION("finalize") {
-        auto stmt = linitial(raw_parser("SELECT * FROM TestDatabase.TestCollection;"));
+        auto stmt = linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         auto result = binder.finalize();
         REQUIRE(std::holds_alternative<transform::result_view>(result));

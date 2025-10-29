@@ -11,8 +11,7 @@ using namespace components::expressions;
 
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS, FIELDS)                                                              \
     SECTION(QUERY) {                                                                                                   \
-        transform::transformer transformer(&resource);                                                                 \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                                     \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
         auto node = result.node;                                                                                       \
         auto agg = result.params;                                                                                      \
@@ -34,6 +33,7 @@ using fields = std::pmr::vector<update_expr_ptr>;
 TEST_CASE("sql::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -85,6 +85,7 @@ TEST_CASE("sql::update") {
 TEST_CASE("sql::update_where") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
@@ -143,6 +144,7 @@ TEST_CASE("sql::update_where") {
 TEST_CASE("sql::update_from") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
     auto tape = std::make_unique<components::document::impl::base_document>(&resource);
     auto new_value = [&](auto value) { return v{tape.get(), value}; };
 

@@ -55,7 +55,7 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
-        std::pmr::vector<complex_logical_type> columns(resource);
+        std::pmr::vector<complex_logical_type> columns(resource_);
         columns.reserve(list_length(coldefs));
         for (auto data : coldefs->lst) {
             auto coldef = pg_ptr_assert_cast<ColumnDef>(data.data, T_ColumnDef);
@@ -70,10 +70,10 @@ namespace components::sql::transform {
         }
 
         if (columns.empty()) {
-            return logical_plan::make_node_create_collection(resource, rangevar_to_collection(node.relation));
+            return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
         }
 
-        return logical_plan::make_node_create_collection(resource,
+        return logical_plan::make_node_create_collection(resource_,
                                                          rangevar_to_collection(node.relation),
                                                          std::move(columns));
     }
@@ -85,21 +85,21 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         return logical_plan::make_node_drop_collection(
-                            resource,
+                            resource_,
                             {database_name_t(), strVal(drop_name.front().data)});
                     }
                     case database_table: {
                         auto it = drop_name.begin();
                         auto database = strVal(it++->data);
                         auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource, {database, collection});
+                        return logical_plan::make_node_drop_collection(resource_, {database, collection});
                     }
                     case database_schema_table: {
                         auto it = drop_name.begin();
                         auto database = strVal(it++->data);
                         auto schema = strVal(it++->data);
                         auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource, {database, schema, collection});
+                        return logical_plan::make_node_drop_collection(resource_, {database, schema, collection});
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
@@ -107,11 +107,11 @@ namespace components::sql::transform {
                         auto database = strVal(it++->data);
                         auto schema = strVal(it++->data);
                         auto collection = strVal(it->data);
-                        return logical_plan::make_node_drop_collection(resource, {uuid, database, schema, collection});
+                        return logical_plan::make_node_drop_collection(resource_, {uuid, database, schema, collection});
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_collection(resource, {});
+                        return logical_plan::make_node_drop_collection(resource_, {});
                 }
             }
             case OBJECT_INDEX: {
@@ -127,7 +127,7 @@ namespace components::sql::transform {
                         auto database = strVal(it++->data);
                         auto collection = strVal(it++->data);
                         auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource, {database, collection}, name);
+                        return logical_plan::make_node_drop_index(resource_, {database, collection}, name);
                     }
                     case database_schema_table: {
                         auto it = drop_name.begin();
@@ -135,7 +135,7 @@ namespace components::sql::transform {
                         auto schema = strVal(it++->data);
                         auto collection = strVal(it++->data);
                         auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource, {database, schema, collection}, name);
+                        return logical_plan::make_node_drop_index(resource_, {database, schema, collection}, name);
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
@@ -144,11 +144,11 @@ namespace components::sql::transform {
                         auto schema = strVal(it++->data);
                         auto collection = strVal(it++->data);
                         auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource, {uuid, database, schema, collection}, name);
+                        return logical_plan::make_node_drop_index(resource_, {uuid, database, schema, collection}, name);
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_index(resource, {}, "");
+                        return logical_plan::make_node_drop_index(resource_, {}, "");
                 }
             }
             default:

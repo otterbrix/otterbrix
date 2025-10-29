@@ -36731,7 +36731,7 @@ yyreduce:
             ParamRef* p = makeNode(resource, ParamRef);
             p->number = (yyvsp[-1].ival);
             p->location = (yylsp[-1]);
-            if ((yyvsp[0].list)) {
+            if ((yyvsp[0].list) != NIL) {
                 A_Indirection* n = makeNode(resource, A_Indirection);
                 n->arg = (Node*) p;
                 n->indirection = check_indirection((yyvsp[0].list), yyscanner);
@@ -36745,7 +36745,7 @@ yyreduce:
         case 1996: /* c_expr: '(' a_expr ')' opt_indirection  */
 #line 14008 "gram.y"
         {
-            if ((yyvsp[0].list)) {
+            if ((yyvsp[0].list) != NIL) {
                 A_Indirection* n = makeNode(resource, A_Indirection);
                 n->arg = (yyvsp[-2].node);
                 n->indirection = check_indirection((yyvsp[0].list), yyscanner);

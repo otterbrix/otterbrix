@@ -1,5 +1,4 @@
 #include <catch2/catch.hpp>
-#include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
@@ -23,11 +22,9 @@ using namespace components::sql;
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        transform::transformer transformer(&resource);                                                                 \
-        components::logical_plan::parameter_node_t agg(&resource);                                                     \
         bool exception_thrown = false;                                                                                 \
         try {                                                                                                          \
-            auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                          \
+            auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                              \
         } catch (const parser_exception_t& e) {                                                                        \
             exception_thrown = true;                                                                                   \
             REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
@@ -42,6 +39,7 @@ using fields = std::vector<std::pair<std::string, v>>;
 TEST_CASE("sql::errors") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
 
     TEST_PARSER_ERROR("INVALID QUERY", R"_(syntax error at or near "INVALID")_");
     TEST_PARSER_ERROR("CREATE DATABASE;", R"_(syntax error at or near ";")_");

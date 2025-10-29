@@ -12,7 +12,7 @@ namespace components::sql::transform {
         }
 
         auto create_index =
-            logical_plan::make_node_create_index(resource, rangevar_to_collection(node.relation), node.idxname);
+            logical_plan::make_node_create_index(resource_, rangevar_to_collection(node.relation), node.idxname);
         for (auto key : node.indexParams->lst) {
             create_index->keys().emplace_back(pg_ptr_cast<IndexElem>(key.data)->name);
         }

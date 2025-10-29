@@ -1,4 +1,3 @@
-#include "transfrom_common.hpp"
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -9,11 +8,10 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
-
-    update_expr_ptr transform_update_expr(Node* node,
-                                          const collection_full_name_t& to,
-                                          const collection_full_name_t& from,
-                                          logical_plan::parameter_node_t* params) {
+    update_expr_ptr transformer::transform_update_expr(Node* node,
+                                                       const collection_full_name_t& to,
+                                                       const collection_full_name_t& from,
+                                                       logical_plan::parameter_node_t* params) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto value = pg_ptr_cast<TypeCast>(node);
@@ -45,6 +43,9 @@ namespace components::sql::transform {
                         assert(false);
                 }
                 return {new update_expr_get_const_value_t(id)};
+            }
+            case T_ParamRef: {
+                return {new update_expr_get_const_value_t(add_param_value(node, params))};
             }
             case T_A_Expr: {
                 auto expr = pg_ptr_cast<A_Expr>(node);
@@ -164,7 +165,7 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::parameter_node_t* params) {
         logical_plan::node_match_ptr match;
-        std::pmr::vector<update_expr_ptr> updates(resource);
+        std::pmr::vector<update_expr_ptr> updates(resource_);
         collection_full_name_t to = rangevar_to_collection(node.relation);
         collection_full_name_t from;
 
@@ -189,19 +190,19 @@ namespace components::sql::transform {
 
         // where
         if (node.whereClause) {
-            match =
-                logical_plan::make_node_match(resource,
-                                              to,
-                                              impl::transform_a_expr(params, pg_ptr_cast<A_Expr>(node.whereClause)));
+            match = logical_plan::make_node_match(resource_,
+                                                  to,
+                                                  transform_a_expr(params, pg_ptr_cast<A_Expr>(node.whereClause)));
         } else {
-            match =
-                logical_plan::make_node_match(resource, to, make_compare_expression(resource, compare_type::all_true));
+            match = logical_plan::make_node_match(resource_,
+                                                  to,
+                                                  make_compare_expression(resource_, compare_type::all_true));
         }
 
         if (from.empty()) {
-            return logical_plan::make_node_update_many(resource, to, match, updates, false);
+            return logical_plan::make_node_update_many(resource_, to, match, updates, false);
         } else {
-            return logical_plan::make_node_update_many(resource, to, from, match, updates, false);
+            return logical_plan::make_node_update_many(resource_, to, from, match, updates, false);
         }
     }
 } // namespace components::sql::transform

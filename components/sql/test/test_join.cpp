@@ -5,17 +5,18 @@
 #include <components/sql/transformer/utils.hpp>
 
 using namespace components::sql;
+using namespace components::sql::transform;
 
 #define TEST_JOIN(QUERY, RESULT, PARAMS)                                                                               \
     SECTION(QUERY) {                                                                                                   \
-        transform::transformer transformer(&resource);                                                                 \
-        components::logical_plan::parameter_node_t agg(&resource);                                                     \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto node = transformer.transform(transform::pg_cell_to_node_cast(select), &agg);                              \
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
+        auto node = result.node;                                                                                       \
+        auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
-        REQUIRE(agg.parameters().parameters.size() == PARAMS.size());                                                  \
+        REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
-            REQUIRE(agg.parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                 \
+            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
         }                                                                                                              \
     }
 
@@ -25,6 +26,7 @@ using vec = std::vector<v>;
 TEST_CASE("sql::join") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
 
     INFO("join types") {
         TEST_JOIN(R"_(select * from col1 join col2 on col1.id = col2.id_col1;)_",

@@ -18,6 +18,7 @@ set(SOURCE_${PROJECT_NAME}
 
     transformer/utils.cpp
     transformer/transformer.cpp
+    transformer/transform_result.cpp
 
     transformer/impl/transform_database.cpp
     transformer/impl/transform_table.cpp

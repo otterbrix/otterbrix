@@ -9,9 +9,8 @@ using namespace components::sql::transform;
 
 #define TEST_JOIN(QUERY, RESULT, PARAMS)                                                                               \
     SECTION(QUERY) {                                                                                                   \
-        auto resource = std::pmr::synchronized_pool_resource();                                                        \
         transform::transformer transformer(&resource);                                                                 \
-        auto select = linitial(raw_parser(QUERY));                                                                     \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                                     \
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
         auto node = result.node;                                                                                       \
         auto agg = result.params;                                                                                      \
@@ -27,6 +26,7 @@ using vec = std::vector<v>;
 
 TEST_CASE("sql::join") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     INFO("join types") {
         TEST_JOIN(R"_(select * from col1 join col2 on col1.id = col2.id_col1;)_",

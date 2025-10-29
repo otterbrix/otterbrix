@@ -25,11 +25,11 @@ int pg_encoding_mbcliplen(const char* mbstr, int len, int limit) {
     return clen;
 }
 
-char* downcase_truncate_identifier(const char* ident, int len, bool warn) {
+char* downcase_truncate_identifier(std::pmr::memory_resource* resource, const char* ident, int len, bool warn) {
     char* result;
     int i;
 
-    result = reinterpret_cast<char*>(malloc(len + 1));
+    result = reinterpret_cast<char*>(resource->allocate(len + 1));
     for (i = 0; i < len; i++) {
         unsigned char ch = (unsigned char) ident[i];
 

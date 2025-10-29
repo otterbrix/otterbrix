@@ -1,4 +1,4 @@
-FROM ubuntu:20.04 as builder
+FROM ubuntu:22.04 as builder
 
 ENV TZ=America/US
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,7 +16,7 @@ RUN apt update && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 cmake && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -32,15 +32,15 @@ COPY ./cmake ./cmake
 COPY ./components ./components
 COPY ./core ./core
 COPY ./services ./services
-COPY ./example ./example
 COPY ./CMakeLists.txt ./CMakeLists.txt
 
 WORKDIR /app/build
 
-RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON  -DENABLE_ASAN=ON && \
+RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DENABLE_ASAN=ON && \
     cmake --build . --target all -- -j $(nproc)
 
-RUN ctest -C -V --output-on-failure --timeout 60
+RUN ctest -C Release -V --output-on-failure --timeout 120
 
 RUN cd integration/python/ && pytest -v -s
 

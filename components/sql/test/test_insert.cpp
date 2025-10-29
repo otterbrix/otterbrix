@@ -10,11 +10,13 @@ using namespace components::sql::transform;
 
 TEST_CASE("sql::insert_into") {
     auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
     SECTION("insert into with TestDatabase") {
         auto select =
-            linitial(raw_parser("INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
+            linitial(raw_parser(&arena_resource,
+                                "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
@@ -31,7 +33,8 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into without TestDatabase") {
-        auto select = linitial(raw_parser("INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
+        auto select = linitial(
+            raw_parser(&arena_resource, "INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
@@ -48,8 +51,8 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into with quoted") {
-        auto select =
-            linitial(raw_parser(R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
+        auto select = linitial(
+            raw_parser(&arena_resource, R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
         auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
         auto node = result.node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
@@ -66,7 +69,8 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert into multi-documents") {
-        auto select = linitial(raw_parser("INSERT INTO TestCollection (id, name, count) VALUES "
+        auto select = linitial(raw_parser(&arena_resource,
+                                          "INSERT INTO TestCollection (id, name, count) VALUES "
                                           "(1, 'Name1', 1), "
                                           "(2, 'Name2', 2), "
                                           "(3, 'Name3', 3), "
@@ -93,7 +97,7 @@ TEST_CASE("sql::insert_into") {
     }
 
     SECTION("insert from select") {
-        auto select = linitial(raw_parser(R"_(INSERT INTO table2 (column1, column2, column3)
+        auto select = linitial(raw_parser(&arena_resource, R"_(INSERT INTO table2 (column1, column2, column3)
 SELECT column1, column2, column3
 FROM table1
 WHERE condition = true;)_"));

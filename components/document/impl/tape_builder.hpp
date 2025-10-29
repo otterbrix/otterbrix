@@ -47,15 +47,15 @@ namespace components::document {
                 append(value, types::physical_type::BOOL);
             } else if constexpr (std::is_signed_v<T>) {
                 if constexpr (sizeof(T) == 1) {
-                    uint64_t tape_data;
+                    uint64_t tape_data = 0;
                     std::memcpy(&tape_data, &value, sizeof(value));
                     append(tape_data, types::physical_type::INT8);
                 } else if constexpr (sizeof(T) == 2) {
-                    uint64_t tape_data;
+                    uint64_t tape_data = 0;
                     std::memcpy(&tape_data, &value, sizeof(value));
                     append(tape_data, types::physical_type::INT16);
                 } else if constexpr (sizeof(T) == 4) {
-                    uint64_t tape_data;
+                    uint64_t tape_data = 0;
                     std::memcpy(&tape_data, &value, sizeof(value));
                     append(tape_data, types::physical_type::INT32);
                 } else if constexpr (sizeof(T) == 8) {
@@ -76,7 +76,7 @@ namespace components::document {
         } else if constexpr (std::is_same_v<T, int128_t>) {
             append3(value, types::physical_type::INT128);
         } else if constexpr (std::is_same_v<T, float>) {
-            uint64_t tape_data;
+            uint64_t tape_data = 0;
             std::memcpy(&tape_data, &value, sizeof(value));
             append(tape_data, types::physical_type::FLOAT);
         } else if constexpr (std::is_same_v<T, double>) {

@@ -108,7 +108,8 @@ struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
     }
 
     void execute_sql(const std::string& query) {
-        auto parse_result = linitial(raw_parser(query.c_str()));
+        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         auto view = std::get<components::sql::transform::result_view>(
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 

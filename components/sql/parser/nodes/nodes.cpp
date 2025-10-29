@@ -19,13 +19,13 @@
 //#define COMPARE_LOCATION_FIELD(fldname) \
 //	((void) 0)
 
-void* copyObject(const void* obj) { // mdxn: only copies TypeName
-    TypeName* n = makeNode(TypeName);
+void* copyObject(std::pmr::memory_resource* resource, const void* obj) { // mdxn: only copies TypeName
+    TypeName* n = makeNode(resource, TypeName);
     const TypeName* obj_n = reinterpret_cast<const TypeName*>(obj);
 
     n->type = obj_n->type;
 
-    n->names = new List();
+    n->names = new (resource->allocate(sizeof(List))) List(resource);
     n->names->lst = obj_n->names->lst;
 
     n->typeOid = obj_n->typeOid;
@@ -33,12 +33,12 @@ void* copyObject(const void* obj) { // mdxn: only copies TypeName
     n->setof = obj_n->setof;
     n->pct_type = obj_n->pct_type;
 
-    n->typmods = new List();
+    n->typmods = new (resource->allocate(sizeof(List))) List(resource);
     n->typmods->lst = obj_n->typmods->lst;
 
     n->typemod = obj_n->typemod;
 
-    n->arrayBounds = new List();
+    n->arrayBounds = new (resource->allocate(sizeof(List))) List(resource);
     n->arrayBounds->lst = obj_n->arrayBounds->lst;
 
     n->location = obj_n->location;
@@ -46,7 +46,7 @@ void* copyObject(const void* obj) { // mdxn: only copies TypeName
 }
 
 bool equal(const void* a1, const void* b1) {
-    const TypeName *a = reinterpret_cast<const TypeName*>(a), *b = reinterpret_cast<const TypeName*>(b);
+    const TypeName *a = reinterpret_cast<const TypeName*>(a1), *b = reinterpret_cast<const TypeName*>(b1);
 
     COMPARE_NODE_FIELD(names);
     COMPARE_SCALAR_FIELD(typeOid);

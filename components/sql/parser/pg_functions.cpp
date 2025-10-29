@@ -53,19 +53,19 @@ const char* errdetail(const char* fmt, ...) { return fmt; }
 
 int errposition(int cursorpos) { return cursorpos; }
 
-char* psprintf(const char* fmt, ...) {
+char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...) {
     size_t len = 128; /* initial assumption about buffer size */
 
     for (;;) {
         char* result;
         va_list args;
-        size_t newlen;
+        int newlen;
 
         /*
 		 * Allocate result buffer.  Note that in frontend this maps to malloc
 		 * with exit-on-error.
 		 */
-        result = reinterpret_cast<char*>(palloc(len));
+        result = reinterpret_cast<char*>(palloc(resource, len));
 
         /* Try to format the data. */
         va_start(args, fmt);
@@ -73,7 +73,7 @@ char* psprintf(const char* fmt, ...) {
         va_end(args);
 
         if (newlen < 0) {
-            free(result);
+            pfree(result);
             throw std::runtime_error("Formatting error in psprintf");
         }
 
@@ -86,11 +86,27 @@ char* psprintf(const char* fmt, ...) {
 }
 
 // memory mgmt
-char* pstrdup(const char* in) { return strdup(in); }
-void* palloc(size_t n) { return malloc(n); }
-void pfree(void* ptr) { free(ptr); }
-void* palloc0fast(size_t n) { return calloc(n, sizeof(char)); }
-void* repalloc(void* ptr, size_t n) { return realloc(ptr, n); }
+void* flex_malloc(size_t n) { return malloc(n); }
+void* flex_realloc(void* ptr, size_t n) { return realloc(ptr, n); }
+void flex_free(void* ptr) { free(ptr); }
+
+char* pstrdup(std::pmr::memory_resource* resource, const char* in) {
+    size_t size = strlen(in) + 1;
+    void* ptr = resource->allocate(size);
+    memcpy(ptr, in, size);
+    return static_cast<char*>(ptr);
+}
+void* palloc(std::pmr::memory_resource* resource, size_t n) { return resource->allocate(n); }
+void* palloc0fast(std::pmr::memory_resource* resource, size_t n) {
+    void* ptr = resource->allocate(n);
+    memset(ptr, 0, n);
+    return ptr;
+}
+void* repalloc(std::pmr::memory_resource* resource, void* ptr, size_t n) {
+    void* new_ptr = resource->allocate(n);
+    memmove(new_ptr, ptr, n);
+    return new_ptr;
+}
 
 std::string NameListToString(PGList* names) {
     std::string string;
@@ -113,7 +129,9 @@ std::string NameListToString(PGList* names) {
     return string;
 }
 
-DefElem* defWithOids(bool value) { return makeDefElem("oids", (Node*) makeInteger(value)); }
+DefElem* defWithOids(std::pmr::memory_resource* resource, bool value) {
+    return makeDefElem(resource, "oids", (Node*) makeInteger(resource, value));
+}
 
 // mdxn: only utf-8 support
 bool pg_utf8_islegal(const unsigned char* source, int length) {

@@ -14,6 +14,7 @@ target_link_libraries(
         otterbrix::logical_plan
         otterbrix::document
         otterbrix::types
+        otterbrix::test_generaty
         otterbrix::expressions
         magic_enum::magic_enum
         msgpackc-cxx

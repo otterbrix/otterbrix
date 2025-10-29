@@ -184,23 +184,29 @@ typedef struct PrivTarget {
 #define parser_yyerror(msg) scanner_yyerror(msg, yyscanner)
 #define parser_errposition(pos) scanner_errposition(pos, yyscanner)
 
-static void base_yyerror(YYLTYPE* yylloc, core_yyscan_t yyscanner, const char* msg);
-static Node* makeColumnRef(char* colname, List* indirection, int location, core_yyscan_t yyscanner);
-static Node* makeTypeCast(Node* arg, TypeName* type, int location);
-static Node* makeStringConst(char* str, int location);
-static Node* makeStringConstCast(char* str, int location, TypeName* type);
-static Node* makeIntConst(int val, int location);
-static Node* makeFloatConst(char* str, int location);
-static Node* makeBitStringConst(char* str, int location);
-static Node* makeNullAConst(int location);
-static Node* makeAConst(Value* v, int location);
-static Node* makeBoolAConst(bool state, int location);
+static void
+base_yyerror(YYLTYPE* yylloc, std::pmr::memory_resource* resource, core_yyscan_t yyscanner, const char* msg);
+static Node* makeColumnRef(std::pmr::memory_resource* resource,
+                           char* colname,
+                           List* indirection,
+                           int location,
+                           core_yyscan_t yyscanner);
+static Node* makeTypeCast(std::pmr::memory_resource* resource, Node* arg, TypeName* type, int location);
+static Node* makeStringConst(std::pmr::memory_resource* resource, char* str, int location);
+static Node* makeStringConstCast(std::pmr::memory_resource* resource, char* str, int location, TypeName* type);
+static Node* makeIntConst(std::pmr::memory_resource* resource, int val, int location);
+static Node* makeFloatConst(std::pmr::memory_resource* resource, char* str, int location);
+static Node* makeBitStringConst(std::pmr::memory_resource* resource, char* str, int location);
+static Node* makeNullAConst(std::pmr::memory_resource* resource, int location);
+static Node* makeAConst(std::pmr::memory_resource* resource, Value* v, int location);
+static Node* makeBoolAConst(std::pmr::memory_resource* resource, bool state, int location);
 static void check_qualified_name(List* names, core_yyscan_t yyscanner);
 static List* check_func_name(List* names, core_yyscan_t yyscanner);
 static List* check_indirection(List* indirection, core_yyscan_t yyscanner);
-static List* extractArgTypes(List* parameters);
-static List* extractAggrArgTypes(List* aggrargs);
-static List* makeOrderedSetArgs(List* directargs, List* orderedargs, core_yyscan_t yyscanner);
+static List* extractArgTypes(std::pmr::memory_resource* resource, List* parameters);
+static List* extractAggrArgTypes(std::pmr::memory_resource* resource, List* aggrargs);
+static List*
+makeOrderedSetArgs(std::pmr::memory_resource* resource, List* directargs, List* orderedargs, core_yyscan_t yyscanner);
 static void insertSelectOptions(SelectStmt* stmt,
                                 List* sortClause,
                                 List* lockingClause,
@@ -208,14 +214,16 @@ static void insertSelectOptions(SelectStmt* stmt,
                                 Node* limitCount,
                                 WithClause* withClause,
                                 core_yyscan_t yyscanner);
-static Node* makeSetOp(SetOperation op, bool all, Node* larg, Node* rarg);
-static Node* doNegate(Node* n, int location);
-static void doNegateFloat(Value* v);
-static Node* makeAArrayExpr(List* elements, int location);
-static Node* makeXmlExpr(XmlExprOp op, char* name, List* named_args, List* args, int location);
+static Node* makeSetOp(std::pmr::memory_resource* resource, SetOperation op, bool all, Node* larg, Node* rarg);
+static Node* doNegate(std::pmr::memory_resource* resource, Node* n, int location);
+static void doNegateFloat(std::pmr::memory_resource* resource, Value* v);
+static Node* makeAArrayExpr(std::pmr::memory_resource* resource, List* elements, int location);
+static Node*
+makeXmlExpr(std::pmr::memory_resource* resource, XmlExprOp op, char* name, List* named_args, List* args, int location);
 static List* mergeTableFuncParameters(List* func_args, List* columns);
-static TypeName* TableFuncTypeName(List* columns);
-static RangeVar* makeRangeVarFromAnyName(List* names, int position, core_yyscan_t yyscanner);
+static TypeName* TableFuncTypeName(std::pmr::memory_resource* resource, List* columns);
+static RangeVar*
+makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List* names, int position, core_yyscan_t yyscanner);
 static void
 SplitColQualList(List* qualList, List** constraintList, CollateClause** collClause, core_yyscan_t yyscanner);
 static void processCASbits(int cas_bits,
@@ -226,12 +234,12 @@ static void processCASbits(int cas_bits,
                            bool* not_valid,
                            bool* no_inherit,
                            core_yyscan_t yyscanner);
-static Node* makeRecursiveViewSelect(char* relname, List* aliases, Node* query);
+static Node* makeRecursiveViewSelect(std::pmr::memory_resource* resource, char* relname, List* aliases, Node* query);
 
 static void checkWindowExclude(void);
-static Node* makeIsNotDistinctFromNode(Node* expr, int position);
-List* SystemFuncName(char* name);
-TypeName* SystemTypeName(char* name);
+static Node* makeIsNotDistinctFromNode(std::pmr::memory_resource* resource, Node* expr, int position);
+List* SystemFuncName(std::pmr::memory_resource* resource, char* name);
+TypeName* SystemTypeName(std::pmr::memory_resource* resource, char* name);
 
 #line 240 "gram.cpp"
 
@@ -16885,7 +16893,7 @@ enum
             yystate = *yyssp;                                                                                          \
             goto yybackup;                                                                                             \
         } else {                                                                                                       \
-            yyerror(&yylloc, yyscanner, YY_("syntax error: cannot back up"));                                          \
+            yyerror(&yylloc, resource, yyscanner, YY_("syntax error: cannot back up"));                                \
             YYERROR;                                                                                                   \
         }                                                                                                              \
     while (0)
@@ -16985,7 +16993,7 @@ static int yy_location_print_(FILE* yyo, YYLTYPE const* const yylocp) {
     do {                                                                                                               \
         if (yydebug) {                                                                                                 \
             YYFPRINTF(stderr, "%s ", Title);                                                                           \
-            yy_symbol_print(stderr, Kind, Value, Location, yyscanner);                                                 \
+            yy_symbol_print(stderr, Kind, Value, Location, resource, yyscanner);                                       \
             YYFPRINTF(stderr, "\n");                                                                                   \
         }                                                                                                              \
     } while (0)
@@ -16998,10 +17006,12 @@ static void yy_symbol_value_print(FILE* yyo,
                                   yysymbol_kind_t yykind,
                                   YYSTYPE const* const yyvaluep,
                                   YYLTYPE const* const yylocationp,
+                                  std::pmr::memory_resource* resource,
                                   core_yyscan_t yyscanner) {
     FILE* yyoutput = yyo;
     YY_USE(yyoutput);
     YY_USE(yylocationp);
+    YY_USE(resource);
     YY_USE(yyscanner);
     if (!yyvaluep)
         return;
@@ -17018,12 +17028,13 @@ static void yy_symbol_print(FILE* yyo,
                             yysymbol_kind_t yykind,
                             YYSTYPE const* const yyvaluep,
                             YYLTYPE const* const yylocationp,
+                            std::pmr::memory_resource* resource,
                             core_yyscan_t yyscanner) {
     YYFPRINTF(yyo, "%s %s (", yykind < YYNTOKENS ? "token" : "nterm", yysymbol_name(yykind));
 
     YYLOCATION_PRINT(yyo, yylocationp);
     YYFPRINTF(yyo, ": ");
-    yy_symbol_value_print(yyo, yykind, yyvaluep, yylocationp, yyscanner);
+    yy_symbol_value_print(yyo, yykind, yyvaluep, yylocationp, resource, yyscanner);
     YYFPRINTF(yyo, ")");
 }
 
@@ -17051,7 +17062,12 @@ static void yy_stack_print(yy_state_t* yybottom, yy_state_t* yytop) {
 | Report that the YYRULE is going to be reduced.  |
 `------------------------------------------------*/
 
-static void yy_reduce_print(yy_state_t* yyssp, YYSTYPE* yyvsp, YYLTYPE* yylsp, int yyrule, core_yyscan_t yyscanner) {
+static void yy_reduce_print(yy_state_t* yyssp,
+                            YYSTYPE* yyvsp,
+                            YYLTYPE* yylsp,
+                            int yyrule,
+                            std::pmr::memory_resource* resource,
+                            core_yyscan_t yyscanner) {
     int yylno = yyrline[yyrule];
     int yynrhs = yyr2[yyrule];
     int yyi;
@@ -17063,6 +17079,7 @@ static void yy_reduce_print(yy_state_t* yyssp, YYSTYPE* yyvsp, YYLTYPE* yylsp, i
                         YY_ACCESSING_SYMBOL(+yyssp[yyi + 1 - yynrhs]),
                         &yyvsp[(yyi + 1) - (yynrhs)],
                         &(yylsp[(yyi + 1) - (yynrhs)]),
+                        resource,
                         yyscanner);
         YYFPRINTF(stderr, "\n");
     }
@@ -17071,7 +17088,7 @@ static void yy_reduce_print(yy_state_t* yyssp, YYSTYPE* yyvsp, YYLTYPE* yylsp, i
 #define YY_REDUCE_PRINT(Rule)                                                                                          \
     do {                                                                                                               \
         if (yydebug)                                                                                                   \
-            yy_reduce_print(yyssp, yyvsp, yylsp, Rule, yyscanner);                                                     \
+            yy_reduce_print(yyssp, yyvsp, yylsp, Rule, resource, yyscanner);                                           \
     } while (0)
 
 /* Nonzero means print parse trace.  It is left uninitialized so that
@@ -17108,9 +17125,11 @@ static void yydestruct(const char* yymsg,
                        yysymbol_kind_t yykind,
                        YYSTYPE* yyvaluep,
                        YYLTYPE* yylocationp,
+                       std::pmr::memory_resource* resource,
                        core_yyscan_t yyscanner) {
     YY_USE(yyvaluep);
     YY_USE(yylocationp);
+    YY_USE(resource);
     YY_USE(yyscanner);
     if (!yymsg)
         yymsg = "Deleting";
@@ -17125,7 +17144,7 @@ static void yydestruct(const char* yymsg,
 | yyparse.  |
 `----------*/
 
-int yyparse(core_yyscan_t yyscanner) {
+int yyparse(std::pmr::memory_resource* resource, core_yyscan_t yyscanner) {
     /* Lookahead token kind.  */
     int yychar;
 
@@ -17310,7 +17329,7 @@ yybackup:
     /* YYCHAR is either empty, or end-of-input, or a valid lookahead.  */
     if (yychar == YYEMPTY) {
         YYDPRINTF((stderr, "Reading a token\n"));
-        yychar = yylex(&yylval, &yylloc, yyscanner);
+        yychar = yylex(&yylval, &yylloc, resource, yyscanner);
     }
 
     if (yychar <= YYEOF) {
@@ -17397,29 +17416,29 @@ yyreduce:
         {
             pg_yyget_extra(yyscanner)->parsetree = (yyvsp[0].list);
         }
-#line 26872 "gram.cpp"
+#line 26874 "gram.cpp"
         break;
 
         case 3: /* stmtmulti: stmtmulti ';' stmt  */
 #line 1142 "gram.y"
         {
             if ((yyvsp[0].node) != NULL)
-                (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+                (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
             else
                 (yyval.list) = (yyvsp[-2].list);
         }
-#line 26883 "gram.cpp"
+#line 26885 "gram.cpp"
         break;
 
         case 4: /* stmtmulti: stmt  */
 #line 1149 "gram.y"
         {
             if ((yyvsp[0].node) != NULL)
-                (yyval.list) = list_make1((yyvsp[0].node));
+                (yyval.list) = list_make1(resource, (yyvsp[0].node));
             else
                 (yyval.list) = NIL;
         }
-#line 26894 "gram.cpp"
+#line 26896 "gram.cpp"
         break;
 
         case 130: /* stmt: %empty  */
@@ -17427,41 +17446,41 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 26900 "gram.cpp"
+#line 26902 "gram.cpp"
         break;
 
         case 131: /* CreateQueueStmt: CREATE RESOURCE QUEUE QueueId OptQueueList  */
 #line 1295 "gram.y"
         {
-            CreateQueueStmt* n = makeNode(CreateQueueStmt);
+            CreateQueueStmt* n = makeNode(resource, CreateQueueStmt);
             DefElem* def1 = /* mark start of WITH items */
-                makeDefElem("withliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withliststart", (Node*) makeInteger(resource, TRUE));
             n->queue = (yyvsp[-1].str);
-            n->options = list_concat(lappend((yyvsp[0].list), def1), NULL);
+            n->options = list_concat(lappend(resource, (yyvsp[0].list), def1), NULL);
             (yyval.node) = (Node*) n;
         }
-#line 26914 "gram.cpp"
+#line 26916 "gram.cpp"
         break;
 
         case 132: /* CreateQueueStmt: CREATE RESOURCE QUEUE QueueId OptQueueList WITH definition  */
 #line 1305 "gram.y"
         {
-            CreateQueueStmt* n = makeNode(CreateQueueStmt);
+            CreateQueueStmt* n = makeNode(resource, CreateQueueStmt);
             DefElem* def1 = /* mark start of WITH items */
-                makeDefElem("withliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withliststart", (Node*) makeInteger(resource, TRUE));
             n->queue = (yyvsp[-3].str);
-            n->options = list_concat(lappend((yyvsp[-2].list), def1), (yyvsp[0].list));
+            n->options = list_concat(lappend(resource, (yyvsp[-2].list), def1), (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 26928 "gram.cpp"
+#line 26930 "gram.cpp"
         break;
 
         case 133: /* OptQueueList: OptQueueList OptQueueElem  */
 #line 1320 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 26934 "gram.cpp"
+#line 26936 "gram.cpp"
         break;
 
         case 134: /* OptQueueList: %empty  */
@@ -17469,244 +17488,246 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 26940 "gram.cpp"
+#line 26942 "gram.cpp"
         break;
 
         case 135: /* OptQueueElem: ACTIVE THRESHOLD NumericOnly  */
 #line 1326 "gram.y"
         {
             /* was "activelimit" */
-            (yyval.defelt) = makeDefElem("active_statements", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "active_statements", (Node*) (yyvsp[0].value));
         }
-#line 26949 "gram.cpp"
+#line 26951 "gram.cpp"
         break;
 
         case 136: /* OptQueueElem: COST THRESHOLD NumericOnly  */
 #line 1331 "gram.y"
         {
             /* was "costlimit" */
-            (yyval.defelt) = makeDefElem("max_cost", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "max_cost", (Node*) (yyvsp[0].value));
         }
-#line 26958 "gram.cpp"
+#line 26960 "gram.cpp"
         break;
 
         case 137: /* OptQueueElem: IGNORE_P THRESHOLD NumericOnly  */
 #line 1336 "gram.y"
         {
             /* was "ignorecostlimit" */
-            (yyval.defelt) = makeDefElem("min_cost", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "min_cost", (Node*) (yyvsp[0].value));
         }
-#line 26967 "gram.cpp"
+#line 26969 "gram.cpp"
         break;
 
         case 138: /* OptQueueElem: OVERCOMMIT  */
 #line 1341 "gram.y"
         {
             /* was "overcommit" */
-            (yyval.defelt) = makeDefElem("cost_overcommit", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "cost_overcommit", (Node*) makeInteger(resource, TRUE));
         }
-#line 26976 "gram.cpp"
+#line 26978 "gram.cpp"
         break;
 
         case 139: /* OptQueueElem: NOOVERCOMMIT  */
 #line 1346 "gram.y"
         {
             /* was "overcommit" */
-            (yyval.defelt) = makeDefElem("cost_overcommit", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "cost_overcommit", (Node*) makeInteger(resource, FALSE));
         }
-#line 26985 "gram.cpp"
+#line 26987 "gram.cpp"
         break;
 
         case 140: /* AlterQueueStmt: ALTER RESOURCE QUEUE QueueId OptQueueList  */
 #line 1360 "gram.y"
         {
-            AlterQueueStmt* n = makeNode(AlterQueueStmt);
+            AlterQueueStmt* n = makeNode(resource, AlterQueueStmt);
             n->queue = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 26996 "gram.cpp"
+#line 26998 "gram.cpp"
         break;
 
         case 141: /* AlterQueueStmt: ALTER RESOURCE QUEUE QueueId OptQueueList WITH definition  */
 #line 1367 "gram.y"
         {
-            AlterQueueStmt* n = makeNode(AlterQueueStmt);
+            AlterQueueStmt* n = makeNode(resource, AlterQueueStmt);
             DefElem* def1 = /* mark start of WITH items */
-                makeDefElem("withliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withliststart", (Node*) makeInteger(resource, TRUE));
             DefElem* def2 = /* mark start of WITHOUT items */
-                makeDefElem("withoutliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withoutliststart", (Node*) makeInteger(resource, TRUE));
             n->queue = (yyvsp[-3].str);
-            n->options = list_concat(lappend((yyvsp[-2].list), def1), (yyvsp[0].list));
-            n->options = lappend(n->options, def2);
+            n->options = list_concat(lappend(resource, (yyvsp[-2].list), def1), (yyvsp[0].list));
+            n->options = lappend(resource, n->options, def2);
             (yyval.node) = (Node*) n;
         }
-#line 27014 "gram.cpp"
+#line 27016 "gram.cpp"
         break;
 
         case 142: /* AlterQueueStmt: ALTER RESOURCE QUEUE QueueId OptQueueList WITHOUT definition  */
 #line 1381 "gram.y"
         {
-            AlterQueueStmt* n = makeNode(AlterQueueStmt);
+            AlterQueueStmt* n = makeNode(resource, AlterQueueStmt);
             DefElem* def1 = /* mark start of WITH items */
-                makeDefElem("withliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withliststart", (Node*) makeInteger(resource, TRUE));
             DefElem* def2 = /* mark start of WITHOUT items */
-                makeDefElem("withoutliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withoutliststart", (Node*) makeInteger(resource, TRUE));
             n->queue = (yyvsp[-3].str);
-            n->options = lappend((yyvsp[-2].list), def1);
-            n->options = list_concat(lappend(n->options, def2), (yyvsp[0].list));
+            n->options = lappend(resource, (yyvsp[-2].list), def1);
+            n->options = list_concat(lappend(resource, n->options, def2), (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 27032 "gram.cpp"
+#line 27034 "gram.cpp"
         break;
 
         case 143: /* AlterQueueStmt: ALTER RESOURCE QUEUE QueueId OptQueueList WITH definition WITHOUT definition  */
 #line 1396 "gram.y"
         {
-            AlterQueueStmt* n = makeNode(AlterQueueStmt);
+            AlterQueueStmt* n = makeNode(resource, AlterQueueStmt);
             DefElem* def1 = /* mark start of WITH items */
-                makeDefElem("withliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withliststart", (Node*) makeInteger(resource, TRUE));
             DefElem* def2 = /* mark start of WITHOUT items */
-                makeDefElem("withoutliststart", (Node*) makeInteger(TRUE));
+                makeDefElem(resource, "withoutliststart", (Node*) makeInteger(resource, TRUE));
             n->queue = (yyvsp[-5].str);
-            n->options = list_concat(lappend((yyvsp[-4].list), def1), (yyvsp[-2].list));
-            n->options = list_concat(lappend(n->options, def2), (yyvsp[0].list));
+            n->options = list_concat(lappend(resource, (yyvsp[-4].list), def1), (yyvsp[-2].list));
+            n->options = list_concat(lappend(resource, n->options, def2), (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 27050 "gram.cpp"
+#line 27052 "gram.cpp"
         break;
 
         case 144: /* DropQueueStmt: DROP RESOURCE QUEUE QueueId  */
 #line 1419 "gram.y"
         {
-            DropQueueStmt* n = makeNode(DropQueueStmt);
+            DropQueueStmt* n = makeNode(resource, DropQueueStmt);
             n->queue = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 27060 "gram.cpp"
+#line 27062 "gram.cpp"
         break;
 
         case 145: /* CreateResourceGroupStmt: CREATE RESOURCE GROUP_P name WITH definition  */
 #line 1434 "gram.y"
         {
-            CreateResourceGroupStmt* n = makeNode(CreateResourceGroupStmt);
+            CreateResourceGroupStmt* n = makeNode(resource, CreateResourceGroupStmt);
             n->name = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27071 "gram.cpp"
+#line 27073 "gram.cpp"
         break;
 
         case 146: /* DropResourceGroupStmt: DROP RESOURCE GROUP_P name  */
 #line 1450 "gram.y"
         {
-            DropResourceGroupStmt* n = makeNode(DropResourceGroupStmt);
+            DropResourceGroupStmt* n = makeNode(resource, DropResourceGroupStmt);
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 27081 "gram.cpp"
+#line 27083 "gram.cpp"
         break;
 
         case 147: /* AlterResourceGroupStmt: ALTER RESOURCE GROUP_P name SET OptResourceGroupList  */
 #line 1464 "gram.y"
         {
-            AlterResourceGroupStmt* n = makeNode(AlterResourceGroupStmt);
+            AlterResourceGroupStmt* n = makeNode(resource, AlterResourceGroupStmt);
             n->name = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27092 "gram.cpp"
+#line 27094 "gram.cpp"
         break;
 
         case 148: /* OptResourceGroupList: OptResourceGroupElem  */
 #line 1475 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 27098 "gram.cpp"
+#line 27100 "gram.cpp"
         break;
 
         case 149: /* OptResourceGroupElem: CONCURRENCY SignedIconst  */
 #line 1480 "gram.y"
         {
             /* was "concurrency" */
-            (yyval.defelt) = makeDefElem("concurrency", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "concurrency", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27107 "gram.cpp"
+#line 27109 "gram.cpp"
         break;
 
         case 150: /* OptResourceGroupElem: CPU_RATE_LIMIT SignedIconst  */
 #line 1485 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cpu_rate_limit", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "cpu_rate_limit", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27115 "gram.cpp"
+#line 27117 "gram.cpp"
         break;
 
         case 151: /* OptResourceGroupElem: CPUSET Sconst  */
 #line 1489 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cpuset", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "cpuset", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27123 "gram.cpp"
+#line 27125 "gram.cpp"
         break;
 
         case 152: /* OptResourceGroupElem: MEMORY_SHARED_QUOTA SignedIconst  */
 #line 1493 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("memory_shared_quota", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) =
+                makeDefElem(resource, "memory_shared_quota", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27131 "gram.cpp"
+#line 27133 "gram.cpp"
         break;
 
         case 153: /* OptResourceGroupElem: MEMORY_LIMIT SignedIconst  */
 #line 1497 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("memory_limit", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "memory_limit", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27139 "gram.cpp"
+#line 27141 "gram.cpp"
         break;
 
         case 154: /* OptResourceGroupElem: MEMORY_SPILL_RATIO SignedIconst  */
 #line 1501 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("memory_spill_ratio", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) =
+                makeDefElem(resource, "memory_spill_ratio", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27147 "gram.cpp"
+#line 27149 "gram.cpp"
         break;
 
         case 155: /* CreateRoleStmt: CREATE ROLE RoleId opt_with OptRoleList  */
 #line 1514 "gram.y"
         {
-            CreateRoleStmt* n = makeNode(CreateRoleStmt);
+            CreateRoleStmt* n = makeNode(resource, CreateRoleStmt);
             n->stmt_type = ROLESTMT_ROLE;
             n->role = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27159 "gram.cpp"
+#line 27161 "gram.cpp"
         break;
 
         case 156: /* opt_with: WITH  */
 #line 1524 "gram.y"
         {
         }
-#line 27165 "gram.cpp"
+#line 27167 "gram.cpp"
         break;
 
         case 157: /* opt_with: %empty  */
 #line 1525 "gram.y"
         {
         }
-#line 27171 "gram.cpp"
+#line 27173 "gram.cpp"
         break;
 
         case 158: /* OptRoleList: OptRoleList CreateOptRoleElem  */
 #line 1534 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 27177 "gram.cpp"
+#line 27179 "gram.cpp"
         break;
 
         case 159: /* OptRoleList: %empty  */
@@ -17714,15 +17735,15 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 27183 "gram.cpp"
+#line 27185 "gram.cpp"
         break;
 
         case 160: /* AlterOptRoleList: AlterOptRoleList AlterOnlyOptRoleElem  */
 #line 1539 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 27189 "gram.cpp"
+#line 27191 "gram.cpp"
         break;
 
         case 161: /* AlterOptRoleList: %empty  */
@@ -17730,7 +17751,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 27195 "gram.cpp"
+#line 27197 "gram.cpp"
         break;
 
         case 162: /* AlterOnlyOptRoleElem: AlterOptRoleElem  */
@@ -17738,119 +17759,119 @@ yyreduce:
         {
             (yyval.defelt) = (yyvsp[0].defelt);
         }
-#line 27201 "gram.cpp"
+#line 27203 "gram.cpp"
         break;
 
         case 163: /* AlterOnlyOptRoleElem: DROP DENY FOR deny_point  */
 #line 1551 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("drop_deny", (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, "drop_deny", (yyvsp[0].node));
         }
-#line 27207 "gram.cpp"
+#line 27209 "gram.cpp"
         break;
 
         case 164: /* AlterOptRoleElem: PASSWORD Sconst  */
 #line 1556 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("password", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "password", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27216 "gram.cpp"
+#line 27218 "gram.cpp"
         break;
 
         case 165: /* AlterOptRoleElem: PASSWORD NULL_P  */
 #line 1561 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("password", NULL);
+            (yyval.defelt) = makeDefElem(resource, "password", NULL);
         }
-#line 27224 "gram.cpp"
+#line 27226 "gram.cpp"
         break;
 
         case 166: /* AlterOptRoleElem: ENCRYPTED PASSWORD Sconst  */
 #line 1565 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encryptedPassword", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "encryptedPassword", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27233 "gram.cpp"
+#line 27235 "gram.cpp"
         break;
 
         case 167: /* AlterOptRoleElem: UNENCRYPTED PASSWORD Sconst  */
 #line 1570 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("unencryptedPassword", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "unencryptedPassword", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27242 "gram.cpp"
+#line 27244 "gram.cpp"
         break;
 
         case 168: /* AlterOptRoleElem: INHERIT  */
 #line 1575 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("inherit", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "inherit", (Node*) makeInteger(resource, TRUE));
         }
-#line 27250 "gram.cpp"
+#line 27252 "gram.cpp"
         break;
 
         case 169: /* AlterOptRoleElem: CONNECTION LIMIT SignedIconst  */
 #line 1579 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("connectionlimit", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "connectionlimit", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27258 "gram.cpp"
+#line 27260 "gram.cpp"
         break;
 
         case 170: /* AlterOptRoleElem: VALID UNTIL Sconst  */
 #line 1583 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("validUntil", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "validUntil", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27266 "gram.cpp"
+#line 27268 "gram.cpp"
         break;
 
         case 171: /* AlterOptRoleElem: RESOURCE QUEUE any_name  */
 #line 1587 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("resourceQueue", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "resourceQueue", (Node*) (yyvsp[0].list));
         }
-#line 27274 "gram.cpp"
+#line 27276 "gram.cpp"
         break;
 
         case 172: /* AlterOptRoleElem: RESOURCE GROUP_P any_name  */
 #line 1591 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("resourceGroup", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "resourceGroup", (Node*) (yyvsp[0].list));
         }
-#line 27282 "gram.cpp"
+#line 27284 "gram.cpp"
         break;
 
         case 173: /* AlterOptRoleElem: CREATEEXTTABLE exttab_auth_list  */
 #line 1595 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exttabauth", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "exttabauth", (Node*) (yyvsp[0].list));
         }
-#line 27290 "gram.cpp"
+#line 27292 "gram.cpp"
         break;
 
         case 174: /* AlterOptRoleElem: NOCREATEEXTTABLE exttab_auth_list  */
 #line 1599 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exttabnoauth", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "exttabnoauth", (Node*) (yyvsp[0].list));
         }
-#line 27298 "gram.cpp"
+#line 27300 "gram.cpp"
         break;
 
         case 175: /* AlterOptRoleElem: USER role_list  */
 #line 1604 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("rolemembers", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "rolemembers", (Node*) (yyvsp[0].list));
         }
-#line 27306 "gram.cpp"
+#line 27308 "gram.cpp"
         break;
 
         case 176: /* AlterOptRoleElem: deny_login_role  */
 #line 1608 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("deny", (Node*) (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, "deny", (Node*) (yyvsp[0].node));
         }
-#line 27314 "gram.cpp"
+#line 27316 "gram.cpp"
         break;
 
         case 177: /* AlterOptRoleElem: IDENT  */
@@ -17862,44 +17883,44 @@ yyreduce:
 					 * size of the main parser.
 					 */
             if (strcmp((yyvsp[0].str), "superuser") == 0)
-                (yyval.defelt) = makeDefElem("superuser", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "superuser", (Node*) makeInteger(resource, TRUE));
             else if (strcmp((yyvsp[0].str), "nosuperuser") == 0)
-                (yyval.defelt) = makeDefElem("superuser", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "superuser", (Node*) makeInteger(resource, FALSE));
             else if (strcmp((yyvsp[0].str), "createuser") == 0) {
                 /* For backwards compatibility, synonym for SUPERUSER */
-                (yyval.defelt) = makeDefElem("superuser", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "superuser", (Node*) makeInteger(resource, TRUE));
             } else if (strcmp((yyvsp[0].str), "nocreateuser") == 0) {
                 /* For backwards compatibility, synonym for SUPERUSER */
-                (yyval.defelt) = makeDefElem("superuser", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "superuser", (Node*) makeInteger(resource, FALSE));
             } else if (strcmp((yyvsp[0].str), "createrole") == 0)
-                (yyval.defelt) = makeDefElem("createrole", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "createrole", (Node*) makeInteger(resource, TRUE));
             else if (strcmp((yyvsp[0].str), "nocreaterole") == 0)
-                (yyval.defelt) = makeDefElem("createrole", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "createrole", (Node*) makeInteger(resource, FALSE));
             else if (strcmp((yyvsp[0].str), "replication") == 0)
-                (yyval.defelt) = makeDefElem("isreplication", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "isreplication", (Node*) makeInteger(resource, TRUE));
             else if (strcmp((yyvsp[0].str), "noreplication") == 0)
-                (yyval.defelt) = makeDefElem("isreplication", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "isreplication", (Node*) makeInteger(resource, FALSE));
             else if (strcmp((yyvsp[0].str), "createdb") == 0)
-                (yyval.defelt) = makeDefElem("createdb", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "createdb", (Node*) makeInteger(resource, TRUE));
             else if (strcmp((yyvsp[0].str), "nocreatedb") == 0)
-                (yyval.defelt) = makeDefElem("createdb", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "createdb", (Node*) makeInteger(resource, FALSE));
             else if (strcmp((yyvsp[0].str), "login") == 0)
-                (yyval.defelt) = makeDefElem("canlogin", (Node*) makeInteger(TRUE));
+                (yyval.defelt) = makeDefElem(resource, "canlogin", (Node*) makeInteger(resource, TRUE));
             else if (strcmp((yyvsp[0].str), "nologin") == 0)
-                (yyval.defelt) = makeDefElem("canlogin", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "canlogin", (Node*) makeInteger(resource, FALSE));
             else if (strcmp((yyvsp[0].str), "noinherit") == 0) {
                 /*
 						 * Note that INHERIT is a keyword, so it's handled by main parser, but
 						 * NOINHERIT is handled here.
 						 */
-                (yyval.defelt) = makeDefElem("inherit", (Node*) makeInteger(FALSE));
+                (yyval.defelt) = makeDefElem(resource, "inherit", (Node*) makeInteger(resource, FALSE));
             } else
                 ereport(ERROR,
                         errcode(ERRCODE_SYNTAX_ERROR),
                         errmsg("unrecognized role option \"%s\"", (yyvsp[0].str)),
                         parser_errposition((yylsp[0])));
         }
-#line 27369 "gram.cpp"
+#line 27371 "gram.cpp"
         break;
 
         case 178: /* CreateOptRoleElem: AlterOptRoleElem  */
@@ -17907,47 +17928,47 @@ yyreduce:
         {
             (yyval.defelt) = (yyvsp[0].defelt);
         }
-#line 27375 "gram.cpp"
+#line 27377 "gram.cpp"
         break;
 
         case 179: /* CreateOptRoleElem: SYSID Iconst  */
 #line 1668 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("sysid", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "sysid", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 27383 "gram.cpp"
+#line 27385 "gram.cpp"
         break;
 
         case 180: /* CreateOptRoleElem: ADMIN role_list  */
 #line 1672 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("adminmembers", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "adminmembers", (Node*) (yyvsp[0].list));
         }
-#line 27391 "gram.cpp"
+#line 27393 "gram.cpp"
         break;
 
         case 181: /* CreateOptRoleElem: ROLE role_list  */
 #line 1676 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("rolemembers", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "rolemembers", (Node*) (yyvsp[0].list));
         }
-#line 27399 "gram.cpp"
+#line 27401 "gram.cpp"
         break;
 
         case 182: /* CreateOptRoleElem: IN_P ROLE role_list  */
 #line 1680 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("addroleto", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "addroleto", (Node*) (yyvsp[0].list));
         }
-#line 27407 "gram.cpp"
+#line 27409 "gram.cpp"
         break;
 
         case 183: /* CreateOptRoleElem: IN_P GROUP_P role_list  */
 #line 1684 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("addroleto", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "addroleto", (Node*) (yyvsp[0].list));
         }
-#line 27415 "gram.cpp"
+#line 27417 "gram.cpp"
         break;
 
         case 184: /* deny_login_role: DENY deny_interval  */
@@ -17955,7 +17976,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].node);
         }
-#line 27421 "gram.cpp"
+#line 27423 "gram.cpp"
         break;
 
         case 185: /* deny_login_role: DENY deny_point  */
@@ -17963,53 +17984,53 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].node);
         }
-#line 27427 "gram.cpp"
+#line 27429 "gram.cpp"
         break;
 
         case 186: /* deny_interval: BETWEEN deny_point AND deny_point  */
 #line 1694 "gram.y"
         {
-            DenyLoginInterval* n = makeNode(DenyLoginInterval);
+            DenyLoginInterval* n = makeNode(resource, DenyLoginInterval);
             n->start = (DenyLoginPoint*) (yyvsp[-2].node);
             n->end = (DenyLoginPoint*) (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 27438 "gram.cpp"
+#line 27440 "gram.cpp"
         break;
 
         case 187: /* deny_day_specifier: Sconst  */
 #line 1702 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 27444 "gram.cpp"
+#line 27446 "gram.cpp"
         break;
 
         case 188: /* deny_day_specifier: Iconst  */
 #line 1703 "gram.y"
         {
-            (yyval.node) = (Node*) makeInteger((yyvsp[0].ival));
+            (yyval.node) = (Node*) makeInteger(resource, (yyvsp[0].ival));
         }
-#line 27450 "gram.cpp"
+#line 27452 "gram.cpp"
         break;
 
         case 189: /* deny_point: DAY_P deny_day_specifier opt_time  */
 #line 1707 "gram.y"
         {
-            DenyLoginPoint* n = makeNode(DenyLoginPoint);
+            DenyLoginPoint* n = makeNode(resource, DenyLoginPoint);
             n->day = (Value*) (yyvsp[-1].node);
             n->time = (Value*) (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 27461 "gram.cpp"
+#line 27463 "gram.cpp"
         break;
 
         case 190: /* opt_time: TIME Sconst  */
 #line 1715 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 27467 "gram.cpp"
+#line 27469 "gram.cpp"
         break;
 
         case 191: /* opt_time: %empty  */
@@ -18017,7 +18038,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 27473 "gram.cpp"
+#line 27475 "gram.cpp"
         break;
 
         case 192: /* exttab_auth_list: '(' keyvalue_list ')'  */
@@ -18025,7 +18046,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 27479 "gram.cpp"
+#line 27481 "gram.cpp"
         break;
 
         case 193: /* exttab_auth_list: %empty  */
@@ -18033,55 +18054,55 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 27485 "gram.cpp"
+#line 27487 "gram.cpp"
         break;
 
         case 194: /* keyvalue_list: keyvalue_pair  */
 #line 1725 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 27491 "gram.cpp"
+#line 27493 "gram.cpp"
         break;
 
         case 195: /* keyvalue_list: keyvalue_list ',' keyvalue_pair  */
 #line 1726 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 27497 "gram.cpp"
+#line 27499 "gram.cpp"
         break;
 
         case 196: /* keyvalue_pair: ColLabel '=' Sconst  */
 #line 1731 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-2].str), (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-2].str), (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 27505 "gram.cpp"
+#line 27507 "gram.cpp"
         break;
 
         case 197: /* CreateUserStmt: CREATE USER RoleId opt_with OptRoleList  */
 #line 1745 "gram.y"
         {
-            CreateRoleStmt* n = makeNode(CreateRoleStmt);
+            CreateRoleStmt* n = makeNode(resource, CreateRoleStmt);
             n->stmt_type = ROLESTMT_USER;
             n->role = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27517 "gram.cpp"
+#line 27519 "gram.cpp"
         break;
 
         case 198: /* AlterRoleStmt: ALTER ROLE RoleId opt_with AlterOptRoleList  */
 #line 1763 "gram.y"
         {
-            AlterRoleStmt* n = makeNode(AlterRoleStmt);
+            AlterRoleStmt* n = makeNode(resource, AlterRoleStmt);
             n->role = (yyvsp[-2].str);
             n->action = +1; /* add, if there are members */
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27529 "gram.cpp"
+#line 27531 "gram.cpp"
         break;
 
         case 199: /* opt_in_database: %empty  */
@@ -18089,7 +18110,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 27535 "gram.cpp"
+#line 27537 "gram.cpp"
         break;
 
         case 200: /* opt_in_database: IN_P DATABASE database_name  */
@@ -18097,135 +18118,135 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 27541 "gram.cpp"
+#line 27543 "gram.cpp"
         break;
 
         case 201: /* AlterRoleSetStmt: ALTER ROLE RoleId opt_in_database SetResetClause  */
 #line 1779 "gram.y"
         {
-            AlterRoleSetStmt* n = makeNode(AlterRoleSetStmt);
+            AlterRoleSetStmt* n = makeNode(resource, AlterRoleSetStmt);
             n->role = (yyvsp[-2].str);
             n->database = (yyvsp[-1].str);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 27553 "gram.cpp"
+#line 27555 "gram.cpp"
         break;
 
         case 202: /* AlterRoleSetStmt: ALTER ROLE ALL opt_in_database SetResetClause  */
 #line 1787 "gram.y"
         {
-            AlterRoleSetStmt* n = makeNode(AlterRoleSetStmt);
+            AlterRoleSetStmt* n = makeNode(resource, AlterRoleSetStmt);
             n->role = NULL;
             n->database = (yyvsp[-1].str);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 27565 "gram.cpp"
+#line 27567 "gram.cpp"
         break;
 
         case 203: /* AlterUserStmt: ALTER USER RoleId opt_with AlterOptRoleList  */
 #line 1805 "gram.y"
         {
-            AlterRoleStmt* n = makeNode(AlterRoleStmt);
+            AlterRoleStmt* n = makeNode(resource, AlterRoleStmt);
             n->role = (yyvsp[-2].str);
             n->action = +1; /* add, if there are members */
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27577 "gram.cpp"
+#line 27579 "gram.cpp"
         break;
 
         case 204: /* AlterUserSetStmt: ALTER USER RoleId opt_in_database SetResetClause  */
 #line 1817 "gram.y"
         {
-            AlterRoleSetStmt* n = makeNode(AlterRoleSetStmt);
+            AlterRoleSetStmt* n = makeNode(resource, AlterRoleSetStmt);
             n->role = (yyvsp[-2].str);
             n->database = (yyvsp[-1].str);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 27589 "gram.cpp"
+#line 27591 "gram.cpp"
         break;
 
         case 205: /* AlterUserSetStmt: ALTER USER ALL opt_in_database SetResetClause  */
 #line 1825 "gram.y"
         {
-            AlterRoleSetStmt* n = makeNode(AlterRoleSetStmt);
+            AlterRoleSetStmt* n = makeNode(resource, AlterRoleSetStmt);
             n->role = NULL;
             n->database = (yyvsp[-1].str);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 27601 "gram.cpp"
+#line 27603 "gram.cpp"
         break;
 
         case 206: /* DropRoleStmt: DROP ROLE role_list  */
 #line 1846 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->missing_ok = FALSE;
             n->roles = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27612 "gram.cpp"
+#line 27614 "gram.cpp"
         break;
 
         case 207: /* DropRoleStmt: DROP ROLE IF_P EXISTS role_list  */
 #line 1853 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->missing_ok = TRUE;
             n->roles = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27623 "gram.cpp"
+#line 27625 "gram.cpp"
         break;
 
         case 208: /* DropUserStmt: DROP USER role_list  */
 #line 1872 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->missing_ok = FALSE;
             n->roles = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27634 "gram.cpp"
+#line 27636 "gram.cpp"
         break;
 
         case 209: /* DropUserStmt: DROP USER IF_P EXISTS role_list  */
 #line 1879 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->roles = (yyvsp[0].list);
             n->missing_ok = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 27645 "gram.cpp"
+#line 27647 "gram.cpp"
         break;
 
         case 210: /* CreateGroupStmt: CREATE GROUP_P RoleId opt_with OptRoleList  */
 #line 1896 "gram.y"
         {
-            CreateRoleStmt* n = makeNode(CreateRoleStmt);
+            CreateRoleStmt* n = makeNode(resource, CreateRoleStmt);
             n->stmt_type = ROLESTMT_GROUP;
             n->role = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27657 "gram.cpp"
+#line 27659 "gram.cpp"
         break;
 
         case 211: /* AlterGroupStmt: ALTER GROUP_P RoleId add_drop USER role_list  */
 #line 1914 "gram.y"
         {
-            AlterRoleStmt* n = makeNode(AlterRoleStmt);
+            AlterRoleStmt* n = makeNode(resource, AlterRoleStmt);
             n->role = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
-            n->options = list_make1(makeDefElem("rolemembers", (Node*) (yyvsp[0].list)));
+            n->options = list_make1(resource, makeDefElem(resource, "rolemembers", (Node*) (yyvsp[0].list)));
             (yyval.node) = (Node*) n;
         }
-#line 27670 "gram.cpp"
+#line 27672 "gram.cpp"
         break;
 
         case 212: /* add_drop: ADD_P  */
@@ -18233,7 +18254,7 @@ yyreduce:
         {
             (yyval.ival) = +1;
         }
-#line 27676 "gram.cpp"
+#line 27678 "gram.cpp"
         break;
 
         case 213: /* add_drop: DROP  */
@@ -18241,35 +18262,35 @@ yyreduce:
         {
             (yyval.ival) = -1;
         }
-#line 27682 "gram.cpp"
+#line 27684 "gram.cpp"
         break;
 
         case 214: /* DropGroupStmt: DROP GROUP_P role_list  */
 #line 1938 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->missing_ok = FALSE;
             n->roles = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27693 "gram.cpp"
+#line 27695 "gram.cpp"
         break;
 
         case 215: /* DropGroupStmt: DROP GROUP_P IF_P EXISTS role_list  */
 #line 1945 "gram.y"
         {
-            DropRoleStmt* n = makeNode(DropRoleStmt);
+            DropRoleStmt* n = makeNode(resource, DropRoleStmt);
             n->missing_ok = TRUE;
             n->roles = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 27704 "gram.cpp"
+#line 27706 "gram.cpp"
         break;
 
         case 216: /* CreateSchemaStmt: CREATE SCHEMA OptSchemaName AUTHORIZATION RoleId OptSchemaEltList  */
 #line 1962 "gram.y"
         {
-            CreateSchemaStmt* n = makeNode(CreateSchemaStmt);
+            CreateSchemaStmt* n = makeNode(resource, CreateSchemaStmt);
             /* One can omit the schema name or the authorization id. */
             if ((yyvsp[-3].str) != NULL)
                 n->schemaname = (yyvsp[-3].str);
@@ -18280,13 +18301,13 @@ yyreduce:
             n->if_not_exists = false;
             (yyval.node) = (Node*) n;
         }
-#line 27721 "gram.cpp"
+#line 27723 "gram.cpp"
         break;
 
         case 217: /* CreateSchemaStmt: CREATE SCHEMA ColId OptSchemaEltList  */
 #line 1975 "gram.y"
         {
-            CreateSchemaStmt* n = makeNode(CreateSchemaStmt);
+            CreateSchemaStmt* n = makeNode(resource, CreateSchemaStmt);
             /* ...but not both */
             n->schemaname = (yyvsp[-1].str);
             n->authid = NULL;
@@ -18294,13 +18315,13 @@ yyreduce:
             n->if_not_exists = false;
             (yyval.node) = (Node*) n;
         }
-#line 27735 "gram.cpp"
+#line 27737 "gram.cpp"
         break;
 
         case 218: /* CreateSchemaStmt: CREATE SCHEMA IF_P NOT EXISTS OptSchemaName AUTHORIZATION RoleId OptSchemaEltList  */
 #line 1985 "gram.y"
         {
-            CreateSchemaStmt* n = makeNode(CreateSchemaStmt);
+            CreateSchemaStmt* n = makeNode(resource, CreateSchemaStmt);
             /* One can omit the schema name or the authorization id. */
             if ((yyvsp[-3].str) != NULL)
                 n->schemaname = (yyvsp[-3].str);
@@ -18316,13 +18337,13 @@ yyreduce:
             n->if_not_exists = true;
             (yyval.node) = (Node*) n;
         }
-#line 27757 "gram.cpp"
+#line 27759 "gram.cpp"
         break;
 
         case 219: /* CreateSchemaStmt: CREATE SCHEMA IF_P NOT EXISTS ColId OptSchemaEltList  */
 #line 2003 "gram.y"
         {
-            CreateSchemaStmt* n = makeNode(CreateSchemaStmt);
+            CreateSchemaStmt* n = makeNode(resource, CreateSchemaStmt);
             /* ...but not both */
             n->schemaname = (yyvsp[-1].str);
             n->authid = NULL;
@@ -18335,7 +18356,7 @@ yyreduce:
             n->if_not_exists = true;
             (yyval.node) = (Node*) n;
         }
-#line 27776 "gram.cpp"
+#line 27778 "gram.cpp"
         break;
 
         case 220: /* OptSchemaName: ColId  */
@@ -18343,7 +18364,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 27782 "gram.cpp"
+#line 27784 "gram.cpp"
         break;
 
         case 221: /* OptSchemaName: %empty  */
@@ -18351,7 +18372,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 27788 "gram.cpp"
+#line 27790 "gram.cpp"
         break;
 
         case 222: /* OptSchemaEltList: OptSchemaEltList schema_stmt  */
@@ -18359,9 +18380,9 @@ yyreduce:
         {
             if ((yyloc) < 0) /* see comments for YYLLOC_DEFAULT */
                 (yyloc) = (yylsp[0]);
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 27798 "gram.cpp"
+#line 27800 "gram.cpp"
         break;
 
         case 223: /* OptSchemaEltList: %empty  */
@@ -18369,7 +18390,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 27804 "gram.cpp"
+#line 27806 "gram.cpp"
         break;
 
         case 230: /* VariableSetStmt: SET set_rest  */
@@ -18379,7 +18400,7 @@ yyreduce:
             n->is_local = false;
             (yyval.node) = (Node*) n;
         }
-#line 27814 "gram.cpp"
+#line 27816 "gram.cpp"
         break;
 
         case 231: /* VariableSetStmt: SET LOCAL set_rest  */
@@ -18389,7 +18410,7 @@ yyreduce:
             n->is_local = true;
             (yyval.node) = (Node*) n;
         }
-#line 27824 "gram.cpp"
+#line 27826 "gram.cpp"
         break;
 
         case 232: /* VariableSetStmt: SET SESSION set_rest  */
@@ -18399,77 +18420,77 @@ yyreduce:
             n->is_local = false;
             (yyval.node) = (Node*) n;
         }
-#line 27834 "gram.cpp"
+#line 27836 "gram.cpp"
         break;
 
         case 233: /* set_rest: TRANSACTION transaction_mode_list  */
 #line 2081 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_MULTI;
             n->name = "TRANSACTION";
             n->args = (yyvsp[0].list);
             (yyval.vsetstmt) = n;
         }
-#line 27846 "gram.cpp"
+#line 27848 "gram.cpp"
         break;
 
         case 234: /* set_rest: SESSION CHARACTERISTICS AS TRANSACTION transaction_mode_list  */
 #line 2089 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_MULTI;
             n->name = "SESSION CHARACTERISTICS";
             n->args = (yyvsp[0].list);
             (yyval.vsetstmt) = n;
         }
-#line 27858 "gram.cpp"
+#line 27860 "gram.cpp"
         break;
 
         case 236: /* generic_set: var_name TO var_list  */
 #line 2101 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = (yyvsp[-2].str);
             n->args = (yyvsp[0].list);
             (yyval.vsetstmt) = n;
         }
-#line 27870 "gram.cpp"
+#line 27872 "gram.cpp"
         break;
 
         case 237: /* generic_set: var_name '=' var_list  */
 #line 2109 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = (yyvsp[-2].str);
             n->args = (yyvsp[0].list);
             (yyval.vsetstmt) = n;
         }
-#line 27882 "gram.cpp"
+#line 27884 "gram.cpp"
         break;
 
         case 238: /* generic_set: var_name TO DEFAULT  */
 #line 2117 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_DEFAULT;
             n->name = (yyvsp[-2].str);
             (yyval.vsetstmt) = n;
         }
-#line 27893 "gram.cpp"
+#line 27895 "gram.cpp"
         break;
 
         case 239: /* generic_set: var_name '=' DEFAULT  */
 #line 2124 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_DEFAULT;
             n->name = (yyvsp[-2].str);
             (yyval.vsetstmt) = n;
         }
-#line 27904 "gram.cpp"
+#line 27906 "gram.cpp"
         break;
 
         case 240: /* set_rest_more: generic_set  */
@@ -18477,33 +18498,33 @@ yyreduce:
         {
             (yyval.vsetstmt) = (yyvsp[0].vsetstmt);
         }
-#line 27910 "gram.cpp"
+#line 27912 "gram.cpp"
         break;
 
         case 241: /* set_rest_more: var_name FROM CURRENT_P  */
 #line 2135 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_CURRENT;
             n->name = (yyvsp[-2].str);
             (yyval.vsetstmt) = n;
         }
-#line 27921 "gram.cpp"
+#line 27923 "gram.cpp"
         break;
 
         case 242: /* set_rest_more: TIME ZONE zone_value  */
 #line 2143 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "timezone";
             if ((yyvsp[0].node) != NULL)
-                n->args = list_make1((yyvsp[0].node));
+                n->args = list_make1(resource, (yyvsp[0].node));
             else
                 n->kind = VAR_SET_DEFAULT;
             (yyval.vsetstmt) = n;
         }
-#line 27936 "gram.cpp"
+#line 27938 "gram.cpp"
         break;
 
         case 243: /* set_rest_more: CATALOG_P Sconst  */
@@ -18515,95 +18536,97 @@ yyreduce:
                     parser_errposition((yylsp[0])));
             (yyval.vsetstmt) = NULL; /*not reached*/
         }
-#line 27948 "gram.cpp"
+#line 27950 "gram.cpp"
         break;
 
         case 244: /* set_rest_more: SCHEMA Sconst  */
 #line 2162 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "search_path";
-            n->args = list_make1(makeStringConst((yyvsp[0].str), (yylsp[0])));
+            n->args = list_make1(resource, makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
             (yyval.vsetstmt) = n;
         }
-#line 27960 "gram.cpp"
+#line 27962 "gram.cpp"
         break;
 
         case 245: /* set_rest_more: NAMES opt_encoding  */
 #line 2170 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "client_encoding";
             if ((yyvsp[0].str) != NULL)
-                n->args = list_make1(makeStringConst((yyvsp[0].str), (yylsp[0])));
+                n->args = list_make1(resource, makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
             else
                 n->kind = VAR_SET_DEFAULT;
             (yyval.vsetstmt) = n;
         }
-#line 27975 "gram.cpp"
+#line 27977 "gram.cpp"
         break;
 
         case 246: /* set_rest_more: ROLE NonReservedWord_or_Sconst  */
 #line 2181 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "role";
-            n->args = list_make1(makeStringConst((yyvsp[0].str), (yylsp[0])));
+            n->args = list_make1(resource, makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
             (yyval.vsetstmt) = n;
         }
-#line 27987 "gram.cpp"
+#line 27989 "gram.cpp"
         break;
 
         case 247: /* set_rest_more: SESSION AUTHORIZATION NonReservedWord_or_Sconst  */
 #line 2189 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "session_authorization";
-            n->args = list_make1(makeStringConst((yyvsp[0].str), (yylsp[0])));
+            n->args = list_make1(resource, makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
             (yyval.vsetstmt) = n;
         }
-#line 27999 "gram.cpp"
+#line 28001 "gram.cpp"
         break;
 
         case 248: /* set_rest_more: SESSION AUTHORIZATION DEFAULT  */
 #line 2197 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_DEFAULT;
             n->name = "session_authorization";
             (yyval.vsetstmt) = n;
         }
-#line 28010 "gram.cpp"
+#line 28012 "gram.cpp"
         break;
 
         case 249: /* set_rest_more: XML_P OPTION document_or_content  */
 #line 2204 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_VALUE;
             n->name = "xmloption";
-            n->args = list_make1(
-                makeStringConst((yyvsp[0].ival) == XMLOPTION_DOCUMENT ? pstrdup("DOCUMENT") : pstrdup("CONTENT"),
-                                (yylsp[0])));
+            n->args = list_make1(resource,
+                                 makeStringConst(resource,
+                                                 (yyvsp[0].ival) == XMLOPTION_DOCUMENT ? pstrdup(resource, "DOCUMENT")
+                                                                                       : pstrdup(resource, "CONTENT"),
+                                                 (yylsp[0])));
             (yyval.vsetstmt) = n;
         }
-#line 28022 "gram.cpp"
+#line 28024 "gram.cpp"
         break;
 
         case 250: /* set_rest_more: TRANSACTION SNAPSHOT Sconst  */
 #line 2213 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_SET_MULTI;
             n->name = "TRANSACTION SNAPSHOT";
-            n->args = list_make1(makeStringConst((yyvsp[0].str), (yylsp[0])));
+            n->args = list_make1(resource, makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
             (yyval.vsetstmt) = n;
         }
-#line 28034 "gram.cpp"
+#line 28036 "gram.cpp"
         break;
 
         case 251: /* var_name: ColId  */
@@ -18611,47 +18634,47 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 28040 "gram.cpp"
+#line 28042 "gram.cpp"
         break;
 
         case 252: /* var_name: var_name '.' ColId  */
 #line 2224 "gram.y"
         {
-            (yyval.str) = psprintf("%s.%s", (yyvsp[-2].str), (yyvsp[0].str));
+            (yyval.str) = psprintf(resource, "%s.%s", (yyvsp[-2].str), (yyvsp[0].str));
         }
-#line 28046 "gram.cpp"
+#line 28048 "gram.cpp"
         break;
 
         case 253: /* var_list: var_value  */
 #line 2227 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 28052 "gram.cpp"
+#line 28054 "gram.cpp"
         break;
 
         case 254: /* var_list: var_list ',' var_value  */
 #line 2228 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 28058 "gram.cpp"
+#line 28060 "gram.cpp"
         break;
 
         case 255: /* var_value: opt_boolean_or_string  */
 #line 2232 "gram.y"
         {
-            (yyval.node) = makeStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 28064 "gram.cpp"
+#line 28066 "gram.cpp"
         break;
 
         case 256: /* var_value: NumericOnly  */
 #line 2234 "gram.y"
         {
-            (yyval.node) = makeAConst((yyvsp[0].value), (yylsp[0]));
+            (yyval.node) = makeAConst(resource, (yyvsp[0].value), (yylsp[0]));
         }
-#line 28070 "gram.cpp"
+#line 28072 "gram.cpp"
         break;
 
         case 257: /* iso_level: READ UNCOMMITTED  */
@@ -18659,7 +18682,7 @@ yyreduce:
         {
             (yyval.str) = "read uncommitted";
         }
-#line 28076 "gram.cpp"
+#line 28078 "gram.cpp"
         break;
 
         case 258: /* iso_level: READ COMMITTED  */
@@ -18667,7 +18690,7 @@ yyreduce:
         {
             (yyval.str) = "read committed";
         }
-#line 28082 "gram.cpp"
+#line 28084 "gram.cpp"
         break;
 
         case 259: /* iso_level: REPEATABLE READ  */
@@ -18675,7 +18698,7 @@ yyreduce:
         {
             (yyval.str) = "repeatable read";
         }
-#line 28088 "gram.cpp"
+#line 28090 "gram.cpp"
         break;
 
         case 260: /* iso_level: SERIALIZABLE  */
@@ -18683,7 +18706,7 @@ yyreduce:
         {
             (yyval.str) = "serializable";
         }
-#line 28094 "gram.cpp"
+#line 28096 "gram.cpp"
         break;
 
         case 261: /* opt_boolean_or_string: TRUE_P  */
@@ -18691,7 +18714,7 @@ yyreduce:
         {
             (yyval.str) = "true";
         }
-#line 28100 "gram.cpp"
+#line 28102 "gram.cpp"
         break;
 
         case 262: /* opt_boolean_or_string: FALSE_P  */
@@ -18699,7 +18722,7 @@ yyreduce:
         {
             (yyval.str) = "false";
         }
-#line 28106 "gram.cpp"
+#line 28108 "gram.cpp"
         break;
 
         case 263: /* opt_boolean_or_string: ON  */
@@ -18707,7 +18730,7 @@ yyreduce:
         {
             (yyval.str) = "on";
         }
-#line 28112 "gram.cpp"
+#line 28114 "gram.cpp"
         break;
 
         case 264: /* opt_boolean_or_string: NonReservedWord_or_Sconst  */
@@ -18715,23 +18738,23 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 28118 "gram.cpp"
+#line 28120 "gram.cpp"
         break;
 
         case 265: /* zone_value: Sconst  */
 #line 2265 "gram.y"
         {
-            (yyval.node) = makeStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 28126 "gram.cpp"
+#line 28128 "gram.cpp"
         break;
 
         case 266: /* zone_value: IDENT  */
 #line 2269 "gram.y"
         {
-            (yyval.node) = makeStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 28134 "gram.cpp"
+#line 28136 "gram.cpp"
         break;
 
         case 267: /* zone_value: ConstInterval Sconst opt_interval  */
@@ -18747,9 +18770,9 @@ yyreduce:
                             parser_errposition((yylsp[0])));
             }
             t->typmods = (yyvsp[0].list);
-            (yyval.node) = makeStringConstCast((yyvsp[-1].str), (yylsp[-1]), t);
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[-1].str), (yylsp[-1]), t);
         }
-#line 28153 "gram.cpp"
+#line 28155 "gram.cpp"
         break;
 
         case 268: /* zone_value: ConstInterval '(' Iconst ')' Sconst opt_interval  */
@@ -18768,21 +18791,22 @@ yyreduce:
                             errcode(ERRCODE_SYNTAX_ERROR),
                             errmsg("interval precision specified twice"),
                             parser_errposition((yylsp[-5])));
-                t->typmods = lappend((yyvsp[0].list), makeIntConst((yyvsp[-3].ival), (yylsp[-3])));
+                t->typmods = lappend(resource, (yyvsp[0].list), makeIntConst(resource, (yyvsp[-3].ival), (yylsp[-3])));
             } else
-                t->typmods =
-                    list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1), makeIntConst((yyvsp[-3].ival), (yylsp[-3])));
-            (yyval.node) = makeStringConstCast((yyvsp[-1].str), (yylsp[-1]), t);
+                t->typmods = list_make2(resource,
+                                        makeIntConst(resource, INTERVAL_FULL_RANGE, -1),
+                                        makeIntConst(resource, (yyvsp[-3].ival), (yylsp[-3])));
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[-1].str), (yylsp[-1]), t);
         }
-#line 28180 "gram.cpp"
+#line 28182 "gram.cpp"
         break;
 
         case 269: /* zone_value: NumericOnly  */
 #line 2310 "gram.y"
         {
-            (yyval.node) = makeAConst((yyvsp[0].value), (yylsp[0]));
+            (yyval.node) = makeAConst(resource, (yyvsp[0].value), (yylsp[0]));
         }
-#line 28186 "gram.cpp"
+#line 28188 "gram.cpp"
         break;
 
         case 270: /* zone_value: DEFAULT  */
@@ -18790,7 +18814,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 28192 "gram.cpp"
+#line 28194 "gram.cpp"
         break;
 
         case 271: /* zone_value: LOCAL  */
@@ -18798,7 +18822,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 28198 "gram.cpp"
+#line 28200 "gram.cpp"
         break;
 
         case 272: /* opt_encoding: Sconst  */
@@ -18806,7 +18830,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 28204 "gram.cpp"
+#line 28206 "gram.cpp"
         break;
 
         case 273: /* opt_encoding: DEFAULT  */
@@ -18814,7 +18838,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 28210 "gram.cpp"
+#line 28212 "gram.cpp"
         break;
 
         case 274: /* opt_encoding: %empty  */
@@ -18822,7 +18846,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 28216 "gram.cpp"
+#line 28218 "gram.cpp"
         break;
 
         case 275: /* NonReservedWord_or_Sconst: NonReservedWord  */
@@ -18830,7 +18854,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 28222 "gram.cpp"
+#line 28224 "gram.cpp"
         break;
 
         case 276: /* NonReservedWord_or_Sconst: Sconst  */
@@ -18838,7 +18862,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 28228 "gram.cpp"
+#line 28230 "gram.cpp"
         break;
 
         case 277: /* VariableResetStmt: RESET reset_rest  */
@@ -18846,7 +18870,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].vsetstmt);
         }
-#line 28234 "gram.cpp"
+#line 28236 "gram.cpp"
         break;
 
         case 278: /* reset_rest: generic_reset  */
@@ -18854,61 +18878,61 @@ yyreduce:
         {
             (yyval.vsetstmt) = (yyvsp[0].vsetstmt);
         }
-#line 28240 "gram.cpp"
+#line 28242 "gram.cpp"
         break;
 
         case 279: /* reset_rest: TIME ZONE  */
 #line 2333 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_RESET;
             n->name = "timezone";
             (yyval.vsetstmt) = n;
         }
-#line 28251 "gram.cpp"
+#line 28253 "gram.cpp"
         break;
 
         case 280: /* reset_rest: TRANSACTION ISOLATION LEVEL  */
 #line 2340 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_RESET;
             n->name = "transaction_isolation";
             (yyval.vsetstmt) = n;
         }
-#line 28262 "gram.cpp"
+#line 28264 "gram.cpp"
         break;
 
         case 281: /* reset_rest: SESSION AUTHORIZATION  */
 #line 2347 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_RESET;
             n->name = "session_authorization";
             (yyval.vsetstmt) = n;
         }
-#line 28273 "gram.cpp"
+#line 28275 "gram.cpp"
         break;
 
         case 282: /* generic_reset: var_name  */
 #line 2357 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_RESET;
             n->name = (yyvsp[0].str);
             (yyval.vsetstmt) = n;
         }
-#line 28284 "gram.cpp"
+#line 28286 "gram.cpp"
         break;
 
         case 283: /* generic_reset: ALL  */
 #line 2364 "gram.y"
         {
-            VariableSetStmt* n = makeNode(VariableSetStmt);
+            VariableSetStmt* n = makeNode(resource, VariableSetStmt);
             n->kind = VAR_RESET_ALL;
             (yyval.vsetstmt) = n;
         }
-#line 28294 "gram.cpp"
+#line 28296 "gram.cpp"
         break;
 
         case 284: /* SetResetClause: SET set_rest  */
@@ -18916,7 +18940,7 @@ yyreduce:
         {
             (yyval.vsetstmt) = (yyvsp[0].vsetstmt);
         }
-#line 28300 "gram.cpp"
+#line 28302 "gram.cpp"
         break;
 
         case 285: /* SetResetClause: VariableResetStmt  */
@@ -18924,7 +18948,7 @@ yyreduce:
         {
             (yyval.vsetstmt) = (VariableSetStmt*) (yyvsp[0].node);
         }
-#line 28306 "gram.cpp"
+#line 28308 "gram.cpp"
         break;
 
         case 286: /* FunctionSetResetClause: SET set_rest_more  */
@@ -18932,7 +18956,7 @@ yyreduce:
         {
             (yyval.vsetstmt) = (yyvsp[0].vsetstmt);
         }
-#line 28312 "gram.cpp"
+#line 28314 "gram.cpp"
         break;
 
         case 287: /* FunctionSetResetClause: VariableResetStmt  */
@@ -18940,68 +18964,68 @@ yyreduce:
         {
             (yyval.vsetstmt) = (VariableSetStmt*) (yyvsp[0].node);
         }
-#line 28318 "gram.cpp"
+#line 28320 "gram.cpp"
         break;
 
         case 288: /* VariableShowStmt: SHOW var_name  */
 #line 2386 "gram.y"
         {
-            VariableShowStmt* n = makeNode(VariableShowStmt);
+            VariableShowStmt* n = makeNode(resource, VariableShowStmt);
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 28328 "gram.cpp"
+#line 28330 "gram.cpp"
         break;
 
         case 289: /* VariableShowStmt: SHOW TIME ZONE  */
 #line 2392 "gram.y"
         {
-            VariableShowStmt* n = makeNode(VariableShowStmt);
+            VariableShowStmt* n = makeNode(resource, VariableShowStmt);
             n->name = "timezone";
             (yyval.node) = (Node*) n;
         }
-#line 28338 "gram.cpp"
+#line 28340 "gram.cpp"
         break;
 
         case 290: /* VariableShowStmt: SHOW TRANSACTION ISOLATION LEVEL  */
 #line 2398 "gram.y"
         {
-            VariableShowStmt* n = makeNode(VariableShowStmt);
+            VariableShowStmt* n = makeNode(resource, VariableShowStmt);
             n->name = "transaction_isolation";
             (yyval.node) = (Node*) n;
         }
-#line 28348 "gram.cpp"
+#line 28350 "gram.cpp"
         break;
 
         case 291: /* VariableShowStmt: SHOW SESSION AUTHORIZATION  */
 #line 2404 "gram.y"
         {
-            VariableShowStmt* n = makeNode(VariableShowStmt);
+            VariableShowStmt* n = makeNode(resource, VariableShowStmt);
             n->name = "session_authorization";
             (yyval.node) = (Node*) n;
         }
-#line 28358 "gram.cpp"
+#line 28360 "gram.cpp"
         break;
 
         case 292: /* VariableShowStmt: SHOW ALL  */
 #line 2410 "gram.y"
         {
-            VariableShowStmt* n = makeNode(VariableShowStmt);
+            VariableShowStmt* n = makeNode(resource, VariableShowStmt);
             n->name = "all";
             (yyval.node) = (Node*) n;
         }
-#line 28368 "gram.cpp"
+#line 28370 "gram.cpp"
         break;
 
         case 293: /* ConstraintsSetStmt: SET CONSTRAINTS constraints_set_list constraints_set_mode  */
 #line 2420 "gram.y"
         {
-            ConstraintsSetStmt* n = makeNode(ConstraintsSetStmt);
+            ConstraintsSetStmt* n = makeNode(resource, ConstraintsSetStmt);
             n->constraints = (yyvsp[-1].list);
             n->deferred = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28379 "gram.cpp"
+#line 28381 "gram.cpp"
         break;
 
         case 294: /* constraints_set_list: ALL  */
@@ -19009,7 +19033,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 28385 "gram.cpp"
+#line 28387 "gram.cpp"
         break;
 
         case 295: /* constraints_set_list: qualified_name_list  */
@@ -19017,7 +19041,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 28391 "gram.cpp"
+#line 28393 "gram.cpp"
         break;
 
         case 296: /* constraints_set_mode: DEFERRED  */
@@ -19025,7 +19049,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 28397 "gram.cpp"
+#line 28399 "gram.cpp"
         break;
 
         case 297: /* constraints_set_mode: IMMEDIATE  */
@@ -19033,110 +19057,110 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 28403 "gram.cpp"
+#line 28405 "gram.cpp"
         break;
 
         case 298: /* CheckPointStmt: CHECKPOINT  */
 #line 2444 "gram.y"
         {
-            CheckPointStmt* n = makeNode(CheckPointStmt);
+            CheckPointStmt* n = makeNode(resource, CheckPointStmt);
             (yyval.node) = (Node*) n;
         }
-#line 28412 "gram.cpp"
+#line 28414 "gram.cpp"
         break;
 
         case 299: /* DiscardStmt: DISCARD ALL  */
 #line 2459 "gram.y"
         {
-            DiscardStmt* n = makeNode(DiscardStmt);
+            DiscardStmt* n = makeNode(resource, DiscardStmt);
             n->target = DISCARD_ALL;
             (yyval.node) = (Node*) n;
         }
-#line 28422 "gram.cpp"
+#line 28424 "gram.cpp"
         break;
 
         case 300: /* DiscardStmt: DISCARD TEMP  */
 #line 2465 "gram.y"
         {
-            DiscardStmt* n = makeNode(DiscardStmt);
+            DiscardStmt* n = makeNode(resource, DiscardStmt);
             n->target = DISCARD_TEMP;
             (yyval.node) = (Node*) n;
         }
-#line 28432 "gram.cpp"
+#line 28434 "gram.cpp"
         break;
 
         case 301: /* DiscardStmt: DISCARD TEMPORARY  */
 #line 2471 "gram.y"
         {
-            DiscardStmt* n = makeNode(DiscardStmt);
+            DiscardStmt* n = makeNode(resource, DiscardStmt);
             n->target = DISCARD_TEMP;
             (yyval.node) = (Node*) n;
         }
-#line 28442 "gram.cpp"
+#line 28444 "gram.cpp"
         break;
 
         case 302: /* DiscardStmt: DISCARD PLANS  */
 #line 2477 "gram.y"
         {
-            DiscardStmt* n = makeNode(DiscardStmt);
+            DiscardStmt* n = makeNode(resource, DiscardStmt);
             n->target = DISCARD_PLANS;
             (yyval.node) = (Node*) n;
         }
-#line 28452 "gram.cpp"
+#line 28454 "gram.cpp"
         break;
 
         case 303: /* DiscardStmt: DISCARD SEQUENCES  */
 #line 2483 "gram.y"
         {
-            DiscardStmt* n = makeNode(DiscardStmt);
+            DiscardStmt* n = makeNode(resource, DiscardStmt);
             n->target = DISCARD_SEQUENCES;
             (yyval.node) = (Node*) n;
         }
-#line 28462 "gram.cpp"
+#line 28464 "gram.cpp"
         break;
 
         case 304: /* AlterTableStmt: ALTER TABLE relation_expr alter_table_cmds  */
 #line 2502 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_TABLE;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 28475 "gram.cpp"
+#line 28477 "gram.cpp"
         break;
 
         case 305: /* AlterTableStmt: ALTER TABLE IF_P EXISTS relation_expr alter_table_cmds  */
 #line 2511 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_TABLE;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 28488 "gram.cpp"
+#line 28490 "gram.cpp"
         break;
 
         case 306: /* AlterTableStmt: ALTER EXTERNAL TABLE relation_expr alter_table_cmds  */
 #line 2520 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_EXTTABLE;
             (yyval.node) = (Node*) n;
         }
-#line 28500 "gram.cpp"
+#line 28502 "gram.cpp"
         break;
 
         case 307: /* AlterTableStmt: ALTER TABLE ALL IN_P TABLESPACE name SET TABLESPACE name opt_nowait  */
 #line 2528 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-4].str);
             n->objtype = OBJECT_TABLE;
             n->roles = NIL;
@@ -19144,13 +19168,13 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28515 "gram.cpp"
+#line 28517 "gram.cpp"
         break;
 
         case 308: /* AlterTableStmt: ALTER TABLE ALL IN_P TABLESPACE name OWNED BY role_list SET TABLESPACE name opt_nowait  */
 #line 2539 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-7].str);
             n->objtype = OBJECT_TABLE;
             n->roles = (yyvsp[-4].list);
@@ -19158,39 +19182,39 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28530 "gram.cpp"
+#line 28532 "gram.cpp"
         break;
 
         case 309: /* AlterTableStmt: ALTER INDEX qualified_name alter_table_cmds  */
 #line 2550 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_INDEX;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 28543 "gram.cpp"
+#line 28545 "gram.cpp"
         break;
 
         case 310: /* AlterTableStmt: ALTER INDEX IF_P EXISTS qualified_name alter_table_cmds  */
 #line 2559 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_INDEX;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 28556 "gram.cpp"
+#line 28558 "gram.cpp"
         break;
 
         case 311: /* AlterTableStmt: ALTER INDEX ALL IN_P TABLESPACE name SET TABLESPACE name opt_nowait  */
 #line 2568 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-4].str);
             n->objtype = OBJECT_INDEX;
             n->roles = NIL;
@@ -19198,13 +19222,13 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28571 "gram.cpp"
+#line 28573 "gram.cpp"
         break;
 
         case 312: /* AlterTableStmt: ALTER INDEX ALL IN_P TABLESPACE name OWNED BY role_list SET TABLESPACE name opt_nowait  */
 #line 2579 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-7].str);
             n->objtype = OBJECT_INDEX;
             n->roles = (yyvsp[-4].list);
@@ -19212,91 +19236,91 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28586 "gram.cpp"
+#line 28588 "gram.cpp"
         break;
 
         case 313: /* AlterTableStmt: ALTER SEQUENCE qualified_name alter_table_cmds  */
 #line 2590 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_SEQUENCE;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 28599 "gram.cpp"
+#line 28601 "gram.cpp"
         break;
 
         case 314: /* AlterTableStmt: ALTER SEQUENCE IF_P EXISTS qualified_name alter_table_cmds  */
 #line 2599 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_SEQUENCE;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 28612 "gram.cpp"
+#line 28614 "gram.cpp"
         break;
 
         case 315: /* AlterTableStmt: ALTER VIEW qualified_name alter_table_cmds  */
 #line 2608 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_VIEW;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 28625 "gram.cpp"
+#line 28627 "gram.cpp"
         break;
 
         case 316: /* AlterTableStmt: ALTER VIEW IF_P EXISTS qualified_name alter_table_cmds  */
 #line 2617 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_VIEW;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 28638 "gram.cpp"
+#line 28640 "gram.cpp"
         break;
 
         case 317: /* AlterTableStmt: ALTER MATERIALIZED VIEW qualified_name alter_table_cmds  */
 #line 2626 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_MATVIEW;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 28651 "gram.cpp"
+#line 28653 "gram.cpp"
         break;
 
         case 318: /* AlterTableStmt: ALTER MATERIALIZED VIEW IF_P EXISTS qualified_name alter_table_cmds  */
 #line 2635 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_MATVIEW;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 28664 "gram.cpp"
+#line 28666 "gram.cpp"
         break;
 
         case 319: /* AlterTableStmt: ALTER MATERIALIZED VIEW ALL IN_P TABLESPACE name SET TABLESPACE name opt_nowait  */
 #line 2644 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-4].str);
             n->objtype = OBJECT_MATVIEW;
             n->roles = NIL;
@@ -19304,13 +19328,13 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28679 "gram.cpp"
+#line 28681 "gram.cpp"
         break;
 
         case 320: /* AlterTableStmt: ALTER MATERIALIZED VIEW ALL IN_P TABLESPACE name OWNED BY role_list SET TABLESPACE name opt_nowait  */
 #line 2655 "gram.y"
         {
-            AlterTableMoveAllStmt* n = makeNode(AlterTableMoveAllStmt);
+            AlterTableMoveAllStmt* n = makeNode(resource, AlterTableMoveAllStmt);
             n->orig_tablespacename = (yyvsp[-7].str);
             n->objtype = OBJECT_MATVIEW;
             n->roles = (yyvsp[-4].list);
@@ -19318,163 +19342,163 @@ yyreduce:
             n->nowait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 28694 "gram.cpp"
+#line 28696 "gram.cpp"
         break;
 
         case 321: /* alter_table_cmds: alter_table_cmd  */
 #line 2668 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 28700 "gram.cpp"
+#line 28702 "gram.cpp"
         break;
 
         case 322: /* alter_table_cmds: alter_table_cmds ',' alter_table_cmd  */
 #line 2669 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 28706 "gram.cpp"
+#line 28708 "gram.cpp"
         break;
 
         case 323: /* alter_table_cmd: ADD_P columnDef  */
 #line 2675 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddColumn;
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 28717 "gram.cpp"
+#line 28719 "gram.cpp"
         break;
 
         case 324: /* alter_table_cmd: ADD_P COLUMN columnDef  */
 #line 2683 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddColumn;
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 28728 "gram.cpp"
+#line 28730 "gram.cpp"
         break;
 
         case 325: /* alter_table_cmd: ALTER opt_column ColId alter_column_default  */
 #line 2691 "gram.y"
         {
-            ColumnDef* colDef = makeNode(ColumnDef);
+            ColumnDef* colDef = makeNode(resource, ColumnDef);
             colDef->raw_default = (yyvsp[0].node);
 
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ColumnDefault;
             n->name = (yyvsp[-1].str);
             n->def = (Node*) colDef;
             (yyval.node) = (Node*) n;
         }
-#line 28743 "gram.cpp"
+#line 28745 "gram.cpp"
         break;
 
         case 326: /* alter_table_cmd: ALTER opt_column ColId DROP NOT NULL_P  */
 #line 2703 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropNotNull;
             n->name = (yyvsp[-3].str);
             (yyval.node) = (Node*) n;
         }
-#line 28754 "gram.cpp"
+#line 28756 "gram.cpp"
         break;
 
         case 327: /* alter_table_cmd: ALTER opt_column ColId SET NOT NULL_P  */
 #line 2711 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetNotNull;
             n->name = (yyvsp[-3].str);
             (yyval.node) = (Node*) n;
         }
-#line 28765 "gram.cpp"
+#line 28767 "gram.cpp"
         break;
 
         case 328: /* alter_table_cmd: ALTER opt_column ColId SET STATISTICS SignedIconst  */
 #line 2719 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetStatistics;
             n->name = (yyvsp[-3].str);
-            n->def = (Node*) makeInteger((yyvsp[0].ival));
+            n->def = (Node*) makeInteger(resource, (yyvsp[0].ival));
             (yyval.node) = (Node*) n;
         }
-#line 28777 "gram.cpp"
+#line 28779 "gram.cpp"
         break;
 
         case 329: /* alter_table_cmd: ALTER opt_column ColId SET reloptions  */
 #line 2728 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetOptions;
             n->name = (yyvsp[-2].str);
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 28789 "gram.cpp"
+#line 28791 "gram.cpp"
         break;
 
         case 330: /* alter_table_cmd: ALTER opt_column ColId RESET reloptions  */
 #line 2737 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ResetOptions;
             n->name = (yyvsp[-2].str);
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 28801 "gram.cpp"
+#line 28803 "gram.cpp"
         break;
 
         case 331: /* alter_table_cmd: ALTER opt_column ColId SET STORAGE ColId  */
 #line 2746 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetStorage;
             n->name = (yyvsp[-3].str);
-            n->def = (Node*) makeString((yyvsp[0].str));
+            n->def = (Node*) makeString(resource, (yyvsp[0].str));
             (yyval.node) = (Node*) n;
         }
-#line 28813 "gram.cpp"
+#line 28815 "gram.cpp"
         break;
 
         case 332: /* alter_table_cmd: DROP opt_column IF_P EXISTS ColId opt_drop_behavior  */
 #line 2755 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropColumn;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 28826 "gram.cpp"
+#line 28828 "gram.cpp"
         break;
 
         case 333: /* alter_table_cmd: DROP opt_column ColId opt_drop_behavior  */
 #line 2765 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropColumn;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 28839 "gram.cpp"
+#line 28841 "gram.cpp"
         break;
 
         case 334: /* alter_table_cmd: ALTER opt_column ColId opt_set_data TYPE_P Typename opt_collate_clause alter_using  */
 #line 2778 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            ColumnDef* def = makeNode(ColumnDef);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            ColumnDef* def = makeNode(resource, ColumnDef);
             n->subtype = AT_AlterColumnType;
             n->name = (yyvsp[-5].str);
             n->def = (Node*) def;
@@ -19485,37 +19509,37 @@ yyreduce:
             def->location = (yylsp[-5]);
             (yyval.node) = (Node*) n;
         }
-#line 28857 "gram.cpp"
+#line 28859 "gram.cpp"
         break;
 
         case 335: /* alter_table_cmd: ALTER opt_column ColId alter_generic_options  */
 #line 2793 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AlterColumnGenericOptions;
             n->name = (yyvsp[-1].str);
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 28869 "gram.cpp"
+#line 28871 "gram.cpp"
         break;
 
         case 336: /* alter_table_cmd: ADD_P TableConstraint  */
 #line 2802 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddConstraint;
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 28880 "gram.cpp"
+#line 28882 "gram.cpp"
         break;
 
         case 337: /* alter_table_cmd: ALTER CONSTRAINT name ConstraintAttributeSpec  */
 #line 2810 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            Constraint* c = makeNode(Constraint);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            Constraint* c = makeNode(resource, Constraint);
             n->subtype = AT_AlterConstraint;
             n->def = (Node*) c;
             c->contype = CONSTR_FOREIGN; /* others not supported, yet */
@@ -19530,269 +19554,269 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 28898 "gram.cpp"
+#line 28900 "gram.cpp"
         break;
 
         case 338: /* alter_table_cmd: VALIDATE CONSTRAINT name  */
 #line 2825 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ValidateConstraint;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 28909 "gram.cpp"
+#line 28911 "gram.cpp"
         break;
 
         case 339: /* alter_table_cmd: DROP CONSTRAINT IF_P EXISTS name opt_drop_behavior  */
 #line 2833 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropConstraint;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 28922 "gram.cpp"
+#line 28924 "gram.cpp"
         break;
 
         case 340: /* alter_table_cmd: DROP CONSTRAINT name opt_drop_behavior  */
 #line 2843 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropConstraint;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 28935 "gram.cpp"
+#line 28937 "gram.cpp"
         break;
 
         case 341: /* alter_table_cmd: SET WITH OIDS  */
 #line 2853 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddOids;
             (yyval.node) = (Node*) n;
         }
-#line 28945 "gram.cpp"
+#line 28947 "gram.cpp"
         break;
 
         case 342: /* alter_table_cmd: SET WITHOUT OIDS  */
 #line 2860 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropOids;
             (yyval.node) = (Node*) n;
         }
-#line 28955 "gram.cpp"
+#line 28957 "gram.cpp"
         break;
 
         case 343: /* alter_table_cmd: CLUSTER ON name  */
 #line 2867 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ClusterOn;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 28966 "gram.cpp"
+#line 28968 "gram.cpp"
         break;
 
         case 344: /* alter_table_cmd: SET WITHOUT CLUSTER  */
 #line 2875 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropCluster;
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 28977 "gram.cpp"
+#line 28979 "gram.cpp"
         break;
 
         case 345: /* alter_table_cmd: ENABLE_P TRIGGER name  */
 #line 2883 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableTrig;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 28988 "gram.cpp"
+#line 28990 "gram.cpp"
         break;
 
         case 346: /* alter_table_cmd: ENABLE_P ALWAYS TRIGGER name  */
 #line 2891 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableAlwaysTrig;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 28999 "gram.cpp"
+#line 29001 "gram.cpp"
         break;
 
         case 347: /* alter_table_cmd: ENABLE_P REPLICA TRIGGER name  */
 #line 2899 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableReplicaTrig;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29010 "gram.cpp"
+#line 29012 "gram.cpp"
         break;
 
         case 348: /* alter_table_cmd: ENABLE_P TRIGGER ALL  */
 #line 2907 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableTrigAll;
             (yyval.node) = (Node*) n;
         }
-#line 29020 "gram.cpp"
+#line 29022 "gram.cpp"
         break;
 
         case 349: /* alter_table_cmd: ENABLE_P TRIGGER USER  */
 #line 2914 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableTrigUser;
             (yyval.node) = (Node*) n;
         }
-#line 29030 "gram.cpp"
+#line 29032 "gram.cpp"
         break;
 
         case 350: /* alter_table_cmd: DISABLE_P TRIGGER name  */
 #line 2921 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DisableTrig;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29041 "gram.cpp"
+#line 29043 "gram.cpp"
         break;
 
         case 351: /* alter_table_cmd: DISABLE_P TRIGGER ALL  */
 #line 2929 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DisableTrigAll;
             (yyval.node) = (Node*) n;
         }
-#line 29051 "gram.cpp"
+#line 29053 "gram.cpp"
         break;
 
         case 352: /* alter_table_cmd: DISABLE_P TRIGGER USER  */
 #line 2936 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DisableTrigUser;
             (yyval.node) = (Node*) n;
         }
-#line 29061 "gram.cpp"
+#line 29063 "gram.cpp"
         break;
 
         case 353: /* alter_table_cmd: ENABLE_P RULE name  */
 #line 2943 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableRule;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29072 "gram.cpp"
+#line 29074 "gram.cpp"
         break;
 
         case 354: /* alter_table_cmd: ENABLE_P ALWAYS RULE name  */
 #line 2951 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableAlwaysRule;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29083 "gram.cpp"
+#line 29085 "gram.cpp"
         break;
 
         case 355: /* alter_table_cmd: ENABLE_P REPLICA RULE name  */
 #line 2959 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_EnableReplicaRule;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29094 "gram.cpp"
+#line 29096 "gram.cpp"
         break;
 
         case 356: /* alter_table_cmd: DISABLE_P RULE name  */
 #line 2967 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DisableRule;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29105 "gram.cpp"
+#line 29107 "gram.cpp"
         break;
 
         case 357: /* alter_table_cmd: INHERIT qualified_name  */
 #line 2975 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddInherit;
             n->def = (Node*) (yyvsp[0].range);
             (yyval.node) = (Node*) n;
         }
-#line 29116 "gram.cpp"
+#line 29118 "gram.cpp"
         break;
 
         case 358: /* alter_table_cmd: NO INHERIT qualified_name  */
 #line 2983 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropInherit;
             n->def = (Node*) (yyvsp[0].range);
             (yyval.node) = (Node*) n;
         }
-#line 29127 "gram.cpp"
+#line 29129 "gram.cpp"
         break;
 
         case 359: /* alter_table_cmd: SET DistributedBy  */
 #line 2992 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetDistributedBy;
-            n->def = (Node*) list_make2(NULL, (yyvsp[0].node));
+            n->def = (Node*) list_make2(resource, NULL, (yyvsp[0].node));
             (yyval.node) = (Node*) n;
         }
-#line 29138 "gram.cpp"
+#line 29140 "gram.cpp"
         break;
 
         case 360: /* alter_table_cmd: SET WITH definition DistributedBy  */
 #line 3000 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetDistributedBy;
-            n->def = (Node*) list_make2((yyvsp[-1].list), (yyvsp[0].node));
+            n->def = (Node*) list_make2(resource, (yyvsp[-1].list), (yyvsp[0].node));
             (yyval.node) = (Node*) n;
         }
-#line 29149 "gram.cpp"
+#line 29151 "gram.cpp"
         break;
 
         case 361: /* alter_table_cmd: SET WITH definition  */
 #line 3008 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetDistributedBy;
-            n->def = (Node*) list_make2((yyvsp[0].list), NULL);
+            n->def = (Node*) list_make2(resource, (yyvsp[0].list), NULL);
             (yyval.node) = (Node*) n;
         }
-#line 29160 "gram.cpp"
+#line 29162 "gram.cpp"
         break;
 
         case 362: /* alter_table_cmd: alter_table_partition_cmd  */
@@ -19800,116 +19824,116 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 29168 "gram.cpp"
+#line 29170 "gram.cpp"
         break;
 
         case 363: /* alter_table_cmd: EXPAND TABLE  */
 #line 3020 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ExpandTable;
             (yyval.node) = (Node*) n;
         }
-#line 29178 "gram.cpp"
+#line 29180 "gram.cpp"
         break;
 
         case 364: /* alter_table_cmd: EXPAND PARTITION PREPARE  */
 #line 3027 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ExpandPartitionTablePrepare;
             (yyval.node) = (Node*) n;
         }
-#line 29188 "gram.cpp"
+#line 29190 "gram.cpp"
         break;
 
         case 365: /* alter_table_cmd: OF any_name  */
 #line 3034 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            TypeName* def = makeTypeNameFromNameList((yyvsp[0].list));
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            TypeName* def = makeTypeNameFromNameList(resource, (yyvsp[0].list));
             def->location = (yylsp[0]);
             n->subtype = AT_AddOf;
             n->def = (Node*) def;
             (yyval.node) = (Node*) n;
         }
-#line 29201 "gram.cpp"
+#line 29203 "gram.cpp"
         break;
 
         case 366: /* alter_table_cmd: NOT OF  */
 #line 3044 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropOf;
             (yyval.node) = (Node*) n;
         }
-#line 29211 "gram.cpp"
+#line 29213 "gram.cpp"
         break;
 
         case 367: /* alter_table_cmd: OWNER TO RoleId  */
 #line 3051 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ChangeOwner;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29222 "gram.cpp"
+#line 29224 "gram.cpp"
         break;
 
         case 368: /* alter_table_cmd: SET TABLESPACE name  */
 #line 3059 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetTableSpace;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29233 "gram.cpp"
+#line 29235 "gram.cpp"
         break;
 
         case 369: /* alter_table_cmd: SET reloptions  */
 #line 3067 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_SetRelOptions;
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 29244 "gram.cpp"
+#line 29246 "gram.cpp"
         break;
 
         case 370: /* alter_table_cmd: RESET reloptions  */
 #line 3075 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ResetRelOptions;
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 29255 "gram.cpp"
+#line 29257 "gram.cpp"
         break;
 
         case 371: /* alter_table_cmd: REPLICA IDENTITY_P replica_identity  */
 #line 3083 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_ReplicaIdentity;
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 29266 "gram.cpp"
+#line 29268 "gram.cpp"
         break;
 
         case 372: /* alter_table_cmd: alter_generic_options  */
 #line 3090 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_GenericOptions;
             n->def = (Node*) (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 29277 "gram.cpp"
+#line 29279 "gram.cpp"
         break;
 
         case 373: /* alter_column_default: SET DEFAULT a_expr  */
@@ -19917,7 +19941,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 29283 "gram.cpp"
+#line 29285 "gram.cpp"
         break;
 
         case 374: /* alter_column_default: DROP DEFAULT  */
@@ -19925,7 +19949,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 29289 "gram.cpp"
+#line 29291 "gram.cpp"
         break;
 
         case 375: /* opt_drop_behavior: CASCADE  */
@@ -19933,7 +19957,7 @@ yyreduce:
         {
             (yyval.dbehavior) = DROP_CASCADE;
         }
-#line 29295 "gram.cpp"
+#line 29297 "gram.cpp"
         break;
 
         case 376: /* opt_drop_behavior: RESTRICT  */
@@ -19941,7 +19965,7 @@ yyreduce:
         {
             (yyval.dbehavior) = DROP_RESTRICT;
         }
-#line 29301 "gram.cpp"
+#line 29303 "gram.cpp"
         break;
 
         case 377: /* opt_drop_behavior: %empty  */
@@ -19949,19 +19973,19 @@ yyreduce:
         {
             (yyval.dbehavior) = DROP_RESTRICT; /* default */
         }
-#line 29307 "gram.cpp"
+#line 29309 "gram.cpp"
         break;
 
         case 378: /* opt_collate_clause: COLLATE any_name  */
 #line 3111 "gram.y"
         {
-            CollateClause* n = makeNode(CollateClause);
+            CollateClause* n = makeNode(resource, CollateClause);
             n->arg = NULL;
             n->collname = (yyvsp[0].list);
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 29319 "gram.cpp"
+#line 29321 "gram.cpp"
         break;
 
         case 379: /* opt_collate_clause: %empty  */
@@ -19969,7 +19993,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 29325 "gram.cpp"
+#line 29327 "gram.cpp"
         break;
 
         case 380: /* alter_using: USING a_expr  */
@@ -19977,7 +20001,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 29331 "gram.cpp"
+#line 29333 "gram.cpp"
         break;
 
         case 381: /* alter_using: %empty  */
@@ -19985,51 +20009,51 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 29337 "gram.cpp"
+#line 29339 "gram.cpp"
         break;
 
         case 382: /* replica_identity: NOTHING  */
 #line 3128 "gram.y"
         {
-            ReplicaIdentityStmt* n = makeNode(ReplicaIdentityStmt);
+            ReplicaIdentityStmt* n = makeNode(resource, ReplicaIdentityStmt);
             n->identity_type = REPLICA_IDENTITY_NOTHING;
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 29348 "gram.cpp"
+#line 29350 "gram.cpp"
         break;
 
         case 383: /* replica_identity: FULL  */
 #line 3135 "gram.y"
         {
-            ReplicaIdentityStmt* n = makeNode(ReplicaIdentityStmt);
+            ReplicaIdentityStmt* n = makeNode(resource, ReplicaIdentityStmt);
             n->identity_type = REPLICA_IDENTITY_FULL;
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 29359 "gram.cpp"
+#line 29361 "gram.cpp"
         break;
 
         case 384: /* replica_identity: DEFAULT  */
 #line 3142 "gram.y"
         {
-            ReplicaIdentityStmt* n = makeNode(ReplicaIdentityStmt);
+            ReplicaIdentityStmt* n = makeNode(resource, ReplicaIdentityStmt);
             n->identity_type = REPLICA_IDENTITY_DEFAULT;
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 29370 "gram.cpp"
+#line 29372 "gram.cpp"
         break;
 
         case 385: /* replica_identity: USING INDEX name  */
 #line 3149 "gram.y"
         {
-            ReplicaIdentityStmt* n = makeNode(ReplicaIdentityStmt);
+            ReplicaIdentityStmt* n = makeNode(resource, ReplicaIdentityStmt);
             n->identity_type = REPLICA_IDENTITY_INDEX;
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 29381 "gram.cpp"
+#line 29383 "gram.cpp"
         break;
 
         case 386: /* reloptions: '(' reloption_list ')'  */
@@ -20037,7 +20061,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 29387 "gram.cpp"
+#line 29389 "gram.cpp"
         break;
 
         case 387: /* opt_reloptions: WITH reloptions  */
@@ -20045,7 +20069,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 29393 "gram.cpp"
+#line 29395 "gram.cpp"
         break;
 
         case 388: /* opt_reloptions: %empty  */
@@ -20053,23 +20077,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 29399 "gram.cpp"
+#line 29401 "gram.cpp"
         break;
 
         case 389: /* reloption_list: reloption_elem  */
 #line 3166 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 29405 "gram.cpp"
+#line 29407 "gram.cpp"
         break;
 
         case 390: /* reloption_list: reloption_list ',' reloption_elem  */
 #line 3167 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 29411 "gram.cpp"
+#line 29413 "gram.cpp"
         break;
 
         case 391: /* reloption_elem: ColLabel '=' def_arg  */
@@ -20083,11 +20107,11 @@ yyreduce:
 					 * say appendonly.
 					 */
             if (strcmp((yyvsp[-2].str), "appendoptimized") == 0)
-                (yyval.defelt) = makeDefElem("appendonly", (Node*) (yyvsp[0].node));
+                (yyval.defelt) = makeDefElem(resource, "appendonly", (Node*) (yyvsp[0].node));
             else
-                (yyval.defelt) = makeDefElem((yyvsp[-2].str), (Node*) (yyvsp[0].node));
+                (yyval.defelt) = makeDefElem(resource, (yyvsp[-2].str), (Node*) (yyvsp[0].node));
         }
-#line 29429 "gram.cpp"
+#line 29431 "gram.cpp"
         break;
 
         case 392: /* reloption_elem: ColLabel  */
@@ -20100,42 +20124,46 @@ yyreduce:
 					 * See: https://github.com/greenplum-db/gpdb/issues/14510.
 					 */
             if (strcmp((yyvsp[0].str), "appendonly") == 0 || strcmp((yyvsp[0].str), "appendoptimized") == 0)
-                (yyval.defelt) = makeDefElem("appendonly", (Node*) makeString(pstrdup("true")));
+                (yyval.defelt) =
+                    makeDefElem(resource, "appendonly", (Node*) makeString(resource, pstrdup(resource, "true")));
             else
-                (yyval.defelt) = makeDefElem((yyvsp[0].str), NULL);
+                (yyval.defelt) = makeDefElem(resource, (yyvsp[0].str), NULL);
         }
-#line 29446 "gram.cpp"
+#line 29448 "gram.cpp"
         break;
 
         case 393: /* reloption_elem: ColLabel '.' ColLabel '=' def_arg  */
 #line 3200 "gram.y"
         {
-            (yyval.defelt) =
-                makeDefElemExtended((yyvsp[-4].str), (yyvsp[-2].str), (Node*) (yyvsp[0].node), DEFELEM_UNSPEC);
+            (yyval.defelt) = makeDefElemExtended(resource,
+                                                 (yyvsp[-4].str),
+                                                 (yyvsp[-2].str),
+                                                 (Node*) (yyvsp[0].node),
+                                                 DEFELEM_UNSPEC);
         }
-#line 29455 "gram.cpp"
+#line 29457 "gram.cpp"
         break;
 
         case 394: /* reloption_elem: ColLabel '.' ColLabel  */
 #line 3205 "gram.y"
         {
-            (yyval.defelt) = makeDefElemExtended((yyvsp[-2].str), (yyvsp[0].str), NULL, DEFELEM_UNSPEC);
+            (yyval.defelt) = makeDefElemExtended(resource, (yyvsp[-2].str), (yyvsp[0].str), NULL, DEFELEM_UNSPEC);
         }
-#line 29463 "gram.cpp"
+#line 29465 "gram.cpp"
         break;
 
         case 395: /* opt_table_partition_split_into: INTO '(' alter_table_partition_id_spec_with_opt_default ',' alter_table_partition_id_spec_with_opt_default ')'  */
 #line 3214 "gram.y"
         {
             /* re-use alterpartitioncmd struct here... */
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
             pc->partid = (Node*) (yyvsp[-3].node);
             pc->arg1 = (Node*) (yyvsp[-1].node);
             pc->arg2 = NULL;
             pc->location = (yylsp[-1]);
             (yyval.node) = (Node*) pc;
         }
-#line 29477 "gram.cpp"
+#line 29479 "gram.cpp"
         break;
 
         case 396: /* opt_table_partition_split_into: %empty  */
@@ -20143,7 +20171,7 @@ yyreduce:
         {
             (yyval.node) = NULL; /* default */
         }
-#line 29483 "gram.cpp"
+#line 29485 "gram.cpp"
         break;
 
         case 397: /* opt_table_partition_exchange_validate: WITH VALIDATION  */
@@ -20151,7 +20179,7 @@ yyreduce:
         {
             (yyval.ival) = +1;
         }
-#line 29489 "gram.cpp"
+#line 29491 "gram.cpp"
         break;
 
         case 398: /* opt_table_partition_exchange_validate: WITHOUT VALIDATION  */
@@ -20159,7 +20187,7 @@ yyreduce:
         {
             (yyval.ival) = +0;
         }
-#line 29495 "gram.cpp"
+#line 29497 "gram.cpp"
         break;
 
         case 399: /* opt_table_partition_exchange_validate: %empty  */
@@ -20167,31 +20195,31 @@ yyreduce:
         {
             (yyval.ival) = +1; /* default */
         }
-#line 29501 "gram.cpp"
+#line 29503 "gram.cpp"
         break;
 
         case 400: /* alter_table_partition_id_spec: PartitionColId  */
 #line 3234 "gram.y"
         {
-            AlterPartitionId* n = makeNode(AlterPartitionId);
+            AlterPartitionId* n = makeNode(resource, AlterPartitionId);
             n->idtype = AT_AP_IDName;
-            n->partiddef = (Node*) makeString((yyvsp[0].str));
+            n->partiddef = (Node*) makeString(resource, (yyvsp[0].str));
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 29513 "gram.cpp"
+#line 29515 "gram.cpp"
         break;
 
         case 401: /* alter_table_partition_id_spec: FOR '(' TabPartitionBoundarySpecValList ')'  */
 #line 3243 "gram.y"
         {
-            AlterPartitionId* n = makeNode(AlterPartitionId);
+            AlterPartitionId* n = makeNode(resource, AlterPartitionId);
             n->idtype = AT_AP_IDValue;
             n->partiddef = (Node*) (yyvsp[-1].list);
             n->location = (yylsp[-1]);
             (yyval.node) = reinterpret_cast<Node*>(n);
         }
-#line 29525 "gram.cpp"
+#line 29527 "gram.cpp"
         break;
 
         case 402: /* alter_table_partition_id_spec: FOR '(' func_name '(' func_arg_list opt_sort_clause ')' ')'  */
@@ -20224,14 +20252,14 @@ yyreduce:
             if ((yyvsp[-2].list))
                 parser_yyerror("syntax error");
 
-            n = makeNode(AlterPartitionId);
+            n = makeNode(resource, AlterPartitionId);
             n->idtype = AT_AP_IDRank;
             n->partiddef = (Node*) val;
             n->location = (yylsp[-3]);
 
             (yyval.node) = (Node*) n;
         }
-#line 29565 "gram.cpp"
+#line 29567 "gram.cpp"
         break;
 
         case 403: /* alter_table_partition_id_spec_with_opt_default: PARTITION alter_table_partition_id_spec  */
@@ -20240,7 +20268,7 @@ yyreduce:
             AlterPartitionId* n = (AlterPartitionId*) (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 29574 "gram.cpp"
+#line 29576 "gram.cpp"
         break;
 
         case 404: /* alter_table_partition_id_spec_with_opt_default: DEFAULT PARTITION alter_table_partition_id_spec  */
@@ -20250,28 +20278,28 @@ yyreduce:
                     errcode(ERRCODE_SYNTAX_ERROR),
                     errmsg("cannot specify a name, rank, or value for a DEFAULT partition in this context"));
         }
-#line 29584 "gram.cpp"
+#line 29586 "gram.cpp"
         break;
 
         case 405: /* alter_table_partition_id_spec_with_opt_default: DEFAULT PARTITION  */
 #line 3323 "gram.y"
         {
-            AlterPartitionId* n = makeNode(AlterPartitionId);
+            AlterPartitionId* n = makeNode(resource, AlterPartitionId);
             n->idtype = AT_AP_IDDefault;
             n->partiddef = NULL;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 29596 "gram.cpp"
+#line 29598 "gram.cpp"
         break;
 
         case 406: /* alter_table_partition_cmd: ADD_P PARTITION OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabSubPartitionSpec  */
 #line 3338 "gram.y"
         {
-            AlterPartitionId* pid = makeNode(AlterPartitionId);
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            PartitionElem* pelem = makeNode(PartitionElem);
+            AlterPartitionId* pid = makeNode(resource, AlterPartitionId);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            PartitionElem* pelem = makeNode(resource, PartitionElem);
 
             pid->idtype = AT_AP_IDNone;
             pid->location = (yylsp[-2]);
@@ -20294,16 +20322,16 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29628 "gram.cpp"
+#line 29630 "gram.cpp"
         break;
 
         case 407: /* alter_table_partition_cmd: ADD_P DEFAULT PARTITION alter_table_partition_id_spec OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabSubPartitionSpec  */
 #line 3370 "gram.y"
         {
             AlterPartitionId* pid = (AlterPartitionId*) (yyvsp[-3].node);
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            PartitionElem* pelem = makeNode(PartitionElem);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            PartitionElem* pelem = makeNode(resource, PartitionElem);
 
             if (pid->idtype != AT_AP_IDName)
                 ereport(ERROR, errcode(ERRCODE_SYNTAX_ERROR), errmsg("can only ADD a partition by name"));
@@ -20324,16 +20352,16 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29660 "gram.cpp"
+#line 29662 "gram.cpp"
         break;
 
         case 408: /* alter_table_partition_cmd: ADD_P PARTITION alter_table_partition_id_spec OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabSubPartitionSpec  */
 #line 3402 "gram.y"
         {
             AlterPartitionId* pid = (AlterPartitionId*) (yyvsp[-3].node);
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            PartitionElem* pelem = makeNode(PartitionElem);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            PartitionElem* pelem = makeNode(resource, PartitionElem);
 
             if (pid->idtype != AT_AP_IDName)
                 ereport(ERROR, errcode(ERRCODE_SYNTAX_ERROR), errmsg("can only ADD a partition by name"));
@@ -20355,7 +20383,7 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29693 "gram.cpp"
+#line 29695 "gram.cpp"
         break;
 
         case 409: /* alter_table_partition_cmd: ALTER alter_table_partition_id_spec_with_opt_default alter_table_cmd  */
@@ -20365,8 +20393,8 @@ yyreduce:
                        cmds for partitions.
                     */
 
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
 
             pc->partid = (Node*) (yyvsp[-1].node);
             pc->arg1 = (Node*) (yyvsp[0].node);
@@ -20377,15 +20405,15 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29715 "gram.cpp"
+#line 29717 "gram.cpp"
         break;
 
         case 410: /* alter_table_partition_cmd: DROP PARTITION IF_P EXISTS alter_table_partition_id_spec opt_drop_behavior  */
 #line 3453 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            DropStmt* ds = makeNode(DropStmt);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            DropStmt* ds = makeNode(resource, DropStmt);
 
             ds->missing_ok = TRUE;
             ds->behavior = (yyvsp[0].dbehavior);
@@ -20405,16 +20433,16 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29743 "gram.cpp"
+#line 29745 "gram.cpp"
         break;
 
         case 411: /* alter_table_partition_cmd: DROP DEFAULT PARTITION IF_P EXISTS opt_drop_behavior  */
 #line 3478 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            DropStmt* ds = makeNode(DropStmt);
-            AlterPartitionId* pid = makeNode(AlterPartitionId);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            DropStmt* ds = makeNode(resource, DropStmt);
+            AlterPartitionId* pid = makeNode(resource, AlterPartitionId);
 
             pid->idtype = AT_AP_IDDefault;
             pid->partiddef = NULL;
@@ -20438,15 +20466,15 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29776 "gram.cpp"
+#line 29778 "gram.cpp"
         break;
 
         case 412: /* alter_table_partition_cmd: DROP alter_table_partition_id_spec_with_opt_default opt_drop_behavior  */
 #line 3509 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            DropStmt* ds = makeNode(DropStmt);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            DropStmt* ds = makeNode(resource, DropStmt);
 
             ds->missing_ok = FALSE;
             ds->behavior = (yyvsp[0].dbehavior);
@@ -20466,16 +20494,16 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29804 "gram.cpp"
+#line 29806 "gram.cpp"
         break;
 
         case 413: /* alter_table_partition_cmd: DROP PARTITION  */
 #line 3533 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            DropStmt* ds = makeNode(DropStmt);
-            AlterPartitionId* pid = makeNode(AlterPartitionId);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            DropStmt* ds = makeNode(resource, DropStmt);
+            AlterPartitionId* pid = makeNode(resource, AlterPartitionId);
 
             ds->missing_ok = FALSE;
             ds->behavior = DROP_RESTRICT; /* default */
@@ -20499,37 +20527,37 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29837 "gram.cpp"
+#line 29839 "gram.cpp"
         break;
 
         case 414: /* alter_table_partition_cmd: EXCHANGE alter_table_partition_id_spec_with_opt_default WITH TABLE qualified_name opt_table_partition_exchange_validate  */
 #line 3565 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterPartitionCmd* pc2 = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterPartitionCmd* pc2 = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
 
             pc->partid = (Node*) (yyvsp[-4].node);
             pc->arg1 = (Node*) (yyvsp[-1].range);
             pc->arg2 = (Node*) pc2;
-            pc2->arg1 = (Node*) makeInteger((yyvsp[0].ival));
+            pc2->arg1 = (Node*) makeInteger(resource, (yyvsp[0].ival));
             pc->location = (yylsp[-1]);
 
             n->subtype = AT_PartExchange;
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29857 "gram.cpp"
+#line 29859 "gram.cpp"
         break;
 
         case 415: /* alter_table_partition_cmd: RENAME alter_table_partition_id_spec_with_opt_default TO IDENT  */
 #line 3582 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
 
             pc->partid = (Node*) (yyvsp[-2].node);
-            pc->arg1 = (Node*) makeString((yyvsp[0].str));
+            pc->arg1 = (Node*) makeString(resource, (yyvsp[0].str));
             pc->arg2 = NULL;
             pc->location = (yylsp[0]);
 
@@ -20537,23 +20565,23 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29875 "gram.cpp"
+#line 29877 "gram.cpp"
         break;
 
         case 416: /* alter_table_partition_cmd: SET SUBPARTITION TEMPLATE '(' TabSubPartitionElemList ')'  */
 #line 3597 "gram.y"
         {
-            AlterPartitionId* pid = makeNode(AlterPartitionId);
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            PartitionElem* pelem = makeNode(PartitionElem);
-            PartitionSpec* ps = makeNode(PartitionSpec);
+            AlterPartitionId* pid = makeNode(resource, AlterPartitionId);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            PartitionElem* pelem = makeNode(resource, PartitionElem);
+            PartitionSpec* ps = makeNode(resource, PartitionSpec);
 
             /* treat this case as similar to ADD PARTITION */
 
             pid->idtype = AT_AP_IDName;
             pid->location = (yylsp[-3]);
-            pid->partiddef = (Node*) makeString("subpartition_template");
+            pid->partiddef = (Node*) makeString(resource, "subpartition_template");
 
             pc->partid = (Node*) pid;
 
@@ -20600,14 +20628,14 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29941 "gram.cpp"
+#line 29943 "gram.cpp"
         break;
 
         case 417: /* alter_table_partition_cmd: SET SUBPARTITION TEMPLATE '(' ')'  */
 #line 3660 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
 
             pc->partid = NULL;
             pc->arg1 = NULL;
@@ -20618,22 +20646,22 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29959 "gram.cpp"
+#line 29961 "gram.cpp"
         break;
 
         case 418: /* alter_table_partition_cmd: SPLIT DEFAULT PARTITION TabPartitionBoundarySpecStart TabPartitionBoundarySpecEnd opt_table_partition_split_into  */
 #line 3677 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            AlterPartitionId* pid = makeNode(AlterPartitionId);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            AlterPartitionId* pid = makeNode(resource, AlterPartitionId);
 
             pid->idtype = AT_AP_IDDefault;
             pid->partiddef = NULL;
             pid->location = (yylsp[-4]);
 
             pc->partid = (Node*) pid;
-            pc->arg1 = (Node*) list_make2((yyvsp[-2].node), (yyvsp[-1].node));
+            pc->arg1 = (Node*) list_make2(resource, (yyvsp[-2].node), (yyvsp[-1].node));
             pc->arg2 = (Node*) (yyvsp[0].node);
             pc->location = (yylsp[-1]);
 
@@ -20641,14 +20669,14 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 29982 "gram.cpp"
+#line 29984 "gram.cpp"
         break;
 
         case 419: /* alter_table_partition_cmd: SPLIT alter_table_partition_id_spec_with_opt_default AT '(' part_values_or_spec_list ')' opt_table_partition_split_into  */
 #line 3699 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
 
             pc->partid = (Node*) (yyvsp[-5].node);
 
@@ -20656,7 +20684,7 @@ yyreduce:
 					 * The first element of the list is only defined if
 					 * we're doing default splits for range partitioning.
 				 	 */
-            pc->arg1 = (Node*) list_make2(NULL, (yyvsp[-2].list));
+            pc->arg1 = (Node*) list_make2(resource, NULL, (yyvsp[-2].list));
             pc->arg2 = (Node*) (yyvsp[0].node);
             pc->location = (yylsp[-2]);
 
@@ -20664,15 +20692,15 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 30005 "gram.cpp"
+#line 30007 "gram.cpp"
         break;
 
         case 420: /* alter_table_partition_cmd: TRUNCATE alter_table_partition_id_spec_with_opt_default opt_drop_behavior  */
 #line 3720 "gram.y"
         {
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            TruncateStmt* ts = makeNode(TruncateStmt);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            TruncateStmt* ts = makeNode(resource, TruncateStmt);
 
             /* 
                        build an (incomplete) truncate statement for arg1: 
@@ -20691,82 +20719,82 @@ yyreduce:
             n->def = (Node*) pc;
             (yyval.node) = (Node*) n;
         }
-#line 30032 "gram.cpp"
+#line 30034 "gram.cpp"
         break;
 
         case 421: /* AlterCompositeTypeStmt: ALTER TYPE_P any_name alter_type_cmds  */
 #line 3754 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
 
             /* can't use qualified_name, sigh */
-            n->relation = makeRangeVarFromAnyName((yyvsp[-1].list), (yylsp[-1]), yyscanner);
+            n->relation = makeRangeVarFromAnyName(resource, (yyvsp[-1].list), (yylsp[-1]), yyscanner);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_TYPE;
             (yyval.node) = (Node*) n;
         }
-#line 30046 "gram.cpp"
+#line 30048 "gram.cpp"
         break;
 
         case 422: /* alter_type_cmds: alter_type_cmd  */
 #line 3766 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 30052 "gram.cpp"
+#line 30054 "gram.cpp"
         break;
 
         case 423: /* alter_type_cmds: alter_type_cmds ',' alter_type_cmd  */
 #line 3767 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 30058 "gram.cpp"
+#line 30060 "gram.cpp"
         break;
 
         case 424: /* alter_type_cmd: ADD_P ATTRIBUTE TableFuncElement opt_drop_behavior  */
 #line 3773 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_AddColumn;
             n->def = (yyvsp[-1].node);
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 30070 "gram.cpp"
+#line 30072 "gram.cpp"
         break;
 
         case 425: /* alter_type_cmd: DROP ATTRIBUTE IF_P EXISTS ColId opt_drop_behavior  */
 #line 3782 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropColumn;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 30083 "gram.cpp"
+#line 30085 "gram.cpp"
         break;
 
         case 426: /* alter_type_cmd: DROP ATTRIBUTE ColId opt_drop_behavior  */
 #line 3792 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
             n->subtype = AT_DropColumn;
             n->name = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 30096 "gram.cpp"
+#line 30098 "gram.cpp"
         break;
 
         case 427: /* alter_type_cmd: ALTER ATTRIBUTE ColId opt_set_data TYPE_P Typename opt_collate_clause opt_drop_behavior  */
 #line 3802 "gram.y"
         {
-            AlterTableCmd* n = makeNode(AlterTableCmd);
-            ColumnDef* def = makeNode(ColumnDef);
+            AlterTableCmd* n = makeNode(resource, AlterTableCmd);
+            ColumnDef* def = makeNode(resource, ColumnDef);
             n->subtype = AT_AlterColumnType;
             n->name = (yyvsp[-5].str);
             n->def = (Node*) def;
@@ -20778,33 +20806,33 @@ yyreduce:
             def->location = (yylsp[-5]);
             (yyval.node) = (Node*) n;
         }
-#line 30115 "gram.cpp"
+#line 30117 "gram.cpp"
         break;
 
         case 428: /* ClosePortalStmt: CLOSE cursor_name  */
 #line 3828 "gram.y"
         {
-            ClosePortalStmt* n = makeNode(ClosePortalStmt);
+            ClosePortalStmt* n = makeNode(resource, ClosePortalStmt);
             n->portalname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 30125 "gram.cpp"
+#line 30127 "gram.cpp"
         break;
 
         case 429: /* ClosePortalStmt: CLOSE ALL  */
 #line 3834 "gram.y"
         {
-            ClosePortalStmt* n = makeNode(ClosePortalStmt);
+            ClosePortalStmt* n = makeNode(resource, ClosePortalStmt);
             n->portalname = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 30135 "gram.cpp"
+#line 30137 "gram.cpp"
         break;
 
         case 430: /* CopyStmt: COPY opt_binary qualified_name opt_column_list opt_oids copy_from opt_program copy_file_name copy_delimiter opt_with copy_options OptSingleRowErrorHandling skip_external_partition  */
 #line 3866 "gram.y"
         {
-            CopyStmt* n = makeNode(CopyStmt);
+            CopyStmt* n = makeNode(resource, CopyStmt);
             n->relation = (yyvsp[-10].range);
             n->query = NULL;
             n->attlist = (yyvsp[-9].list);
@@ -20839,11 +20867,11 @@ yyreduce:
 
             /* Concatenate user-supplied flags */
             if ((yyvsp[-11].defelt))
-                n->options = lappend(n->options, (yyvsp[-11].defelt));
+                n->options = lappend(resource, n->options, (yyvsp[-11].defelt));
             if ((yyvsp[-8].defelt))
-                n->options = lappend(n->options, (yyvsp[-8].defelt));
+                n->options = lappend(resource, n->options, (yyvsp[-8].defelt));
             if ((yyvsp[-4].defelt))
-                n->options = lappend(n->options, (yyvsp[-4].defelt));
+                n->options = lappend(resource, n->options, (yyvsp[-4].defelt));
             if ((yyvsp[-2].list))
                 n->options = list_concat(n->options, (yyvsp[-2].list));
             if ((yyvsp[-1].list)) {
@@ -20851,13 +20879,13 @@ yyreduce:
             }
             (yyval.node) = (Node*) n;
         }
-#line 30189 "gram.cpp"
+#line 30191 "gram.cpp"
         break;
 
         case 431: /* CopyStmt: COPY select_with_parens TO opt_program copy_file_name opt_with copy_options  */
 #line 3916 "gram.y"
         {
-            CopyStmt* n = makeNode(CopyStmt);
+            CopyStmt* n = makeNode(resource, CopyStmt);
             n->relation = NULL;
             n->query = (yyvsp[-5].node);
             n->attlist = NIL;
@@ -20890,7 +20918,7 @@ yyreduce:
 
             (yyval.node) = (Node*) n;
         }
-#line 30229 "gram.cpp"
+#line 30231 "gram.cpp"
         break;
 
         case 432: /* copy_from: FROM  */
@@ -20898,7 +20926,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 30235 "gram.cpp"
+#line 30237 "gram.cpp"
         break;
 
         case 433: /* copy_from: TO  */
@@ -20906,7 +20934,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 30241 "gram.cpp"
+#line 30243 "gram.cpp"
         break;
 
         case 434: /* opt_program: PROGRAM  */
@@ -20914,7 +20942,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 30247 "gram.cpp"
+#line 30249 "gram.cpp"
         break;
 
         case 435: /* opt_program: %empty  */
@@ -20922,7 +20950,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 30253 "gram.cpp"
+#line 30255 "gram.cpp"
         break;
 
         case 436: /* skip_external_partition: IGNORE_P EXTERNAL PARTITIONS  */
@@ -20930,7 +20958,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 30259 "gram.cpp"
+#line 30261 "gram.cpp"
         break;
 
         case 437: /* skip_external_partition: %empty  */
@@ -20938,7 +20966,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 30265 "gram.cpp"
+#line 30267 "gram.cpp"
         break;
 
         case 438: /* copy_file_name: Sconst  */
@@ -20946,7 +20974,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 30271 "gram.cpp"
+#line 30273 "gram.cpp"
         break;
 
         case 439: /* copy_file_name: STDIN  */
@@ -20954,7 +20982,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 30277 "gram.cpp"
+#line 30279 "gram.cpp"
         break;
 
         case 440: /* copy_file_name: STDOUT  */
@@ -20962,7 +20990,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 30283 "gram.cpp"
+#line 30285 "gram.cpp"
         break;
 
         case 441: /* copy_options: copy_opt_list  */
@@ -20970,7 +20998,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 30289 "gram.cpp"
+#line 30291 "gram.cpp"
         break;
 
         case 442: /* copy_options: '(' copy_generic_opt_list ')'  */
@@ -20978,15 +21006,15 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 30295 "gram.cpp"
+#line 30297 "gram.cpp"
         break;
 
         case 443: /* copy_opt_list: copy_opt_list copy_opt_item  */
 #line 3985 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 30301 "gram.cpp"
+#line 30303 "gram.cpp"
         break;
 
         case 444: /* copy_opt_list: %empty  */
@@ -20994,151 +21022,151 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 30307 "gram.cpp"
+#line 30309 "gram.cpp"
         break;
 
         case 445: /* copy_opt_item: BINARY  */
 #line 3991 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("format", (Node*) makeString("binary"));
+            (yyval.defelt) = makeDefElem(resource, "format", (Node*) makeString(resource, "binary"));
         }
-#line 30315 "gram.cpp"
+#line 30317 "gram.cpp"
         break;
 
         case 446: /* copy_opt_item: OIDS  */
 #line 3995 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("oids", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "oids", (Node*) makeInteger(resource, TRUE));
         }
-#line 30323 "gram.cpp"
+#line 30325 "gram.cpp"
         break;
 
         case 447: /* copy_opt_item: FREEZE  */
 #line 3999 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("freeze", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "freeze", (Node*) makeInteger(resource, TRUE));
         }
-#line 30331 "gram.cpp"
+#line 30333 "gram.cpp"
         break;
 
         case 448: /* copy_opt_item: DELIMITER opt_as Sconst  */
 #line 4003 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("delimiter", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "delimiter", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30339 "gram.cpp"
+#line 30341 "gram.cpp"
         break;
 
         case 449: /* copy_opt_item: NULL_P opt_as Sconst  */
 #line 4007 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("null", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "null", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30347 "gram.cpp"
+#line 30349 "gram.cpp"
         break;
 
         case 450: /* copy_opt_item: CSV  */
 #line 4011 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("format", (Node*) makeString("csv"));
+            (yyval.defelt) = makeDefElem(resource, "format", (Node*) makeString(resource, "csv"));
         }
-#line 30355 "gram.cpp"
+#line 30357 "gram.cpp"
         break;
 
         case 451: /* copy_opt_item: HEADER_P  */
 #line 4015 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("header", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "header", (Node*) makeInteger(resource, TRUE));
         }
-#line 30363 "gram.cpp"
+#line 30365 "gram.cpp"
         break;
 
         case 452: /* copy_opt_item: QUOTE opt_as Sconst  */
 #line 4019 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("quote", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "quote", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30371 "gram.cpp"
+#line 30373 "gram.cpp"
         break;
 
         case 453: /* copy_opt_item: ESCAPE opt_as Sconst  */
 #line 4023 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("escape", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "escape", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30379 "gram.cpp"
+#line 30381 "gram.cpp"
         break;
 
         case 454: /* copy_opt_item: FORCE QUOTE columnList  */
 #line 4027 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_quote", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "force_quote", (Node*) (yyvsp[0].list));
         }
-#line 30387 "gram.cpp"
+#line 30389 "gram.cpp"
         break;
 
         case 455: /* copy_opt_item: FORCE QUOTE '*'  */
 #line 4031 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_quote", (Node*) makeNode(A_Star));
+            (yyval.defelt) = makeDefElem(resource, "force_quote", (Node*) makeNode(resource, A_Star));
         }
-#line 30395 "gram.cpp"
+#line 30397 "gram.cpp"
         break;
 
         case 456: /* copy_opt_item: FORCE NOT NULL_P columnList  */
 #line 4035 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_not_null", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "force_not_null", (Node*) (yyvsp[0].list));
         }
-#line 30403 "gram.cpp"
+#line 30405 "gram.cpp"
         break;
 
         case 457: /* copy_opt_item: FORCE NULL_P columnList  */
 #line 4039 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_null", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "force_null", (Node*) (yyvsp[0].list));
         }
-#line 30411 "gram.cpp"
+#line 30413 "gram.cpp"
         break;
 
         case 458: /* copy_opt_item: ENCODING Sconst  */
 #line 4043 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "encoding", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30419 "gram.cpp"
+#line 30421 "gram.cpp"
         break;
 
         case 459: /* copy_opt_item: FILL MISSING FIELDS  */
 #line 4047 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("fill_missing_fields", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "fill_missing_fields", (Node*) makeInteger(resource, TRUE));
         }
-#line 30427 "gram.cpp"
+#line 30429 "gram.cpp"
         break;
 
         case 460: /* copy_opt_item: NEWLINE opt_as Sconst  */
 #line 4051 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("newline", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "newline", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30435 "gram.cpp"
+#line 30437 "gram.cpp"
         break;
 
         case 461: /* copy_opt_item: ON SEGMENT  */
 #line 4055 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("on_segment", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "on_segment", (Node*) makeInteger(resource, TRUE));
         }
-#line 30443 "gram.cpp"
+#line 30445 "gram.cpp"
         break;
 
         case 462: /* opt_binary: BINARY  */
 #line 4064 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("format", (Node*) makeString("binary"));
+            (yyval.defelt) = makeDefElem(resource, "format", (Node*) makeString(resource, "binary"));
         }
-#line 30451 "gram.cpp"
+#line 30453 "gram.cpp"
         break;
 
         case 463: /* opt_binary: %empty  */
@@ -21146,15 +21174,15 @@ yyreduce:
         {
             (yyval.defelt) = NULL;
         }
-#line 30457 "gram.cpp"
+#line 30459 "gram.cpp"
         break;
 
         case 464: /* opt_oids: WITH OIDS  */
 #line 4072 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("oids", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "oids", (Node*) makeInteger(resource, TRUE));
         }
-#line 30465 "gram.cpp"
+#line 30467 "gram.cpp"
         break;
 
         case 465: /* opt_oids: %empty  */
@@ -21162,15 +21190,15 @@ yyreduce:
         {
             (yyval.defelt) = NULL;
         }
-#line 30471 "gram.cpp"
+#line 30473 "gram.cpp"
         break;
 
         case 466: /* copy_delimiter: opt_using DELIMITERS Sconst  */
 #line 4080 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("delimiter", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "delimiter", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 30479 "gram.cpp"
+#line 30481 "gram.cpp"
         break;
 
         case 467: /* copy_delimiter: %empty  */
@@ -21178,53 +21206,53 @@ yyreduce:
         {
             (yyval.defelt) = NULL;
         }
-#line 30485 "gram.cpp"
+#line 30487 "gram.cpp"
         break;
 
         case 468: /* opt_using: USING  */
 #line 4087 "gram.y"
         {
         }
-#line 30491 "gram.cpp"
+#line 30493 "gram.cpp"
         break;
 
         case 469: /* opt_using: %empty  */
 #line 4088 "gram.y"
         {
         }
-#line 30497 "gram.cpp"
+#line 30499 "gram.cpp"
         break;
 
         case 470: /* copy_generic_opt_list: copy_generic_opt_elem  */
 #line 4094 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 30505 "gram.cpp"
+#line 30507 "gram.cpp"
         break;
 
         case 471: /* copy_generic_opt_list: copy_generic_opt_list ',' copy_generic_opt_elem  */
 #line 4098 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 30513 "gram.cpp"
+#line 30515 "gram.cpp"
         break;
 
         case 472: /* copy_generic_opt_elem: ColLabel copy_generic_opt_arg  */
 #line 4105 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-1].str), (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-1].str), (yyvsp[0].node));
         }
-#line 30521 "gram.cpp"
+#line 30523 "gram.cpp"
         break;
 
         case 473: /* copy_generic_opt_arg: opt_boolean_or_string  */
 #line 4111 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 30527 "gram.cpp"
+#line 30529 "gram.cpp"
         break;
 
         case 474: /* copy_generic_opt_arg: NumericOnly  */
@@ -21232,15 +21260,15 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].value);
         }
-#line 30533 "gram.cpp"
+#line 30535 "gram.cpp"
         break;
 
         case 475: /* copy_generic_opt_arg: '*'  */
 #line 4113 "gram.y"
         {
-            (yyval.node) = (Node*) makeNode(A_Star);
+            (yyval.node) = (Node*) makeNode(resource, A_Star);
         }
-#line 30539 "gram.cpp"
+#line 30541 "gram.cpp"
         break;
 
         case 476: /* copy_generic_opt_arg: '(' copy_generic_opt_arg_list ')'  */
@@ -21248,7 +21276,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[-1].list);
         }
-#line 30545 "gram.cpp"
+#line 30547 "gram.cpp"
         break;
 
         case 477: /* copy_generic_opt_arg: %empty  */
@@ -21256,37 +21284,37 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 30551 "gram.cpp"
+#line 30553 "gram.cpp"
         break;
 
         case 478: /* copy_generic_opt_arg_list: copy_generic_opt_arg_list_item  */
 #line 4120 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 30559 "gram.cpp"
+#line 30561 "gram.cpp"
         break;
 
         case 479: /* copy_generic_opt_arg_list: copy_generic_opt_arg_list ',' copy_generic_opt_arg_list_item  */
 #line 4124 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 30567 "gram.cpp"
+#line 30569 "gram.cpp"
         break;
 
         case 480: /* copy_generic_opt_arg_list_item: opt_boolean_or_string  */
 #line 4131 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 30573 "gram.cpp"
+#line 30575 "gram.cpp"
         break;
 
         case 481: /* CreateStmt: CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')' OptInherit OptWith OnCommitOption OptTableSpace OptDistributedBy OptTabPartitionBy  */
 #line 4145 "gram.y"
         {
-            CreateStmt* n = makeNode(CreateStmt);
+            CreateStmt* n = makeNode(resource, CreateStmt);
             (yyvsp[-9].range)->relpersistence = (yyvsp[-11].ival);
             n->relation = (yyvsp[-9].range);
             n->tableElts = (yyvsp[-7].list);
@@ -21301,13 +21329,13 @@ yyreduce:
             n->relKind = RELKIND_RELATION;
             (yyval.node) = (Node*) n;
         }
-#line 30594 "gram.cpp"
+#line 30596 "gram.cpp"
         break;
 
         case 482: /* CreateStmt: CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name '(' OptTableElementList ')' OptInherit OptWith OnCommitOption OptTableSpace OptDistributedBy OptTabPartitionBy  */
 #line 4165 "gram.y"
         {
-            CreateStmt* n = makeNode(CreateStmt);
+            CreateStmt* n = makeNode(resource, CreateStmt);
             (yyvsp[-9].range)->relpersistence = (yyvsp[-14].ival);
             n->relation = (yyvsp[-9].range);
             n->tableElts = (yyvsp[-7].list);
@@ -21322,17 +21350,17 @@ yyreduce:
             n->relKind = RELKIND_RELATION;
             (yyval.node) = (Node*) n;
         }
-#line 30615 "gram.cpp"
+#line 30617 "gram.cpp"
         break;
 
         case 483: /* CreateStmt: CREATE OptTemp TABLE qualified_name OF any_name OptTypedTableElementList OptWith OnCommitOption OptTableSpace OptDistributedBy OptTabPartitionBy  */
 #line 4184 "gram.y"
         {
-            CreateStmt* n = makeNode(CreateStmt);
+            CreateStmt* n = makeNode(resource, CreateStmt);
             (yyvsp[-8].range)->relpersistence = (yyvsp[-10].ival);
             n->relation = (yyvsp[-8].range);
             n->tableElts = (yyvsp[-5].list);
-            n->ofTypename = makeTypeNameFromNameList((yyvsp[-6].list));
+            n->ofTypename = makeTypeNameFromNameList(resource, (yyvsp[-6].list));
             n->ofTypename->location = (yylsp[-6]);
             n->constraints = NIL;
             n->options = (yyvsp[-4].list);
@@ -21344,17 +21372,17 @@ yyreduce:
             n->relKind = RELKIND_RELATION;
             (yyval.node) = (Node*) n;
         }
-#line 30637 "gram.cpp"
+#line 30639 "gram.cpp"
         break;
 
         case 484: /* CreateStmt: CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name OF any_name OptTypedTableElementList OptWith OnCommitOption OptTableSpace OptDistributedBy OptTabPartitionBy  */
 #line 4204 "gram.y"
         {
-            CreateStmt* n = makeNode(CreateStmt);
+            CreateStmt* n = makeNode(resource, CreateStmt);
             (yyvsp[-8].range)->relpersistence = (yyvsp[-13].ival);
             n->relation = (yyvsp[-8].range);
             n->tableElts = (yyvsp[-5].list);
-            n->ofTypename = makeTypeNameFromNameList((yyvsp[-6].list));
+            n->ofTypename = makeTypeNameFromNameList(resource, (yyvsp[-6].list));
             n->ofTypename->location = (yylsp[-6]);
             n->constraints = NIL;
             n->options = (yyvsp[-4].list);
@@ -21366,7 +21394,7 @@ yyreduce:
             n->relKind = RELKIND_RELATION;
             (yyval.node) = (Node*) n;
         }
-#line 30659 "gram.cpp"
+#line 30661 "gram.cpp"
         break;
 
         case 485: /* OptTemp: TEMPORARY  */
@@ -21374,7 +21402,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30665 "gram.cpp"
+#line 30667 "gram.cpp"
         break;
 
         case 486: /* OptTemp: TEMP  */
@@ -21382,7 +21410,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30671 "gram.cpp"
+#line 30673 "gram.cpp"
         break;
 
         case 487: /* OptTemp: LOCAL TEMPORARY  */
@@ -21390,7 +21418,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30677 "gram.cpp"
+#line 30679 "gram.cpp"
         break;
 
         case 488: /* OptTemp: LOCAL TEMP  */
@@ -21398,7 +21426,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30683 "gram.cpp"
+#line 30685 "gram.cpp"
         break;
 
         case 489: /* OptTemp: GLOBAL TEMPORARY  */
@@ -21409,7 +21437,7 @@ yyreduce:
                     parser_errposition((yylsp[-1])));
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30694 "gram.cpp"
+#line 30696 "gram.cpp"
         break;
 
         case 490: /* OptTemp: GLOBAL TEMP  */
@@ -21420,7 +21448,7 @@ yyreduce:
                     parser_errposition((yylsp[-1])));
             (yyval.ival) = RELPERSISTENCE_TEMP;
         }
-#line 30705 "gram.cpp"
+#line 30707 "gram.cpp"
         break;
 
         case 491: /* OptTemp: UNLOGGED  */
@@ -21428,7 +21456,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_UNLOGGED;
         }
-#line 30711 "gram.cpp"
+#line 30713 "gram.cpp"
         break;
 
         case 492: /* OptTemp: %empty  */
@@ -21436,7 +21464,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_PERMANENT;
         }
-#line 30717 "gram.cpp"
+#line 30719 "gram.cpp"
         break;
 
         case 493: /* OptTableElementList: TableElementList  */
@@ -21444,7 +21472,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 30723 "gram.cpp"
+#line 30725 "gram.cpp"
         break;
 
         case 494: /* OptTableElementList: %empty  */
@@ -21452,7 +21480,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 30729 "gram.cpp"
+#line 30731 "gram.cpp"
         break;
 
         case 495: /* OptTypedTableElementList: '(' TypedTableElementList ')'  */
@@ -21460,7 +21488,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 30735 "gram.cpp"
+#line 30737 "gram.cpp"
         break;
 
         case 496: /* OptTypedTableElementList: %empty  */
@@ -21468,39 +21496,39 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 30741 "gram.cpp"
+#line 30743 "gram.cpp"
         break;
 
         case 497: /* TableElementList: TableElement  */
 #line 4268 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 30749 "gram.cpp"
+#line 30751 "gram.cpp"
         break;
 
         case 498: /* TableElementList: TableElementList ',' TableElement  */
 #line 4272 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 30757 "gram.cpp"
+#line 30759 "gram.cpp"
         break;
 
         case 499: /* TypedTableElementList: TypedTableElement  */
 #line 4279 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 30765 "gram.cpp"
+#line 30767 "gram.cpp"
         break;
 
         case 500: /* TypedTableElementList: TypedTableElementList ',' TypedTableElement  */
 #line 4283 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 30773 "gram.cpp"
+#line 30775 "gram.cpp"
         break;
 
         case 501: /* TableElement: columnDef  */
@@ -21508,7 +21536,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30779 "gram.cpp"
+#line 30781 "gram.cpp"
         break;
 
         case 502: /* TableElement: TableLikeClause  */
@@ -21516,7 +21544,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30785 "gram.cpp"
+#line 30787 "gram.cpp"
         break;
 
         case 503: /* TableElement: TableConstraint  */
@@ -21524,7 +21552,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30791 "gram.cpp"
+#line 30793 "gram.cpp"
         break;
 
         case 504: /* TableElement: column_reference_storage_directive  */
@@ -21532,7 +21560,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30797 "gram.cpp"
+#line 30799 "gram.cpp"
         break;
 
         case 505: /* TypedTableElement: columnOptions  */
@@ -21540,7 +21568,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30803 "gram.cpp"
+#line 30805 "gram.cpp"
         break;
 
         case 506: /* TypedTableElement: TableConstraint  */
@@ -21548,38 +21576,38 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30809 "gram.cpp"
+#line 30811 "gram.cpp"
         break;
 
         case 507: /* column_reference_storage_directive: COLUMN ColId ENCODING definition  */
 #line 4302 "gram.y"
         {
-            ColumnReferenceStorageDirective* n = makeNode(ColumnReferenceStorageDirective);
+            ColumnReferenceStorageDirective* n = makeNode(resource, ColumnReferenceStorageDirective);
 
             n->column = (yyvsp[-2].str);
             n->encoding = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 30822 "gram.cpp"
+#line 30824 "gram.cpp"
         break;
 
         case 508: /* column_reference_storage_directive: DEFAULT COLUMN ENCODING definition  */
 #line 4311 "gram.y"
         {
-            ColumnReferenceStorageDirective* n = makeNode(ColumnReferenceStorageDirective);
+            ColumnReferenceStorageDirective* n = makeNode(resource, ColumnReferenceStorageDirective);
 
             n->deflt = true;
             n->encoding = (yyvsp[0].list);
 
             (yyval.node) = (Node*) n;
         }
-#line 30836 "gram.cpp"
+#line 30838 "gram.cpp"
         break;
 
         case 509: /* columnDef: ColId Typename create_generic_options ColQualList opt_storage_encoding  */
 #line 4323 "gram.y"
         {
-            ColumnDef* n = makeNode(ColumnDef);
+            ColumnDef* n = makeNode(resource, ColumnDef);
             n->colname = (yyvsp[-4].str);
             n->typeName = (yyvsp[-3].typnam);
             n->inhcount = 0;
@@ -21596,13 +21624,13 @@ yyreduce:
             n->location = (yylsp[-4]);
             (yyval.node) = (Node*) n;
         }
-#line 30860 "gram.cpp"
+#line 30862 "gram.cpp"
         break;
 
         case 510: /* columnOptions: ColId WITH OPTIONS ColQualList  */
 #line 4345 "gram.y"
         {
-            ColumnDef* n = makeNode(ColumnDef);
+            ColumnDef* n = makeNode(resource, ColumnDef);
             n->colname = (yyvsp[-3].str);
             n->typeName = NULL;
             n->inhcount = 0;
@@ -21617,15 +21645,15 @@ yyreduce:
             n->location = (yylsp[-3]);
             (yyval.node) = (Node*) n;
         }
-#line 30882 "gram.cpp"
+#line 30884 "gram.cpp"
         break;
 
         case 511: /* ColQualList: ColQualList ColConstraint  */
 #line 4365 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 30888 "gram.cpp"
+#line 30890 "gram.cpp"
         break;
 
         case 512: /* ColQualList: %empty  */
@@ -21633,7 +21661,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 30894 "gram.cpp"
+#line 30896 "gram.cpp"
         break;
 
         case 513: /* ColConstraint: CONSTRAINT name ColConstraintElem  */
@@ -21645,7 +21673,7 @@ yyreduce:
             n->location = (yylsp[-2]);
             (yyval.node) = (Node*) n;
         }
-#line 30906 "gram.cpp"
+#line 30908 "gram.cpp"
         break;
 
         case 514: /* ColConstraint: ColConstraintElem  */
@@ -21653,7 +21681,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30912 "gram.cpp"
+#line 30914 "gram.cpp"
         break;
 
         case 515: /* ColConstraint: ConstraintAttr  */
@@ -21661,7 +21689,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 30918 "gram.cpp"
+#line 30920 "gram.cpp"
         break;
 
         case 516: /* ColConstraint: COLLATE any_name  */
@@ -21672,13 +21700,13 @@ yyreduce:
 					 * the list built by ColQualList, but we split it out
 					 * again in SplitColQualList.
 					 */
-            CollateClause* n = makeNode(CollateClause);
+            CollateClause* n = makeNode(resource, CollateClause);
             n->arg = NULL;
             n->collname = (yyvsp[0].list);
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 30935 "gram.cpp"
+#line 30937 "gram.cpp"
         break;
 
         case 517: /* opt_storage_encoding: ENCODING definition  */
@@ -21686,7 +21714,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 30941 "gram.cpp"
+#line 30943 "gram.cpp"
         break;
 
         case 518: /* opt_storage_encoding: %empty  */
@@ -21694,35 +21722,35 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 30947 "gram.cpp"
+#line 30949 "gram.cpp"
         break;
 
         case 519: /* ColConstraintElem: NOT NULL_P  */
 #line 4416 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_NOTNULL;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 30958 "gram.cpp"
+#line 30960 "gram.cpp"
         break;
 
         case 520: /* ColConstraintElem: NULL_P  */
 #line 4423 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_NULL;
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 30969 "gram.cpp"
+#line 30971 "gram.cpp"
         break;
 
         case 521: /* ColConstraintElem: UNIQUE opt_definition OptConsTableSpace  */
 #line 4430 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_UNIQUE;
             n->location = (yylsp[-2]);
             n->keys = NULL;
@@ -21731,13 +21759,13 @@ yyreduce:
             n->indexspace = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 30984 "gram.cpp"
+#line 30986 "gram.cpp"
         break;
 
         case 522: /* ColConstraintElem: PRIMARY KEY opt_definition OptConsTableSpace  */
 #line 4441 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_PRIMARY;
             n->location = (yylsp[-3]);
             n->keys = NULL;
@@ -21746,13 +21774,13 @@ yyreduce:
             n->indexspace = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 30999 "gram.cpp"
+#line 31001 "gram.cpp"
         break;
 
         case 523: /* ColConstraintElem: CHECK '(' a_expr ')' opt_no_inherit  */
 #line 4452 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_CHECK;
             n->location = (yylsp[-4]);
             n->is_no_inherit = (yyvsp[0].boolean);
@@ -21760,26 +21788,26 @@ yyreduce:
             n->cooked_expr = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 31013 "gram.cpp"
+#line 31015 "gram.cpp"
         break;
 
         case 524: /* ColConstraintElem: DEFAULT b_expr  */
 #line 4462 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_DEFAULT;
             n->location = (yylsp[-1]);
             n->raw_expr = (yyvsp[0].node);
             n->cooked_expr = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 31026 "gram.cpp"
+#line 31028 "gram.cpp"
         break;
 
         case 525: /* ColConstraintElem: REFERENCES qualified_name opt_column_list key_match key_actions  */
 #line 4471 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_FOREIGN;
             n->location = (yylsp[-4]);
             n->pktable = (yyvsp[-3].range);
@@ -21792,62 +21820,62 @@ yyreduce:
             n->initially_valid = true;
             (yyval.node) = (Node*) n;
         }
-#line 31045 "gram.cpp"
+#line 31047 "gram.cpp"
         break;
 
         case 526: /* ConstraintAttr: DEFERRABLE  */
 #line 4504 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_ATTR_DEFERRABLE;
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 31056 "gram.cpp"
+#line 31058 "gram.cpp"
         break;
 
         case 527: /* ConstraintAttr: NOT DEFERRABLE  */
 #line 4511 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_ATTR_NOT_DEFERRABLE;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 31067 "gram.cpp"
+#line 31069 "gram.cpp"
         break;
 
         case 528: /* ConstraintAttr: INITIALLY DEFERRED  */
 #line 4518 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_ATTR_DEFERRED;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 31078 "gram.cpp"
+#line 31080 "gram.cpp"
         break;
 
         case 529: /* ConstraintAttr: INITIALLY IMMEDIATE  */
 #line 4525 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_ATTR_IMMEDIATE;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 31089 "gram.cpp"
+#line 31091 "gram.cpp"
         break;
 
         case 530: /* TableLikeClause: LIKE qualified_name TableLikeOptionList  */
 #line 4536 "gram.y"
         {
-            TableLikeClause* n = makeNode(TableLikeClause);
+            TableLikeClause* n = makeNode(resource, TableLikeClause);
             n->relation = (yyvsp[-1].range);
             n->options = (yyvsp[0].ival);
             (yyval.node) = (Node*) n;
         }
-#line 31100 "gram.cpp"
+#line 31102 "gram.cpp"
         break;
 
         case 531: /* TableLikeOptionList: TableLikeOptionList INCLUDING TableLikeOption  */
@@ -21855,7 +21883,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-2].ival) | (yyvsp[0].ival);
         }
-#line 31106 "gram.cpp"
+#line 31108 "gram.cpp"
         break;
 
         case 532: /* TableLikeOptionList: TableLikeOptionList EXCLUDING TableLikeOption  */
@@ -21863,7 +21891,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-2].ival) & ~(yyvsp[0].ival);
         }
-#line 31112 "gram.cpp"
+#line 31114 "gram.cpp"
         break;
 
         case 533: /* TableLikeOptionList: %empty  */
@@ -21871,7 +21899,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 31118 "gram.cpp"
+#line 31120 "gram.cpp"
         break;
 
         case 534: /* TableLikeOption: DEFAULTS  */
@@ -21879,7 +21907,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_DEFAULTS;
         }
-#line 31124 "gram.cpp"
+#line 31126 "gram.cpp"
         break;
 
         case 535: /* TableLikeOption: CONSTRAINTS  */
@@ -21887,7 +21915,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_CONSTRAINTS;
         }
-#line 31130 "gram.cpp"
+#line 31132 "gram.cpp"
         break;
 
         case 536: /* TableLikeOption: INDEXES  */
@@ -21895,7 +21923,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_INDEXES;
         }
-#line 31136 "gram.cpp"
+#line 31138 "gram.cpp"
         break;
 
         case 537: /* TableLikeOption: STORAGE  */
@@ -21903,7 +21931,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_STORAGE;
         }
-#line 31142 "gram.cpp"
+#line 31144 "gram.cpp"
         break;
 
         case 538: /* TableLikeOption: COMMENTS  */
@@ -21911,7 +21939,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_COMMENTS;
         }
-#line 31148 "gram.cpp"
+#line 31150 "gram.cpp"
         break;
 
         case 539: /* TableLikeOption: ALL  */
@@ -21919,7 +21947,7 @@ yyreduce:
         {
             (yyval.ival) = CREATE_TABLE_LIKE_ALL;
         }
-#line 31154 "gram.cpp"
+#line 31156 "gram.cpp"
         break;
 
         case 540: /* TableConstraint: CONSTRAINT name ConstraintElem  */
@@ -21931,7 +21959,7 @@ yyreduce:
             n->location = (yylsp[-2]);
             (yyval.node) = (Node*) n;
         }
-#line 31166 "gram.cpp"
+#line 31168 "gram.cpp"
         break;
 
         case 541: /* TableConstraint: ConstraintElem  */
@@ -21939,13 +21967,13 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 31172 "gram.cpp"
+#line 31174 "gram.cpp"
         break;
 
         case 542: /* ConstraintElem: CHECK '(' a_expr ')' ConstraintAttributeSpec  */
 #line 4578 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_CHECK;
             n->location = (yylsp[-4]);
             n->raw_expr = (yyvsp[-2].node);
@@ -21961,13 +21989,13 @@ yyreduce:
             n->initially_valid = !n->skip_validation;
             (yyval.node) = (Node*) n;
         }
-#line 31189 "gram.cpp"
+#line 31191 "gram.cpp"
         break;
 
         case 543: /* ConstraintElem: UNIQUE '(' columnList ')' opt_definition OptConsTableSpace ConstraintAttributeSpec  */
 #line 4592 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_UNIQUE;
             n->location = (yylsp[-6]);
             n->keys = (yyvsp[-4].list);
@@ -21984,13 +22012,13 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 31207 "gram.cpp"
+#line 31209 "gram.cpp"
         break;
 
         case 544: /* ConstraintElem: UNIQUE ExistingIndex ConstraintAttributeSpec  */
 #line 4606 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_UNIQUE;
             n->location = (yylsp[-2]);
             n->keys = NIL;
@@ -22007,13 +22035,13 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 31225 "gram.cpp"
+#line 31227 "gram.cpp"
         break;
 
         case 545: /* ConstraintElem: PRIMARY KEY '(' columnList ')' opt_definition OptConsTableSpace ConstraintAttributeSpec  */
 #line 4621 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_PRIMARY;
             n->location = (yylsp[-7]);
             n->keys = (yyvsp[-4].list);
@@ -22030,13 +22058,13 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 31243 "gram.cpp"
+#line 31245 "gram.cpp"
         break;
 
         case 546: /* ConstraintElem: PRIMARY KEY ExistingIndex ConstraintAttributeSpec  */
 #line 4635 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_PRIMARY;
             n->location = (yylsp[-3]);
             n->keys = NIL;
@@ -22053,13 +22081,13 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 31261 "gram.cpp"
+#line 31263 "gram.cpp"
         break;
 
         case 547: /* ConstraintElem: EXCLUDE access_method_clause '(' ExclusionConstraintList ')' opt_definition OptConsTableSpace ExclusionWhereClause ConstraintAttributeSpec  */
 #line 4651 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_EXCLUSION;
             n->location = (yylsp[-8]);
             n->access_method = (yyvsp[-7].str);
@@ -22078,13 +22106,13 @@ yyreduce:
                            yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 31281 "gram.cpp"
+#line 31283 "gram.cpp"
         break;
 
         case 548: /* ConstraintElem: FOREIGN KEY '(' columnList ')' REFERENCES qualified_name opt_column_list key_match key_actions ConstraintAttributeSpec  */
 #line 4668 "gram.y"
         {
-            Constraint* n = makeNode(Constraint);
+            Constraint* n = makeNode(resource, Constraint);
             n->contype = CONSTR_FOREIGN;
             n->location = (yylsp[-10]);
             n->pktable = (yyvsp[-4].range);
@@ -22104,7 +22132,7 @@ yyreduce:
             n->initially_valid = !n->skip_validation;
             (yyval.node) = (Node*) n;
         }
-#line 31303 "gram.cpp"
+#line 31305 "gram.cpp"
         break;
 
         case 549: /* opt_no_inherit: NO INHERIT  */
@@ -22112,7 +22140,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 31309 "gram.cpp"
+#line 31311 "gram.cpp"
         break;
 
         case 550: /* opt_no_inherit: %empty  */
@@ -22120,7 +22148,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 31315 "gram.cpp"
+#line 31317 "gram.cpp"
         break;
 
         case 551: /* opt_column_list: '(' columnList ')'  */
@@ -22128,7 +22156,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 31321 "gram.cpp"
+#line 31323 "gram.cpp"
         break;
 
         case 552: /* opt_column_list: %empty  */
@@ -22136,39 +22164,39 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 31327 "gram.cpp"
+#line 31329 "gram.cpp"
         break;
 
         case 553: /* columnList: columnElem  */
 #line 4697 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 31333 "gram.cpp"
+#line 31335 "gram.cpp"
         break;
 
         case 554: /* columnList: columnList ',' columnElem  */
 #line 4698 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 31339 "gram.cpp"
+#line 31341 "gram.cpp"
         break;
 
         case 555: /* columnElem: ColId  */
 #line 4702 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 31347 "gram.cpp"
+#line 31349 "gram.cpp"
         break;
 
         case 556: /* distributed_by_list: distributed_by_elem  */
 #line 4708 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].ielem));
+            (yyval.list) = list_make1(resource, (yyvsp[0].ielem));
         }
-#line 31353 "gram.cpp"
+#line 31355 "gram.cpp"
         break;
 
         case 557: /* distributed_by_list: distributed_by_list ',' distributed_by_elem  */
@@ -22187,9 +22215,9 @@ yyreduce:
                             parser_errposition((yylsp[0])));
             }
 
-            (yyval.list) = lappend((yyvsp[-2].list), newelem);
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), newelem);
         }
-#line 31375 "gram.cpp"
+#line 31377 "gram.cpp"
         break;
 
         case 558: /* distributed_by_elem: ColId opt_class  */
@@ -22198,11 +22226,11 @@ yyreduce:
             /*
 					 * only these fields are used, leave others as 0/NULL
 					 */
-            (yyval.ielem) = makeNode(IndexElem);
+            (yyval.ielem) = makeNode(resource, IndexElem);
             (yyval.ielem)->name = (yyvsp[-1].str);
             (yyval.ielem)->opclass = (yyvsp[0].list);
         }
-#line 31388 "gram.cpp"
+#line 31390 "gram.cpp"
         break;
 
         case 559: /* key_match: MATCH FULL  */
@@ -22210,7 +22238,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_MATCH_FULL;
         }
-#line 31396 "gram.cpp"
+#line 31398 "gram.cpp"
         break;
 
         case 560: /* key_match: MATCH PARTIAL  */
@@ -22222,7 +22250,7 @@ yyreduce:
                     parser_errposition((yylsp[-1])));
             (yyval.ival) = FKCONSTR_MATCH_PARTIAL;
         }
-#line 31408 "gram.cpp"
+#line 31410 "gram.cpp"
         break;
 
         case 561: /* key_match: MATCH SIMPLE  */
@@ -22230,7 +22258,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_MATCH_SIMPLE;
         }
-#line 31416 "gram.cpp"
+#line 31418 "gram.cpp"
         break;
 
         case 562: /* key_match: %empty  */
@@ -22238,39 +22266,39 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_MATCH_SIMPLE;
         }
-#line 31424 "gram.cpp"
+#line 31426 "gram.cpp"
         break;
 
         case 563: /* ExclusionConstraintList: ExclusionConstraintElem  */
 #line 4763 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].list));
+            (yyval.list) = list_make1(resource, (yyvsp[0].list));
         }
-#line 31430 "gram.cpp"
+#line 31432 "gram.cpp"
         break;
 
         case 564: /* ExclusionConstraintList: ExclusionConstraintList ',' ExclusionConstraintElem  */
 #line 4765 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].list));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].list));
         }
-#line 31436 "gram.cpp"
+#line 31438 "gram.cpp"
         break;
 
         case 565: /* ExclusionConstraintElem: index_elem WITH any_operator  */
 #line 4769 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-2].ielem), (yyvsp[0].list));
+            (yyval.list) = list_make2(resource, (yyvsp[-2].ielem), (yyvsp[0].list));
         }
-#line 31444 "gram.cpp"
+#line 31446 "gram.cpp"
         break;
 
         case 566: /* ExclusionConstraintElem: index_elem WITH OPERATOR '(' any_operator ')'  */
 #line 4774 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-5].ielem), (yyvsp[-1].list));
+            (yyval.list) = list_make2(resource, (yyvsp[-5].ielem), (yyvsp[-1].list));
         }
-#line 31452 "gram.cpp"
+#line 31454 "gram.cpp"
         break;
 
         case 567: /* ExclusionWhereClause: WHERE '(' a_expr ')'  */
@@ -22278,7 +22306,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 31458 "gram.cpp"
+#line 31460 "gram.cpp"
         break;
 
         case 568: /* ExclusionWhereClause: %empty  */
@@ -22286,7 +22314,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31464 "gram.cpp"
+#line 31466 "gram.cpp"
         break;
 
         case 569: /* key_actions: key_update  */
@@ -22294,7 +22322,7 @@ yyreduce:
         {
             (yyval.ival) = ((yyvsp[0].ival) << 8) | (FKCONSTR_ACTION_NOACTION & 0xFF);
         }
-#line 31470 "gram.cpp"
+#line 31472 "gram.cpp"
         break;
 
         case 570: /* key_actions: key_delete  */
@@ -22302,7 +22330,7 @@ yyreduce:
         {
             (yyval.ival) = (FKCONSTR_ACTION_NOACTION << 8) | ((yyvsp[0].ival) & 0xFF);
         }
-#line 31476 "gram.cpp"
+#line 31478 "gram.cpp"
         break;
 
         case 571: /* key_actions: key_update key_delete  */
@@ -22310,7 +22338,7 @@ yyreduce:
         {
             (yyval.ival) = ((yyvsp[-1].ival) << 8) | ((yyvsp[0].ival) & 0xFF);
         }
-#line 31482 "gram.cpp"
+#line 31484 "gram.cpp"
         break;
 
         case 572: /* key_actions: key_delete key_update  */
@@ -22318,7 +22346,7 @@ yyreduce:
         {
             (yyval.ival) = ((yyvsp[0].ival) << 8) | ((yyvsp[-1].ival) & 0xFF);
         }
-#line 31488 "gram.cpp"
+#line 31490 "gram.cpp"
         break;
 
         case 573: /* key_actions: %empty  */
@@ -22326,7 +22354,7 @@ yyreduce:
         {
             (yyval.ival) = (FKCONSTR_ACTION_NOACTION << 8) | (FKCONSTR_ACTION_NOACTION & 0xFF);
         }
-#line 31494 "gram.cpp"
+#line 31496 "gram.cpp"
         break;
 
         case 574: /* key_update: ON UPDATE key_action  */
@@ -22334,7 +22362,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 31500 "gram.cpp"
+#line 31502 "gram.cpp"
         break;
 
         case 575: /* key_delete: ON DELETE_P key_action  */
@@ -22342,7 +22370,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 31506 "gram.cpp"
+#line 31508 "gram.cpp"
         break;
 
         case 576: /* key_action: NO ACTION  */
@@ -22350,7 +22378,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_ACTION_NOACTION;
         }
-#line 31512 "gram.cpp"
+#line 31514 "gram.cpp"
         break;
 
         case 577: /* key_action: RESTRICT  */
@@ -22358,7 +22386,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_ACTION_RESTRICT;
         }
-#line 31518 "gram.cpp"
+#line 31520 "gram.cpp"
         break;
 
         case 578: /* key_action: CASCADE  */
@@ -22366,7 +22394,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_ACTION_CASCADE;
         }
-#line 31524 "gram.cpp"
+#line 31526 "gram.cpp"
         break;
 
         case 579: /* key_action: SET NULL_P  */
@@ -22374,7 +22402,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_ACTION_SETNULL;
         }
-#line 31530 "gram.cpp"
+#line 31532 "gram.cpp"
         break;
 
         case 580: /* key_action: SET DEFAULT  */
@@ -22382,7 +22410,7 @@ yyreduce:
         {
             (yyval.ival) = FKCONSTR_ACTION_SETDEFAULT;
         }
-#line 31536 "gram.cpp"
+#line 31538 "gram.cpp"
         break;
 
         case 581: /* OptInherit: INHERITS '(' qualified_name_list ')'  */
@@ -22390,7 +22418,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 31542 "gram.cpp"
+#line 31544 "gram.cpp"
         break;
 
         case 582: /* OptInherit: %empty  */
@@ -22398,7 +22426,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 31548 "gram.cpp"
+#line 31550 "gram.cpp"
         break;
 
         case 583: /* OptWith: WITH reloptions  */
@@ -22406,23 +22434,23 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 31554 "gram.cpp"
+#line 31556 "gram.cpp"
         break;
 
         case 584: /* OptWith: WITH OIDS  */
 #line 4824 "gram.y"
         {
-            (yyval.list) = list_make1(defWithOids(true));
+            (yyval.list) = list_make1(resource, defWithOids(resource, (true)));
         }
-#line 31560 "gram.cpp"
+#line 31562 "gram.cpp"
         break;
 
         case 585: /* OptWith: WITHOUT OIDS  */
 #line 4825 "gram.y"
         {
-            (yyval.list) = list_make1(defWithOids(false));
+            (yyval.list) = list_make1(resource, defWithOids(resource, (false)));
         }
-#line 31566 "gram.cpp"
+#line 31568 "gram.cpp"
         break;
 
         case 586: /* OptWith: %empty  */
@@ -22430,7 +22458,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 31572 "gram.cpp"
+#line 31574 "gram.cpp"
         break;
 
         case 587: /* OnCommitOption: ON COMMIT DROP  */
@@ -22438,7 +22466,7 @@ yyreduce:
         {
             (yyval.oncommit) = ONCOMMIT_DROP;
         }
-#line 31578 "gram.cpp"
+#line 31580 "gram.cpp"
         break;
 
         case 588: /* OnCommitOption: ON COMMIT DELETE_P ROWS  */
@@ -22446,7 +22474,7 @@ yyreduce:
         {
             (yyval.oncommit) = ONCOMMIT_DELETE_ROWS;
         }
-#line 31584 "gram.cpp"
+#line 31586 "gram.cpp"
         break;
 
         case 589: /* OnCommitOption: ON COMMIT PRESERVE ROWS  */
@@ -22454,7 +22482,7 @@ yyreduce:
         {
             (yyval.oncommit) = ONCOMMIT_PRESERVE_ROWS;
         }
-#line 31590 "gram.cpp"
+#line 31592 "gram.cpp"
         break;
 
         case 590: /* OnCommitOption: %empty  */
@@ -22462,7 +22490,7 @@ yyreduce:
         {
             (yyval.oncommit) = ONCOMMIT_NOOP;
         }
-#line 31596 "gram.cpp"
+#line 31598 "gram.cpp"
         break;
 
         case 591: /* OptTableSpace: TABLESPACE name  */
@@ -22470,7 +22498,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 31602 "gram.cpp"
+#line 31604 "gram.cpp"
         break;
 
         case 592: /* OptTableSpace: %empty  */
@@ -22478,7 +22506,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 31608 "gram.cpp"
+#line 31610 "gram.cpp"
         break;
 
         case 593: /* OptConsTableSpace: USING INDEX TABLESPACE name  */
@@ -22486,7 +22514,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 31614 "gram.cpp"
+#line 31616 "gram.cpp"
         break;
 
         case 594: /* OptConsTableSpace: %empty  */
@@ -22494,7 +22522,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 31620 "gram.cpp"
+#line 31622 "gram.cpp"
         break;
 
         case 595: /* ExistingIndex: USING INDEX index_name  */
@@ -22502,7 +22530,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 31626 "gram.cpp"
+#line 31628 "gram.cpp"
         break;
 
         case 596: /* optNumsegments: SEGMENTS ICONST  */
@@ -22510,7 +22538,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 31634 "gram.cpp"
+#line 31636 "gram.cpp"
         break;
 
         case 597: /* optNumsegments: %empty  */
@@ -22518,56 +22546,56 @@ yyreduce:
         {
             (yyval.ival) = -1;
         }
-#line 31642 "gram.cpp"
+#line 31644 "gram.cpp"
         break;
 
         case 598: /* DistributedBy: DISTRIBUTED BY '(' distributed_by_list ')' optNumsegments  */
 #line 4858 "gram.y"
         {
-            DistributedBy* distributedBy = makeNode(DistributedBy);
+            DistributedBy* distributedBy = makeNode(resource, DistributedBy);
             distributedBy->ptype = POLICYTYPE_PARTITIONED;
             distributedBy->numsegments = (yyvsp[0].ival);
             distributedBy->keyCols = (yyvsp[-2].list);
             (yyval.node) = (Node*) distributedBy;
         }
-#line 31654 "gram.cpp"
+#line 31656 "gram.cpp"
         break;
 
         case 599: /* DistributedBy: DISTRIBUTED RANDOMLY optNumsegments  */
 #line 4866 "gram.y"
         {
-            DistributedBy* distributedBy = makeNode(DistributedBy);
+            DistributedBy* distributedBy = makeNode(resource, DistributedBy);
             distributedBy->ptype = POLICYTYPE_PARTITIONED;
             distributedBy->numsegments = (yyvsp[0].ival);
             distributedBy->keyCols = NIL;
             (yyval.node) = (Node*) distributedBy;
         }
-#line 31666 "gram.cpp"
+#line 31668 "gram.cpp"
         break;
 
         case 600: /* DistributedBy: DISTRIBUTED REPLICATED  */
 #line 4874 "gram.y"
         {
-            DistributedBy* distributedBy = makeNode(DistributedBy);
+            DistributedBy* distributedBy = makeNode(resource, DistributedBy);
             distributedBy->ptype = POLICYTYPE_REPLICATED;
             distributedBy->numsegments = -1;
             distributedBy->keyCols = NIL;
             (yyval.node) = (Node*) distributedBy;
         }
-#line 31678 "gram.cpp"
+#line 31680 "gram.cpp"
         break;
 
         case 601: /* DistributedBy: DISTRIBUTED LOCAL  */
 #line 4882 "gram.y"
         {
-            DistributedBy* distributedBy = makeNode(DistributedBy);
+            DistributedBy* distributedBy = makeNode(resource, DistributedBy);
             distributedBy->ptype = POLICYTYPE_LOCAL;
             distributedBy->numsegments = -1;
             distributedBy->keyCols = NIL;
             (yyval.node) = (Node*) distributedBy;
 
         }
-#line 31691 "gram.cpp"
+#line 31693 "gram.cpp"
         break;
 
         case 602: /* OptDistributedBy: DistributedBy  */
@@ -22575,7 +22603,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 31697 "gram.cpp"
+#line 31699 "gram.cpp"
         break;
 
         case 603: /* OptDistributedBy: %empty  */
@@ -22583,7 +22611,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31703 "gram.cpp"
+#line 31705 "gram.cpp"
         break;
 
         case 604: /* OptTabPartitionColumnEncList: TabPartitionColumnEncList  */
@@ -22591,7 +22619,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 31709 "gram.cpp"
+#line 31711 "gram.cpp"
         break;
 
         case 605: /* OptTabPartitionColumnEncList: %empty  */
@@ -22599,65 +22627,65 @@ yyreduce:
         {
             (yyval.list) = NULL;
         }
-#line 31715 "gram.cpp"
+#line 31717 "gram.cpp"
         break;
 
         case 606: /* TabPartitionColumnEncList: column_reference_storage_directive  */
 #line 4903 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 31721 "gram.cpp"
+#line 31723 "gram.cpp"
         break;
 
         case 607: /* TabPartitionColumnEncList: TabPartitionColumnEncList column_reference_storage_directive  */
 #line 4905 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 31729 "gram.cpp"
+#line 31731 "gram.cpp"
         break;
 
         case 608: /* OptTabPartitionStorageAttr: WITH definition TABLESPACE name  */
 #line 4911 "gram.y"
         {
             /* re-use alterpartitioncmd struct here... */
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
             pc->partid = NULL;
             pc->arg1 = (Node*) (yyvsp[-2].list);
-            pc->arg2 = (Node*) makeString((yyvsp[0].str));
+            pc->arg2 = (Node*) makeString(resource, (yyvsp[0].str));
             pc->location = (yylsp[-3]);
             (yyval.node) = (Node*) pc;
         }
-#line 31743 "gram.cpp"
+#line 31745 "gram.cpp"
         break;
 
         case 609: /* OptTabPartitionStorageAttr: WITH definition  */
 #line 4921 "gram.y"
         {
             /* re-use alterpartitioncmd struct here... */
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
             pc->partid = NULL;
             pc->arg1 = (Node*) (yyvsp[0].list);
             pc->arg2 = NULL;
             pc->location = (yylsp[-1]);
             (yyval.node) = (Node*) pc;
         }
-#line 31757 "gram.cpp"
+#line 31759 "gram.cpp"
         break;
 
         case 610: /* OptTabPartitionStorageAttr: TABLESPACE name  */
 #line 4931 "gram.y"
         {
             /* re-use alterpartitioncmd struct here... */
-            AlterPartitionCmd* pc = makeNode(AlterPartitionCmd);
+            AlterPartitionCmd* pc = makeNode(resource, AlterPartitionCmd);
             pc->partid = NULL;
             pc->arg1 = NULL;
-            pc->arg2 = (Node*) makeString((yyvsp[0].str));
+            pc->arg2 = (Node*) makeString(resource, (yyvsp[0].str));
             pc->location = (yylsp[-1]);
             (yyval.node) = (Node*) pc;
         }
-#line 31771 "gram.cpp"
+#line 31773 "gram.cpp"
         break;
 
         case 611: /* OptTabPartitionStorageAttr: %empty  */
@@ -22665,19 +22693,19 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31777 "gram.cpp"
+#line 31779 "gram.cpp"
         break;
 
         case 612: /* OptTabPartitionSpec: '(' TabPartitionElemList ')'  */
 #line 4944 "gram.y"
         {
-            PartitionSpec* n = makeNode(PartitionSpec);
+            PartitionSpec* n = makeNode(resource, PartitionSpec);
             n->partElem = (yyvsp[-1].list);
             n->subSpec = NULL;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 31789 "gram.cpp"
+#line 31791 "gram.cpp"
         break;
 
         case 613: /* OptTabPartitionSpec: %empty  */
@@ -22685,19 +22713,19 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31795 "gram.cpp"
+#line 31797 "gram.cpp"
         break;
 
         case 614: /* OptTabSubPartitionSpec: '(' TabSubPartitionElemList ')'  */
 #line 4956 "gram.y"
         {
-            PartitionSpec* n = makeNode(PartitionSpec);
+            PartitionSpec* n = makeNode(resource, PartitionSpec);
             n->partElem = (yyvsp[-1].list);
             n->subSpec = NULL;
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 31807 "gram.cpp"
+#line 31809 "gram.cpp"
         break;
 
         case 615: /* OptTabSubPartitionSpec: %empty  */
@@ -22705,39 +22733,39 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31813 "gram.cpp"
+#line 31815 "gram.cpp"
         break;
 
         case 616: /* TabPartitionElemList: TabPartitionElem  */
 #line 4967 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 31819 "gram.cpp"
+#line 31821 "gram.cpp"
         break;
 
         case 617: /* TabPartitionElemList: TabPartitionElemList ',' TabPartitionElem  */
 #line 4969 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 31825 "gram.cpp"
+#line 31827 "gram.cpp"
         break;
 
         case 618: /* TabSubPartitionElemList: TabSubPartitionElem  */
 #line 4972 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 31831 "gram.cpp"
+#line 31833 "gram.cpp"
         break;
 
         case 619: /* TabSubPartitionElemList: TabSubPartitionElemList ',' TabSubPartitionElem  */
 #line 4974 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 31837 "gram.cpp"
+#line 31839 "gram.cpp"
         break;
 
         case 620: /* tab_part_val_no_paran: AexprConst  */
@@ -22745,31 +22773,31 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 31843 "gram.cpp"
+#line 31845 "gram.cpp"
         break;
 
         case 621: /* tab_part_val_no_paran: CAST '(' tab_part_val AS Typename ')'  */
 #line 4979 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-3].node), (yyvsp[-1].typnam), (yylsp[-2]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-3].node), (yyvsp[-1].typnam), (yylsp[-2]));
         }
-#line 31851 "gram.cpp"
+#line 31853 "gram.cpp"
         break;
 
         case 622: /* tab_part_val_no_paran: tab_part_val_no_paran TYPECAST Typename  */
 #line 4983 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
         }
-#line 31859 "gram.cpp"
+#line 31861 "gram.cpp"
         break;
 
         case 623: /* tab_part_val_no_paran: '-' tab_part_val_no_paran  */
 #line 4986 "gram.y"
         {
-            (yyval.node) = doNegate((yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = doNegate(resource, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 31865 "gram.cpp"
+#line 31867 "gram.cpp"
         break;
 
         case 624: /* tab_part_val: tab_part_val_no_paran  */
@@ -22777,7 +22805,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 31871 "gram.cpp"
+#line 31873 "gram.cpp"
         break;
 
         case 625: /* tab_part_val: '(' tab_part_val_no_paran ')'  */
@@ -22785,31 +22813,31 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 31877 "gram.cpp"
+#line 31879 "gram.cpp"
         break;
 
         case 626: /* tab_part_val: '(' tab_part_val_no_paran ')' TYPECAST Typename  */
 #line 4992 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-3].node), (yyvsp[0].typnam), (yylsp[-1]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-3].node), (yyvsp[0].typnam), (yylsp[-1]));
         }
-#line 31885 "gram.cpp"
+#line 31887 "gram.cpp"
         break;
 
         case 627: /* TabPartitionBoundarySpecValList: tab_part_val  */
 #line 4998 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 31891 "gram.cpp"
+#line 31893 "gram.cpp"
         break;
 
         case 628: /* TabPartitionBoundarySpecValList: TabPartitionBoundarySpecValList ',' tab_part_val  */
 #line 5000 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 31897 "gram.cpp"
+#line 31899 "gram.cpp"
         break;
 
         case 629: /* OptTabPartitionRangeInclusive: INCLUSIVE  */
@@ -22817,7 +22845,7 @@ yyreduce:
         {
             (yyval.ival) = PART_EDGE_INCLUSIVE;
         }
-#line 31903 "gram.cpp"
+#line 31905 "gram.cpp"
         break;
 
         case 630: /* OptTabPartitionRangeInclusive: EXCLUSIVE  */
@@ -22825,7 +22853,7 @@ yyreduce:
         {
             (yyval.ival) = PART_EDGE_EXCLUSIVE;
         }
-#line 31909 "gram.cpp"
+#line 31911 "gram.cpp"
         break;
 
         case 631: /* OptTabPartitionRangeInclusive: %empty  */
@@ -22833,13 +22861,13 @@ yyreduce:
         {
             (yyval.ival) = PART_EDGE_UNSPECIFIED;
         }
-#line 31915 "gram.cpp"
+#line 31917 "gram.cpp"
         break;
 
         case 632: /* TabPartitionBoundarySpecStart: START '(' TabPartitionBoundarySpecValList ')' OptTabPartitionRangeInclusive  */
 #line 5013 "gram.y"
         {
-            PartitionRangeItem* n = makeNode(PartitionRangeItem);
+            PartitionRangeItem* n = makeNode(resource, PartitionRangeItem);
             n->partRangeVal = (yyvsp[-2].list);
             if (!((yyvsp[0].ival)))
                 n->partedge = PART_EDGE_INCLUSIVE;
@@ -22848,13 +22876,13 @@ yyreduce:
             n->location = (yylsp[-4]);
             (yyval.node) = (Node*) n;
         }
-#line 31930 "gram.cpp"
+#line 31932 "gram.cpp"
         break;
 
         case 633: /* TabPartitionBoundarySpecEnd: END_P '(' TabPartitionBoundarySpecValList ')' OptTabPartitionRangeInclusive  */
 #line 5029 "gram.y"
         {
-            PartitionRangeItem* n = makeNode(PartitionRangeItem);
+            PartitionRangeItem* n = makeNode(resource, PartitionRangeItem);
             n->partRangeVal = (yyvsp[-2].list);
             if (!((yyvsp[0].ival)))
                 n->partedge = PART_EDGE_EXCLUSIVE;
@@ -22863,19 +22891,19 @@ yyreduce:
             n->location = (yylsp[-4]);
             (yyval.node) = (Node*) n;
         }
-#line 31945 "gram.cpp"
+#line 31947 "gram.cpp"
         break;
 
         case 634: /* OptTabPartitionBoundarySpecEvery: EVERY '(' TabPartitionBoundarySpecValList ')'  */
 #line 5043 "gram.y"
         {
-            PartitionRangeItem* n = makeNode(PartitionRangeItem);
+            PartitionRangeItem* n = makeNode(resource, PartitionRangeItem);
             n->partRangeVal = (yyvsp[-1].list);
             n->location = (yylsp[-3]);
 
             (yyval.node) = (Node*) n;
         }
-#line 31957 "gram.cpp"
+#line 31959 "gram.cpp"
         break;
 
         case 635: /* OptTabPartitionBoundarySpecEvery: %empty  */
@@ -22883,7 +22911,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31963 "gram.cpp"
+#line 31965 "gram.cpp"
         break;
 
         case 636: /* OptTabPartitionBoundarySpecEnd: TabPartitionBoundarySpecEnd  */
@@ -22891,7 +22919,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 31969 "gram.cpp"
+#line 31971 "gram.cpp"
         break;
 
         case 637: /* OptTabPartitionBoundarySpecEnd: %empty  */
@@ -22899,25 +22927,25 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 31975 "gram.cpp"
+#line 31977 "gram.cpp"
         break;
 
         case 638: /* TabPartitionBoundarySpec: part_values_clause  */
 #line 5061 "gram.y"
         {
-            PartitionValuesSpec* n = makeNode(PartitionValuesSpec);
+            PartitionValuesSpec* n = makeNode(resource, PartitionValuesSpec);
 
             n->partValues = (yyvsp[0].list);
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 31987 "gram.cpp"
+#line 31989 "gram.cpp"
         break;
 
         case 639: /* TabPartitionBoundarySpec: TabPartitionBoundarySpecStart OptTabPartitionBoundarySpecEnd OptTabPartitionBoundarySpecEvery  */
 #line 5071 "gram.y"
         {
-            PartitionBoundSpec* n = makeNode(PartitionBoundSpec);
+            PartitionBoundSpec* n = makeNode(resource, PartitionBoundSpec);
             n->partStart = (yyvsp[-2].node);
             n->partEnd = (yyvsp[-1].node);
             n->partEvery = (yyvsp[0].node);
@@ -22926,13 +22954,13 @@ yyreduce:
             n->location = (yylsp[-2]);
             (yyval.node) = (Node*) n;
         }
-#line 32002 "gram.cpp"
+#line 32004 "gram.cpp"
         break;
 
         case 640: /* TabPartitionBoundarySpec: TabPartitionBoundarySpecEnd OptTabPartitionBoundarySpecEvery  */
 #line 5083 "gram.y"
         {
-            PartitionBoundSpec* n = makeNode(PartitionBoundSpec);
+            PartitionBoundSpec* n = makeNode(resource, PartitionBoundSpec);
             n->partStart = NULL;
             n->partEnd = (yyvsp[-1].node);
             n->partEvery = (yyvsp[0].node);
@@ -22941,7 +22969,7 @@ yyreduce:
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 32017 "gram.cpp"
+#line 32019 "gram.cpp"
         break;
 
         case 641: /* OptTabPartitionBoundarySpec: TabPartitionBoundarySpec  */
@@ -22949,7 +22977,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 32023 "gram.cpp"
+#line 32025 "gram.cpp"
         break;
 
         case 642: /* OptTabPartitionBoundarySpec: %empty  */
@@ -22957,7 +22985,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 32029 "gram.cpp"
+#line 32031 "gram.cpp"
         break;
 
         case 643: /* multi_spec_value_list: '(' part_values_single ')'  */
@@ -22967,11 +22995,11 @@ yyreduce:
             List* out = NIL;
 
             foreach (lc, (yyvsp[-1].list))
-                out = lappend(out, linitial(reinterpret_cast<const PGList*>(lfirst(lc))));
+                out = lappend(resource, out, linitial(reinterpret_cast<const PGList*>(lfirst(lc))));
 
-            (yyval.list) = list_make1(out);
+            (yyval.list) = list_make1(resource, out);
         }
-#line 32043 "gram.cpp"
+#line 32045 "gram.cpp"
         break;
 
         case 644: /* multi_spec_value_list: multi_spec_value_list ',' '(' part_values_single ')'  */
@@ -22981,27 +23009,27 @@ yyreduce:
             List* out = NIL;
 
             foreach (lc, (yyvsp[-1].list))
-                out = lappend(out, linitial(reinterpret_cast<const PGList*>(lfirst(lc))));
+                out = lappend(resource, out, linitial(reinterpret_cast<const PGList*>(lfirst(lc))));
 
-            (yyval.list) = lappend((yyvsp[-4].list), out);
+            (yyval.list) = lappend(resource, (yyvsp[-4].list), out);
         }
-#line 32057 "gram.cpp"
+#line 32059 "gram.cpp"
         break;
 
         case 645: /* part_values_single: tab_part_val_no_paran  */
 #line 5123 "gram.y"
         {
-            (yyval.list) = list_make1(list_make1((yyvsp[0].node)));
+            (yyval.list) = list_make1(resource, list_make1(resource, (yyvsp[0].node)));
         }
-#line 32065 "gram.cpp"
+#line 32067 "gram.cpp"
         break;
 
         case 646: /* part_values_single: part_values_single ',' tab_part_val_no_paran  */
 #line 5127 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), list_make1((yyvsp[0].node)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), list_make1(resource, (yyvsp[0].node)));
         }
-#line 32073 "gram.cpp"
+#line 32075 "gram.cpp"
         break;
 
         case 647: /* part_values_clause: VALUES '(' part_values_single ')'  */
@@ -23009,7 +23037,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 32081 "gram.cpp"
+#line 32083 "gram.cpp"
         break;
 
         case 648: /* part_values_clause: VALUES '(' multi_spec_value_list ')'  */
@@ -23017,7 +23045,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 32089 "gram.cpp"
+#line 32091 "gram.cpp"
         break;
 
         case 649: /* part_values_or_spec_list: TabPartitionBoundarySpecValList  */
@@ -23025,7 +23053,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 32095 "gram.cpp"
+#line 32097 "gram.cpp"
         break;
 
         case 650: /* part_values_or_spec_list: part_values_clause  */
@@ -23033,13 +23061,13 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 32101 "gram.cpp"
+#line 32103 "gram.cpp"
         break;
 
         case 651: /* TabPartitionElem: TabPartitionNameDecl OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5153 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = (yyvsp[-4].str);
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23050,13 +23078,13 @@ yyreduce:
             n->AddPartDesc = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32118 "gram.cpp"
+#line 32120 "gram.cpp"
         break;
 
         case 652: /* TabPartitionElem: TabPartitionDefaultNameDecl OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5172 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = (yyvsp[-4].str);
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23066,13 +23094,13 @@ yyreduce:
             n->colencs = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 32134 "gram.cpp"
+#line 32136 "gram.cpp"
         break;
 
         case 653: /* TabPartitionElem: TabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5187 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = NULL;
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23083,7 +23111,7 @@ yyreduce:
             n->AddPartDesc = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32151 "gram.cpp"
+#line 32153 "gram.cpp"
         break;
 
         case 654: /* TabPartitionElem: column_reference_storage_directive  */
@@ -23091,13 +23119,13 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].node);
         }
-#line 32159 "gram.cpp"
+#line 32161 "gram.cpp"
         break;
 
         case 655: /* TabSubPartitionElem: TabSubPartitionNameDecl OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5210 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = (yyvsp[-4].str);
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23108,13 +23136,13 @@ yyreduce:
             n->AddPartDesc = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32176 "gram.cpp"
+#line 32178 "gram.cpp"
         break;
 
         case 656: /* TabSubPartitionElem: TabSubPartitionDefaultNameDecl OptTabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5227 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = (yyvsp[-4].str);
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23125,13 +23153,13 @@ yyreduce:
             n->AddPartDesc = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32193 "gram.cpp"
+#line 32195 "gram.cpp"
         break;
 
         case 657: /* TabSubPartitionElem: TabPartitionBoundarySpec OptTabPartitionStorageAttr OptTabPartitionColumnEncList OptTabSubPartitionSpec  */
 #line 5243 "gram.y"
         {
-            PartitionElem* n = makeNode(PartitionElem);
+            PartitionElem* n = makeNode(resource, PartitionElem);
             n->partName = NULL;
             n->boundSpec = (yyvsp[-3].node);
             n->subSpec = (yyvsp[0].node);
@@ -23142,7 +23170,7 @@ yyreduce:
             n->AddPartDesc = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32210 "gram.cpp"
+#line 32212 "gram.cpp"
         break;
 
         case 658: /* TabSubPartitionElem: column_reference_storage_directive  */
@@ -23150,7 +23178,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].node);
         }
-#line 32218 "gram.cpp"
+#line 32220 "gram.cpp"
         break;
 
         case 659: /* TabPartitionNameDecl: PARTITION PartitionColId  */
@@ -23158,7 +23186,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 32226 "gram.cpp"
+#line 32228 "gram.cpp"
         break;
 
         case 660: /* TabPartitionDefaultNameDecl: DEFAULT PARTITION PartitionColId  */
@@ -23166,7 +23194,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 32234 "gram.cpp"
+#line 32236 "gram.cpp"
         break;
 
         case 661: /* TabSubPartitionNameDecl: SUBPARTITION PartitionColId  */
@@ -23174,7 +23202,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 32242 "gram.cpp"
+#line 32244 "gram.cpp"
         break;
 
         case 662: /* TabSubPartitionDefaultNameDecl: DEFAULT SUBPARTITION PartitionColId  */
@@ -23182,7 +23210,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 32250 "gram.cpp"
+#line 32252 "gram.cpp"
         break;
 
         case 663: /* TabPartitionByType: RANGE  */
@@ -23190,7 +23218,7 @@ yyreduce:
         {
             (yyval.ival) = PARTTYP_RANGE;
         }
-#line 32256 "gram.cpp"
+#line 32258 "gram.cpp"
         break;
 
         case 664: /* TabPartitionByType: LIST  */
@@ -23198,7 +23226,7 @@ yyreduce:
         {
             (yyval.ival) = PARTTYP_LIST;
         }
-#line 32262 "gram.cpp"
+#line 32264 "gram.cpp"
         break;
 
         case 665: /* TabPartitionByType: %empty  */
@@ -23208,13 +23236,13 @@ yyreduce:
 
             ereport(ERROR, errcode(ERRCODE_SYNTAX_ERROR), errmsg("PARTITION BY must specify RANGE or LIST"));
         }
-#line 32274 "gram.cpp"
+#line 32276 "gram.cpp"
         break;
 
         case 666: /* OptTabPartitionBy: PARTITION BY TabPartitionByType '(' columnList ')' opt_list_subparts OptTabPartitionSpec  */
 #line 5302 "gram.y"
         {
-            PartitionBy* n = makeNode(PartitionBy);
+            PartitionBy* n = makeNode(resource, PartitionBy);
 
             n->partType = static_cast<PartitionByType>((yyvsp[-5].ival));
             n->keys = (yyvsp[-3].list);
@@ -23229,7 +23257,7 @@ yyreduce:
             n->partDefault = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32296 "gram.cpp"
+#line 32298 "gram.cpp"
         break;
 
         case 667: /* OptTabPartitionBy: %empty  */
@@ -23237,13 +23265,13 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 32302 "gram.cpp"
+#line 32304 "gram.cpp"
         break;
 
         case 668: /* TabSubPartitionTemplate: SUBPARTITION TEMPLATE '(' TabSubPartitionElemList ')'  */
 #line 5325 "gram.y"
         {
-            PartitionSpec* n = makeNode(PartitionSpec);
+            PartitionSpec* n = makeNode(resource, PartitionSpec);
             n->partElem = (yyvsp[-1].list);
             n->subSpec = NULL;
             n->istemplate = true;
@@ -23272,7 +23300,7 @@ yyreduce:
                 }
             }
         }
-#line 32339 "gram.cpp"
+#line 32341 "gram.cpp"
         break;
 
         case 669: /* opt_list_subparts: TabSubPartition  */
@@ -23280,7 +23308,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 32345 "gram.cpp"
+#line 32347 "gram.cpp"
         break;
 
         case 670: /* opt_list_subparts: %empty  */
@@ -23288,13 +23316,13 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 32351 "gram.cpp"
+#line 32353 "gram.cpp"
         break;
 
         case 671: /* TabSubPartitionBy: SUBPARTITION BY TabPartitionByType '(' columnList ')'  */
 #line 5366 "gram.y"
         {
-            PartitionBy* n = makeNode(PartitionBy);
+            PartitionBy* n = makeNode(resource, PartitionBy);
             n->partType = static_cast<PartitionByType>((yyvsp[-3].ival));
             n->keys = (yyvsp[-1].list);
             n->subPart = NULL;
@@ -23305,7 +23333,7 @@ yyreduce:
             n->partDefault = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 32368 "gram.cpp"
+#line 32370 "gram.cpp"
         break;
 
         case 672: /* TabSubPartition: TabSubPartitionBy TabSubPartitionTemplate  */
@@ -23317,7 +23345,7 @@ yyreduce:
 
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 32380 "gram.cpp"
+#line 32382 "gram.cpp"
         break;
 
         case 673: /* TabSubPartition: TabSubPartitionBy  */
@@ -23325,7 +23353,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 32386 "gram.cpp"
+#line 32388 "gram.cpp"
         break;
 
         case 674: /* TabSubPartition: TabSubPartitionBy TabSubPartition  */
@@ -23335,7 +23363,7 @@ yyreduce:
             pby->subPart = (yyvsp[0].node);
             (yyval.node) = (Node*) pby;
         }
-#line 32396 "gram.cpp"
+#line 32398 "gram.cpp"
         break;
 
         case 675: /* TabSubPartition: TabSubPartitionBy TabSubPartitionTemplate TabSubPartition  */
@@ -23346,13 +23374,13 @@ yyreduce:
             pby->subPart = (yyvsp[0].node);
             (yyval.node) = (Node*) pby;
         }
-#line 32407 "gram.cpp"
+#line 32409 "gram.cpp"
         break;
 
         case 676: /* CreateAsStmt: CREATE OptTemp TABLE create_as_target AS SelectStmt opt_with_data OptDistributedBy OptTabPartitionBy  */
 #line 5419 "gram.y"
         {
-            CreateTableAsStmt* ctas = makeNode(CreateTableAsStmt);
+            CreateTableAsStmt* ctas = makeNode(resource, CreateTableAsStmt);
             ctas->query = (yyvsp[-3].node);
             ctas->into = (yyvsp[-5].into);
             ctas->relkind = OBJECT_TABLE;
@@ -23370,13 +23398,13 @@ yyreduce:
             (yyvsp[-5].into)->skipData = !((yyvsp[-2].boolean));
             (yyval.node) = (Node*) ctas;
         }
-#line 32431 "gram.cpp"
+#line 32433 "gram.cpp"
         break;
 
         case 677: /* create_as_target: qualified_name opt_column_list OptWith OnCommitOption OptTableSpace  */
 #line 5442 "gram.y"
         {
-            (yyval.into) = makeNode(IntoClause);
+            (yyval.into) = makeNode(resource, IntoClause);
             (yyval.into)->rel = (yyvsp[-4].range);
             (yyval.into)->colNames = (yyvsp[-3].list);
             (yyval.into)->options = (yyvsp[-2].list);
@@ -23385,7 +23413,7 @@ yyreduce:
             (yyval.into)->viewQuery = NULL;
             (yyval.into)->skipData = false; /* might get changed later */
         }
-#line 32446 "gram.cpp"
+#line 32448 "gram.cpp"
         break;
 
         case 678: /* opt_with_data: WITH DATA_P  */
@@ -23393,7 +23421,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 32452 "gram.cpp"
+#line 32454 "gram.cpp"
         break;
 
         case 679: /* opt_with_data: WITH NO DATA_P  */
@@ -23401,7 +23429,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 32458 "gram.cpp"
+#line 32460 "gram.cpp"
         break;
 
         case 680: /* opt_with_data: %empty  */
@@ -23409,13 +23437,13 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 32464 "gram.cpp"
+#line 32466 "gram.cpp"
         break;
 
         case 681: /* CreateExternalStmt: CREATE OptWritable EXTERNAL OptWeb OptTemp TABLE qualified_name '(' OptExtTableElementList ')' ExtTypedesc FORMAT Sconst format_opt ext_options_opt ext_opt_encoding_list ExtSingleRowErrorHandling OptDistributedBy  */
 #line 5469 "gram.y"
         {
-            CreateExternalStmt* n = makeNode(CreateExternalStmt);
+            CreateExternalStmt* n = makeNode(resource, CreateExternalStmt);
             n->iswritable = (yyvsp[-16].boolean);
             n->isweb = (yyvsp[-14].boolean);
             (yyvsp[-11].range)->relpersistence = (yyvsp[-13].ival);
@@ -23441,7 +23469,9 @@ yyreduce:
 
                 /* if no ON clause specified, default to "ON ALL" */
                 if (extdesc->on_clause == NIL) {
-                    extdesc->on_clause = lappend(extdesc->on_clause, makeDefElem("all", (Node*) makeInteger(TRUE)));
+                    extdesc->on_clause = lappend(resource,
+                                                 extdesc->on_clause,
+                                                 makeDefElem(resource, "all", (Node*) makeInteger(resource, TRUE)));
                 } else if (n->iswritable) {
                     ereport(ERROR,
                             errcode(ERRCODE_SYNTAX_ERROR),
@@ -23457,13 +23487,15 @@ yyreduce:
 
                 if (((SingleRowErrorDesc*) n->sreh)->log_errors_type == LOG_ERRORS_PERSISTENTLY) {
                     n->extOptions =
-                        lappend(n->extOptions, makeDefElem("error_log_persistent", (Node*) makeString("true")));
+                        lappend(resource,
+                                n->extOptions,
+                                makeDefElem(resource, "error_log_persistent", (Node*) makeString(resource, "true")));
                 }
             }
 
             (yyval.node) = (Node*) n;
         }
-#line 32525 "gram.cpp"
+#line 32527 "gram.cpp"
         break;
 
         case 682: /* OptWritable: WRITABLE  */
@@ -23471,7 +23503,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 32531 "gram.cpp"
+#line 32533 "gram.cpp"
         break;
 
         case 683: /* OptWritable: READABLE  */
@@ -23479,7 +23511,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 32537 "gram.cpp"
+#line 32539 "gram.cpp"
         break;
 
         case 684: /* OptWritable: %empty  */
@@ -23487,7 +23519,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 32543 "gram.cpp"
+#line 32545 "gram.cpp"
         break;
 
         case 685: /* OptWeb: WEB  */
@@ -23495,7 +23527,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 32549 "gram.cpp"
+#line 32551 "gram.cpp"
         break;
 
         case 686: /* OptWeb: %empty  */
@@ -23503,13 +23535,13 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 32555 "gram.cpp"
+#line 32557 "gram.cpp"
         break;
 
         case 687: /* ExtTypedesc: LOCATION '(' cdb_string_list ')' ext_on_clause_list  */
 #line 5538 "gram.y"
         {
-            ExtTableTypeDesc* n = makeNode(ExtTableTypeDesc);
+            ExtTableTypeDesc* n = makeNode(resource, ExtTableTypeDesc);
             n->exttabletype = EXTTBL_TYPE_LOCATION;
             n->location_list = (yyvsp[-2].list);
             n->on_clause = (yyvsp[0].list);
@@ -23517,13 +23549,13 @@ yyreduce:
             (yyval.node) = (Node*) n;
 
         }
-#line 32569 "gram.cpp"
+#line 32571 "gram.cpp"
         break;
 
         case 688: /* ExtTypedesc: EXECUTE Sconst ext_on_clause_list  */
 #line 5548 "gram.y"
         {
-            ExtTableTypeDesc* n = makeNode(ExtTableTypeDesc);
+            ExtTableTypeDesc* n = makeNode(resource, ExtTableTypeDesc);
             n->exttabletype = EXTTBL_TYPE_EXECUTE;
             n->location_list = NIL;
             n->command_string = (yyvsp[-1].str);
@@ -23531,15 +23563,15 @@ yyreduce:
 
             (yyval.node) = (Node*) n;
         }
-#line 32583 "gram.cpp"
+#line 32585 "gram.cpp"
         break;
 
         case 689: /* ext_on_clause_list: ext_on_clause_list ext_on_clause_item  */
 #line 5560 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 32589 "gram.cpp"
+#line 32591 "gram.cpp"
         break;
 
         case 690: /* ext_on_clause_list: %empty  */
@@ -23547,55 +23579,55 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32595 "gram.cpp"
+#line 32597 "gram.cpp"
         break;
 
         case 691: /* ext_on_clause_item: ON ALL  */
 #line 5566 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("all", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "all", (Node*) makeInteger(resource, TRUE));
         }
-#line 32603 "gram.cpp"
+#line 32605 "gram.cpp"
         break;
 
         case 692: /* ext_on_clause_item: ON HOST Sconst  */
 #line 5570 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("hostname", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "hostname", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32611 "gram.cpp"
+#line 32613 "gram.cpp"
         break;
 
         case 693: /* ext_on_clause_item: ON HOST  */
 #line 5574 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("eachhost", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "eachhost", (Node*) makeInteger(resource, TRUE));
         }
-#line 32619 "gram.cpp"
+#line 32621 "gram.cpp"
         break;
 
         case 694: /* ext_on_clause_item: ON MASTER  */
 #line 5578 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("master", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "master", (Node*) makeInteger(resource, TRUE));
         }
-#line 32627 "gram.cpp"
+#line 32629 "gram.cpp"
         break;
 
         case 695: /* ext_on_clause_item: ON SEGMENT Iconst  */
 #line 5582 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("segment", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "segment", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 32635 "gram.cpp"
+#line 32637 "gram.cpp"
         break;
 
         case 696: /* ext_on_clause_item: ON Iconst  */
 #line 5586 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("random", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "random", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 32643 "gram.cpp"
+#line 32645 "gram.cpp"
         break;
 
         case 697: /* format_opt: '(' format_opt_list ')'  */
@@ -23603,7 +23635,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 32649 "gram.cpp"
+#line 32651 "gram.cpp"
         break;
 
         case 698: /* format_opt: '(' format_def_list ')'  */
@@ -23611,7 +23643,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 32655 "gram.cpp"
+#line 32657 "gram.cpp"
         break;
 
         case 699: /* format_opt: '(' ')'  */
@@ -23619,7 +23651,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32661 "gram.cpp"
+#line 32663 "gram.cpp"
         break;
 
         case 700: /* format_opt: %empty  */
@@ -23627,143 +23659,143 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32667 "gram.cpp"
+#line 32669 "gram.cpp"
         break;
 
         case 701: /* format_opt_list: format_opt_item  */
 #line 5600 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 32675 "gram.cpp"
+#line 32677 "gram.cpp"
         break;
 
         case 702: /* format_opt_list: format_opt_list format_opt_item  */
 #line 5604 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 32683 "gram.cpp"
+#line 32685 "gram.cpp"
         break;
 
         case 703: /* format_def_list: format_def_item  */
 #line 5611 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 32691 "gram.cpp"
+#line 32693 "gram.cpp"
         break;
 
         case 704: /* format_def_list: format_def_list ',' format_def_item  */
 #line 5615 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 32699 "gram.cpp"
+#line 32701 "gram.cpp"
         break;
 
         case 705: /* format_def_item: ColLabel '=' def_arg  */
 #line 5622 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-2].str), (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-2].str), (yyvsp[0].node));
         }
-#line 32707 "gram.cpp"
+#line 32709 "gram.cpp"
         break;
 
         case 706: /* format_def_item: ColLabel '=' '(' columnList ')'  */
 #line 5626 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-4].str), (Node*) (yyvsp[-1].list));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-4].str), (Node*) (yyvsp[-1].list));
         }
-#line 32715 "gram.cpp"
+#line 32717 "gram.cpp"
         break;
 
         case 707: /* format_opt_item: DELIMITER opt_as Sconst  */
 #line 5633 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("delimiter", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "delimiter", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32723 "gram.cpp"
+#line 32725 "gram.cpp"
         break;
 
         case 708: /* format_opt_item: NULL_P opt_as Sconst  */
 #line 5637 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("null", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "null", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32731 "gram.cpp"
+#line 32733 "gram.cpp"
         break;
 
         case 709: /* format_opt_item: CSV  */
 #line 5641 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("csv", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "csv", (Node*) makeInteger(resource, TRUE));
         }
-#line 32739 "gram.cpp"
+#line 32741 "gram.cpp"
         break;
 
         case 710: /* format_opt_item: HEADER_P  */
 #line 5645 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("header", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "header", (Node*) makeInteger(resource, TRUE));
         }
-#line 32747 "gram.cpp"
+#line 32749 "gram.cpp"
         break;
 
         case 711: /* format_opt_item: QUOTE opt_as Sconst  */
 #line 5649 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("quote", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "quote", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32755 "gram.cpp"
+#line 32757 "gram.cpp"
         break;
 
         case 712: /* format_opt_item: ESCAPE opt_as Sconst  */
 #line 5653 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("escape", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "escape", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32763 "gram.cpp"
+#line 32765 "gram.cpp"
         break;
 
         case 713: /* format_opt_item: FORCE NOT NULL_P columnList  */
 #line 5657 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_not_null", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "force_not_null", (Node*) (yyvsp[0].list));
         }
-#line 32771 "gram.cpp"
+#line 32773 "gram.cpp"
         break;
 
         case 714: /* format_opt_item: FORCE QUOTE columnList  */
 #line 5661 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_quote", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "force_quote", (Node*) (yyvsp[0].list));
         }
-#line 32779 "gram.cpp"
+#line 32781 "gram.cpp"
         break;
 
         case 715: /* format_opt_item: FORCE QUOTE '*'  */
 #line 5665 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("force_quote", (Node*) makeNode(A_Star));
+            (yyval.defelt) = makeDefElem(resource, "force_quote", (Node*) makeNode(resource, A_Star));
         }
-#line 32787 "gram.cpp"
+#line 32789 "gram.cpp"
         break;
 
         case 716: /* format_opt_item: FILL MISSING FIELDS  */
 #line 5669 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("fill_missing_fields", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "fill_missing_fields", (Node*) makeInteger(resource, TRUE));
         }
-#line 32795 "gram.cpp"
+#line 32797 "gram.cpp"
         break;
 
         case 717: /* format_opt_item: NEWLINE opt_as Sconst  */
 #line 5673 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("newline", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "newline", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32803 "gram.cpp"
+#line 32805 "gram.cpp"
         break;
 
         case 718: /* ext_options_opt: OPTIONS ext_options  */
@@ -23771,7 +23803,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 32809 "gram.cpp"
+#line 32811 "gram.cpp"
         break;
 
         case 719: /* ext_options_opt: %empty  */
@@ -23779,7 +23811,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32815 "gram.cpp"
+#line 32817 "gram.cpp"
         break;
 
         case 720: /* ext_options: '(' ext_options_list ')'  */
@@ -23787,7 +23819,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 32821 "gram.cpp"
+#line 32823 "gram.cpp"
         break;
 
         case 721: /* ext_options: '(' ')'  */
@@ -23795,31 +23827,31 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32827 "gram.cpp"
+#line 32829 "gram.cpp"
         break;
 
         case 722: /* ext_options_list: ext_options_item  */
 #line 5690 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 32835 "gram.cpp"
+#line 32837 "gram.cpp"
         break;
 
         case 723: /* ext_options_list: ext_options_list ',' ext_options_item  */
 #line 5694 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 32843 "gram.cpp"
+#line 32845 "gram.cpp"
         break;
 
         case 724: /* ext_options_item: ColLabel Sconst  */
 #line 5701 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-1].str), (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-1].str), (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 32851 "gram.cpp"
+#line 32853 "gram.cpp"
         break;
 
         case 725: /* OptExtTableElementList: ExtTableElementList  */
@@ -23827,7 +23859,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 32857 "gram.cpp"
+#line 32859 "gram.cpp"
         break;
 
         case 726: /* OptExtTableElementList: %empty  */
@@ -23835,23 +23867,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 32863 "gram.cpp"
+#line 32865 "gram.cpp"
         break;
 
         case 727: /* ExtTableElementList: ExtTableElement  */
 #line 5713 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 32871 "gram.cpp"
+#line 32873 "gram.cpp"
         break;
 
         case 728: /* ExtTableElementList: ExtTableElementList ',' ExtTableElement  */
 #line 5717 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 32879 "gram.cpp"
+#line 32881 "gram.cpp"
         break;
 
         case 729: /* ExtTableElement: ExtcolumnDef  */
@@ -23859,7 +23891,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 32885 "gram.cpp"
+#line 32887 "gram.cpp"
         break;
 
         case 730: /* ExtTableElement: TableLikeClause  */
@@ -23867,13 +23899,13 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 32891 "gram.cpp"
+#line 32893 "gram.cpp"
         break;
 
         case 731: /* ExtcolumnDef: ColId Typename  */
 #line 5729 "gram.y"
         {
-            ColumnDef* n = makeNode(ColumnDef);
+            ColumnDef* n = makeNode(resource, ColumnDef);
             n->colname = (yyvsp[-1].str);
             n->typeName = (yyvsp[0].typnam);
             n->is_local = true;
@@ -23881,13 +23913,13 @@ yyreduce:
             n->constraints = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 32905 "gram.cpp"
+#line 32907 "gram.cpp"
         break;
 
         case 732: /* OptSingleRowErrorHandling: OptLogErrorTable SEGMENT REJECT_P LIMIT Iconst OptSrehLimitType  */
 #line 5745 "gram.y"
         {
-            SingleRowErrorDesc* n = makeNode(SingleRowErrorDesc);
+            SingleRowErrorDesc* n = makeNode(resource, SingleRowErrorDesc);
             n->into_file = (yyvsp[-5].ival) == LOG_ERRORS_DISABLE ? false : true;
             n->log_errors_type = n->into_file ? LOG_ERRORS_ENABLE : LOG_ERRORS_DISABLE;
             n->rejectlimit = (yyvsp[-1].ival);
@@ -23905,9 +23937,9 @@ yyreduce:
                         errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("invalid (ROWS) reject limit. Should be 2 or larger"));
 
-            (yyval.list) = lappend(NULL, makeDefElem("sreh", (Node*) n));
+            (yyval.list) = lappend(resource, NULL, makeDefElem(resource, "sreh", (Node*) n));
         }
-#line 32931 "gram.cpp"
+#line 32933 "gram.cpp"
         break;
 
         case 733: /* OptSingleRowErrorHandling: %empty  */
@@ -23915,7 +23947,7 @@ yyreduce:
         {
             (yyval.list) = NULL;
         }
-#line 32937 "gram.cpp"
+#line 32939 "gram.cpp"
         break;
 
         case 734: /* OptLogErrorTable: LOG_P ERRORS INTO qualified_name  */
@@ -23938,7 +23970,7 @@ yyreduce:
             }
             (yyval.ival) = LOG_ERRORS_ENABLE;
         }
-#line 32960 "gram.cpp"
+#line 32962 "gram.cpp"
         break;
 
         case 735: /* OptLogErrorTable: LOG_P ERRORS  */
@@ -23946,7 +23978,7 @@ yyreduce:
         {
             (yyval.ival) = LOG_ERRORS_ENABLE;
         }
-#line 32966 "gram.cpp"
+#line 32968 "gram.cpp"
         break;
 
         case 736: /* OptLogErrorTable: %empty  */
@@ -23954,13 +23986,13 @@ yyreduce:
         {
             (yyval.ival) = LOG_ERRORS_DISABLE;
         }
-#line 32972 "gram.cpp"
+#line 32974 "gram.cpp"
         break;
 
         case 737: /* ExtSingleRowErrorHandling: ExtLogErrorTable SEGMENT REJECT_P LIMIT Iconst OptSrehLimitType  */
 #line 5794 "gram.y"
         {
-            SingleRowErrorDesc* n = makeNode(SingleRowErrorDesc);
+            SingleRowErrorDesc* n = makeNode(resource, SingleRowErrorDesc);
             n->log_errors_type = static_cast<LogErrorsType>((yyvsp[-5].ival));
             n->into_file = n->log_errors_type == LOG_ERRORS_DISABLE ? false : true;
             n->rejectlimit = (yyvsp[-1].ival);
@@ -23980,7 +24012,7 @@ yyreduce:
 
             (yyval.node) = (Node*) n;
         }
-#line 32998 "gram.cpp"
+#line 33000 "gram.cpp"
         break;
 
         case 738: /* ExtSingleRowErrorHandling: %empty  */
@@ -23988,7 +24020,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 33004 "gram.cpp"
+#line 33006 "gram.cpp"
         break;
 
         case 739: /* ExtLogErrorTable: OptLogErrorTable  */
@@ -23996,7 +24028,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 33010 "gram.cpp"
+#line 33012 "gram.cpp"
         break;
 
         case 740: /* ExtLogErrorTable: LOG_P ERRORS PERSISTENTLY  */
@@ -24004,7 +24036,7 @@ yyreduce:
         {
             (yyval.ival) = LOG_ERRORS_PERSISTENTLY;
         }
-#line 33016 "gram.cpp"
+#line 33018 "gram.cpp"
         break;
 
         case 741: /* OptSrehLimitType: ROWS  */
@@ -24012,7 +24044,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 33022 "gram.cpp"
+#line 33024 "gram.cpp"
         break;
 
         case 742: /* OptSrehLimitType: PERCENT  */
@@ -24020,7 +24052,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 33028 "gram.cpp"
+#line 33030 "gram.cpp"
         break;
 
         case 743: /* OptSrehLimitType: %empty  */
@@ -24028,15 +24060,15 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 33034 "gram.cpp"
+#line 33036 "gram.cpp"
         break;
 
         case 744: /* ext_opt_encoding_list: ext_opt_encoding_list ext_opt_encoding_item  */
 #line 5833 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 33040 "gram.cpp"
+#line 33042 "gram.cpp"
         break;
 
         case 745: /* ext_opt_encoding_list: %empty  */
@@ -24044,29 +24076,29 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33046 "gram.cpp"
+#line 33048 "gram.cpp"
         break;
 
         case 746: /* ext_opt_encoding_item: ENCODING opt_equal Sconst  */
 #line 5839 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "encoding", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 33054 "gram.cpp"
+#line 33056 "gram.cpp"
         break;
 
         case 747: /* ext_opt_encoding_item: ENCODING opt_equal Iconst  */
 #line 5843 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "encoding", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 33062 "gram.cpp"
+#line 33064 "gram.cpp"
         break;
 
         case 748: /* CreateMatViewStmt: CREATE OptNoLog MATERIALIZED VIEW create_mv_target AS SelectStmt opt_with_data OptDistributedBy  */
 #line 5857 "gram.y"
         {
-            CreateTableAsStmt* ctas = makeNode(CreateTableAsStmt);
+            CreateTableAsStmt* ctas = makeNode(resource, CreateTableAsStmt);
             ctas->query = (yyvsp[-2].node);
             ctas->into = (yyvsp[-4].into);
             ctas->relkind = OBJECT_MATVIEW;
@@ -24078,13 +24110,13 @@ yyreduce:
 
             (yyval.node) = (Node*) ctas;
         }
-#line 33080 "gram.cpp"
+#line 33082 "gram.cpp"
         break;
 
         case 749: /* create_mv_target: qualified_name opt_column_list opt_reloptions OptTableSpace  */
 #line 5874 "gram.y"
         {
-            (yyval.into) = makeNode(IntoClause);
+            (yyval.into) = makeNode(resource, IntoClause);
             (yyval.into)->rel = (yyvsp[-3].range);
             (yyval.into)->colNames = (yyvsp[-2].list);
             (yyval.into)->options = (yyvsp[-1].list);
@@ -24093,7 +24125,7 @@ yyreduce:
             (yyval.into)->viewQuery = NULL; /* filled at analysis time */
             (yyval.into)->skipData = false; /* might get changed later */
         }
-#line 33095 "gram.cpp"
+#line 33097 "gram.cpp"
         break;
 
         case 750: /* OptNoLog: UNLOGGED  */
@@ -24101,7 +24133,7 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_UNLOGGED;
         }
-#line 33101 "gram.cpp"
+#line 33103 "gram.cpp"
         break;
 
         case 751: /* OptNoLog: %empty  */
@@ -24109,56 +24141,56 @@ yyreduce:
         {
             (yyval.ival) = RELPERSISTENCE_PERMANENT;
         }
-#line 33107 "gram.cpp"
+#line 33109 "gram.cpp"
         break;
 
         case 752: /* RefreshMatViewStmt: REFRESH MATERIALIZED VIEW opt_concurrently qualified_name opt_with_data  */
 #line 5900 "gram.y"
         {
-            RefreshMatViewStmt* n = makeNode(RefreshMatViewStmt);
+            RefreshMatViewStmt* n = makeNode(resource, RefreshMatViewStmt);
             n->concurrent = (yyvsp[-2].boolean);
             n->relation = (yyvsp[-1].range);
             n->skipData = !((yyvsp[0].boolean));
             (yyval.node) = (Node*) n;
         }
-#line 33119 "gram.cpp"
+#line 33121 "gram.cpp"
         break;
 
         case 753: /* CreateSeqStmt: CREATE OptTemp SEQUENCE qualified_name OptSeqOptList  */
 #line 5920 "gram.y"
         {
-            CreateSeqStmt* n = makeNode(CreateSeqStmt);
+            CreateSeqStmt* n = makeNode(resource, CreateSeqStmt);
             (yyvsp[-1].range)->relpersistence = (yyvsp[-3].ival);
             n->sequence = (yyvsp[-1].range);
             n->options = (yyvsp[0].list);
             n->ownerId = InvalidOid;
             (yyval.node) = (Node*) n;
         }
-#line 33132 "gram.cpp"
+#line 33134 "gram.cpp"
         break;
 
         case 754: /* AlterSeqStmt: ALTER SEQUENCE qualified_name SeqOptList  */
 #line 5932 "gram.y"
         {
-            AlterSeqStmt* n = makeNode(AlterSeqStmt);
+            AlterSeqStmt* n = makeNode(resource, AlterSeqStmt);
             n->sequence = (yyvsp[-1].range);
             n->options = (yyvsp[0].list);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 33144 "gram.cpp"
+#line 33146 "gram.cpp"
         break;
 
         case 755: /* AlterSeqStmt: ALTER SEQUENCE IF_P EXISTS qualified_name SeqOptList  */
 #line 5940 "gram.y"
         {
-            AlterSeqStmt* n = makeNode(AlterSeqStmt);
+            AlterSeqStmt* n = makeNode(resource, AlterSeqStmt);
             n->sequence = (yyvsp[-1].range);
             n->options = (yyvsp[0].list);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 33156 "gram.cpp"
+#line 33158 "gram.cpp"
         break;
 
         case 756: /* OptSeqOptList: SeqOptList  */
@@ -24166,7 +24198,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 33162 "gram.cpp"
+#line 33164 "gram.cpp"
         break;
 
         case 757: /* OptSeqOptList: %empty  */
@@ -24174,188 +24206,188 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33168 "gram.cpp"
+#line 33170 "gram.cpp"
         break;
 
         case 758: /* SeqOptList: SeqOptElem  */
 #line 5954 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 33174 "gram.cpp"
+#line 33176 "gram.cpp"
         break;
 
         case 759: /* SeqOptList: SeqOptList SeqOptElem  */
 #line 5955 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 33180 "gram.cpp"
+#line 33182 "gram.cpp"
         break;
 
         case 760: /* SeqOptElem: CACHE NumericOnly  */
 #line 5959 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cache", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "cache", (Node*) (yyvsp[0].value));
         }
-#line 33188 "gram.cpp"
+#line 33190 "gram.cpp"
         break;
 
         case 761: /* SeqOptElem: CYCLE  */
 #line 5963 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cycle", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "cycle", (Node*) makeInteger(resource, TRUE));
         }
-#line 33196 "gram.cpp"
+#line 33198 "gram.cpp"
         break;
 
         case 762: /* SeqOptElem: NO CYCLE  */
 #line 5967 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cycle", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "cycle", (Node*) makeInteger(resource, FALSE));
         }
-#line 33204 "gram.cpp"
+#line 33206 "gram.cpp"
         break;
 
         case 763: /* SeqOptElem: INCREMENT opt_by NumericOnly  */
 #line 5971 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("increment", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "increment", (Node*) (yyvsp[0].value));
         }
-#line 33212 "gram.cpp"
+#line 33214 "gram.cpp"
         break;
 
         case 764: /* SeqOptElem: MAXVALUE NumericOnly  */
 #line 5975 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("maxvalue", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "maxvalue", (Node*) (yyvsp[0].value));
         }
-#line 33220 "gram.cpp"
+#line 33222 "gram.cpp"
         break;
 
         case 765: /* SeqOptElem: MINVALUE NumericOnly  */
 #line 5979 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("minvalue", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "minvalue", (Node*) (yyvsp[0].value));
         }
-#line 33228 "gram.cpp"
+#line 33230 "gram.cpp"
         break;
 
         case 766: /* SeqOptElem: NO MAXVALUE  */
 #line 5983 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("maxvalue", NULL);
+            (yyval.defelt) = makeDefElem(resource, "maxvalue", NULL);
         }
-#line 33236 "gram.cpp"
+#line 33238 "gram.cpp"
         break;
 
         case 767: /* SeqOptElem: NO MINVALUE  */
 #line 5987 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("minvalue", NULL);
+            (yyval.defelt) = makeDefElem(resource, "minvalue", NULL);
         }
-#line 33244 "gram.cpp"
+#line 33246 "gram.cpp"
         break;
 
         case 768: /* SeqOptElem: OWNED BY any_name  */
 #line 5991 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("owned_by", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "owned_by", (Node*) (yyvsp[0].list));
         }
-#line 33252 "gram.cpp"
+#line 33254 "gram.cpp"
         break;
 
         case 769: /* SeqOptElem: START opt_with NumericOnly  */
 #line 5995 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("start", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "start", (Node*) (yyvsp[0].value));
         }
-#line 33260 "gram.cpp"
+#line 33262 "gram.cpp"
         break;
 
         case 770: /* SeqOptElem: RESTART  */
 #line 5999 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("restart", NULL);
+            (yyval.defelt) = makeDefElem(resource, "restart", NULL);
         }
-#line 33268 "gram.cpp"
+#line 33270 "gram.cpp"
         break;
 
         case 771: /* SeqOptElem: RESTART opt_with NumericOnly  */
 #line 6003 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("restart", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "restart", (Node*) (yyvsp[0].value));
         }
-#line 33276 "gram.cpp"
+#line 33278 "gram.cpp"
         break;
 
         case 772: /* opt_by: BY  */
 #line 6008 "gram.y"
         {
         }
-#line 33282 "gram.cpp"
+#line 33284 "gram.cpp"
         break;
 
         case 773: /* opt_by: %empty  */
 #line 6009 "gram.y"
         {
         }
-#line 33288 "gram.cpp"
+#line 33290 "gram.cpp"
         break;
 
         case 774: /* NumericOnly: FCONST  */
 #line 6013 "gram.y"
         {
-            (yyval.value) = makeFloat((yyvsp[0].str));
+            (yyval.value) = makeFloat(resource, (yyvsp[0].str));
         }
-#line 33294 "gram.cpp"
+#line 33296 "gram.cpp"
         break;
 
         case 775: /* NumericOnly: '+' FCONST  */
 #line 6014 "gram.y"
         {
-            (yyval.value) = makeFloat((yyvsp[0].str));
+            (yyval.value) = makeFloat(resource, (yyvsp[0].str));
         }
-#line 33300 "gram.cpp"
+#line 33302 "gram.cpp"
         break;
 
         case 776: /* NumericOnly: '-' FCONST  */
 #line 6016 "gram.y"
         {
-            (yyval.value) = makeFloat((yyvsp[0].str));
-            doNegateFloat((yyval.value));
+            (yyval.value) = makeFloat(resource, (yyvsp[0].str));
+            doNegateFloat(resource, (yyval.value));
         }
-#line 33309 "gram.cpp"
+#line 33311 "gram.cpp"
         break;
 
         case 777: /* NumericOnly: SignedIconst  */
 #line 6020 "gram.y"
         {
-            (yyval.value) = makeInteger((yyvsp[0].ival));
+            (yyval.value) = makeInteger(resource, (yyvsp[0].ival));
         }
-#line 33315 "gram.cpp"
+#line 33317 "gram.cpp"
         break;
 
         case 778: /* NumericOnly_list: NumericOnly  */
 #line 6023 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].value));
+            (yyval.list) = list_make1(resource, (yyvsp[0].value));
         }
-#line 33321 "gram.cpp"
+#line 33323 "gram.cpp"
         break;
 
         case 779: /* NumericOnly_list: NumericOnly_list ',' NumericOnly  */
 #line 6024 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].value));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].value));
         }
-#line 33327 "gram.cpp"
+#line 33329 "gram.cpp"
         break;
 
         case 780: /* CreatePLangStmt: CREATE opt_or_replace opt_trusted opt_procedural LANGUAGE NonReservedWord_or_Sconst  */
 #line 6037 "gram.y"
         {
-            CreatePLangStmt* n = makeNode(CreatePLangStmt);
+            CreatePLangStmt* n = makeNode(resource, CreatePLangStmt);
             n->replace = (yyvsp[-4].boolean);
             n->plname = (yyvsp[0].str);
             /* parameters are all to be supplied by system */
@@ -24365,13 +24397,13 @@ yyreduce:
             n->pltrusted = false;
             (yyval.node) = (Node*) n;
         }
-#line 33343 "gram.cpp"
+#line 33345 "gram.cpp"
         break;
 
         case 781: /* CreatePLangStmt: CREATE opt_or_replace opt_trusted opt_procedural LANGUAGE NonReservedWord_or_Sconst HANDLER handler_name opt_inline_handler opt_validator  */
 #line 6050 "gram.y"
         {
-            CreatePLangStmt* n = makeNode(CreatePLangStmt);
+            CreatePLangStmt* n = makeNode(resource, CreatePLangStmt);
             n->replace = (yyvsp[-8].boolean);
             n->plname = (yyvsp[-4].str);
             n->plhandler = (yyvsp[-2].list);
@@ -24380,7 +24412,7 @@ yyreduce:
             n->pltrusted = (yyvsp[-7].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 33358 "gram.cpp"
+#line 33360 "gram.cpp"
         break;
 
         case 782: /* opt_trusted: TRUSTED  */
@@ -24388,7 +24420,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 33364 "gram.cpp"
+#line 33366 "gram.cpp"
         break;
 
         case 783: /* opt_trusted: %empty  */
@@ -24396,23 +24428,23 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 33370 "gram.cpp"
+#line 33372 "gram.cpp"
         break;
 
         case 784: /* handler_name: name  */
 #line 6072 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 33376 "gram.cpp"
+#line 33378 "gram.cpp"
         break;
 
         case 785: /* handler_name: name attrs  */
 #line 6073 "gram.y"
         {
-            (yyval.list) = lcons(makeString((yyvsp[-1].str)), (yyvsp[0].list));
+            (yyval.list) = lcons(resource, makeString(resource, (yyvsp[-1].str)), (yyvsp[0].list));
         }
-#line 33382 "gram.cpp"
+#line 33384 "gram.cpp"
         break;
 
         case 786: /* opt_inline_handler: INLINE_P handler_name  */
@@ -24420,7 +24452,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 33388 "gram.cpp"
+#line 33390 "gram.cpp"
         break;
 
         case 787: /* opt_inline_handler: %empty  */
@@ -24428,7 +24460,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33394 "gram.cpp"
+#line 33396 "gram.cpp"
         break;
 
         case 788: /* validator_clause: VALIDATOR handler_name  */
@@ -24436,7 +24468,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 33400 "gram.cpp"
+#line 33402 "gram.cpp"
         break;
 
         case 789: /* validator_clause: NO VALIDATOR  */
@@ -24444,7 +24476,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33406 "gram.cpp"
+#line 33408 "gram.cpp"
         break;
 
         case 790: /* opt_validator: validator_clause  */
@@ -24452,7 +24484,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 33412 "gram.cpp"
+#line 33414 "gram.cpp"
         break;
 
         case 791: /* opt_validator: %empty  */
@@ -24460,63 +24492,63 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33418 "gram.cpp"
+#line 33420 "gram.cpp"
         break;
 
         case 792: /* DropPLangStmt: DROP opt_procedural LANGUAGE NonReservedWord_or_Sconst opt_drop_behavior  */
 #line 6093 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_LANGUAGE;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 33433 "gram.cpp"
+#line 33435 "gram.cpp"
         break;
 
         case 793: /* DropPLangStmt: DROP opt_procedural LANGUAGE IF_P EXISTS NonReservedWord_or_Sconst opt_drop_behavior  */
 #line 6104 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_LANGUAGE;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 33447 "gram.cpp"
+#line 33449 "gram.cpp"
         break;
 
         case 794: /* opt_procedural: PROCEDURAL  */
 #line 6116 "gram.y"
         {
         }
-#line 33453 "gram.cpp"
+#line 33455 "gram.cpp"
         break;
 
         case 795: /* opt_procedural: %empty  */
 #line 6117 "gram.y"
         {
         }
-#line 33459 "gram.cpp"
+#line 33461 "gram.cpp"
         break;
 
         case 796: /* CreateTableSpaceStmt: CREATE TABLESPACE name OptTableSpaceOwner LOCATION Sconst opt_reloptions  */
 #line 6128 "gram.y"
         {
-            CreateTableSpaceStmt* n = makeNode(CreateTableSpaceStmt);
+            CreateTableSpaceStmt* n = makeNode(resource, CreateTableSpaceStmt);
             n->tablespacename = (yyvsp[-4].str);
             n->owner = (yyvsp[-3].str);
             n->location = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33472 "gram.cpp"
+#line 33474 "gram.cpp"
         break;
 
         case 797: /* OptTableSpaceOwner: OWNER name  */
@@ -24524,7 +24556,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 33478 "gram.cpp"
+#line 33480 "gram.cpp"
         break;
 
         case 798: /* OptTableSpaceOwner: %empty  */
@@ -24532,61 +24564,61 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 33484 "gram.cpp"
+#line 33486 "gram.cpp"
         break;
 
         case 799: /* DropTableSpaceStmt: DROP TABLESPACE name  */
 #line 6153 "gram.y"
         {
-            DropTableSpaceStmt* n = makeNode(DropTableSpaceStmt);
+            DropTableSpaceStmt* n = makeNode(resource, DropTableSpaceStmt);
             n->tablespacename = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 33495 "gram.cpp"
+#line 33497 "gram.cpp"
         break;
 
         case 800: /* DropTableSpaceStmt: DROP TABLESPACE IF_P EXISTS name  */
 #line 6160 "gram.y"
         {
-            DropTableSpaceStmt* n = makeNode(DropTableSpaceStmt);
+            DropTableSpaceStmt* n = makeNode(resource, DropTableSpaceStmt);
             n->tablespacename = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 33506 "gram.cpp"
+#line 33508 "gram.cpp"
         break;
 
         case 801: /* CreateExtensionStmt: CREATE EXTENSION name opt_with create_extension_opt_list  */
 #line 6177 "gram.y"
         {
-            CreateExtensionStmt* n = makeNode(CreateExtensionStmt);
+            CreateExtensionStmt* n = makeNode(resource, CreateExtensionStmt);
             n->extname = (yyvsp[-2].str);
             n->if_not_exists = false;
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33518 "gram.cpp"
+#line 33520 "gram.cpp"
         break;
 
         case 802: /* CreateExtensionStmt: CREATE EXTENSION IF_P NOT EXISTS name opt_with create_extension_opt_list  */
 #line 6185 "gram.y"
         {
-            CreateExtensionStmt* n = makeNode(CreateExtensionStmt);
+            CreateExtensionStmt* n = makeNode(resource, CreateExtensionStmt);
             n->extname = (yyvsp[-2].str);
             n->if_not_exists = true;
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33530 "gram.cpp"
+#line 33532 "gram.cpp"
         break;
 
         case 803: /* create_extension_opt_list: create_extension_opt_list create_extension_opt_item  */
 #line 6196 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 33536 "gram.cpp"
+#line 33538 "gram.cpp"
         break;
 
         case 804: /* create_extension_opt_list: %empty  */
@@ -24594,50 +24626,50 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33542 "gram.cpp"
+#line 33544 "gram.cpp"
         break;
 
         case 805: /* create_extension_opt_item: SCHEMA name  */
 #line 6203 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("schema", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "schema", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 33550 "gram.cpp"
+#line 33552 "gram.cpp"
         break;
 
         case 806: /* create_extension_opt_item: VERSION_P NonReservedWord_or_Sconst  */
 #line 6207 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("new_version", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "new_version", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 33558 "gram.cpp"
+#line 33560 "gram.cpp"
         break;
 
         case 807: /* create_extension_opt_item: FROM NonReservedWord_or_Sconst  */
 #line 6211 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("old_version", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "old_version", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 33566 "gram.cpp"
+#line 33568 "gram.cpp"
         break;
 
         case 808: /* AlterExtensionStmt: ALTER EXTENSION name UPDATE alter_extension_opt_list  */
 #line 6223 "gram.y"
         {
-            AlterExtensionStmt* n = makeNode(AlterExtensionStmt);
+            AlterExtensionStmt* n = makeNode(resource, AlterExtensionStmt);
             n->extname = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33577 "gram.cpp"
+#line 33579 "gram.cpp"
         break;
 
         case 809: /* alter_extension_opt_list: alter_extension_opt_list alter_extension_opt_item  */
 #line 6233 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 33583 "gram.cpp"
+#line 33585 "gram.cpp"
         break;
 
         case 810: /* alter_extension_opt_list: %empty  */
@@ -24645,88 +24677,88 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33589 "gram.cpp"
+#line 33591 "gram.cpp"
         break;
 
         case 811: /* alter_extension_opt_item: TO NonReservedWord_or_Sconst  */
 #line 6240 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("new_version", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "new_version", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 33597 "gram.cpp"
+#line 33599 "gram.cpp"
         break;
 
         case 812: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop AGGREGATE func_name aggr_args  */
 #line 6253 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_AGGREGATE;
             n->objname = (yyvsp[-1].list);
-            n->objargs = extractAggrArgTypes((yyvsp[0].list));
+            n->objargs = extractAggrArgTypes(resource, (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 33611 "gram.cpp"
+#line 33613 "gram.cpp"
         break;
 
         case 813: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop CAST '(' Typename AS Typename ')'  */
 #line 6263 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-7].str);
             n->action = (yyvsp[-6].ival);
             n->objtype = OBJECT_CAST;
-            n->objname = list_make1((yyvsp[-3].typnam));
-            n->objargs = list_make1((yyvsp[-1].typnam));
+            n->objname = list_make1(resource, (yyvsp[-3].typnam));
+            n->objargs = list_make1(resource, (yyvsp[-1].typnam));
             (yyval.node) = (Node*) n;
         }
-#line 33625 "gram.cpp"
+#line 33627 "gram.cpp"
         break;
 
         case 814: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop COLLATION any_name  */
 #line 6273 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_COLLATION;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33638 "gram.cpp"
+#line 33640 "gram.cpp"
         break;
 
         case 815: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop CONVERSION_P any_name  */
 #line 6282 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_CONVERSION;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33651 "gram.cpp"
+#line 33653 "gram.cpp"
         break;
 
         case 816: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop DOMAIN_P any_name  */
 #line 6291 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_DOMAIN;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33664 "gram.cpp"
+#line 33666 "gram.cpp"
         break;
 
         case 817: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop FUNCTION function_with_argtypes  */
 #line 6300 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_FUNCTION;
@@ -24734,26 +24766,26 @@ yyreduce:
             n->objargs = (yyvsp[0].funwithargs)->funcargs;
             (yyval.node) = (Node*) n;
         }
-#line 33678 "gram.cpp"
+#line 33680 "gram.cpp"
         break;
 
         case 818: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop opt_procedural LANGUAGE name  */
 #line 6310 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_LANGUAGE;
-            n->objname = list_make1(makeString((yyvsp[0].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33691 "gram.cpp"
+#line 33693 "gram.cpp"
         break;
 
         case 819: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop OPERATOR any_operator oper_argtypes  */
 #line 6319 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_OPERATOR;
@@ -24761,277 +24793,277 @@ yyreduce:
             n->objargs = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33705 "gram.cpp"
+#line 33707 "gram.cpp"
         break;
 
         case 820: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop OPERATOR CLASS any_name USING access_method  */
 #line 6329 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-6].str);
             n->action = (yyvsp[-5].ival);
             n->objtype = OBJECT_OPCLASS;
             n->objname = (yyvsp[-2].list);
-            n->objargs = list_make1(makeString((yyvsp[0].str)));
+            n->objargs = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33719 "gram.cpp"
+#line 33721 "gram.cpp"
         break;
 
         case 821: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop OPERATOR FAMILY any_name USING access_method  */
 #line 6339 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-6].str);
             n->action = (yyvsp[-5].ival);
             n->objtype = OBJECT_OPFAMILY;
             n->objname = (yyvsp[-2].list);
-            n->objargs = list_make1(makeString((yyvsp[0].str)));
+            n->objargs = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33733 "gram.cpp"
+#line 33735 "gram.cpp"
         break;
 
         case 822: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop SCHEMA name  */
 #line 6349 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_SCHEMA;
-            n->objname = list_make1(makeString((yyvsp[0].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33746 "gram.cpp"
+#line 33748 "gram.cpp"
         break;
 
         case 823: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop EVENT TRIGGER name  */
 #line 6358 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_EVENT_TRIGGER;
-            n->objname = list_make1(makeString((yyvsp[0].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33759 "gram.cpp"
+#line 33761 "gram.cpp"
         break;
 
         case 824: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TABLE any_name  */
 #line 6367 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_TABLE;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33772 "gram.cpp"
+#line 33774 "gram.cpp"
         break;
 
         case 825: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TEXT_P SEARCH PARSER any_name  */
 #line 6376 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-5].str);
             n->action = (yyvsp[-4].ival);
             n->objtype = OBJECT_TSPARSER;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33785 "gram.cpp"
+#line 33787 "gram.cpp"
         break;
 
         case 826: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TEXT_P SEARCH DICTIONARY any_name  */
 #line 6385 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-5].str);
             n->action = (yyvsp[-4].ival);
             n->objtype = OBJECT_TSDICTIONARY;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33798 "gram.cpp"
+#line 33800 "gram.cpp"
         break;
 
         case 827: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TEXT_P SEARCH TEMPLATE any_name  */
 #line 6394 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-5].str);
             n->action = (yyvsp[-4].ival);
             n->objtype = OBJECT_TSTEMPLATE;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33811 "gram.cpp"
+#line 33813 "gram.cpp"
         break;
 
         case 828: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TEXT_P SEARCH CONFIGURATION any_name  */
 #line 6403 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-5].str);
             n->action = (yyvsp[-4].ival);
             n->objtype = OBJECT_TSCONFIGURATION;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33824 "gram.cpp"
+#line 33826 "gram.cpp"
         break;
 
         case 829: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop SEQUENCE any_name  */
 #line 6412 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_SEQUENCE;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33837 "gram.cpp"
+#line 33839 "gram.cpp"
         break;
 
         case 830: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop VIEW any_name  */
 #line 6421 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_VIEW;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33850 "gram.cpp"
+#line 33852 "gram.cpp"
         break;
 
         case 831: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop MATERIALIZED VIEW any_name  */
 #line 6430 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_MATVIEW;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33863 "gram.cpp"
+#line 33865 "gram.cpp"
         break;
 
         case 832: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop FOREIGN TABLE any_name  */
 #line 6439 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-4].str);
             n->action = (yyvsp[-3].ival);
             n->objtype = OBJECT_FOREIGN_TABLE;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33876 "gram.cpp"
+#line 33878 "gram.cpp"
         break;
 
         case 833: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop FOREIGN DATA_P WRAPPER name  */
 #line 6448 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-5].str);
             n->action = (yyvsp[-4].ival);
             n->objtype = OBJECT_FDW;
-            n->objname = list_make1(makeString((yyvsp[0].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33889 "gram.cpp"
+#line 33891 "gram.cpp"
         break;
 
         case 834: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop SERVER name  */
 #line 6457 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_FOREIGN_SERVER;
-            n->objname = list_make1(makeString((yyvsp[0].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[0].str)));
             (yyval.node) = (Node*) n;
         }
-#line 33902 "gram.cpp"
+#line 33904 "gram.cpp"
         break;
 
         case 835: /* AlterExtensionContentsStmt: ALTER EXTENSION name add_drop TYPE_P any_name  */
 #line 6466 "gram.y"
         {
-            AlterExtensionContentsStmt* n = makeNode(AlterExtensionContentsStmt);
+            AlterExtensionContentsStmt* n = makeNode(resource, AlterExtensionContentsStmt);
             n->extname = (yyvsp[-3].str);
             n->action = (yyvsp[-2].ival);
             n->objtype = OBJECT_TYPE;
             n->objname = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33915 "gram.cpp"
+#line 33917 "gram.cpp"
         break;
 
         case 836: /* CreateFdwStmt: CREATE FOREIGN DATA_P WRAPPER name opt_fdw_options create_generic_options  */
 #line 6484 "gram.y"
         {
-            CreateFdwStmt* n = makeNode(CreateFdwStmt);
+            CreateFdwStmt* n = makeNode(resource, CreateFdwStmt);
             n->fdwname = (yyvsp[-2].str);
             n->func_options = (yyvsp[-1].list);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 33927 "gram.cpp"
+#line 33929 "gram.cpp"
         break;
 
         case 837: /* fdw_option: HANDLER handler_name  */
 #line 6494 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("handler", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "handler", (Node*) (yyvsp[0].list));
         }
-#line 33933 "gram.cpp"
+#line 33935 "gram.cpp"
         break;
 
         case 838: /* fdw_option: NO HANDLER  */
 #line 6495 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("handler", NULL);
+            (yyval.defelt) = makeDefElem(resource, "handler", NULL);
         }
-#line 33939 "gram.cpp"
+#line 33941 "gram.cpp"
         break;
 
         case 839: /* fdw_option: VALIDATOR handler_name  */
 #line 6496 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("validator", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "validator", (Node*) (yyvsp[0].list));
         }
-#line 33945 "gram.cpp"
+#line 33947 "gram.cpp"
         break;
 
         case 840: /* fdw_option: NO VALIDATOR  */
 #line 6497 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("validator", NULL);
+            (yyval.defelt) = makeDefElem(resource, "validator", NULL);
         }
-#line 33951 "gram.cpp"
+#line 33953 "gram.cpp"
         break;
 
         case 841: /* fdw_options: fdw_option  */
 #line 6501 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 33957 "gram.cpp"
+#line 33959 "gram.cpp"
         break;
 
         case 842: /* fdw_options: fdw_options fdw_option  */
 #line 6502 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 33963 "gram.cpp"
+#line 33965 "gram.cpp"
         break;
 
         case 843: /* opt_fdw_options: fdw_options  */
@@ -25039,7 +25071,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 33969 "gram.cpp"
+#line 33971 "gram.cpp"
         break;
 
         case 844: /* opt_fdw_options: %empty  */
@@ -25047,61 +25079,61 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 33975 "gram.cpp"
+#line 33977 "gram.cpp"
         break;
 
         case 845: /* DropFdwStmt: DROP FOREIGN DATA_P WRAPPER name opt_drop_behavior  */
 #line 6518 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FDW;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->arguments = NIL;
             n->missing_ok = false;
             n->behavior = (yyvsp[0].dbehavior);
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 33990 "gram.cpp"
+#line 33992 "gram.cpp"
         break;
 
         case 846: /* DropFdwStmt: DROP FOREIGN DATA_P WRAPPER IF_P EXISTS name opt_drop_behavior  */
 #line 6529 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FDW;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->arguments = NIL;
             n->missing_ok = true;
             n->behavior = (yyvsp[0].dbehavior);
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 34005 "gram.cpp"
+#line 34007 "gram.cpp"
         break;
 
         case 847: /* AlterFdwStmt: ALTER FOREIGN DATA_P WRAPPER name opt_fdw_options alter_generic_options  */
 #line 6549 "gram.y"
         {
-            AlterFdwStmt* n = makeNode(AlterFdwStmt);
+            AlterFdwStmt* n = makeNode(resource, AlterFdwStmt);
             n->fdwname = (yyvsp[-2].str);
             n->func_options = (yyvsp[-1].list);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34017 "gram.cpp"
+#line 34019 "gram.cpp"
         break;
 
         case 848: /* AlterFdwStmt: ALTER FOREIGN DATA_P WRAPPER name fdw_options  */
 #line 6557 "gram.y"
         {
-            AlterFdwStmt* n = makeNode(AlterFdwStmt);
+            AlterFdwStmt* n = makeNode(resource, AlterFdwStmt);
             n->fdwname = (yyvsp[-1].str);
             n->func_options = (yyvsp[0].list);
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 34029 "gram.cpp"
+#line 34031 "gram.cpp"
         break;
 
         case 849: /* create_generic_options: OPTIONS '(' generic_option_list ')'  */
@@ -25109,7 +25141,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 34035 "gram.cpp"
+#line 34037 "gram.cpp"
         break;
 
         case 850: /* create_generic_options: %empty  */
@@ -25117,23 +25149,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 34041 "gram.cpp"
+#line 34043 "gram.cpp"
         break;
 
         case 851: /* generic_option_list: generic_option_elem  */
 #line 6574 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 34049 "gram.cpp"
+#line 34051 "gram.cpp"
         break;
 
         case 852: /* generic_option_list: generic_option_list ',' generic_option_elem  */
 #line 6578 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 34057 "gram.cpp"
+#line 34059 "gram.cpp"
         break;
 
         case 853: /* alter_generic_options: OPTIONS '(' alter_generic_option_list ')'  */
@@ -25141,23 +25173,23 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 34063 "gram.cpp"
+#line 34065 "gram.cpp"
         break;
 
         case 854: /* alter_generic_option_list: alter_generic_option_elem  */
 #line 6590 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 34071 "gram.cpp"
+#line 34073 "gram.cpp"
         break;
 
         case 855: /* alter_generic_option_list: alter_generic_option_list ',' alter_generic_option_elem  */
 #line 6594 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 34079 "gram.cpp"
+#line 34081 "gram.cpp"
         break;
 
         case 856: /* alter_generic_option_elem: generic_option_elem  */
@@ -25165,7 +25197,7 @@ yyreduce:
         {
             (yyval.defelt) = (yyvsp[0].defelt);
         }
-#line 34087 "gram.cpp"
+#line 34089 "gram.cpp"
         break;
 
         case 857: /* alter_generic_option_elem: SET generic_option_elem  */
@@ -25174,7 +25206,7 @@ yyreduce:
             (yyval.defelt) = (yyvsp[0].defelt);
             (yyval.defelt)->defaction = DEFELEM_SET;
         }
-#line 34096 "gram.cpp"
+#line 34098 "gram.cpp"
         break;
 
         case 858: /* alter_generic_option_elem: ADD_P generic_option_elem  */
@@ -25183,23 +25215,23 @@ yyreduce:
             (yyval.defelt) = (yyvsp[0].defelt);
             (yyval.defelt)->defaction = DEFELEM_ADD;
         }
-#line 34105 "gram.cpp"
+#line 34107 "gram.cpp"
         break;
 
         case 859: /* alter_generic_option_elem: DROP generic_option_name  */
 #line 6615 "gram.y"
         {
-            (yyval.defelt) = makeDefElemExtended(NULL, (yyvsp[0].str), NULL, DEFELEM_DROP);
+            (yyval.defelt) = makeDefElemExtended(resource, NULL, (yyvsp[0].str), NULL, DEFELEM_DROP);
         }
-#line 34113 "gram.cpp"
+#line 34115 "gram.cpp"
         break;
 
         case 860: /* generic_option_elem: generic_option_name generic_option_arg  */
 #line 6622 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-1].str), (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-1].str), (yyvsp[0].node));
         }
-#line 34121 "gram.cpp"
+#line 34123 "gram.cpp"
         break;
 
         case 861: /* generic_option_name: ColLabel  */
@@ -25207,21 +25239,21 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 34127 "gram.cpp"
+#line 34129 "gram.cpp"
         break;
 
         case 862: /* generic_option_arg: Sconst  */
 #line 6633 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 34133 "gram.cpp"
+#line 34135 "gram.cpp"
         break;
 
         case 863: /* CreateForeignServerStmt: CREATE SERVER name opt_type opt_foreign_server_version FOREIGN DATA_P WRAPPER name create_generic_options  */
 #line 6645 "gram.y"
         {
-            CreateForeignServerStmt* n = makeNode(CreateForeignServerStmt);
+            CreateForeignServerStmt* n = makeNode(resource, CreateForeignServerStmt);
             n->servername = (yyvsp[-7].str);
             n->servertype = (yyvsp[-6].str);
             n->version = (yyvsp[-5].str);
@@ -25229,7 +25261,7 @@ yyreduce:
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34147 "gram.cpp"
+#line 34149 "gram.cpp"
         break;
 
         case 864: /* opt_type: TYPE_P Sconst  */
@@ -25237,7 +25269,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 34153 "gram.cpp"
+#line 34155 "gram.cpp"
         break;
 
         case 865: /* opt_type: %empty  */
@@ -25245,7 +25277,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 34159 "gram.cpp"
+#line 34161 "gram.cpp"
         break;
 
         case 866: /* foreign_server_version: VERSION_P Sconst  */
@@ -25253,7 +25285,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 34165 "gram.cpp"
+#line 34167 "gram.cpp"
         break;
 
         case 867: /* foreign_server_version: VERSION_P NULL_P  */
@@ -25261,7 +25293,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 34171 "gram.cpp"
+#line 34173 "gram.cpp"
         break;
 
         case 868: /* opt_foreign_server_version: foreign_server_version  */
@@ -25269,7 +25301,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 34177 "gram.cpp"
+#line 34179 "gram.cpp"
         break;
 
         case 869: /* opt_foreign_server_version: %empty  */
@@ -25277,79 +25309,79 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 34183 "gram.cpp"
+#line 34185 "gram.cpp"
         break;
 
         case 870: /* DropForeignServerStmt: DROP SERVER name opt_drop_behavior  */
 #line 6680 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FOREIGN_SERVER;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->arguments = NIL;
             n->missing_ok = false;
             n->behavior = (yyvsp[0].dbehavior);
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 34198 "gram.cpp"
+#line 34200 "gram.cpp"
         break;
 
         case 871: /* DropForeignServerStmt: DROP SERVER IF_P EXISTS name opt_drop_behavior  */
 #line 6691 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FOREIGN_SERVER;
-            n->objects = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            n->objects = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->arguments = NIL;
             n->missing_ok = true;
             n->behavior = (yyvsp[0].dbehavior);
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 34213 "gram.cpp"
+#line 34215 "gram.cpp"
         break;
 
         case 872: /* AlterForeignServerStmt: ALTER SERVER name foreign_server_version alter_generic_options  */
 #line 6711 "gram.y"
         {
-            AlterForeignServerStmt* n = makeNode(AlterForeignServerStmt);
+            AlterForeignServerStmt* n = makeNode(resource, AlterForeignServerStmt);
             n->servername = (yyvsp[-2].str);
             n->version = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             n->has_version = true;
             (yyval.node) = (Node*) n;
         }
-#line 34226 "gram.cpp"
+#line 34228 "gram.cpp"
         break;
 
         case 873: /* AlterForeignServerStmt: ALTER SERVER name foreign_server_version  */
 #line 6720 "gram.y"
         {
-            AlterForeignServerStmt* n = makeNode(AlterForeignServerStmt);
+            AlterForeignServerStmt* n = makeNode(resource, AlterForeignServerStmt);
             n->servername = (yyvsp[-1].str);
             n->version = (yyvsp[0].str);
             n->has_version = true;
             (yyval.node) = (Node*) n;
         }
-#line 34238 "gram.cpp"
+#line 34240 "gram.cpp"
         break;
 
         case 874: /* AlterForeignServerStmt: ALTER SERVER name alter_generic_options  */
 #line 6728 "gram.y"
         {
-            AlterForeignServerStmt* n = makeNode(AlterForeignServerStmt);
+            AlterForeignServerStmt* n = makeNode(resource, AlterForeignServerStmt);
             n->servername = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34249 "gram.cpp"
+#line 34251 "gram.cpp"
         break;
 
         case 875: /* CreateForeignTableStmt: CREATE FOREIGN TABLE qualified_name '(' OptTableElementList ')' SERVER name create_generic_options  */
 #line 6747 "gram.y"
         {
-            CreateForeignTableStmt* n = makeNode(CreateForeignTableStmt);
+            CreateForeignTableStmt* n = makeNode(resource, CreateForeignTableStmt);
             (yyvsp[-6].range)->relpersistence = RELPERSISTENCE_PERMANENT;
             n->base.relation = (yyvsp[-6].range);
             n->base.tableElts = (yyvsp[-4].list);
@@ -25360,13 +25392,13 @@ yyreduce:
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34266 "gram.cpp"
+#line 34268 "gram.cpp"
         break;
 
         case 876: /* CreateForeignTableStmt: CREATE FOREIGN TABLE IF_P NOT EXISTS qualified_name '(' OptTableElementList ')' SERVER name create_generic_options  */
 #line 6762 "gram.y"
         {
-            CreateForeignTableStmt* n = makeNode(CreateForeignTableStmt);
+            CreateForeignTableStmt* n = makeNode(resource, CreateForeignTableStmt);
             (yyvsp[-6].range)->relpersistence = RELPERSISTENCE_PERMANENT;
             n->base.relation = (yyvsp[-6].range);
             n->base.tableElts = (yyvsp[-4].list);
@@ -25377,45 +25409,45 @@ yyreduce:
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34283 "gram.cpp"
+#line 34285 "gram.cpp"
         break;
 
         case 877: /* AlterForeignTableStmt: ALTER FOREIGN TABLE relation_expr alter_table_cmds  */
 #line 6785 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_FOREIGN_TABLE;
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 34296 "gram.cpp"
+#line 34298 "gram.cpp"
         break;
 
         case 878: /* AlterForeignTableStmt: ALTER FOREIGN TABLE IF_P EXISTS relation_expr alter_table_cmds  */
 #line 6794 "gram.y"
         {
-            AlterTableStmt* n = makeNode(AlterTableStmt);
+            AlterTableStmt* n = makeNode(resource, AlterTableStmt);
             n->relation = (yyvsp[-1].range);
             n->cmds = (yyvsp[0].list);
             n->relkind = OBJECT_FOREIGN_TABLE;
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 34309 "gram.cpp"
+#line 34311 "gram.cpp"
         break;
 
         case 879: /* CreateUserMappingStmt: CREATE USER MAPPING FOR auth_ident SERVER name create_generic_options  */
 #line 6812 "gram.y"
         {
-            CreateUserMappingStmt* n = makeNode(CreateUserMappingStmt);
+            CreateUserMappingStmt* n = makeNode(resource, CreateUserMappingStmt);
             n->username = (yyvsp[-3].str);
             n->servername = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34321 "gram.cpp"
+#line 34323 "gram.cpp"
         break;
 
         case 880: /* auth_ident: CURRENT_USER  */
@@ -25423,7 +25455,7 @@ yyreduce:
         {
             (yyval.str) = "current_user";
         }
-#line 34327 "gram.cpp"
+#line 34329 "gram.cpp"
         break;
 
         case 881: /* auth_ident: USER  */
@@ -25431,7 +25463,7 @@ yyreduce:
         {
             (yyval.str) = "current_user";
         }
-#line 34333 "gram.cpp"
+#line 34335 "gram.cpp"
         break;
 
         case 882: /* auth_ident: RoleId  */
@@ -25439,49 +25471,49 @@ yyreduce:
         {
             (yyval.str) = (strcmp((yyvsp[0].str), "public") == 0) ? NULL : (yyvsp[0].str);
         }
-#line 34339 "gram.cpp"
+#line 34341 "gram.cpp"
         break;
 
         case 883: /* DropUserMappingStmt: DROP USER MAPPING FOR auth_ident SERVER name  */
 #line 6836 "gram.y"
         {
-            DropUserMappingStmt* n = makeNode(DropUserMappingStmt);
+            DropUserMappingStmt* n = makeNode(resource, DropUserMappingStmt);
             n->username = (yyvsp[-2].str);
             n->servername = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 34351 "gram.cpp"
+#line 34353 "gram.cpp"
         break;
 
         case 884: /* DropUserMappingStmt: DROP USER MAPPING IF_P EXISTS FOR auth_ident SERVER name  */
 #line 6844 "gram.y"
         {
-            DropUserMappingStmt* n = makeNode(DropUserMappingStmt);
+            DropUserMappingStmt* n = makeNode(resource, DropUserMappingStmt);
             n->username = (yyvsp[-2].str);
             n->servername = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 34363 "gram.cpp"
+#line 34365 "gram.cpp"
         break;
 
         case 885: /* AlterUserMappingStmt: ALTER USER MAPPING FOR auth_ident SERVER name alter_generic_options  */
 #line 6861 "gram.y"
         {
-            AlterUserMappingStmt* n = makeNode(AlterUserMappingStmt);
+            AlterUserMappingStmt* n = makeNode(resource, AlterUserMappingStmt);
             n->username = (yyvsp[-3].str);
             n->servername = (yyvsp[-1].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34375 "gram.cpp"
+#line 34377 "gram.cpp"
         break;
 
         case 886: /* CreateTrigStmt: CREATE TRIGGER name TriggerActionTime TriggerEvents ON qualified_name TriggerForSpec TriggerWhen EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'  */
 #line 6882 "gram.y"
         {
-            CreateTrigStmt* n = makeNode(CreateTrigStmt);
+            CreateTrigStmt* n = makeNode(resource, CreateTrigStmt);
             n->trigname = (yyvsp[-12].str);
             n->relation = (yyvsp[-8].range);
             n->funcname = (yyvsp[-3].list);
@@ -25497,13 +25529,13 @@ yyreduce:
             n->constrrel = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 34397 "gram.cpp"
+#line 34399 "gram.cpp"
         break;
 
         case 887: /* CreateTrigStmt: CREATE CONSTRAINT TRIGGER name AFTER TriggerEvents ON qualified_name OptConstrFromTable ConstraintAttributeSpec FOR EACH ROW TriggerWhen EXECUTE PROCEDURE func_name '(' TriggerFuncArgs ')'  */
 #line 6903 "gram.y"
         {
-            CreateTrigStmt* n = makeNode(CreateTrigStmt);
+            CreateTrigStmt* n = makeNode(resource, CreateTrigStmt);
             n->trigname = (yyvsp[-16].str);
             n->relation = (yyvsp[-12].range);
             n->funcname = (yyvsp[-3].list);
@@ -25525,7 +25557,7 @@ yyreduce:
             n->constrrel = (yyvsp[-11].range);
             (yyval.node) = (Node*) n;
         }
-#line 34420 "gram.cpp"
+#line 34422 "gram.cpp"
         break;
 
         case 888: /* TriggerActionTime: BEFORE  */
@@ -25533,7 +25565,7 @@ yyreduce:
         {
             (yyval.ival) = TRIGGER_TYPE_BEFORE;
         }
-#line 34426 "gram.cpp"
+#line 34428 "gram.cpp"
         break;
 
         case 889: /* TriggerActionTime: AFTER  */
@@ -25541,7 +25573,7 @@ yyreduce:
         {
             (yyval.ival) = TRIGGER_TYPE_AFTER;
         }
-#line 34432 "gram.cpp"
+#line 34434 "gram.cpp"
         break;
 
         case 890: /* TriggerActionTime: INSTEAD OF  */
@@ -25549,7 +25581,7 @@ yyreduce:
         {
             (yyval.ival) = TRIGGER_TYPE_INSTEAD;
         }
-#line 34438 "gram.cpp"
+#line 34440 "gram.cpp"
         break;
 
         case 891: /* TriggerEvents: TriggerOneEvent  */
@@ -25557,7 +25589,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 34444 "gram.cpp"
+#line 34446 "gram.cpp"
         break;
 
         case 892: /* TriggerEvents: TriggerEvents OR TriggerOneEvent  */
@@ -25577,49 +25609,50 @@ yyreduce:
 					 * UPDATE items, it doesn't matter.  Command execution
 					 * should just ignore the columns for non-UPDATE events.
 					 */
-            (yyval.list) = list_make2(makeInteger(events1 | events2), list_concat(columns1, columns2));
+            (yyval.list) =
+                list_make2(resource, makeInteger(resource, events1 | events2), list_concat(columns1, columns2));
         }
-#line 34467 "gram.cpp"
+#line 34469 "gram.cpp"
         break;
 
         case 893: /* TriggerOneEvent: INSERT  */
 #line 6955 "gram.y"
         {
-            (yyval.list) = list_make2(makeInteger(TRIGGER_TYPE_INSERT), NIL);
+            (yyval.list) = list_make2(resource, makeInteger(resource, TRIGGER_TYPE_INSERT), NIL);
         }
-#line 34473 "gram.cpp"
+#line 34475 "gram.cpp"
         break;
 
         case 894: /* TriggerOneEvent: DELETE_P  */
 #line 6957 "gram.y"
         {
-            (yyval.list) = list_make2(makeInteger(TRIGGER_TYPE_DELETE), NIL);
+            (yyval.list) = list_make2(resource, makeInteger(resource, TRIGGER_TYPE_DELETE), NIL);
         }
-#line 34479 "gram.cpp"
+#line 34481 "gram.cpp"
         break;
 
         case 895: /* TriggerOneEvent: UPDATE  */
 #line 6959 "gram.y"
         {
-            (yyval.list) = list_make2(makeInteger(TRIGGER_TYPE_UPDATE), NIL);
+            (yyval.list) = list_make2(resource, makeInteger(resource, TRIGGER_TYPE_UPDATE), NIL);
         }
-#line 34485 "gram.cpp"
+#line 34487 "gram.cpp"
         break;
 
         case 896: /* TriggerOneEvent: UPDATE OF columnList  */
 #line 6961 "gram.y"
         {
-            (yyval.list) = list_make2(makeInteger(TRIGGER_TYPE_UPDATE), (yyvsp[0].list));
+            (yyval.list) = list_make2(resource, makeInteger(resource, TRIGGER_TYPE_UPDATE), (yyvsp[0].list));
         }
-#line 34491 "gram.cpp"
+#line 34493 "gram.cpp"
         break;
 
         case 897: /* TriggerOneEvent: TRUNCATE  */
 #line 6963 "gram.y"
         {
-            (yyval.list) = list_make2(makeInteger(TRIGGER_TYPE_TRUNCATE), NIL);
+            (yyval.list) = list_make2(resource, makeInteger(resource, TRIGGER_TYPE_TRUNCATE), NIL);
         }
-#line 34497 "gram.cpp"
+#line 34499 "gram.cpp"
         break;
 
         case 898: /* TriggerForSpec: FOR TriggerForOptEach TriggerForType  */
@@ -25627,7 +25660,7 @@ yyreduce:
         {
             (yyval.boolean) = (yyvsp[0].boolean);
         }
-#line 34505 "gram.cpp"
+#line 34507 "gram.cpp"
         break;
 
         case 899: /* TriggerForSpec: %empty  */
@@ -25639,21 +25672,21 @@ yyreduce:
 					 */
             (yyval.boolean) = FALSE;
         }
-#line 34517 "gram.cpp"
+#line 34519 "gram.cpp"
         break;
 
         case 900: /* TriggerForOptEach: EACH  */
 #line 6982 "gram.y"
         {
         }
-#line 34523 "gram.cpp"
+#line 34525 "gram.cpp"
         break;
 
         case 901: /* TriggerForOptEach: %empty  */
 #line 6983 "gram.y"
         {
         }
-#line 34529 "gram.cpp"
+#line 34531 "gram.cpp"
         break;
 
         case 902: /* TriggerForType: ROW  */
@@ -25661,7 +25694,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 34535 "gram.cpp"
+#line 34537 "gram.cpp"
         break;
 
         case 903: /* TriggerForType: STATEMENT  */
@@ -25669,7 +25702,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 34541 "gram.cpp"
+#line 34543 "gram.cpp"
         break;
 
         case 904: /* TriggerWhen: WHEN '(' a_expr ')'  */
@@ -25677,7 +25710,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 34547 "gram.cpp"
+#line 34549 "gram.cpp"
         break;
 
         case 905: /* TriggerWhen: %empty  */
@@ -25685,23 +25718,23 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 34553 "gram.cpp"
+#line 34555 "gram.cpp"
         break;
 
         case 906: /* TriggerFuncArgs: TriggerFuncArg  */
 #line 6997 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].value));
+            (yyval.list) = list_make1(resource, (yyvsp[0].value));
         }
-#line 34559 "gram.cpp"
+#line 34561 "gram.cpp"
         break;
 
         case 907: /* TriggerFuncArgs: TriggerFuncArgs ',' TriggerFuncArg  */
 #line 6998 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].value));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].value));
         }
-#line 34565 "gram.cpp"
+#line 34567 "gram.cpp"
         break;
 
         case 908: /* TriggerFuncArgs: %empty  */
@@ -25709,7 +25742,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 34571 "gram.cpp"
+#line 34573 "gram.cpp"
         break;
 
         case 909: /* TriggerFuncArg: Iconst  */
@@ -25717,33 +25750,33 @@ yyreduce:
         {
             char buf[64];
             snprintf(buf, sizeof(buf), "%d", (yyvsp[0].ival));
-            (yyval.value) = makeString(pstrdup(buf));
+            (yyval.value) = makeString(resource, pstrdup(resource, buf));
         }
-#line 34581 "gram.cpp"
+#line 34583 "gram.cpp"
         break;
 
         case 910: /* TriggerFuncArg: FCONST  */
 #line 7009 "gram.y"
         {
-            (yyval.value) = makeString((yyvsp[0].str));
+            (yyval.value) = makeString(resource, (yyvsp[0].str));
         }
-#line 34587 "gram.cpp"
+#line 34589 "gram.cpp"
         break;
 
         case 911: /* TriggerFuncArg: Sconst  */
 #line 7010 "gram.y"
         {
-            (yyval.value) = makeString((yyvsp[0].str));
+            (yyval.value) = makeString(resource, (yyvsp[0].str));
         }
-#line 34593 "gram.cpp"
+#line 34595 "gram.cpp"
         break;
 
         case 912: /* TriggerFuncArg: ColLabel  */
 #line 7011 "gram.y"
         {
-            (yyval.value) = makeString((yyvsp[0].str));
+            (yyval.value) = makeString(resource, (yyvsp[0].str));
         }
-#line 34599 "gram.cpp"
+#line 34601 "gram.cpp"
         break;
 
         case 913: /* OptConstrFromTable: FROM qualified_name  */
@@ -25751,7 +25784,7 @@ yyreduce:
         {
             (yyval.range) = (yyvsp[0].range);
         }
-#line 34605 "gram.cpp"
+#line 34607 "gram.cpp"
         break;
 
         case 914: /* OptConstrFromTable: %empty  */
@@ -25759,7 +25792,7 @@ yyreduce:
         {
             (yyval.range) = NULL;
         }
-#line 34611 "gram.cpp"
+#line 34613 "gram.cpp"
         break;
 
         case 915: /* ConstraintAttributeSpec: %empty  */
@@ -25767,7 +25800,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 34617 "gram.cpp"
+#line 34619 "gram.cpp"
         break;
 
         case 916: /* ConstraintAttributeSpec: ConstraintAttributeSpec ConstraintAttributeElem  */
@@ -25797,7 +25830,7 @@ yyreduce:
                         parser_errposition((yylsp[0])));
             (yyval.ival) = newspec;
         }
-#line 34645 "gram.cpp"
+#line 34647 "gram.cpp"
         break;
 
         case 917: /* ConstraintAttributeElem: NOT DEFERRABLE  */
@@ -25805,7 +25838,7 @@ yyreduce:
         {
             (yyval.ival) = CAS_NOT_DEFERRABLE;
         }
-#line 34651 "gram.cpp"
+#line 34653 "gram.cpp"
         break;
 
         case 918: /* ConstraintAttributeElem: DEFERRABLE  */
@@ -25813,7 +25846,7 @@ yyreduce:
         {
             (yyval.ival) = CAS_DEFERRABLE;
         }
-#line 34657 "gram.cpp"
+#line 34659 "gram.cpp"
         break;
 
         case 919: /* ConstraintAttributeElem: INITIALLY IMMEDIATE  */
@@ -25821,7 +25854,7 @@ yyreduce:
         {
             (yyval.ival) = CAS_INITIALLY_IMMEDIATE;
         }
-#line 34663 "gram.cpp"
+#line 34665 "gram.cpp"
         break;
 
         case 920: /* ConstraintAttributeElem: INITIALLY DEFERRED  */
@@ -25829,7 +25862,7 @@ yyreduce:
         {
             (yyval.ival) = CAS_INITIALLY_DEFERRED;
         }
-#line 34669 "gram.cpp"
+#line 34671 "gram.cpp"
         break;
 
         case 921: /* ConstraintAttributeElem: NOT VALID  */
@@ -25837,7 +25870,7 @@ yyreduce:
         {
             (yyval.ival) = CAS_NOT_VALID;
         }
-#line 34675 "gram.cpp"
+#line 34677 "gram.cpp"
         break;
 
         case 922: /* ConstraintAttributeElem: NO INHERIT  */
@@ -25845,114 +25878,116 @@ yyreduce:
         {
             (yyval.ival) = CAS_NO_INHERIT;
         }
-#line 34681 "gram.cpp"
+#line 34683 "gram.cpp"
         break;
 
         case 923: /* DropTrigStmt: DROP TRIGGER name ON any_name opt_drop_behavior  */
 #line 7060 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_TRIGGER;
-            n->objects = list_make1(lappend((yyvsp[-1].list), makeString((yyvsp[-3].str))));
+            n->objects =
+                list_make1(resource, lappend(resource, (yyvsp[-1].list), makeString(resource, (yyvsp[-3].str))));
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 34696 "gram.cpp"
+#line 34698 "gram.cpp"
         break;
 
         case 924: /* DropTrigStmt: DROP TRIGGER IF_P EXISTS name ON any_name opt_drop_behavior  */
 #line 7071 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_TRIGGER;
-            n->objects = list_make1(lappend((yyvsp[-1].list), makeString((yyvsp[-3].str))));
+            n->objects =
+                list_make1(resource, lappend(resource, (yyvsp[-1].list), makeString(resource, (yyvsp[-3].str))));
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 34711 "gram.cpp"
+#line 34713 "gram.cpp"
         break;
 
         case 925: /* CreateEventTrigStmt: CREATE EVENT TRIGGER name ON ColLabel EXECUTE PROCEDURE func_name '(' ')'  */
 #line 7095 "gram.y"
         {
-            CreateEventTrigStmt* n = makeNode(CreateEventTrigStmt);
+            CreateEventTrigStmt* n = makeNode(resource, CreateEventTrigStmt);
             n->trigname = (yyvsp[-7].str);
             n->eventname = (yyvsp[-5].str);
             n->whenclause = NULL;
             n->funcname = (yyvsp[-2].list);
             (yyval.node) = (Node*) n;
         }
-#line 34724 "gram.cpp"
+#line 34726 "gram.cpp"
         break;
 
         case 926: /* CreateEventTrigStmt: CREATE EVENT TRIGGER name ON ColLabel WHEN event_trigger_when_list EXECUTE PROCEDURE func_name '(' ')'  */
 #line 7106 "gram.y"
         {
-            CreateEventTrigStmt* n = makeNode(CreateEventTrigStmt);
+            CreateEventTrigStmt* n = makeNode(resource, CreateEventTrigStmt);
             n->trigname = (yyvsp[-9].str);
             n->eventname = (yyvsp[-7].str);
             n->whenclause = (yyvsp[-5].list);
             n->funcname = (yyvsp[-2].list);
             (yyval.node) = (Node*) n;
         }
-#line 34737 "gram.cpp"
+#line 34739 "gram.cpp"
         break;
 
         case 927: /* event_trigger_when_list: event_trigger_when_item  */
 #line 7118 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 34743 "gram.cpp"
+#line 34745 "gram.cpp"
         break;
 
         case 928: /* event_trigger_when_list: event_trigger_when_list AND event_trigger_when_item  */
 #line 7120 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 34749 "gram.cpp"
+#line 34751 "gram.cpp"
         break;
 
         case 929: /* event_trigger_when_item: ColId IN_P '(' event_trigger_value_list ')'  */
 #line 7125 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-4].str), (Node*) (yyvsp[-1].list));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-4].str), (Node*) (yyvsp[-1].list));
         }
-#line 34755 "gram.cpp"
+#line 34757 "gram.cpp"
         break;
 
         case 930: /* event_trigger_value_list: SCONST  */
 #line 7130 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 34761 "gram.cpp"
+#line 34763 "gram.cpp"
         break;
 
         case 931: /* event_trigger_value_list: event_trigger_value_list ',' SCONST  */
 #line 7132 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeString((yyvsp[0].str)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[0].str)));
         }
-#line 34767 "gram.cpp"
+#line 34769 "gram.cpp"
         break;
 
         case 932: /* AlterEventTrigStmt: ALTER EVENT TRIGGER name enable_trigger  */
 #line 7137 "gram.y"
         {
-            AlterEventTrigStmt* n = makeNode(AlterEventTrigStmt);
+            AlterEventTrigStmt* n = makeNode(resource, AlterEventTrigStmt);
             n->trigname = (yyvsp[-1].str);
             n->tgenabled = (yyvsp[0].chr);
             (yyval.node) = (Node*) n;
         }
-#line 34778 "gram.cpp"
+#line 34780 "gram.cpp"
         break;
 
         case 933: /* enable_trigger: ENABLE_P  */
@@ -25960,7 +25995,7 @@ yyreduce:
         {
             (yyval.chr) = TRIGGER_FIRES_ON_ORIGIN;
         }
-#line 34784 "gram.cpp"
+#line 34786 "gram.cpp"
         break;
 
         case 934: /* enable_trigger: ENABLE_P REPLICA  */
@@ -25968,7 +26003,7 @@ yyreduce:
         {
             (yyval.chr) = TRIGGER_FIRES_ON_REPLICA;
         }
-#line 34790 "gram.cpp"
+#line 34792 "gram.cpp"
         break;
 
         case 935: /* enable_trigger: ENABLE_P ALWAYS  */
@@ -25976,7 +26011,7 @@ yyreduce:
         {
             (yyval.chr) = TRIGGER_FIRES_ALWAYS;
         }
-#line 34796 "gram.cpp"
+#line 34798 "gram.cpp"
         break;
 
         case 936: /* enable_trigger: DISABLE_P  */
@@ -25984,15 +26019,15 @@ yyreduce:
         {
             (yyval.chr) = TRIGGER_DISABLED;
         }
-#line 34802 "gram.cpp"
+#line 34804 "gram.cpp"
         break;
 
         case 937: /* CreateAssertStmt: CREATE ASSERTION name CHECK '(' a_expr ')' ConstraintAttributeSpec  */
 #line 7163 "gram.y"
         {
-            CreateTrigStmt* n = makeNode(CreateTrigStmt);
+            CreateTrigStmt* n = makeNode(resource, CreateTrigStmt);
             n->trigname = (yyvsp[-5].str);
-            n->args = list_make1((yyvsp[-2].node));
+            n->args = list_make1(resource, (yyvsp[-2].node));
             n->isconstraint = TRUE;
             processCASbits((yyvsp[0].ival),
                            (yylsp[0]),
@@ -26007,13 +26042,13 @@ yyreduce:
 
             (yyval.node) = (Node*) n;
         }
-#line 34822 "gram.cpp"
+#line 34824 "gram.cpp"
         break;
 
         case 938: /* DropAssertStmt: DROP ASSERTION name opt_drop_behavior  */
 #line 7182 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->objects = NIL;
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
@@ -26021,13 +26056,13 @@ yyreduce:
             ereport(ERROR, errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("DROP ASSERTION is not yet implemented"));
             (yyval.node) = (Node*) n;
         }
-#line 34838 "gram.cpp"
+#line 34840 "gram.cpp"
         break;
 
         case 939: /* DefineStmt: CREATE opt_ordered AGGREGATE func_name aggr_args definition  */
 #line 7205 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_AGGREGATE;
             n->oldstyle = false;
             n->defnames = (yyvsp[-2].list);
@@ -26035,14 +26070,14 @@ yyreduce:
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34852 "gram.cpp"
+#line 34854 "gram.cpp"
         break;
 
         case 940: /* DefineStmt: CREATE opt_ordered AGGREGATE func_name old_aggr_definition  */
 #line 7215 "gram.y"
         {
             /* old-style (pre-8.2) syntax for CREATE AGGREGATE */
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_AGGREGATE;
             n->oldstyle = true;
             n->defnames = (yyvsp[-1].list);
@@ -26050,13 +26085,13 @@ yyreduce:
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34867 "gram.cpp"
+#line 34869 "gram.cpp"
         break;
 
         case 941: /* DefineStmt: CREATE OPERATOR any_operator definition  */
 #line 7226 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_OPERATOR;
             n->oldstyle = false;
             n->defnames = (yyvsp[-1].list);
@@ -26064,13 +26099,13 @@ yyreduce:
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34881 "gram.cpp"
+#line 34883 "gram.cpp"
         break;
 
         case 942: /* DefineStmt: CREATE TYPE_P any_name definition  */
 #line 7236 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TYPE;
             n->oldstyle = false;
             n->defnames = (yyvsp[-1].list);
@@ -26078,14 +26113,14 @@ yyreduce:
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34895 "gram.cpp"
+#line 34897 "gram.cpp"
         break;
 
         case 943: /* DefineStmt: CREATE TYPE_P any_name  */
 #line 7246 "gram.y"
         {
             /* Shell type (identified by lack of definition) */
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TYPE;
             n->oldstyle = false;
             n->defnames = (yyvsp[0].list);
@@ -26093,20 +26128,20 @@ yyreduce:
             n->definition = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 34910 "gram.cpp"
+#line 34912 "gram.cpp"
         break;
 
         case 944: /* DefineStmt: CREATE TYPE_P any_name AS '(' OptTableFuncElementList ')'  */
 #line 7257 "gram.y"
         {
-            CompositeTypeStmt* n = makeNode(CompositeTypeStmt);
+            CompositeTypeStmt* n = makeNode(resource, CompositeTypeStmt);
 
             /* can't use qualified_name, sigh */
-            n->typevar = makeRangeVarFromAnyName((yyvsp[-4].list), (yylsp[-4]), yyscanner);
+            n->typevar = makeRangeVarFromAnyName(resource, (yyvsp[-4].list), (yylsp[-4]), yyscanner);
             n->coldeflist = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 34923 "gram.cpp"
+#line 34925 "gram.cpp"
         break;
 
         case 945: /* DefineStmt: CREATE opt_or_replace opt_trusted PROTOCOL name definition  */
@@ -26119,116 +26154,116 @@ yyreduce:
             if ((yyvsp[-4].boolean))
                 ereport(ERROR, errcode(ERRCODE_SYNTAX_ERROR), errmsg("syntax error"), parser_errposition((yylsp[-4])));
 
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_EXTPROTOCOL;
             n->oldstyle = false;
             n->trusted = (yyvsp[-3].boolean);
-            n->defnames = list_make1(makeString((yyvsp[-1].str)));
+            n->defnames = list_make1(resource, makeString(resource, (yyvsp[-1].str)));
             n->args = NIL;
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34948 "gram.cpp"
+#line 34950 "gram.cpp"
         break;
 
         case 946: /* DefineStmt: CREATE TYPE_P any_name AS ENUM_P '(' opt_enum_val_list ')'  */
 #line 7287 "gram.y"
         {
-            CreateEnumStmt* n = makeNode(CreateEnumStmt);
+            CreateEnumStmt* n = makeNode(resource, CreateEnumStmt);
             n->typeName = (yyvsp[-5].list);
             n->vals = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 34959 "gram.cpp"
+#line 34961 "gram.cpp"
         break;
 
         case 947: /* DefineStmt: CREATE TYPE_P any_name AS RANGE definition  */
 #line 7294 "gram.y"
         {
-            CreateRangeStmt* n = makeNode(CreateRangeStmt);
+            CreateRangeStmt* n = makeNode(resource, CreateRangeStmt);
             n->typeName = (yyvsp[-3].list);
             n->params = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34970 "gram.cpp"
+#line 34972 "gram.cpp"
         break;
 
         case 948: /* DefineStmt: CREATE TEXT_P SEARCH PARSER any_name definition  */
 #line 7301 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TSPARSER;
             n->args = NIL;
             n->defnames = (yyvsp[-1].list);
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34983 "gram.cpp"
+#line 34985 "gram.cpp"
         break;
 
         case 949: /* DefineStmt: CREATE TEXT_P SEARCH DICTIONARY any_name definition  */
 #line 7310 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TSDICTIONARY;
             n->args = NIL;
             n->defnames = (yyvsp[-1].list);
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 34996 "gram.cpp"
+#line 34998 "gram.cpp"
         break;
 
         case 950: /* DefineStmt: CREATE TEXT_P SEARCH TEMPLATE any_name definition  */
 #line 7319 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TSTEMPLATE;
             n->args = NIL;
             n->defnames = (yyvsp[-1].list);
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35009 "gram.cpp"
+#line 35011 "gram.cpp"
         break;
 
         case 951: /* DefineStmt: CREATE TEXT_P SEARCH CONFIGURATION any_name definition  */
 #line 7328 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_TSCONFIGURATION;
             n->args = NIL;
             n->defnames = (yyvsp[-1].list);
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35022 "gram.cpp"
+#line 35024 "gram.cpp"
         break;
 
         case 952: /* DefineStmt: CREATE COLLATION any_name definition  */
 #line 7337 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_COLLATION;
             n->args = NIL;
             n->defnames = (yyvsp[-1].list);
             n->definition = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35035 "gram.cpp"
+#line 35037 "gram.cpp"
         break;
 
         case 953: /* DefineStmt: CREATE COLLATION any_name FROM any_name  */
 #line 7346 "gram.y"
         {
-            DefineStmt* n = makeNode(DefineStmt);
+            DefineStmt* n = makeNode(resource, DefineStmt);
             n->kind = OBJECT_COLLATION;
             n->args = NIL;
             n->defnames = (yyvsp[-2].list);
-            n->definition = list_make1(makeDefElem("from", (Node*) (yyvsp[0].list)));
+            n->definition = list_make1(resource, makeDefElem(resource, "from", (Node*) (yyvsp[0].list)));
             (yyval.node) = (Node*) n;
         }
-#line 35048 "gram.cpp"
+#line 35050 "gram.cpp"
         break;
 
         case 954: /* opt_ordered: ORDERED  */
@@ -26236,7 +26271,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 35054 "gram.cpp"
+#line 35056 "gram.cpp"
         break;
 
         case 955: /* opt_ordered: %empty  */
@@ -26244,7 +26279,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 35060 "gram.cpp"
+#line 35062 "gram.cpp"
         break;
 
         case 956: /* definition: '(' def_list ')'  */
@@ -26252,23 +26287,23 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 35066 "gram.cpp"
+#line 35068 "gram.cpp"
         break;
 
         case 957: /* def_list: def_elem  */
 #line 7363 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 35072 "gram.cpp"
+#line 35074 "gram.cpp"
         break;
 
         case 958: /* def_list: def_list ',' def_elem  */
 #line 7364 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 35078 "gram.cpp"
+#line 35080 "gram.cpp"
         break;
 
         case 959: /* def_elem: ColLabel '=' def_arg  */
@@ -26282,19 +26317,19 @@ yyreduce:
 					 * say appendonly.
 					 */
             if (strcmp((yyvsp[-2].str), "appendoptimized") == 0)
-                (yyval.defelt) = makeDefElem("appendonly", (Node*) (yyvsp[0].node));
+                (yyval.defelt) = makeDefElem(resource, "appendonly", (Node*) (yyvsp[0].node));
             else
-                (yyval.defelt) = makeDefElem((yyvsp[-2].str), (Node*) (yyvsp[0].node));
+                (yyval.defelt) = makeDefElem(resource, (yyvsp[-2].str), (Node*) (yyvsp[0].node));
         }
-#line 35096 "gram.cpp"
+#line 35098 "gram.cpp"
         break;
 
         case 960: /* def_elem: ColLabel  */
 #line 7382 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[0].str), NULL);
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[0].str), NULL);
         }
-#line 35104 "gram.cpp"
+#line 35106 "gram.cpp"
         break;
 
         case 961: /* def_arg: func_type  */
@@ -26302,23 +26337,23 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].typnam);
         }
-#line 35110 "gram.cpp"
+#line 35112 "gram.cpp"
         break;
 
         case 962: /* def_arg: ROW  */
 #line 7390 "gram.y"
         {
-            (yyval.node) = (Node*) makeString(pstrdup("row"));
+            (yyval.node) = (Node*) makeString(resource, pstrdup(resource, "row"));
         }
-#line 35116 "gram.cpp"
+#line 35118 "gram.cpp"
         break;
 
         case 963: /* def_arg: reserved_keyword  */
 #line 7391 "gram.y"
         {
-            (yyval.node) = (Node*) makeString(pstrdup((yyvsp[0].keyword)));
+            (yyval.node) = (Node*) makeString(resource, pstrdup(resource, (yyvsp[0].keyword)));
         }
-#line 35122 "gram.cpp"
+#line 35124 "gram.cpp"
         break;
 
         case 964: /* def_arg: qual_all_Op  */
@@ -26326,7 +26361,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].list);
         }
-#line 35128 "gram.cpp"
+#line 35130 "gram.cpp"
         break;
 
         case 965: /* def_arg: NumericOnly  */
@@ -26334,23 +26369,23 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].value);
         }
-#line 35134 "gram.cpp"
+#line 35136 "gram.cpp"
         break;
 
         case 966: /* def_arg: Sconst  */
 #line 7394 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 35140 "gram.cpp"
+#line 35142 "gram.cpp"
         break;
 
         case 967: /* def_arg: NONE  */
 #line 7401 "gram.y"
         {
-            (yyval.node) = (Node*) makeString(pstrdup("none"));
+            (yyval.node) = (Node*) makeString(resource, pstrdup(resource, "none"));
         }
-#line 35146 "gram.cpp"
+#line 35148 "gram.cpp"
         break;
 
         case 968: /* old_aggr_definition: '(' old_aggr_list ')'  */
@@ -26358,31 +26393,31 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 35152 "gram.cpp"
+#line 35154 "gram.cpp"
         break;
 
         case 969: /* old_aggr_list: old_aggr_elem  */
 #line 7407 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 35158 "gram.cpp"
+#line 35160 "gram.cpp"
         break;
 
         case 970: /* old_aggr_list: old_aggr_list ',' old_aggr_elem  */
 #line 7408 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 35164 "gram.cpp"
+#line 35166 "gram.cpp"
         break;
 
         case 971: /* old_aggr_elem: IDENT '=' def_arg  */
 #line 7417 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-2].str), (Node*) (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-2].str), (Node*) (yyvsp[0].node));
         }
-#line 35172 "gram.cpp"
+#line 35174 "gram.cpp"
         break;
 
         case 972: /* opt_enum_val_list: enum_val_list  */
@@ -26390,7 +26425,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 35178 "gram.cpp"
+#line 35180 "gram.cpp"
         break;
 
         case 973: /* opt_enum_val_list: %empty  */
@@ -26398,29 +26433,29 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 35184 "gram.cpp"
+#line 35186 "gram.cpp"
         break;
 
         case 974: /* enum_val_list: Sconst  */
 #line 7428 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 35190 "gram.cpp"
+#line 35192 "gram.cpp"
         break;
 
         case 975: /* enum_val_list: enum_val_list ',' Sconst  */
 #line 7430 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeString((yyvsp[0].str)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[0].str)));
         }
-#line 35196 "gram.cpp"
+#line 35198 "gram.cpp"
         break;
 
         case 976: /* AlterEnumStmt: ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst  */
 #line 7441 "gram.y"
         {
-            AlterEnumStmt* n = makeNode(AlterEnumStmt);
+            AlterEnumStmt* n = makeNode(resource, AlterEnumStmt);
             n->typeName = (yyvsp[-4].list);
             n->newVal = (yyvsp[0].str);
             n->newValNeighbor = NULL;
@@ -26428,13 +26463,13 @@ yyreduce:
             n->skipIfExists = (yyvsp[-1].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 35210 "gram.cpp"
+#line 35212 "gram.cpp"
         break;
 
         case 977: /* AlterEnumStmt: ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst BEFORE Sconst  */
 #line 7451 "gram.y"
         {
-            AlterEnumStmt* n = makeNode(AlterEnumStmt);
+            AlterEnumStmt* n = makeNode(resource, AlterEnumStmt);
             n->typeName = (yyvsp[-6].list);
             n->newVal = (yyvsp[-2].str);
             n->newValNeighbor = (yyvsp[0].str);
@@ -26442,13 +26477,13 @@ yyreduce:
             n->skipIfExists = (yyvsp[-3].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 35224 "gram.cpp"
+#line 35226 "gram.cpp"
         break;
 
         case 978: /* AlterEnumStmt: ALTER TYPE_P any_name ADD_P VALUE_P opt_if_not_exists Sconst AFTER Sconst  */
 #line 7461 "gram.y"
         {
-            AlterEnumStmt* n = makeNode(AlterEnumStmt);
+            AlterEnumStmt* n = makeNode(resource, AlterEnumStmt);
             n->typeName = (yyvsp[-6].list);
             n->newVal = (yyvsp[-2].str);
             n->newValNeighbor = (yyvsp[0].str);
@@ -26456,7 +26491,7 @@ yyreduce:
             n->skipIfExists = (yyvsp[-3].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 35238 "gram.cpp"
+#line 35240 "gram.cpp"
         break;
 
         case 979: /* opt_if_not_exists: IF_P NOT EXISTS  */
@@ -26464,7 +26499,7 @@ yyreduce:
         {
             (yyval.boolean) = true;
         }
-#line 35244 "gram.cpp"
+#line 35246 "gram.cpp"
         break;
 
         case 980: /* opt_if_not_exists: %empty  */
@@ -26472,13 +26507,13 @@ yyreduce:
         {
             (yyval.boolean) = false;
         }
-#line 35250 "gram.cpp"
+#line 35252 "gram.cpp"
         break;
 
         case 981: /* CreateOpClassStmt: CREATE OPERATOR CLASS any_name opt_default FOR TYPE_P Typename USING access_method opt_opfamily AS opclass_item_list  */
 #line 7491 "gram.y"
         {
-            CreateOpClassStmt* n = makeNode(CreateOpClassStmt);
+            CreateOpClassStmt* n = makeNode(resource, CreateOpClassStmt);
             n->opclassname = (yyvsp[-9].list);
             n->isDefault = (yyvsp[-8].boolean);
             n->datatype = (yyvsp[-5].typnam);
@@ -26487,29 +26522,29 @@ yyreduce:
             n->items = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35265 "gram.cpp"
+#line 35267 "gram.cpp"
         break;
 
         case 982: /* opclass_item_list: opclass_item  */
 #line 7504 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 35271 "gram.cpp"
+#line 35273 "gram.cpp"
         break;
 
         case 983: /* opclass_item_list: opclass_item_list ',' opclass_item  */
 #line 7505 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 35277 "gram.cpp"
+#line 35279 "gram.cpp"
         break;
 
         case 984: /* opclass_item: OPERATOR Iconst any_operator opclass_purpose opt_recheck  */
 #line 7510 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_OPERATOR;
             n->name = (yyvsp[-2].list);
             n->args = NIL;
@@ -26517,13 +26552,13 @@ yyreduce:
             n->order_family = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 35291 "gram.cpp"
+#line 35293 "gram.cpp"
         break;
 
         case 985: /* opclass_item: OPERATOR Iconst any_operator oper_argtypes opclass_purpose opt_recheck  */
 #line 7521 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_OPERATOR;
             n->name = (yyvsp[-3].list);
             n->args = (yyvsp[-2].list);
@@ -26531,45 +26566,45 @@ yyreduce:
             n->order_family = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 35305 "gram.cpp"
+#line 35307 "gram.cpp"
         break;
 
         case 986: /* opclass_item: FUNCTION Iconst func_name func_args  */
 #line 7531 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_FUNCTION;
             n->name = (yyvsp[-1].list);
-            n->args = extractArgTypes((yyvsp[0].list));
+            n->args = extractArgTypes(resource, (yyvsp[0].list));
             n->number = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 35318 "gram.cpp"
+#line 35320 "gram.cpp"
         break;
 
         case 987: /* opclass_item: FUNCTION Iconst '(' type_list ')' func_name func_args  */
 #line 7540 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_FUNCTION;
             n->name = (yyvsp[-1].list);
-            n->args = extractArgTypes((yyvsp[0].list));
+            n->args = extractArgTypes(resource, (yyvsp[0].list));
             n->number = (yyvsp[-5].ival);
             n->class_args = (yyvsp[-3].list);
             (yyval.node) = (Node*) n;
         }
-#line 35332 "gram.cpp"
+#line 35334 "gram.cpp"
         break;
 
         case 988: /* opclass_item: STORAGE Typename  */
 #line 7550 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_STORAGETYPE;
             n->storedtype = (yyvsp[0].typnam);
             (yyval.node) = (Node*) n;
         }
-#line 35343 "gram.cpp"
+#line 35345 "gram.cpp"
         break;
 
         case 989: /* opt_default: DEFAULT  */
@@ -26577,7 +26612,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 35349 "gram.cpp"
+#line 35351 "gram.cpp"
         break;
 
         case 990: /* opt_default: %empty  */
@@ -26585,7 +26620,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 35355 "gram.cpp"
+#line 35357 "gram.cpp"
         break;
 
         case 991: /* opt_opfamily: FAMILY any_name  */
@@ -26593,7 +26628,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 35361 "gram.cpp"
+#line 35363 "gram.cpp"
         break;
 
         case 992: /* opt_opfamily: %empty  */
@@ -26601,7 +26636,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 35367 "gram.cpp"
+#line 35369 "gram.cpp"
         break;
 
         case 993: /* opclass_purpose: FOR SEARCH  */
@@ -26609,7 +26644,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 35373 "gram.cpp"
+#line 35375 "gram.cpp"
         break;
 
         case 994: /* opclass_purpose: FOR ORDER BY any_name  */
@@ -26617,7 +26652,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 35379 "gram.cpp"
+#line 35381 "gram.cpp"
         break;
 
         case 995: /* opclass_purpose: %empty  */
@@ -26625,7 +26660,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 35385 "gram.cpp"
+#line 35387 "gram.cpp"
         break;
 
         case 996: /* opt_recheck: RECHECK  */
@@ -26643,7 +26678,7 @@ yyreduce:
                     parser_errposition((yylsp[0])));
             (yyval.boolean) = TRUE;
         }
-#line 35403 "gram.cpp"
+#line 35405 "gram.cpp"
         break;
 
         case 997: /* opt_recheck: %empty  */
@@ -26651,172 +26686,172 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 35409 "gram.cpp"
+#line 35411 "gram.cpp"
         break;
 
         case 998: /* CreateOpFamilyStmt: CREATE OPERATOR FAMILY any_name USING access_method  */
 #line 7591 "gram.y"
         {
-            CreateOpFamilyStmt* n = makeNode(CreateOpFamilyStmt);
+            CreateOpFamilyStmt* n = makeNode(resource, CreateOpFamilyStmt);
             n->opfamilyname = (yyvsp[-2].list);
             n->amname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35420 "gram.cpp"
+#line 35422 "gram.cpp"
         break;
 
         case 999: /* AlterOpFamilyStmt: ALTER OPERATOR FAMILY any_name USING access_method ADD_P opclass_item_list  */
 #line 7601 "gram.y"
         {
-            AlterOpFamilyStmt* n = makeNode(AlterOpFamilyStmt);
+            AlterOpFamilyStmt* n = makeNode(resource, AlterOpFamilyStmt);
             n->opfamilyname = (yyvsp[-4].list);
             n->amname = (yyvsp[-2].str);
             n->isDrop = false;
             n->items = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35433 "gram.cpp"
+#line 35435 "gram.cpp"
         break;
 
         case 1000: /* AlterOpFamilyStmt: ALTER OPERATOR FAMILY any_name USING access_method DROP opclass_drop_list  */
 #line 7610 "gram.y"
         {
-            AlterOpFamilyStmt* n = makeNode(AlterOpFamilyStmt);
+            AlterOpFamilyStmt* n = makeNode(resource, AlterOpFamilyStmt);
             n->opfamilyname = (yyvsp[-4].list);
             n->amname = (yyvsp[-2].str);
             n->isDrop = true;
             n->items = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 35446 "gram.cpp"
+#line 35448 "gram.cpp"
         break;
 
         case 1001: /* opclass_drop_list: opclass_drop  */
 #line 7621 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 35452 "gram.cpp"
+#line 35454 "gram.cpp"
         break;
 
         case 1002: /* opclass_drop_list: opclass_drop_list ',' opclass_drop  */
 #line 7622 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 35458 "gram.cpp"
+#line 35460 "gram.cpp"
         break;
 
         case 1003: /* opclass_drop: OPERATOR Iconst '(' type_list ')'  */
 #line 7627 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_OPERATOR;
             n->number = (yyvsp[-3].ival);
             n->args = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 35470 "gram.cpp"
+#line 35472 "gram.cpp"
         break;
 
         case 1004: /* opclass_drop: FUNCTION Iconst '(' type_list ')'  */
 #line 7635 "gram.y"
         {
-            CreateOpClassItem* n = makeNode(CreateOpClassItem);
+            CreateOpClassItem* n = makeNode(resource, CreateOpClassItem);
             n->itemtype = OPCLASS_ITEM_FUNCTION;
             n->number = (yyvsp[-3].ival);
             n->args = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 35482 "gram.cpp"
+#line 35484 "gram.cpp"
         break;
 
         case 1005: /* DropOpClassStmt: DROP OPERATOR CLASS any_name USING access_method opt_drop_behavior  */
 #line 7647 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
-            n->objects = list_make1((yyvsp[-3].list));
-            n->arguments = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            DropStmt* n = makeNode(resource, DropStmt);
+            n->objects = list_make1(resource, (yyvsp[-3].list));
+            n->arguments = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->removeType = OBJECT_OPCLASS;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35497 "gram.cpp"
+#line 35499 "gram.cpp"
         break;
 
         case 1006: /* DropOpClassStmt: DROP OPERATOR CLASS IF_P EXISTS any_name USING access_method opt_drop_behavior  */
 #line 7658 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
-            n->objects = list_make1((yyvsp[-3].list));
-            n->arguments = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            DropStmt* n = makeNode(resource, DropStmt);
+            n->objects = list_make1(resource, (yyvsp[-3].list));
+            n->arguments = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->removeType = OBJECT_OPCLASS;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35512 "gram.cpp"
+#line 35514 "gram.cpp"
         break;
 
         case 1007: /* DropOpFamilyStmt: DROP OPERATOR FAMILY any_name USING access_method opt_drop_behavior  */
 #line 7672 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
-            n->objects = list_make1((yyvsp[-3].list));
-            n->arguments = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            DropStmt* n = makeNode(resource, DropStmt);
+            n->objects = list_make1(resource, (yyvsp[-3].list));
+            n->arguments = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->removeType = OBJECT_OPFAMILY;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35527 "gram.cpp"
+#line 35529 "gram.cpp"
         break;
 
         case 1008: /* DropOpFamilyStmt: DROP OPERATOR FAMILY IF_P EXISTS any_name USING access_method opt_drop_behavior  */
 #line 7683 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
-            n->objects = list_make1((yyvsp[-3].list));
-            n->arguments = list_make1(list_make1(makeString((yyvsp[-1].str))));
+            DropStmt* n = makeNode(resource, DropStmt);
+            n->objects = list_make1(resource, (yyvsp[-3].list));
+            n->arguments = list_make1(resource, list_make1(resource, makeString(resource, (yyvsp[-1].str))));
             n->removeType = OBJECT_OPFAMILY;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35542 "gram.cpp"
+#line 35544 "gram.cpp"
         break;
 
         case 1009: /* DropOwnedStmt: DROP OWNED BY role_list opt_drop_behavior  */
 #line 7706 "gram.y"
         {
-            DropOwnedStmt* n = makeNode(DropOwnedStmt);
+            DropOwnedStmt* n = makeNode(resource, DropOwnedStmt);
             n->roles = (yyvsp[-1].list);
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 35553 "gram.cpp"
+#line 35555 "gram.cpp"
         break;
 
         case 1010: /* ReassignOwnedStmt: REASSIGN OWNED BY role_list TO name  */
 #line 7716 "gram.y"
         {
-            ReassignOwnedStmt* n = makeNode(ReassignOwnedStmt);
+            ReassignOwnedStmt* n = makeNode(resource, ReassignOwnedStmt);
             n->roles = (yyvsp[-2].list);
             n->newrole = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35564 "gram.cpp"
+#line 35566 "gram.cpp"
         break;
 
         case 1011: /* DropStmt: DROP drop_type IF_P EXISTS any_name_list opt_drop_behavior  */
 #line 7734 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = (yyvsp[-4].objtype);
             n->missing_ok = TRUE;
             n->objects = (yyvsp[-1].list);
@@ -26825,13 +26860,13 @@ yyreduce:
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35579 "gram.cpp"
+#line 35581 "gram.cpp"
         break;
 
         case 1012: /* DropStmt: DROP drop_type any_name_list opt_drop_behavior  */
 #line 7745 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = (yyvsp[-2].objtype);
             n->missing_ok = FALSE;
             n->objects = (yyvsp[-1].list);
@@ -26840,13 +26875,13 @@ yyreduce:
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 35594 "gram.cpp"
+#line 35596 "gram.cpp"
         break;
 
         case 1013: /* DropStmt: DROP INDEX CONCURRENTLY any_name_list opt_drop_behavior  */
 #line 7756 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_INDEX;
             n->missing_ok = FALSE;
             n->objects = (yyvsp[-1].list);
@@ -26855,13 +26890,13 @@ yyreduce:
             n->concurrent = true;
             (yyval.node) = (Node*) n;
         }
-#line 35609 "gram.cpp"
+#line 35611 "gram.cpp"
         break;
 
         case 1014: /* DropStmt: DROP INDEX CONCURRENTLY IF_P EXISTS any_name_list opt_drop_behavior  */
 #line 7767 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_INDEX;
             n->missing_ok = TRUE;
             n->objects = (yyvsp[-1].list);
@@ -26870,7 +26905,7 @@ yyreduce:
             n->concurrent = true;
             (yyval.node) = (Node*) n;
         }
-#line 35624 "gram.cpp"
+#line 35626 "gram.cpp"
         break;
 
         case 1015: /* drop_type: TABLE  */
@@ -26878,7 +26913,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLE;
         }
-#line 35630 "gram.cpp"
+#line 35632 "gram.cpp"
         break;
 
         case 1016: /* drop_type: EXTERNAL TABLE  */
@@ -26886,7 +26921,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EXTTABLE;
         }
-#line 35636 "gram.cpp"
+#line 35638 "gram.cpp"
         break;
 
         case 1017: /* drop_type: EXTERNAL WEB TABLE  */
@@ -26894,7 +26929,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EXTTABLE;
         }
-#line 35642 "gram.cpp"
+#line 35644 "gram.cpp"
         break;
 
         case 1018: /* drop_type: SEQUENCE  */
@@ -26902,7 +26937,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SEQUENCE;
         }
-#line 35648 "gram.cpp"
+#line 35650 "gram.cpp"
         break;
 
         case 1019: /* drop_type: VIEW  */
@@ -26910,7 +26945,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_VIEW;
         }
-#line 35654 "gram.cpp"
+#line 35656 "gram.cpp"
         break;
 
         case 1020: /* drop_type: MATERIALIZED VIEW  */
@@ -26918,7 +26953,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_MATVIEW;
         }
-#line 35660 "gram.cpp"
+#line 35662 "gram.cpp"
         break;
 
         case 1021: /* drop_type: INDEX  */
@@ -26926,7 +26961,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_INDEX;
         }
-#line 35666 "gram.cpp"
+#line 35668 "gram.cpp"
         break;
 
         case 1022: /* drop_type: FOREIGN TABLE  */
@@ -26934,7 +26969,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_FOREIGN_TABLE;
         }
-#line 35672 "gram.cpp"
+#line 35674 "gram.cpp"
         break;
 
         case 1023: /* drop_type: EVENT TRIGGER  */
@@ -26942,7 +26977,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EVENT_TRIGGER;
         }
-#line 35678 "gram.cpp"
+#line 35680 "gram.cpp"
         break;
 
         case 1024: /* drop_type: TYPE_P  */
@@ -26950,7 +26985,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TYPE;
         }
-#line 35684 "gram.cpp"
+#line 35686 "gram.cpp"
         break;
 
         case 1025: /* drop_type: DOMAIN_P  */
@@ -26958,7 +26993,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_DOMAIN;
         }
-#line 35690 "gram.cpp"
+#line 35692 "gram.cpp"
         break;
 
         case 1026: /* drop_type: COLLATION  */
@@ -26966,7 +27001,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_COLLATION;
         }
-#line 35696 "gram.cpp"
+#line 35698 "gram.cpp"
         break;
 
         case 1027: /* drop_type: CONVERSION_P  */
@@ -26974,7 +27009,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_CONVERSION;
         }
-#line 35702 "gram.cpp"
+#line 35704 "gram.cpp"
         break;
 
         case 1028: /* drop_type: SCHEMA  */
@@ -26982,7 +27017,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SCHEMA;
         }
-#line 35708 "gram.cpp"
+#line 35710 "gram.cpp"
         break;
 
         case 1029: /* drop_type: EXTENSION  */
@@ -26990,7 +27025,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EXTENSION;
         }
-#line 35714 "gram.cpp"
+#line 35716 "gram.cpp"
         break;
 
         case 1030: /* drop_type: TEXT_P SEARCH PARSER  */
@@ -26998,7 +27033,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSPARSER;
         }
-#line 35720 "gram.cpp"
+#line 35722 "gram.cpp"
         break;
 
         case 1031: /* drop_type: TEXT_P SEARCH DICTIONARY  */
@@ -27006,7 +27041,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSDICTIONARY;
         }
-#line 35726 "gram.cpp"
+#line 35728 "gram.cpp"
         break;
 
         case 1032: /* drop_type: TEXT_P SEARCH TEMPLATE  */
@@ -27014,7 +27049,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSTEMPLATE;
         }
-#line 35732 "gram.cpp"
+#line 35734 "gram.cpp"
         break;
 
         case 1033: /* drop_type: TEXT_P SEARCH CONFIGURATION  */
@@ -27022,7 +27057,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSCONFIGURATION;
         }
-#line 35738 "gram.cpp"
+#line 35740 "gram.cpp"
         break;
 
         case 1034: /* drop_type: PROTOCOL  */
@@ -27030,67 +27065,67 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EXTPROTOCOL;
         }
-#line 35744 "gram.cpp"
+#line 35746 "gram.cpp"
         break;
 
         case 1035: /* any_name_list: any_name  */
 #line 7803 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].list));
+            (yyval.list) = list_make1(resource, (yyvsp[0].list));
         }
-#line 35750 "gram.cpp"
+#line 35752 "gram.cpp"
         break;
 
         case 1036: /* any_name_list: any_name_list ',' any_name  */
 #line 7804 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].list));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].list));
         }
-#line 35756 "gram.cpp"
+#line 35758 "gram.cpp"
         break;
 
         case 1037: /* any_name: ColId  */
 #line 7807 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 35762 "gram.cpp"
+#line 35764 "gram.cpp"
         break;
 
         case 1038: /* any_name: ColId attrs  */
 #line 7808 "gram.y"
         {
-            (yyval.list) = lcons(makeString((yyvsp[-1].str)), (yyvsp[0].list));
+            (yyval.list) = lcons(resource, makeString(resource, (yyvsp[-1].str)), (yyvsp[0].list));
         }
-#line 35768 "gram.cpp"
+#line 35770 "gram.cpp"
         break;
 
         case 1039: /* attrs: '.' attr_name  */
 #line 7812 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 35774 "gram.cpp"
+#line 35776 "gram.cpp"
         break;
 
         case 1040: /* attrs: attrs '.' attr_name  */
 #line 7814 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeString((yyvsp[0].str)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[0].str)));
         }
-#line 35780 "gram.cpp"
+#line 35782 "gram.cpp"
         break;
 
         case 1041: /* TruncateStmt: TRUNCATE opt_table relation_expr_list opt_restart_seqs opt_drop_behavior  */
 #line 7827 "gram.y"
         {
-            TruncateStmt* n = makeNode(TruncateStmt);
+            TruncateStmt* n = makeNode(resource, TruncateStmt);
             n->relations = (yyvsp[-2].list);
             n->restart_seqs = (yyvsp[-1].boolean);
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 35792 "gram.cpp"
+#line 35794 "gram.cpp"
         break;
 
         case 1042: /* opt_restart_seqs: CONTINUE_P IDENTITY_P  */
@@ -27098,7 +27133,7 @@ yyreduce:
         {
             (yyval.boolean) = false;
         }
-#line 35798 "gram.cpp"
+#line 35800 "gram.cpp"
         break;
 
         case 1043: /* opt_restart_seqs: RESTART IDENTITY_P  */
@@ -27106,7 +27141,7 @@ yyreduce:
         {
             (yyval.boolean) = true;
         }
-#line 35804 "gram.cpp"
+#line 35806 "gram.cpp"
         break;
 
         case 1044: /* opt_restart_seqs: %empty  */
@@ -27114,177 +27149,177 @@ yyreduce:
         {
             (yyval.boolean) = false;
         }
-#line 35810 "gram.cpp"
+#line 35812 "gram.cpp"
         break;
 
         case 1045: /* CommentStmt: COMMENT ON comment_type any_name IS comment_text  */
 #line 7872 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = (yyvsp[-3].objtype);
             n->objname = (yyvsp[-2].list);
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35823 "gram.cpp"
+#line 35825 "gram.cpp"
         break;
 
         case 1046: /* CommentStmt: COMMENT ON AGGREGATE func_name aggr_args IS comment_text  */
 #line 7881 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_AGGREGATE;
             n->objname = (yyvsp[-3].list);
-            n->objargs = extractAggrArgTypes((yyvsp[-2].list));
+            n->objargs = extractAggrArgTypes(resource, (yyvsp[-2].list));
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35836 "gram.cpp"
+#line 35838 "gram.cpp"
         break;
 
         case 1047: /* CommentStmt: COMMENT ON FUNCTION func_name func_args IS comment_text  */
 #line 7890 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_FUNCTION;
             n->objname = (yyvsp[-3].list);
-            n->objargs = extractArgTypes((yyvsp[-2].list));
+            n->objargs = extractArgTypes(resource, (yyvsp[-2].list));
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35849 "gram.cpp"
+#line 35851 "gram.cpp"
         break;
 
         case 1048: /* CommentStmt: COMMENT ON OPERATOR any_operator oper_argtypes IS comment_text  */
 #line 7899 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_OPERATOR;
             n->objname = (yyvsp[-3].list);
             n->objargs = (yyvsp[-2].list);
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35862 "gram.cpp"
+#line 35864 "gram.cpp"
         break;
 
         case 1049: /* CommentStmt: COMMENT ON CONSTRAINT name ON any_name IS comment_text  */
 #line 7908 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_CONSTRAINT;
-            n->objname = lappend((yyvsp[-2].list), makeString((yyvsp[-4].str)));
+            n->objname = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[-4].str)));
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35875 "gram.cpp"
+#line 35877 "gram.cpp"
         break;
 
         case 1050: /* CommentStmt: COMMENT ON RULE name ON any_name IS comment_text  */
 #line 7917 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_RULE;
-            n->objname = lappend((yyvsp[-2].list), makeString((yyvsp[-4].str)));
+            n->objname = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[-4].str)));
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35888 "gram.cpp"
+#line 35890 "gram.cpp"
         break;
 
         case 1051: /* CommentStmt: COMMENT ON RULE name IS comment_text  */
 #line 7926 "gram.y"
         {
             /* Obsolete syntax supported for awhile for compatibility */
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_RULE;
-            n->objname = list_make1(makeString((yyvsp[-2].str)));
+            n->objname = list_make1(resource, makeString(resource, (yyvsp[-2].str)));
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35902 "gram.cpp"
+#line 35904 "gram.cpp"
         break;
 
         case 1052: /* CommentStmt: COMMENT ON TRIGGER name ON any_name IS comment_text  */
 #line 7936 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_TRIGGER;
-            n->objname = lappend((yyvsp[-2].list), makeString((yyvsp[-4].str)));
+            n->objname = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[-4].str)));
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35915 "gram.cpp"
+#line 35917 "gram.cpp"
         break;
 
         case 1053: /* CommentStmt: COMMENT ON OPERATOR CLASS any_name USING access_method IS comment_text  */
 #line 7945 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_OPCLASS;
             n->objname = (yyvsp[-4].list);
-            n->objargs = list_make1(makeString((yyvsp[-2].str)));
+            n->objargs = list_make1(resource, makeString(resource, (yyvsp[-2].str)));
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35928 "gram.cpp"
+#line 35930 "gram.cpp"
         break;
 
         case 1054: /* CommentStmt: COMMENT ON OPERATOR FAMILY any_name USING access_method IS comment_text  */
 #line 7954 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_OPFAMILY;
             n->objname = (yyvsp[-4].list);
-            n->objargs = list_make1(makeString((yyvsp[-2].str)));
+            n->objargs = list_make1(resource, makeString(resource, (yyvsp[-2].str)));
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35941 "gram.cpp"
+#line 35943 "gram.cpp"
         break;
 
         case 1055: /* CommentStmt: COMMENT ON LARGE_P OBJECT_P NumericOnly IS comment_text  */
 #line 7963 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_LARGEOBJECT;
-            n->objname = list_make1((yyvsp[-2].value));
+            n->objname = list_make1(resource, (yyvsp[-2].value));
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35954 "gram.cpp"
+#line 35956 "gram.cpp"
         break;
 
         case 1056: /* CommentStmt: COMMENT ON CAST '(' Typename AS Typename ')' IS comment_text  */
 #line 7972 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_CAST;
-            n->objname = list_make1((yyvsp[-5].typnam));
-            n->objargs = list_make1((yyvsp[-3].typnam));
+            n->objname = list_make1(resource, (yyvsp[-5].typnam));
+            n->objargs = list_make1(resource, (yyvsp[-3].typnam));
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35967 "gram.cpp"
+#line 35969 "gram.cpp"
         break;
 
         case 1057: /* CommentStmt: COMMENT ON opt_procedural LANGUAGE any_name IS comment_text  */
 #line 7981 "gram.y"
         {
-            CommentStmt* n = makeNode(CommentStmt);
+            CommentStmt* n = makeNode(resource, CommentStmt);
             n->objtype = OBJECT_LANGUAGE;
             n->objname = (yyvsp[-2].list);
             n->objargs = NIL;
             n->comment = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 35980 "gram.cpp"
+#line 35982 "gram.cpp"
         break;
 
         case 1058: /* comment_type: COLUMN  */
@@ -27292,7 +27327,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_COLUMN;
         }
-#line 35986 "gram.cpp"
+#line 35988 "gram.cpp"
         break;
 
         case 1059: /* comment_type: DATABASE  */
@@ -27300,7 +27335,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_DATABASE;
         }
-#line 35992 "gram.cpp"
+#line 35994 "gram.cpp"
         break;
 
         case 1060: /* comment_type: SCHEMA  */
@@ -27308,7 +27343,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SCHEMA;
         }
-#line 35998 "gram.cpp"
+#line 36000 "gram.cpp"
         break;
 
         case 1061: /* comment_type: INDEX  */
@@ -27316,7 +27351,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_INDEX;
         }
-#line 36004 "gram.cpp"
+#line 36006 "gram.cpp"
         break;
 
         case 1062: /* comment_type: SEQUENCE  */
@@ -27324,7 +27359,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SEQUENCE;
         }
-#line 36010 "gram.cpp"
+#line 36012 "gram.cpp"
         break;
 
         case 1063: /* comment_type: TABLE  */
@@ -27332,7 +27367,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLE;
         }
-#line 36016 "gram.cpp"
+#line 36018 "gram.cpp"
         break;
 
         case 1064: /* comment_type: DOMAIN_P  */
@@ -27340,7 +27375,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_DOMAIN;
         }
-#line 36022 "gram.cpp"
+#line 36024 "gram.cpp"
         break;
 
         case 1065: /* comment_type: TYPE_P  */
@@ -27348,7 +27383,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TYPE;
         }
-#line 36028 "gram.cpp"
+#line 36030 "gram.cpp"
         break;
 
         case 1066: /* comment_type: VIEW  */
@@ -27356,7 +27391,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_VIEW;
         }
-#line 36034 "gram.cpp"
+#line 36036 "gram.cpp"
         break;
 
         case 1067: /* comment_type: MATERIALIZED VIEW  */
@@ -27364,7 +27399,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_MATVIEW;
         }
-#line 36040 "gram.cpp"
+#line 36042 "gram.cpp"
         break;
 
         case 1068: /* comment_type: COLLATION  */
@@ -27372,7 +27407,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_COLLATION;
         }
-#line 36046 "gram.cpp"
+#line 36048 "gram.cpp"
         break;
 
         case 1069: /* comment_type: CONVERSION_P  */
@@ -27380,7 +27415,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_CONVERSION;
         }
-#line 36052 "gram.cpp"
+#line 36054 "gram.cpp"
         break;
 
         case 1070: /* comment_type: TABLESPACE  */
@@ -27388,7 +27423,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLESPACE;
         }
-#line 36058 "gram.cpp"
+#line 36060 "gram.cpp"
         break;
 
         case 1071: /* comment_type: EXTENSION  */
@@ -27396,7 +27431,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EXTENSION;
         }
-#line 36064 "gram.cpp"
+#line 36066 "gram.cpp"
         break;
 
         case 1072: /* comment_type: ROLE  */
@@ -27404,7 +27439,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_ROLE;
         }
-#line 36070 "gram.cpp"
+#line 36072 "gram.cpp"
         break;
 
         case 1073: /* comment_type: FOREIGN TABLE  */
@@ -27412,7 +27447,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_FOREIGN_TABLE;
         }
-#line 36076 "gram.cpp"
+#line 36078 "gram.cpp"
         break;
 
         case 1074: /* comment_type: SERVER  */
@@ -27420,7 +27455,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_FOREIGN_SERVER;
         }
-#line 36082 "gram.cpp"
+#line 36084 "gram.cpp"
         break;
 
         case 1075: /* comment_type: FOREIGN DATA_P WRAPPER  */
@@ -27428,7 +27463,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_FDW;
         }
-#line 36088 "gram.cpp"
+#line 36090 "gram.cpp"
         break;
 
         case 1076: /* comment_type: EVENT TRIGGER  */
@@ -27436,7 +27471,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EVENT_TRIGGER;
         }
-#line 36094 "gram.cpp"
+#line 36096 "gram.cpp"
         break;
 
         case 1077: /* comment_type: TEXT_P SEARCH CONFIGURATION  */
@@ -27444,7 +27479,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSCONFIGURATION;
         }
-#line 36100 "gram.cpp"
+#line 36102 "gram.cpp"
         break;
 
         case 1078: /* comment_type: TEXT_P SEARCH DICTIONARY  */
@@ -27452,7 +27487,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSDICTIONARY;
         }
-#line 36106 "gram.cpp"
+#line 36108 "gram.cpp"
         break;
 
         case 1079: /* comment_type: TEXT_P SEARCH PARSER  */
@@ -27460,7 +27495,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSPARSER;
         }
-#line 36112 "gram.cpp"
+#line 36114 "gram.cpp"
         break;
 
         case 1080: /* comment_type: TEXT_P SEARCH TEMPLATE  */
@@ -27468,7 +27503,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TSTEMPLATE;
         }
-#line 36118 "gram.cpp"
+#line 36120 "gram.cpp"
         break;
 
         case 1081: /* comment_type: RESOURCE QUEUE  */
@@ -27476,7 +27511,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_RESQUEUE;
         }
-#line 36124 "gram.cpp"
+#line 36126 "gram.cpp"
         break;
 
         case 1082: /* comment_type: RESOURCE GROUP_P  */
@@ -27484,7 +27519,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_RESGROUP;
         }
-#line 36130 "gram.cpp"
+#line 36132 "gram.cpp"
         break;
 
         case 1083: /* comment_text: Sconst  */
@@ -27492,7 +27527,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 36136 "gram.cpp"
+#line 36138 "gram.cpp"
         break;
 
         case 1084: /* comment_text: NULL_P  */
@@ -27500,13 +27535,13 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 36142 "gram.cpp"
+#line 36144 "gram.cpp"
         break;
 
         case 1085: /* SecLabelStmt: SECURITY LABEL opt_provider ON security_label_type any_name IS security_label  */
 #line 8037 "gram.y"
         {
-            SecLabelStmt* n = makeNode(SecLabelStmt);
+            SecLabelStmt* n = makeNode(resource, SecLabelStmt);
             n->provider = (yyvsp[-5].str);
             n->objtype = (yyvsp[-3].objtype);
             n->objname = (yyvsp[-2].list);
@@ -27514,55 +27549,55 @@ yyreduce:
             n->label = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36156 "gram.cpp"
+#line 36158 "gram.cpp"
         break;
 
         case 1086: /* SecLabelStmt: SECURITY LABEL opt_provider ON AGGREGATE func_name aggr_args IS security_label  */
 #line 8048 "gram.y"
         {
-            SecLabelStmt* n = makeNode(SecLabelStmt);
+            SecLabelStmt* n = makeNode(resource, SecLabelStmt);
             n->provider = (yyvsp[-6].str);
             n->objtype = OBJECT_AGGREGATE;
             n->objname = (yyvsp[-3].list);
-            n->objargs = extractAggrArgTypes((yyvsp[-2].list));
+            n->objargs = extractAggrArgTypes(resource, (yyvsp[-2].list));
             n->label = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36170 "gram.cpp"
+#line 36172 "gram.cpp"
         break;
 
         case 1087: /* SecLabelStmt: SECURITY LABEL opt_provider ON FUNCTION func_name func_args IS security_label  */
 #line 8059 "gram.y"
         {
-            SecLabelStmt* n = makeNode(SecLabelStmt);
+            SecLabelStmt* n = makeNode(resource, SecLabelStmt);
             n->provider = (yyvsp[-6].str);
             n->objtype = OBJECT_FUNCTION;
             n->objname = (yyvsp[-3].list);
-            n->objargs = extractArgTypes((yyvsp[-2].list));
+            n->objargs = extractArgTypes(resource, (yyvsp[-2].list));
             n->label = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36184 "gram.cpp"
+#line 36186 "gram.cpp"
         break;
 
         case 1088: /* SecLabelStmt: SECURITY LABEL opt_provider ON LARGE_P OBJECT_P NumericOnly IS security_label  */
 #line 8070 "gram.y"
         {
-            SecLabelStmt* n = makeNode(SecLabelStmt);
+            SecLabelStmt* n = makeNode(resource, SecLabelStmt);
             n->provider = (yyvsp[-6].str);
             n->objtype = OBJECT_LARGEOBJECT;
-            n->objname = list_make1((yyvsp[-2].value));
+            n->objname = list_make1(resource, (yyvsp[-2].value));
             n->objargs = NIL;
             n->label = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36198 "gram.cpp"
+#line 36200 "gram.cpp"
         break;
 
         case 1089: /* SecLabelStmt: SECURITY LABEL opt_provider ON opt_procedural LANGUAGE any_name IS security_label  */
 #line 8081 "gram.y"
         {
-            SecLabelStmt* n = makeNode(SecLabelStmt);
+            SecLabelStmt* n = makeNode(resource, SecLabelStmt);
             n->provider = (yyvsp[-6].str);
             n->objtype = OBJECT_LANGUAGE;
             n->objname = (yyvsp[-2].list);
@@ -27570,7 +27605,7 @@ yyreduce:
             n->label = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36212 "gram.cpp"
+#line 36214 "gram.cpp"
         break;
 
         case 1090: /* opt_provider: FOR NonReservedWord_or_Sconst  */
@@ -27578,7 +27613,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 36218 "gram.cpp"
+#line 36220 "gram.cpp"
         break;
 
         case 1091: /* opt_provider: %empty  */
@@ -27586,7 +27621,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 36224 "gram.cpp"
+#line 36226 "gram.cpp"
         break;
 
         case 1092: /* security_label_type: COLUMN  */
@@ -27594,7 +27629,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_COLUMN;
         }
-#line 36230 "gram.cpp"
+#line 36232 "gram.cpp"
         break;
 
         case 1093: /* security_label_type: DATABASE  */
@@ -27602,7 +27637,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_DATABASE;
         }
-#line 36236 "gram.cpp"
+#line 36238 "gram.cpp"
         break;
 
         case 1094: /* security_label_type: EVENT TRIGGER  */
@@ -27610,7 +27645,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_EVENT_TRIGGER;
         }
-#line 36242 "gram.cpp"
+#line 36244 "gram.cpp"
         break;
 
         case 1095: /* security_label_type: FOREIGN TABLE  */
@@ -27618,7 +27653,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_FOREIGN_TABLE;
         }
-#line 36248 "gram.cpp"
+#line 36250 "gram.cpp"
         break;
 
         case 1096: /* security_label_type: SCHEMA  */
@@ -27626,7 +27661,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SCHEMA;
         }
-#line 36254 "gram.cpp"
+#line 36256 "gram.cpp"
         break;
 
         case 1097: /* security_label_type: SEQUENCE  */
@@ -27634,7 +27669,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_SEQUENCE;
         }
-#line 36260 "gram.cpp"
+#line 36262 "gram.cpp"
         break;
 
         case 1098: /* security_label_type: TABLE  */
@@ -27642,7 +27677,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLE;
         }
-#line 36266 "gram.cpp"
+#line 36268 "gram.cpp"
         break;
 
         case 1099: /* security_label_type: DOMAIN_P  */
@@ -27650,7 +27685,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TYPE;
         }
-#line 36272 "gram.cpp"
+#line 36274 "gram.cpp"
         break;
 
         case 1100: /* security_label_type: ROLE  */
@@ -27658,7 +27693,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_ROLE;
         }
-#line 36278 "gram.cpp"
+#line 36280 "gram.cpp"
         break;
 
         case 1101: /* security_label_type: TABLESPACE  */
@@ -27666,7 +27701,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLESPACE;
         }
-#line 36284 "gram.cpp"
+#line 36286 "gram.cpp"
         break;
 
         case 1102: /* security_label_type: TYPE_P  */
@@ -27674,7 +27709,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TYPE;
         }
-#line 36290 "gram.cpp"
+#line 36292 "gram.cpp"
         break;
 
         case 1103: /* security_label_type: VIEW  */
@@ -27682,7 +27717,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_VIEW;
         }
-#line 36296 "gram.cpp"
+#line 36298 "gram.cpp"
         break;
 
         case 1104: /* security_label_type: MATERIALIZED VIEW  */
@@ -27690,7 +27725,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_MATVIEW;
         }
-#line 36302 "gram.cpp"
+#line 36304 "gram.cpp"
         break;
 
         case 1105: /* security_label: Sconst  */
@@ -27698,7 +27733,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 36308 "gram.cpp"
+#line 36310 "gram.cpp"
         break;
 
         case 1106: /* security_label: NULL_P  */
@@ -27706,7 +27741,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 36314 "gram.cpp"
+#line 36316 "gram.cpp"
         break;
 
         case 1107: /* FetchStmt: FETCH fetch_args  */
@@ -27716,7 +27751,7 @@ yyreduce:
             n->ismove = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 36324 "gram.cpp"
+#line 36326 "gram.cpp"
         break;
 
         case 1108: /* FetchStmt: MOVE fetch_args  */
@@ -27726,233 +27761,233 @@ yyreduce:
             n->ismove = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 36334 "gram.cpp"
+#line 36336 "gram.cpp"
         break;
 
         case 1109: /* fetch_args: cursor_name  */
 #line 8138 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36346 "gram.cpp"
+#line 36348 "gram.cpp"
         break;
 
         case 1110: /* fetch_args: from_in cursor_name  */
 #line 8146 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36358 "gram.cpp"
+#line 36360 "gram.cpp"
         break;
 
         case 1111: /* fetch_args: NEXT opt_from_in cursor_name  */
 #line 8154 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36370 "gram.cpp"
+#line 36372 "gram.cpp"
         break;
 
         case 1112: /* fetch_args: PRIOR opt_from_in cursor_name  */
 #line 8162 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_BACKWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36382 "gram.cpp"
+#line 36384 "gram.cpp"
         break;
 
         case 1113: /* fetch_args: FIRST_P opt_from_in cursor_name  */
 #line 8170 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_ABSOLUTE;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36394 "gram.cpp"
+#line 36396 "gram.cpp"
         break;
 
         case 1114: /* fetch_args: LAST_P opt_from_in cursor_name  */
 #line 8178 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_ABSOLUTE;
             n->howMany = -1;
             (yyval.node) = (Node*) n;
         }
-#line 36406 "gram.cpp"
+#line 36408 "gram.cpp"
         break;
 
         case 1115: /* fetch_args: ABSOLUTE_P SignedIconst opt_from_in cursor_name  */
 #line 8186 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_ABSOLUTE;
             n->howMany = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 36418 "gram.cpp"
+#line 36420 "gram.cpp"
         break;
 
         case 1116: /* fetch_args: RELATIVE_P SignedIconst opt_from_in cursor_name  */
 #line 8194 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_RELATIVE;
             n->howMany = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 36430 "gram.cpp"
+#line 36432 "gram.cpp"
         break;
 
         case 1117: /* fetch_args: SignedIconst opt_from_in cursor_name  */
 #line 8202 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 36442 "gram.cpp"
+#line 36444 "gram.cpp"
         break;
 
         case 1118: /* fetch_args: ALL opt_from_in cursor_name  */
 #line 8210 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = FETCH_ALL;
             (yyval.node) = (Node*) n;
         }
-#line 36454 "gram.cpp"
+#line 36456 "gram.cpp"
         break;
 
         case 1119: /* fetch_args: FORWARD opt_from_in cursor_name  */
 #line 8218 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36466 "gram.cpp"
+#line 36468 "gram.cpp"
         break;
 
         case 1120: /* fetch_args: FORWARD SignedIconst opt_from_in cursor_name  */
 #line 8226 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 36478 "gram.cpp"
+#line 36480 "gram.cpp"
         break;
 
         case 1121: /* fetch_args: FORWARD ALL opt_from_in cursor_name  */
 #line 8234 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_FORWARD;
             n->howMany = FETCH_ALL;
             (yyval.node) = (Node*) n;
         }
-#line 36490 "gram.cpp"
+#line 36492 "gram.cpp"
         break;
 
         case 1122: /* fetch_args: BACKWARD opt_from_in cursor_name  */
 #line 8242 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_BACKWARD;
             n->howMany = 1;
             (yyval.node) = (Node*) n;
         }
-#line 36502 "gram.cpp"
+#line 36504 "gram.cpp"
         break;
 
         case 1123: /* fetch_args: BACKWARD SignedIconst opt_from_in cursor_name  */
 #line 8250 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_BACKWARD;
             n->howMany = (yyvsp[-2].ival);
             (yyval.node) = (Node*) n;
         }
-#line 36514 "gram.cpp"
+#line 36516 "gram.cpp"
         break;
 
         case 1124: /* fetch_args: BACKWARD ALL opt_from_in cursor_name  */
 #line 8258 "gram.y"
         {
-            FetchStmt* n = makeNode(FetchStmt);
+            FetchStmt* n = makeNode(resource, FetchStmt);
             n->portalname = (yyvsp[0].str);
             n->direction = FETCH_BACKWARD;
             n->howMany = FETCH_ALL;
             (yyval.node) = (Node*) n;
         }
-#line 36526 "gram.cpp"
+#line 36528 "gram.cpp"
         break;
 
         case 1125: /* from_in: FROM  */
 #line 8267 "gram.y"
         {
         }
-#line 36532 "gram.cpp"
+#line 36534 "gram.cpp"
         break;
 
         case 1126: /* from_in: IN_P  */
 #line 8268 "gram.y"
         {
         }
-#line 36538 "gram.cpp"
+#line 36540 "gram.cpp"
         break;
 
         case 1127: /* opt_from_in: from_in  */
 #line 8271 "gram.y"
         {
         }
-#line 36544 "gram.cpp"
+#line 36546 "gram.cpp"
         break;
 
         case 1128: /* opt_from_in: %empty  */
 #line 8272 "gram.y"
         {
         }
-#line 36550 "gram.cpp"
+#line 36552 "gram.cpp"
         break;
 
         case 1129: /* GrantStmt: GRANT privileges ON privilege_target TO grantee_list opt_grant_grant_option  */
 #line 8284 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = true;
             n->privileges = (yyvsp[-5].list);
             n->targtype = ((yyvsp[-3].privtarget))->targtype;
@@ -27962,13 +27997,13 @@ yyreduce:
             n->grant_option = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 36566 "gram.cpp"
+#line 36568 "gram.cpp"
         break;
 
         case 1130: /* RevokeStmt: REVOKE privileges ON privilege_target FROM grantee_list opt_drop_behavior  */
 #line 8300 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = false;
             n->grant_option = false;
             n->privileges = (yyvsp[-5].list);
@@ -27979,13 +28014,13 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 36583 "gram.cpp"
+#line 36585 "gram.cpp"
         break;
 
         case 1131: /* RevokeStmt: REVOKE GRANT OPTION FOR privileges ON privilege_target FROM grantee_list opt_drop_behavior  */
 #line 8314 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = false;
             n->grant_option = true;
             n->privileges = (yyvsp[-5].list);
@@ -27996,7 +28031,7 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 36600 "gram.cpp"
+#line 36602 "gram.cpp"
         break;
 
         case 1132: /* privileges: privilege_list  */
@@ -28004,7 +28039,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 36606 "gram.cpp"
+#line 36608 "gram.cpp"
         break;
 
         case 1133: /* privileges: ALL  */
@@ -28012,7 +28047,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 36612 "gram.cpp"
+#line 36614 "gram.cpp"
         break;
 
         case 1134: /* privileges: ALL PRIVILEGES  */
@@ -28020,315 +28055,315 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 36618 "gram.cpp"
+#line 36620 "gram.cpp"
         break;
 
         case 1135: /* privileges: ALL '(' columnList ')'  */
 #line 8345 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
+            AccessPriv* n = makeNode(resource, AccessPriv);
             n->priv_name = NULL;
             n->cols = (yyvsp[-1].list);
-            (yyval.list) = list_make1(n);
+            (yyval.list) = list_make1(resource, n);
         }
-#line 36629 "gram.cpp"
+#line 36631 "gram.cpp"
         break;
 
         case 1136: /* privileges: ALL PRIVILEGES '(' columnList ')'  */
 #line 8352 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
+            AccessPriv* n = makeNode(resource, AccessPriv);
             n->priv_name = NULL;
             n->cols = (yyvsp[-1].list);
-            (yyval.list) = list_make1(n);
+            (yyval.list) = list_make1(resource, n);
         }
-#line 36640 "gram.cpp"
+#line 36642 "gram.cpp"
         break;
 
         case 1137: /* privilege_list: privilege  */
 #line 8360 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].accesspriv));
+            (yyval.list) = list_make1(resource, (yyvsp[0].accesspriv));
         }
-#line 36646 "gram.cpp"
+#line 36648 "gram.cpp"
         break;
 
         case 1138: /* privilege_list: privilege_list ',' privilege  */
 #line 8361 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].accesspriv));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].accesspriv));
         }
-#line 36652 "gram.cpp"
+#line 36654 "gram.cpp"
         break;
 
         case 1139: /* privilege: SELECT opt_column_list  */
 #line 8365 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
-            n->priv_name = pstrdup((yyvsp[-1].keyword));
+            AccessPriv* n = makeNode(resource, AccessPriv);
+            n->priv_name = pstrdup(resource, (yyvsp[-1].keyword));
             n->cols = (yyvsp[0].list);
             (yyval.accesspriv) = n;
         }
-#line 36663 "gram.cpp"
+#line 36665 "gram.cpp"
         break;
 
         case 1140: /* privilege: REFERENCES opt_column_list  */
 #line 8372 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
-            n->priv_name = pstrdup((yyvsp[-1].keyword));
+            AccessPriv* n = makeNode(resource, AccessPriv);
+            n->priv_name = pstrdup(resource, (yyvsp[-1].keyword));
             n->cols = (yyvsp[0].list);
             (yyval.accesspriv) = n;
         }
-#line 36674 "gram.cpp"
+#line 36676 "gram.cpp"
         break;
 
         case 1141: /* privilege: CREATE opt_column_list  */
 #line 8379 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
-            n->priv_name = pstrdup((yyvsp[-1].keyword));
+            AccessPriv* n = makeNode(resource, AccessPriv);
+            n->priv_name = pstrdup(resource, (yyvsp[-1].keyword));
             n->cols = (yyvsp[0].list);
             (yyval.accesspriv) = n;
         }
-#line 36685 "gram.cpp"
+#line 36687 "gram.cpp"
         break;
 
         case 1142: /* privilege: ColId opt_column_list  */
 #line 8386 "gram.y"
         {
-            AccessPriv* n = makeNode(AccessPriv);
+            AccessPriv* n = makeNode(resource, AccessPriv);
             n->priv_name = (yyvsp[-1].str);
             n->cols = (yyvsp[0].list);
             (yyval.accesspriv) = n;
         }
-#line 36696 "gram.cpp"
+#line 36698 "gram.cpp"
         break;
 
         case 1143: /* privilege_target: qualified_name_list  */
 #line 8400 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_RELATION;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36708 "gram.cpp"
+#line 36710 "gram.cpp"
         break;
 
         case 1144: /* privilege_target: TABLE qualified_name_list  */
 #line 8408 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_RELATION;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36720 "gram.cpp"
+#line 36722 "gram.cpp"
         break;
 
         case 1145: /* privilege_target: SEQUENCE qualified_name_list  */
 #line 8416 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_SEQUENCE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36732 "gram.cpp"
+#line 36734 "gram.cpp"
         break;
 
         case 1146: /* privilege_target: FOREIGN DATA_P WRAPPER name_list  */
 #line 8424 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_FDW;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36744 "gram.cpp"
+#line 36746 "gram.cpp"
         break;
 
         case 1147: /* privilege_target: FOREIGN SERVER name_list  */
 #line 8432 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_FOREIGN_SERVER;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36756 "gram.cpp"
+#line 36758 "gram.cpp"
         break;
 
         case 1148: /* privilege_target: FUNCTION function_with_argtypes_list  */
 #line 8440 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_FUNCTION;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36768 "gram.cpp"
+#line 36770 "gram.cpp"
         break;
 
         case 1149: /* privilege_target: DATABASE name_list  */
 #line 8448 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_DATABASE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36780 "gram.cpp"
+#line 36782 "gram.cpp"
         break;
 
         case 1150: /* privilege_target: DOMAIN_P any_name_list  */
 #line 8456 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_DOMAIN;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36792 "gram.cpp"
+#line 36794 "gram.cpp"
         break;
 
         case 1151: /* privilege_target: LANGUAGE name_list  */
 #line 8464 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_LANGUAGE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36804 "gram.cpp"
+#line 36806 "gram.cpp"
         break;
 
         case 1152: /* privilege_target: LARGE_P OBJECT_P NumericOnly_list  */
 #line 8472 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_LARGEOBJECT;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36816 "gram.cpp"
+#line 36818 "gram.cpp"
         break;
 
         case 1153: /* privilege_target: SCHEMA name_list  */
 #line 8480 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_NAMESPACE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36828 "gram.cpp"
+#line 36830 "gram.cpp"
         break;
 
         case 1154: /* privilege_target: TABLESPACE name_list  */
 #line 8488 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_TABLESPACE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36840 "gram.cpp"
+#line 36842 "gram.cpp"
         break;
 
         case 1155: /* privilege_target: PROTOCOL name_list  */
 #line 8496 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_EXTPROTOCOL;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36852 "gram.cpp"
+#line 36854 "gram.cpp"
         break;
 
         case 1156: /* privilege_target: TYPE_P any_name_list  */
 #line 8504 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_OBJECT;
             n->objtype = ACL_OBJECT_TYPE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36864 "gram.cpp"
+#line 36866 "gram.cpp"
         break;
 
         case 1157: /* privilege_target: ALL TABLES IN_P SCHEMA name_list  */
 #line 8512 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
             n->objtype = ACL_OBJECT_RELATION;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36876 "gram.cpp"
+#line 36878 "gram.cpp"
         break;
 
         case 1158: /* privilege_target: ALL SEQUENCES IN_P SCHEMA name_list  */
 #line 8520 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
             n->objtype = ACL_OBJECT_SEQUENCE;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36888 "gram.cpp"
+#line 36890 "gram.cpp"
         break;
 
         case 1159: /* privilege_target: ALL FUNCTIONS IN_P SCHEMA name_list  */
 #line 8528 "gram.y"
         {
-            PrivTarget* n = (PrivTarget*) palloc(sizeof(PrivTarget));
+            PrivTarget* n = (PrivTarget*) palloc(resource, sizeof(PrivTarget));
             n->targtype = ACL_TARGET_ALL_IN_SCHEMA;
             n->objtype = ACL_OBJECT_FUNCTION;
             n->objs = (yyvsp[0].list);
             (yyval.privtarget) = n;
         }
-#line 36900 "gram.cpp"
+#line 36902 "gram.cpp"
         break;
 
         case 1160: /* grantee_list: grantee  */
 #line 8539 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 36906 "gram.cpp"
+#line 36908 "gram.cpp"
         break;
 
         case 1161: /* grantee_list: grantee_list ',' grantee  */
 #line 8540 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 36912 "gram.cpp"
+#line 36914 "gram.cpp"
         break;
 
         case 1162: /* grantee: RoleId  */
 #line 8544 "gram.y"
         {
-            PrivGrantee* n = makeNode(PrivGrantee);
+            PrivGrantee* n = makeNode(resource, PrivGrantee);
             /* This hack lets us avoid reserving PUBLIC as a keyword*/
             if (strcmp((yyvsp[0].str), "public") == 0)
                 n->rolname = NULL;
@@ -28336,13 +28371,13 @@ yyreduce:
                 n->rolname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36926 "gram.cpp"
+#line 36928 "gram.cpp"
         break;
 
         case 1163: /* grantee: GROUP_P RoleId  */
 #line 8554 "gram.y"
         {
-            PrivGrantee* n = makeNode(PrivGrantee);
+            PrivGrantee* n = makeNode(resource, PrivGrantee);
             /* Treat GROUP PUBLIC as a synonym for PUBLIC */
             if (strcmp((yyvsp[0].str), "public") == 0)
                 n->rolname = NULL;
@@ -28350,7 +28385,7 @@ yyreduce:
                 n->rolname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36940 "gram.cpp"
+#line 36942 "gram.cpp"
         break;
 
         case 1164: /* opt_grant_grant_option: WITH GRANT OPTION  */
@@ -28358,7 +28393,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 36946 "gram.cpp"
+#line 36948 "gram.cpp"
         break;
 
         case 1165: /* opt_grant_grant_option: %empty  */
@@ -28366,40 +28401,40 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 36952 "gram.cpp"
+#line 36954 "gram.cpp"
         break;
 
         case 1166: /* function_with_argtypes_list: function_with_argtypes  */
 #line 8572 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].funwithargs));
+            (yyval.list) = list_make1(resource, (yyvsp[0].funwithargs));
         }
-#line 36958 "gram.cpp"
+#line 36960 "gram.cpp"
         break;
 
         case 1167: /* function_with_argtypes_list: function_with_argtypes_list ',' function_with_argtypes  */
 #line 8574 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].funwithargs));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].funwithargs));
         }
-#line 36964 "gram.cpp"
+#line 36966 "gram.cpp"
         break;
 
         case 1168: /* function_with_argtypes: func_name func_args  */
 #line 8579 "gram.y"
         {
-            FuncWithArgs* n = makeNode(FuncWithArgs);
+            FuncWithArgs* n = makeNode(resource, FuncWithArgs);
             n->funcname = (yyvsp[-1].list);
-            n->funcargs = extractArgTypes((yyvsp[0].list));
+            n->funcargs = extractArgTypes(resource, (yyvsp[0].list));
             (yyval.funwithargs) = n;
         }
-#line 36975 "gram.cpp"
+#line 36977 "gram.cpp"
         break;
 
         case 1169: /* GrantRoleStmt: GRANT privilege_list TO role_list opt_grant_admin_option opt_granted_by  */
 #line 8595 "gram.y"
         {
-            GrantRoleStmt* n = makeNode(GrantRoleStmt);
+            GrantRoleStmt* n = makeNode(resource, GrantRoleStmt);
             n->is_grant = true;
             n->granted_roles = (yyvsp[-4].list);
             n->grantee_roles = (yyvsp[-2].list);
@@ -28407,13 +28442,13 @@ yyreduce:
             n->grantor = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 36989 "gram.cpp"
+#line 36991 "gram.cpp"
         break;
 
         case 1170: /* RevokeRoleStmt: REVOKE privilege_list FROM role_list opt_granted_by opt_drop_behavior  */
 #line 8608 "gram.y"
         {
-            GrantRoleStmt* n = makeNode(GrantRoleStmt);
+            GrantRoleStmt* n = makeNode(resource, GrantRoleStmt);
             n->is_grant = false;
             n->admin_opt = false;
             n->granted_roles = (yyvsp[-4].list);
@@ -28421,13 +28456,13 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 37003 "gram.cpp"
+#line 37005 "gram.cpp"
         break;
 
         case 1171: /* RevokeRoleStmt: REVOKE ADMIN OPTION FOR privilege_list FROM role_list opt_granted_by opt_drop_behavior  */
 #line 8618 "gram.y"
         {
-            GrantRoleStmt* n = makeNode(GrantRoleStmt);
+            GrantRoleStmt* n = makeNode(resource, GrantRoleStmt);
             n->is_grant = false;
             n->admin_opt = true;
             n->granted_roles = (yyvsp[-4].list);
@@ -28435,7 +28470,7 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 37017 "gram.cpp"
+#line 37019 "gram.cpp"
         break;
 
         case 1172: /* opt_grant_admin_option: WITH ADMIN OPTION  */
@@ -28443,7 +28478,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 37023 "gram.cpp"
+#line 37025 "gram.cpp"
         break;
 
         case 1173: /* opt_grant_admin_option: %empty  */
@@ -28451,7 +28486,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 37029 "gram.cpp"
+#line 37031 "gram.cpp"
         break;
 
         case 1174: /* opt_granted_by: GRANTED BY RoleId  */
@@ -28459,7 +28494,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 37035 "gram.cpp"
+#line 37037 "gram.cpp"
         break;
 
         case 1175: /* opt_granted_by: %empty  */
@@ -28467,26 +28502,26 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 37041 "gram.cpp"
+#line 37043 "gram.cpp"
         break;
 
         case 1176: /* AlterDefaultPrivilegesStmt: ALTER DEFAULT PRIVILEGES DefACLOptionList DefACLAction  */
 #line 8645 "gram.y"
         {
-            AlterDefaultPrivilegesStmt* n = makeNode(AlterDefaultPrivilegesStmt);
+            AlterDefaultPrivilegesStmt* n = makeNode(resource, AlterDefaultPrivilegesStmt);
             n->options = (yyvsp[-1].list);
             n->action = (GrantStmt*) (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 37052 "gram.cpp"
+#line 37054 "gram.cpp"
         break;
 
         case 1177: /* DefACLOptionList: DefACLOptionList DefACLOption  */
 #line 8654 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 37058 "gram.cpp"
+#line 37060 "gram.cpp"
         break;
 
         case 1178: /* DefACLOptionList: %empty  */
@@ -28494,37 +28529,37 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37064 "gram.cpp"
+#line 37066 "gram.cpp"
         break;
 
         case 1179: /* DefACLOption: IN_P SCHEMA name_list  */
 #line 8660 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("schemas", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "schemas", (Node*) (yyvsp[0].list));
         }
-#line 37072 "gram.cpp"
+#line 37074 "gram.cpp"
         break;
 
         case 1180: /* DefACLOption: FOR ROLE role_list  */
 #line 8664 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("roles", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "roles", (Node*) (yyvsp[0].list));
         }
-#line 37080 "gram.cpp"
+#line 37082 "gram.cpp"
         break;
 
         case 1181: /* DefACLOption: FOR USER role_list  */
 #line 8668 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("roles", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "roles", (Node*) (yyvsp[0].list));
         }
-#line 37088 "gram.cpp"
+#line 37090 "gram.cpp"
         break;
 
         case 1182: /* DefACLAction: GRANT privileges ON defacl_privilege_target TO grantee_list opt_grant_grant_option  */
 #line 8680 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = true;
             n->privileges = (yyvsp[-5].list);
             n->targtype = ACL_TARGET_DEFAULTS;
@@ -28534,13 +28569,13 @@ yyreduce:
             n->grant_option = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 37104 "gram.cpp"
+#line 37106 "gram.cpp"
         break;
 
         case 1183: /* DefACLAction: REVOKE privileges ON defacl_privilege_target FROM grantee_list opt_drop_behavior  */
 #line 8693 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = false;
             n->grant_option = false;
             n->privileges = (yyvsp[-5].list);
@@ -28551,13 +28586,13 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 37121 "gram.cpp"
+#line 37123 "gram.cpp"
         break;
 
         case 1184: /* DefACLAction: REVOKE GRANT OPTION FOR privileges ON defacl_privilege_target FROM grantee_list opt_drop_behavior  */
 #line 8707 "gram.y"
         {
-            GrantStmt* n = makeNode(GrantStmt);
+            GrantStmt* n = makeNode(resource, GrantStmt);
             n->is_grant = false;
             n->grant_option = true;
             n->privileges = (yyvsp[-5].list);
@@ -28568,7 +28603,7 @@ yyreduce:
             n->behavior = (yyvsp[0].dbehavior);
             (yyval.node) = (Node*) n;
         }
-#line 37138 "gram.cpp"
+#line 37140 "gram.cpp"
         break;
 
         case 1185: /* defacl_privilege_target: TABLES  */
@@ -28576,7 +28611,7 @@ yyreduce:
         {
             (yyval.ival) = ACL_OBJECT_RELATION;
         }
-#line 37144 "gram.cpp"
+#line 37146 "gram.cpp"
         break;
 
         case 1186: /* defacl_privilege_target: FUNCTIONS  */
@@ -28584,7 +28619,7 @@ yyreduce:
         {
             (yyval.ival) = ACL_OBJECT_FUNCTION;
         }
-#line 37150 "gram.cpp"
+#line 37152 "gram.cpp"
         break;
 
         case 1187: /* defacl_privilege_target: SEQUENCES  */
@@ -28592,7 +28627,7 @@ yyreduce:
         {
             (yyval.ival) = ACL_OBJECT_SEQUENCE;
         }
-#line 37156 "gram.cpp"
+#line 37158 "gram.cpp"
         break;
 
         case 1188: /* defacl_privilege_target: TYPES_P  */
@@ -28600,13 +28635,13 @@ yyreduce:
         {
             (yyval.ival) = ACL_OBJECT_TYPE;
         }
-#line 37162 "gram.cpp"
+#line 37164 "gram.cpp"
         break;
 
         case 1189: /* IndexStmt: CREATE opt_unique INDEX opt_concurrently opt_index_name ON qualified_name access_method_clause '(' index_params ')' opt_reloptions OptTableSpace where_clause  */
 #line 8740 "gram.y"
         {
-            IndexStmt* n = makeNode(IndexStmt);
+            IndexStmt* n = makeNode(resource, IndexStmt);
             n->unique = (yyvsp[-12].boolean);
             n->concurrent = (yyvsp[-10].boolean);
             n->idxname = (yyvsp[-9].str);
@@ -28633,7 +28668,7 @@ yyreduce:
 
             (yyval.node) = (Node*) n;
         }
-#line 37197 "gram.cpp"
+#line 37199 "gram.cpp"
         break;
 
         case 1190: /* opt_unique: UNIQUE  */
@@ -28641,7 +28676,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 37203 "gram.cpp"
+#line 37205 "gram.cpp"
         break;
 
         case 1191: /* opt_unique: %empty  */
@@ -28649,7 +28684,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 37209 "gram.cpp"
+#line 37211 "gram.cpp"
         break;
 
         case 1192: /* opt_concurrently: CONCURRENTLY  */
@@ -28657,7 +28692,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 37215 "gram.cpp"
+#line 37217 "gram.cpp"
         break;
 
         case 1193: /* opt_concurrently: %empty  */
@@ -28665,7 +28700,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 37221 "gram.cpp"
+#line 37223 "gram.cpp"
         break;
 
         case 1194: /* opt_index_name: index_name  */
@@ -28673,7 +28708,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 37227 "gram.cpp"
+#line 37229 "gram.cpp"
         break;
 
         case 1195: /* opt_index_name: %empty  */
@@ -28681,7 +28716,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 37233 "gram.cpp"
+#line 37235 "gram.cpp"
         break;
 
         case 1196: /* access_method_clause: USING access_method  */
@@ -28689,7 +28724,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 37239 "gram.cpp"
+#line 37241 "gram.cpp"
         break;
 
         case 1197: /* access_method_clause: %empty  */
@@ -28697,29 +28732,29 @@ yyreduce:
         {
             (yyval.str) = DEFAULT_INDEX_TYPE;
         }
-#line 37245 "gram.cpp"
+#line 37247 "gram.cpp"
         break;
 
         case 1198: /* index_params: index_elem  */
 #line 8792 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].ielem));
+            (yyval.list) = list_make1(resource, (yyvsp[0].ielem));
         }
-#line 37251 "gram.cpp"
+#line 37253 "gram.cpp"
         break;
 
         case 1199: /* index_params: index_params ',' index_elem  */
 #line 8793 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].ielem));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].ielem));
         }
-#line 37257 "gram.cpp"
+#line 37259 "gram.cpp"
         break;
 
         case 1200: /* index_elem: ColId opt_collate opt_class opt_asc_desc opt_nulls_order  */
 #line 8802 "gram.y"
         {
-            (yyval.ielem) = makeNode(IndexElem);
+            (yyval.ielem) = makeNode(resource, IndexElem);
             (yyval.ielem)->name = (yyvsp[-4].str);
             (yyval.ielem)->expr = NULL;
             (yyval.ielem)->indexcolname = NULL;
@@ -28728,13 +28763,13 @@ yyreduce:
             (yyval.ielem)->ordering = static_cast<SortByDir>((yyvsp[-1].ival));
             (yyval.ielem)->nulls_ordering = static_cast<SortByNulls>((yyvsp[0].ival));
         }
-#line 37272 "gram.cpp"
+#line 37274 "gram.cpp"
         break;
 
         case 1201: /* index_elem: func_expr_windowless opt_collate opt_class opt_asc_desc opt_nulls_order  */
 #line 8813 "gram.y"
         {
-            (yyval.ielem) = makeNode(IndexElem);
+            (yyval.ielem) = makeNode(resource, IndexElem);
             (yyval.ielem)->name = NULL;
             (yyval.ielem)->expr = (yyvsp[-4].node);
             (yyval.ielem)->indexcolname = NULL;
@@ -28743,13 +28778,13 @@ yyreduce:
             (yyval.ielem)->ordering = static_cast<SortByDir>((yyvsp[-1].ival));
             (yyval.ielem)->nulls_ordering = static_cast<SortByNulls>((yyvsp[0].ival));
         }
-#line 37287 "gram.cpp"
+#line 37289 "gram.cpp"
         break;
 
         case 1202: /* index_elem: '(' a_expr ')' opt_collate opt_class opt_asc_desc opt_nulls_order  */
 #line 8824 "gram.y"
         {
-            (yyval.ielem) = makeNode(IndexElem);
+            (yyval.ielem) = makeNode(resource, IndexElem);
             (yyval.ielem)->name = NULL;
             (yyval.ielem)->expr = (yyvsp[-5].node);
             (yyval.ielem)->indexcolname = NULL;
@@ -28758,7 +28793,7 @@ yyreduce:
             (yyval.ielem)->ordering = static_cast<SortByDir>((yyvsp[-1].ival));
             (yyval.ielem)->nulls_ordering = static_cast<SortByNulls>((yyvsp[0].ival));
         }
-#line 37302 "gram.cpp"
+#line 37304 "gram.cpp"
         break;
 
         case 1203: /* opt_collate: COLLATE any_name  */
@@ -28766,7 +28801,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 37308 "gram.cpp"
+#line 37310 "gram.cpp"
         break;
 
         case 1204: /* opt_collate: %empty  */
@@ -28774,7 +28809,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37314 "gram.cpp"
+#line 37316 "gram.cpp"
         break;
 
         case 1205: /* opt_class: any_name  */
@@ -28782,7 +28817,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 37320 "gram.cpp"
+#line 37322 "gram.cpp"
         break;
 
         case 1206: /* opt_class: USING any_name  */
@@ -28790,7 +28825,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 37326 "gram.cpp"
+#line 37328 "gram.cpp"
         break;
 
         case 1207: /* opt_class: %empty  */
@@ -28798,7 +28833,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37332 "gram.cpp"
+#line 37334 "gram.cpp"
         break;
 
         case 1208: /* opt_asc_desc: ASC  */
@@ -28806,7 +28841,7 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_ASC;
         }
-#line 37338 "gram.cpp"
+#line 37340 "gram.cpp"
         break;
 
         case 1209: /* opt_asc_desc: DESC  */
@@ -28814,7 +28849,7 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_DESC;
         }
-#line 37344 "gram.cpp"
+#line 37346 "gram.cpp"
         break;
 
         case 1210: /* opt_asc_desc: %empty  */
@@ -28822,7 +28857,7 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_DEFAULT;
         }
-#line 37350 "gram.cpp"
+#line 37352 "gram.cpp"
         break;
 
         case 1211: /* opt_nulls_order: NULLS_FIRST  */
@@ -28830,7 +28865,7 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_NULLS_FIRST;
         }
-#line 37356 "gram.cpp"
+#line 37358 "gram.cpp"
         break;
 
         case 1212: /* opt_nulls_order: NULLS_LAST  */
@@ -28838,7 +28873,7 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_NULLS_LAST;
         }
-#line 37362 "gram.cpp"
+#line 37364 "gram.cpp"
         break;
 
         case 1213: /* opt_nulls_order: %empty  */
@@ -28846,13 +28881,13 @@ yyreduce:
         {
             (yyval.ival) = SORTBY_NULLS_DEFAULT;
         }
-#line 37368 "gram.cpp"
+#line 37370 "gram.cpp"
         break;
 
         case 1214: /* CreateFunctionStmt: CREATE opt_or_replace FUNCTION func_name func_args_with_defaults RETURNS func_return createfunc_opt_list opt_definition  */
 #line 8870 "gram.y"
         {
-            CreateFunctionStmt* n = makeNode(CreateFunctionStmt);
+            CreateFunctionStmt* n = makeNode(resource, CreateFunctionStmt);
             n->replace = (yyvsp[-7].boolean);
             n->funcname = (yyvsp[-5].list);
             n->parameters = (yyvsp[-4].list);
@@ -28861,29 +28896,29 @@ yyreduce:
             n->withClause = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 37383 "gram.cpp"
+#line 37385 "gram.cpp"
         break;
 
         case 1215: /* CreateFunctionStmt: CREATE opt_or_replace FUNCTION func_name func_args_with_defaults RETURNS TABLE '(' table_func_column_list ')' createfunc_opt_list opt_definition  */
 #line 8882 "gram.y"
         {
-            CreateFunctionStmt* n = makeNode(CreateFunctionStmt);
+            CreateFunctionStmt* n = makeNode(resource, CreateFunctionStmt);
             n->replace = (yyvsp[-10].boolean);
             n->funcname = (yyvsp[-8].list);
             n->parameters = mergeTableFuncParameters((yyvsp[-7].list), (yyvsp[-3].list));
-            n->returnType = TableFuncTypeName((yyvsp[-3].list));
+            n->returnType = TableFuncTypeName(resource, (yyvsp[-3].list));
             n->returnType->location = (yylsp[-5]);
             n->options = (yyvsp[-1].list);
             n->withClause = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 37399 "gram.cpp"
+#line 37401 "gram.cpp"
         break;
 
         case 1216: /* CreateFunctionStmt: CREATE opt_or_replace FUNCTION func_name func_args_with_defaults createfunc_opt_list opt_definition  */
 #line 8895 "gram.y"
         {
-            CreateFunctionStmt* n = makeNode(CreateFunctionStmt);
+            CreateFunctionStmt* n = makeNode(resource, CreateFunctionStmt);
             n->replace = (yyvsp[-5].boolean);
             n->funcname = (yyvsp[-3].list);
             n->parameters = (yyvsp[-2].list);
@@ -28892,7 +28927,7 @@ yyreduce:
             n->withClause = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 37414 "gram.cpp"
+#line 37416 "gram.cpp"
         break;
 
         case 1217: /* opt_or_replace: OR REPLACE  */
@@ -28900,7 +28935,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 37420 "gram.cpp"
+#line 37422 "gram.cpp"
         break;
 
         case 1218: /* opt_or_replace: %empty  */
@@ -28908,7 +28943,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 37426 "gram.cpp"
+#line 37428 "gram.cpp"
         break;
 
         case 1219: /* func_args: '(' func_args_list ')'  */
@@ -28916,7 +28951,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 37432 "gram.cpp"
+#line 37434 "gram.cpp"
         break;
 
         case 1220: /* func_args: '(' ')'  */
@@ -28924,23 +28959,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37438 "gram.cpp"
+#line 37440 "gram.cpp"
         break;
 
         case 1221: /* func_args_list: func_arg  */
 #line 8917 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].fun_param));
+            (yyval.list) = list_make1(resource, (yyvsp[0].fun_param));
         }
-#line 37444 "gram.cpp"
+#line 37446 "gram.cpp"
         break;
 
         case 1222: /* func_args_list: func_args_list ',' func_arg  */
 #line 8918 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].fun_param));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].fun_param));
         }
-#line 37450 "gram.cpp"
+#line 37452 "gram.cpp"
         break;
 
         case 1223: /* func_args_with_defaults: '(' func_args_with_defaults_list ')'  */
@@ -28948,7 +28983,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 37456 "gram.cpp"
+#line 37458 "gram.cpp"
         break;
 
         case 1224: /* func_args_with_defaults: '(' ')'  */
@@ -28956,88 +28991,88 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37462 "gram.cpp"
+#line 37464 "gram.cpp"
         break;
 
         case 1225: /* func_args_with_defaults_list: func_arg_with_default  */
 #line 8931 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].fun_param));
+            (yyval.list) = list_make1(resource, (yyvsp[0].fun_param));
         }
-#line 37468 "gram.cpp"
+#line 37470 "gram.cpp"
         break;
 
         case 1226: /* func_args_with_defaults_list: func_args_with_defaults_list ',' func_arg_with_default  */
 #line 8933 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].fun_param));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].fun_param));
         }
-#line 37474 "gram.cpp"
+#line 37476 "gram.cpp"
         break;
 
         case 1227: /* func_arg: arg_class param_name func_type  */
 #line 8948 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = (yyvsp[-1].str);
             n->argType = (yyvsp[0].typnam);
             n->mode = (yyvsp[-2].fun_param_mode);
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37487 "gram.cpp"
+#line 37489 "gram.cpp"
         break;
 
         case 1228: /* func_arg: param_name arg_class func_type  */
 #line 8957 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = (yyvsp[-2].str);
             n->argType = (yyvsp[0].typnam);
             n->mode = (yyvsp[-1].fun_param_mode);
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37500 "gram.cpp"
+#line 37502 "gram.cpp"
         break;
 
         case 1229: /* func_arg: param_name func_type  */
 #line 8966 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = (yyvsp[-1].str);
             n->argType = (yyvsp[0].typnam);
             n->mode = FUNC_PARAM_IN;
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37513 "gram.cpp"
+#line 37515 "gram.cpp"
         break;
 
         case 1230: /* func_arg: arg_class func_type  */
 #line 8975 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = NULL;
             n->argType = (yyvsp[0].typnam);
             n->mode = (yyvsp[-1].fun_param_mode);
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37526 "gram.cpp"
+#line 37528 "gram.cpp"
         break;
 
         case 1231: /* func_arg: func_type  */
 #line 8984 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = NULL;
             n->argType = (yyvsp[0].typnam);
             n->mode = FUNC_PARAM_IN;
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37539 "gram.cpp"
+#line 37541 "gram.cpp"
         break;
 
         case 1232: /* arg_class: IN_P  */
@@ -29045,7 +29080,7 @@ yyreduce:
         {
             (yyval.fun_param_mode) = FUNC_PARAM_IN;
         }
-#line 37545 "gram.cpp"
+#line 37547 "gram.cpp"
         break;
 
         case 1233: /* arg_class: OUT_P  */
@@ -29053,7 +29088,7 @@ yyreduce:
         {
             (yyval.fun_param_mode) = FUNC_PARAM_OUT;
         }
-#line 37551 "gram.cpp"
+#line 37553 "gram.cpp"
         break;
 
         case 1234: /* arg_class: INOUT  */
@@ -29061,7 +29096,7 @@ yyreduce:
         {
             (yyval.fun_param_mode) = FUNC_PARAM_INOUT;
         }
-#line 37557 "gram.cpp"
+#line 37559 "gram.cpp"
         break;
 
         case 1235: /* arg_class: IN_P OUT_P  */
@@ -29069,7 +29104,7 @@ yyreduce:
         {
             (yyval.fun_param_mode) = FUNC_PARAM_INOUT;
         }
-#line 37563 "gram.cpp"
+#line 37565 "gram.cpp"
         break;
 
         case 1236: /* arg_class: VARIADIC  */
@@ -29077,7 +29112,7 @@ yyreduce:
         {
             (yyval.fun_param_mode) = FUNC_PARAM_VARIADIC;
         }
-#line 37569 "gram.cpp"
+#line 37571 "gram.cpp"
         break;
 
         case 1238: /* func_return: func_type  */
@@ -29089,7 +29124,7 @@ yyreduce:
 					 */
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 37581 "gram.cpp"
+#line 37583 "gram.cpp"
         break;
 
         case 1239: /* func_type: Typename  */
@@ -29097,28 +29132,32 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 37587 "gram.cpp"
+#line 37589 "gram.cpp"
         break;
 
         case 1240: /* func_type: type_function_name attrs '%' TYPE_P  */
 #line 9026 "gram.y"
         {
-            (yyval.typnam) = makeTypeNameFromNameList(lcons(makeString((yyvsp[-3].str)), (yyvsp[-2].list)));
+            (yyval.typnam) =
+                makeTypeNameFromNameList(resource,
+                                         lcons(resource, makeString(resource, (yyvsp[-3].str)), (yyvsp[-2].list)));
             (yyval.typnam)->pct_type = true;
             (yyval.typnam)->location = (yylsp[-3]);
         }
-#line 37597 "gram.cpp"
+#line 37599 "gram.cpp"
         break;
 
         case 1241: /* func_type: SETOF type_function_name attrs '%' TYPE_P  */
 #line 9032 "gram.y"
         {
-            (yyval.typnam) = makeTypeNameFromNameList(lcons(makeString((yyvsp[-3].str)), (yyvsp[-2].list)));
+            (yyval.typnam) =
+                makeTypeNameFromNameList(resource,
+                                         lcons(resource, makeString(resource, (yyvsp[-3].str)), (yyvsp[-2].list)));
             (yyval.typnam)->pct_type = true;
             (yyval.typnam)->setof = TRUE;
             (yyval.typnam)->location = (yylsp[-3]);
         }
-#line 37608 "gram.cpp"
+#line 37610 "gram.cpp"
         break;
 
         case 1242: /* func_arg_with_default: func_arg  */
@@ -29126,7 +29165,7 @@ yyreduce:
         {
             (yyval.fun_param) = (yyvsp[0].fun_param);
         }
-#line 37616 "gram.cpp"
+#line 37618 "gram.cpp"
         break;
 
         case 1243: /* func_arg_with_default: func_arg DEFAULT a_expr  */
@@ -29135,7 +29174,7 @@ yyreduce:
             (yyval.fun_param) = (yyvsp[-2].fun_param);
             (yyval.fun_param)->defexpr = (yyvsp[0].node);
         }
-#line 37625 "gram.cpp"
+#line 37627 "gram.cpp"
         break;
 
         case 1244: /* func_arg_with_default: func_arg '=' a_expr  */
@@ -29144,7 +29183,7 @@ yyreduce:
             (yyval.fun_param) = (yyvsp[-2].fun_param);
             (yyval.fun_param)->defexpr = (yyvsp[0].node);
         }
-#line 37634 "gram.cpp"
+#line 37636 "gram.cpp"
         break;
 
         case 1245: /* aggr_arg: func_arg  */
@@ -29157,281 +29196,281 @@ yyreduce:
                         parser_errposition((yylsp[0])));
             (yyval.fun_param) = (yyvsp[0].fun_param);
         }
-#line 37648 "gram.cpp"
+#line 37650 "gram.cpp"
         break;
 
         case 1246: /* aggr_args: '(' '*' ')'  */
 #line 9100 "gram.y"
         {
-            (yyval.list) = list_make2(NIL, makeInteger(-1));
+            (yyval.list) = list_make2(resource, NIL, makeInteger(resource, -1));
         }
-#line 37656 "gram.cpp"
+#line 37658 "gram.cpp"
         break;
 
         case 1247: /* aggr_args: '(' aggr_args_list ')'  */
 #line 9104 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-1].list), makeInteger(-1));
+            (yyval.list) = list_make2(resource, (yyvsp[-1].list), makeInteger(resource, -1));
         }
-#line 37664 "gram.cpp"
+#line 37666 "gram.cpp"
         break;
 
         case 1248: /* aggr_args: '(' ORDER BY aggr_args_list ')'  */
 #line 9108 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-1].list), makeInteger(0));
+            (yyval.list) = list_make2(resource, (yyvsp[-1].list), makeInteger(resource, 0));
         }
-#line 37672 "gram.cpp"
+#line 37674 "gram.cpp"
         break;
 
         case 1249: /* aggr_args: '(' aggr_args_list ORDER BY aggr_args_list ')'  */
 #line 9112 "gram.y"
         {
             /* this is the only case requiring consistency checking */
-            (yyval.list) = makeOrderedSetArgs((yyvsp[-4].list), (yyvsp[-1].list), yyscanner);
+            (yyval.list) = makeOrderedSetArgs(resource, (yyvsp[-4].list), (yyvsp[-1].list), yyscanner);
         }
-#line 37681 "gram.cpp"
+#line 37683 "gram.cpp"
         break;
 
         case 1250: /* aggr_args_list: aggr_arg  */
 #line 9119 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].fun_param));
+            (yyval.list) = list_make1(resource, (yyvsp[0].fun_param));
         }
-#line 37687 "gram.cpp"
+#line 37689 "gram.cpp"
         break;
 
         case 1251: /* aggr_args_list: aggr_args_list ',' aggr_arg  */
 #line 9120 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].fun_param));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].fun_param));
         }
-#line 37693 "gram.cpp"
+#line 37695 "gram.cpp"
         break;
 
         case 1252: /* createfunc_opt_list: createfunc_opt_item  */
 #line 9125 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 37699 "gram.cpp"
+#line 37701 "gram.cpp"
         break;
 
         case 1253: /* createfunc_opt_list: createfunc_opt_list createfunc_opt_item  */
 #line 9126 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 37705 "gram.cpp"
+#line 37707 "gram.cpp"
         break;
 
         case 1254: /* common_func_opt_item: CALLED ON NULL_P INPUT_P  */
 #line 9134 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("strict", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "strict", (Node*) makeInteger(resource, FALSE));
         }
-#line 37713 "gram.cpp"
+#line 37715 "gram.cpp"
         break;
 
         case 1255: /* common_func_opt_item: RETURNS NULL_P ON NULL_P INPUT_P  */
 #line 9138 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("strict", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "strict", (Node*) makeInteger(resource, TRUE));
         }
-#line 37721 "gram.cpp"
+#line 37723 "gram.cpp"
         break;
 
         case 1256: /* common_func_opt_item: STRICT_P  */
 #line 9142 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("strict", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "strict", (Node*) makeInteger(resource, TRUE));
         }
-#line 37729 "gram.cpp"
+#line 37731 "gram.cpp"
         break;
 
         case 1257: /* common_func_opt_item: IMMUTABLE  */
 #line 9146 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("volatility", (Node*) makeString("immutable"));
+            (yyval.defelt) = makeDefElem(resource, "volatility", (Node*) makeString(resource, "immutable"));
         }
-#line 37737 "gram.cpp"
+#line 37739 "gram.cpp"
         break;
 
         case 1258: /* common_func_opt_item: STABLE  */
 #line 9150 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("volatility", (Node*) makeString("stable"));
+            (yyval.defelt) = makeDefElem(resource, "volatility", (Node*) makeString(resource, "stable"));
         }
-#line 37745 "gram.cpp"
+#line 37747 "gram.cpp"
         break;
 
         case 1259: /* common_func_opt_item: VOLATILE  */
 #line 9154 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("volatility", (Node*) makeString("volatile"));
+            (yyval.defelt) = makeDefElem(resource, "volatility", (Node*) makeString(resource, "volatile"));
         }
-#line 37753 "gram.cpp"
+#line 37755 "gram.cpp"
         break;
 
         case 1260: /* common_func_opt_item: EXTERNAL SECURITY DEFINER  */
 #line 9158 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("security", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "security", (Node*) makeInteger(resource, TRUE));
         }
-#line 37761 "gram.cpp"
+#line 37763 "gram.cpp"
         break;
 
         case 1261: /* common_func_opt_item: EXTERNAL SECURITY INVOKER  */
 #line 9162 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("security", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "security", (Node*) makeInteger(resource, FALSE));
         }
-#line 37769 "gram.cpp"
+#line 37771 "gram.cpp"
         break;
 
         case 1262: /* common_func_opt_item: SECURITY DEFINER  */
 #line 9166 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("security", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "security", (Node*) makeInteger(resource, TRUE));
         }
-#line 37777 "gram.cpp"
+#line 37779 "gram.cpp"
         break;
 
         case 1263: /* common_func_opt_item: SECURITY INVOKER  */
 #line 9170 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("security", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "security", (Node*) makeInteger(resource, FALSE));
         }
-#line 37785 "gram.cpp"
+#line 37787 "gram.cpp"
         break;
 
         case 1264: /* common_func_opt_item: LEAKPROOF  */
 #line 9174 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("leakproof", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "leakproof", (Node*) makeInteger(resource, TRUE));
         }
-#line 37793 "gram.cpp"
+#line 37795 "gram.cpp"
         break;
 
         case 1265: /* common_func_opt_item: NOT LEAKPROOF  */
 #line 9178 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("leakproof", (Node*) makeInteger(FALSE));
+            (yyval.defelt) = makeDefElem(resource, "leakproof", (Node*) makeInteger(resource, FALSE));
         }
-#line 37801 "gram.cpp"
+#line 37803 "gram.cpp"
         break;
 
         case 1266: /* common_func_opt_item: COST NumericOnly  */
 #line 9182 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("cost", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "cost", (Node*) (yyvsp[0].value));
         }
-#line 37809 "gram.cpp"
+#line 37811 "gram.cpp"
         break;
 
         case 1267: /* common_func_opt_item: ROWS NumericOnly  */
 #line 9186 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("rows", (Node*) (yyvsp[0].value));
+            (yyval.defelt) = makeDefElem(resource, "rows", (Node*) (yyvsp[0].value));
         }
-#line 37817 "gram.cpp"
+#line 37819 "gram.cpp"
         break;
 
         case 1268: /* common_func_opt_item: FunctionSetResetClause  */
 #line 9190 "gram.y"
         {
             /* we abuse the normal content of a DefElem here */
-            (yyval.defelt) = makeDefElem("set", (Node*) (yyvsp[0].vsetstmt));
+            (yyval.defelt) = makeDefElem(resource, "set", (Node*) (yyvsp[0].vsetstmt));
         }
-#line 37826 "gram.cpp"
+#line 37828 "gram.cpp"
         break;
 
         case 1269: /* common_func_opt_item: NO SQL  */
 #line 9195 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("data_access", (Node*) makeString("none"));
+            (yyval.defelt) = makeDefElem(resource, "data_access", (Node*) makeString(resource, "none"));
         }
-#line 37834 "gram.cpp"
+#line 37836 "gram.cpp"
         break;
 
         case 1270: /* common_func_opt_item: CONTAINS SQL  */
 #line 9199 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("data_access", (Node*) makeString("contains"));
+            (yyval.defelt) = makeDefElem(resource, "data_access", (Node*) makeString(resource, "contains"));
         }
-#line 37842 "gram.cpp"
+#line 37844 "gram.cpp"
         break;
 
         case 1271: /* common_func_opt_item: READS SQL DATA_P  */
 #line 9203 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("data_access", (Node*) makeString("reads"));
+            (yyval.defelt) = makeDefElem(resource, "data_access", (Node*) makeString(resource, "reads"));
         }
-#line 37850 "gram.cpp"
+#line 37852 "gram.cpp"
         break;
 
         case 1272: /* common_func_opt_item: MODIFIES SQL DATA_P  */
 #line 9207 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("data_access", (Node*) makeString("modifies"));
+            (yyval.defelt) = makeDefElem(resource, "data_access", (Node*) makeString(resource, "modifies"));
         }
-#line 37858 "gram.cpp"
+#line 37860 "gram.cpp"
         break;
 
         case 1273: /* common_func_opt_item: EXECUTE ON ANY  */
 #line 9211 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exec_location", (Node*) makeString("any"));
+            (yyval.defelt) = makeDefElem(resource, "exec_location", (Node*) makeString(resource, "any"));
         }
-#line 37866 "gram.cpp"
+#line 37868 "gram.cpp"
         break;
 
         case 1274: /* common_func_opt_item: EXECUTE ON MASTER  */
 #line 9215 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exec_location", (Node*) makeString("master"));
+            (yyval.defelt) = makeDefElem(resource, "exec_location", (Node*) makeString(resource, "master"));
         }
-#line 37874 "gram.cpp"
+#line 37876 "gram.cpp"
         break;
 
         case 1275: /* common_func_opt_item: EXECUTE ON INITPLAN  */
 #line 9219 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exec_location", (Node*) makeString("initplan"));
+            (yyval.defelt) = makeDefElem(resource, "exec_location", (Node*) makeString(resource, "initplan"));
         }
-#line 37882 "gram.cpp"
+#line 37884 "gram.cpp"
         break;
 
         case 1276: /* common_func_opt_item: EXECUTE ON ALL SEGMENTS  */
 #line 9223 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("exec_location", (Node*) makeString("all_segments"));
+            (yyval.defelt) = makeDefElem(resource, "exec_location", (Node*) makeString(resource, "all_segments"));
         }
-#line 37890 "gram.cpp"
+#line 37892 "gram.cpp"
         break;
 
         case 1277: /* createfunc_opt_item: AS func_as  */
 #line 9230 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("as", (Node*) (yyvsp[0].list));
+            (yyval.defelt) = makeDefElem(resource, "as", (Node*) (yyvsp[0].list));
         }
-#line 37898 "gram.cpp"
+#line 37900 "gram.cpp"
         break;
 
         case 1278: /* createfunc_opt_item: LANGUAGE NonReservedWord_or_Sconst  */
 #line 9234 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("language", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "language", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 37906 "gram.cpp"
+#line 37908 "gram.cpp"
         break;
 
         case 1279: /* createfunc_opt_item: WINDOW  */
 #line 9238 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("window", (Node*) makeInteger(TRUE));
+            (yyval.defelt) = makeDefElem(resource, "window", (Node*) makeInteger(resource, TRUE));
         }
-#line 37914 "gram.cpp"
+#line 37916 "gram.cpp"
         break;
 
         case 1280: /* createfunc_opt_item: common_func_opt_item  */
@@ -29439,23 +29478,24 @@ yyreduce:
         {
             (yyval.defelt) = (yyvsp[0].defelt);
         }
-#line 37922 "gram.cpp"
+#line 37924 "gram.cpp"
         break;
 
         case 1281: /* func_as: Sconst  */
 #line 9247 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 37928 "gram.cpp"
+#line 37930 "gram.cpp"
         break;
 
         case 1282: /* func_as: Sconst ',' Sconst  */
 #line 9249 "gram.y"
         {
-            (yyval.list) = list_make2(makeString((yyvsp[-2].str)), makeString((yyvsp[0].str)));
+            (yyval.list) =
+                list_make2(resource, makeString(resource, (yyvsp[-2].str)), makeString(resource, (yyvsp[0].str)));
         }
-#line 37936 "gram.cpp"
+#line 37938 "gram.cpp"
         break;
 
         case 1283: /* opt_definition: WITH definition  */
@@ -29463,7 +29503,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 37942 "gram.cpp"
+#line 37944 "gram.cpp"
         break;
 
         case 1284: /* opt_definition: %empty  */
@@ -29471,153 +29511,153 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 37948 "gram.cpp"
+#line 37950 "gram.cpp"
         break;
 
         case 1285: /* table_func_column: param_name func_type  */
 #line 9260 "gram.y"
         {
-            FunctionParameter* n = makeNode(FunctionParameter);
+            FunctionParameter* n = makeNode(resource, FunctionParameter);
             n->name = (yyvsp[-1].str);
             n->argType = (yyvsp[0].typnam);
             n->mode = FUNC_PARAM_TABLE;
             n->defexpr = NULL;
             (yyval.fun_param) = n;
         }
-#line 37961 "gram.cpp"
+#line 37963 "gram.cpp"
         break;
 
         case 1286: /* table_func_column_list: table_func_column  */
 #line 9272 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].fun_param));
+            (yyval.list) = list_make1(resource, (yyvsp[0].fun_param));
         }
-#line 37969 "gram.cpp"
+#line 37971 "gram.cpp"
         break;
 
         case 1287: /* table_func_column_list: table_func_column_list ',' table_func_column  */
 #line 9276 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].fun_param));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].fun_param));
         }
-#line 37977 "gram.cpp"
+#line 37979 "gram.cpp"
         break;
 
         case 1288: /* AlterFunctionStmt: ALTER FUNCTION function_with_argtypes alterfunc_opt_list opt_restrict  */
 #line 9291 "gram.y"
         {
-            AlterFunctionStmt* n = makeNode(AlterFunctionStmt);
+            AlterFunctionStmt* n = makeNode(resource, AlterFunctionStmt);
             n->func = (yyvsp[-2].funwithargs);
             n->actions = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 37988 "gram.cpp"
+#line 37990 "gram.cpp"
         break;
 
         case 1289: /* alterfunc_opt_list: common_func_opt_item  */
 #line 9301 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 37994 "gram.cpp"
+#line 37996 "gram.cpp"
         break;
 
         case 1290: /* alterfunc_opt_list: alterfunc_opt_list common_func_opt_item  */
 #line 9302 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 38000 "gram.cpp"
+#line 38002 "gram.cpp"
         break;
 
         case 1293: /* RemoveFuncStmt: DROP FUNCTION func_name func_args opt_drop_behavior  */
 #line 9324 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FUNCTION;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1(extractArgTypes((yyvsp[-1].list)));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, extractArgTypes(resource, (yyvsp[-1].list)));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38015 "gram.cpp"
+#line 38017 "gram.cpp"
         break;
 
         case 1294: /* RemoveFuncStmt: DROP FUNCTION IF_P EXISTS func_name func_args opt_drop_behavior  */
 #line 9335 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_FUNCTION;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1(extractArgTypes((yyvsp[-1].list)));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, extractArgTypes(resource, (yyvsp[-1].list)));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38030 "gram.cpp"
+#line 38032 "gram.cpp"
         break;
 
         case 1295: /* RemoveAggrStmt: DROP AGGREGATE func_name aggr_args opt_drop_behavior  */
 #line 9349 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_AGGREGATE;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1(extractAggrArgTypes((yyvsp[-1].list)));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, extractAggrArgTypes(resource, (yyvsp[-1].list)));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38045 "gram.cpp"
+#line 38047 "gram.cpp"
         break;
 
         case 1296: /* RemoveAggrStmt: DROP AGGREGATE IF_P EXISTS func_name aggr_args opt_drop_behavior  */
 #line 9360 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_AGGREGATE;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1(extractAggrArgTypes((yyvsp[-1].list)));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, extractAggrArgTypes(resource, (yyvsp[-1].list)));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38060 "gram.cpp"
+#line 38062 "gram.cpp"
         break;
 
         case 1297: /* RemoveOperStmt: DROP OPERATOR any_operator oper_argtypes opt_drop_behavior  */
 #line 9374 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_OPERATOR;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1((yyvsp[-1].list));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, (yyvsp[-1].list));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38075 "gram.cpp"
+#line 38077 "gram.cpp"
         break;
 
         case 1298: /* RemoveOperStmt: DROP OPERATOR IF_P EXISTS any_operator oper_argtypes opt_drop_behavior  */
 #line 9385 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_OPERATOR;
-            n->objects = list_make1((yyvsp[-2].list));
-            n->arguments = list_make1((yyvsp[-1].list));
+            n->objects = list_make1(resource, (yyvsp[-2].list));
+            n->arguments = list_make1(resource, (yyvsp[-1].list));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38090 "gram.cpp"
+#line 38092 "gram.cpp"
         break;
 
         case 1299: /* oper_argtypes: '(' Typename ')'  */
@@ -29629,95 +29669,95 @@ yyreduce:
                     errhint("Use NONE to denote the missing argument of a unary operator."),
                     parser_errposition((yylsp[0])));
         }
-#line 38102 "gram.cpp"
+#line 38104 "gram.cpp"
         break;
 
         case 1300: /* oper_argtypes: '(' Typename ',' Typename ')'  */
 #line 9407 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-3].typnam), (yyvsp[-1].typnam));
+            (yyval.list) = list_make2(resource, (yyvsp[-3].typnam), (yyvsp[-1].typnam));
         }
-#line 38108 "gram.cpp"
+#line 38110 "gram.cpp"
         break;
 
         case 1301: /* oper_argtypes: '(' NONE ',' Typename ')'  */
 #line 9409 "gram.y"
         {
-            (yyval.list) = list_make2(NULL, (yyvsp[-1].typnam));
+            (yyval.list) = list_make2(resource, NULL, (yyvsp[-1].typnam));
         }
-#line 38114 "gram.cpp"
+#line 38116 "gram.cpp"
         break;
 
         case 1302: /* oper_argtypes: '(' Typename ',' NONE ')'  */
 #line 9411 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-3].typnam), NULL);
+            (yyval.list) = list_make2(resource, (yyvsp[-3].typnam), NULL);
         }
-#line 38120 "gram.cpp"
+#line 38122 "gram.cpp"
         break;
 
         case 1303: /* any_operator: all_Op  */
 #line 9416 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 38126 "gram.cpp"
+#line 38128 "gram.cpp"
         break;
 
         case 1304: /* any_operator: ColId '.' any_operator  */
 #line 9418 "gram.y"
         {
-            (yyval.list) = lcons(makeString((yyvsp[-2].str)), (yyvsp[0].list));
+            (yyval.list) = lcons(resource, makeString(resource, (yyvsp[-2].str)), (yyvsp[0].list));
         }
-#line 38132 "gram.cpp"
+#line 38134 "gram.cpp"
         break;
 
         case 1305: /* DoStmt: DO dostmt_opt_list  */
 #line 9431 "gram.y"
         {
-            DoStmt* n = makeNode(DoStmt);
+            DoStmt* n = makeNode(resource, DoStmt);
             n->args = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 38142 "gram.cpp"
+#line 38144 "gram.cpp"
         break;
 
         case 1306: /* dostmt_opt_list: dostmt_opt_item  */
 #line 9439 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 38148 "gram.cpp"
+#line 38150 "gram.cpp"
         break;
 
         case 1307: /* dostmt_opt_list: dostmt_opt_list dostmt_opt_item  */
 #line 9440 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 38154 "gram.cpp"
+#line 38156 "gram.cpp"
         break;
 
         case 1308: /* dostmt_opt_item: Sconst  */
 #line 9445 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("as", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "as", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 38162 "gram.cpp"
+#line 38164 "gram.cpp"
         break;
 
         case 1309: /* dostmt_opt_item: LANGUAGE NonReservedWord_or_Sconst  */
 #line 9449 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("language", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "language", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 38170 "gram.cpp"
+#line 38172 "gram.cpp"
         break;
 
         case 1310: /* CreateCastStmt: CREATE CAST '(' Typename AS Typename ')' WITH FUNCTION function_with_argtypes cast_context  */
 #line 9462 "gram.y"
         {
-            CreateCastStmt* n = makeNode(CreateCastStmt);
+            CreateCastStmt* n = makeNode(resource, CreateCastStmt);
             n->sourcetype = (yyvsp[-7].typnam);
             n->targettype = (yyvsp[-5].typnam);
             n->func = (yyvsp[-1].funwithargs);
@@ -29725,13 +29765,13 @@ yyreduce:
             n->inout = false;
             (yyval.node) = (Node*) n;
         }
-#line 38184 "gram.cpp"
+#line 38186 "gram.cpp"
         break;
 
         case 1311: /* CreateCastStmt: CREATE CAST '(' Typename AS Typename ')' WITHOUT FUNCTION cast_context  */
 #line 9473 "gram.y"
         {
-            CreateCastStmt* n = makeNode(CreateCastStmt);
+            CreateCastStmt* n = makeNode(resource, CreateCastStmt);
             n->sourcetype = (yyvsp[-6].typnam);
             n->targettype = (yyvsp[-4].typnam);
             n->func = NULL;
@@ -29739,13 +29779,13 @@ yyreduce:
             n->inout = false;
             (yyval.node) = (Node*) n;
         }
-#line 38198 "gram.cpp"
+#line 38200 "gram.cpp"
         break;
 
         case 1312: /* CreateCastStmt: CREATE CAST '(' Typename AS Typename ')' WITH INOUT cast_context  */
 #line 9484 "gram.y"
         {
-            CreateCastStmt* n = makeNode(CreateCastStmt);
+            CreateCastStmt* n = makeNode(resource, CreateCastStmt);
             n->sourcetype = (yyvsp[-6].typnam);
             n->targettype = (yyvsp[-4].typnam);
             n->func = NULL;
@@ -29753,7 +29793,7 @@ yyreduce:
             n->inout = true;
             (yyval.node) = (Node*) n;
         }
-#line 38212 "gram.cpp"
+#line 38214 "gram.cpp"
         break;
 
         case 1313: /* cast_context: AS IMPLICIT_P  */
@@ -29761,7 +29801,7 @@ yyreduce:
         {
             (yyval.ival) = COERCION_IMPLICIT;
         }
-#line 38218 "gram.cpp"
+#line 38220 "gram.cpp"
         break;
 
         case 1314: /* cast_context: AS ASSIGNMENT  */
@@ -29769,7 +29809,7 @@ yyreduce:
         {
             (yyval.ival) = COERCION_ASSIGNMENT;
         }
-#line 38224 "gram.cpp"
+#line 38226 "gram.cpp"
         break;
 
         case 1315: /* cast_context: %empty  */
@@ -29777,22 +29817,22 @@ yyreduce:
         {
             (yyval.ival) = COERCION_EXPLICIT;
         }
-#line 38230 "gram.cpp"
+#line 38232 "gram.cpp"
         break;
 
         case 1316: /* DropCastStmt: DROP CAST opt_if_exists '(' Typename AS Typename ')' opt_drop_behavior  */
 #line 9502 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_CAST;
-            n->objects = list_make1(list_make1((yyvsp[-4].typnam)));
-            n->arguments = list_make1(list_make1((yyvsp[-2].typnam)));
+            n->objects = list_make1(resource, list_make1(resource, (yyvsp[-4].typnam)));
+            n->arguments = list_make1(resource, list_make1(resource, (yyvsp[-2].typnam)));
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = (yyvsp[-6].boolean);
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 38245 "gram.cpp"
+#line 38247 "gram.cpp"
         break;
 
         case 1317: /* opt_if_exists: IF_P EXISTS  */
@@ -29800,7 +29840,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 38251 "gram.cpp"
+#line 38253 "gram.cpp"
         break;
 
         case 1318: /* opt_if_exists: %empty  */
@@ -29808,25 +29848,25 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 38257 "gram.cpp"
+#line 38259 "gram.cpp"
         break;
 
         case 1319: /* ReindexStmt: REINDEX reindex_type qualified_name opt_force  */
 #line 9530 "gram.y"
         {
-            ReindexStmt* n = makeNode(ReindexStmt);
+            ReindexStmt* n = makeNode(resource, ReindexStmt);
             n->kind = (yyvsp[-2].objtype);
             n->relation = (yyvsp[-1].range);
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 38269 "gram.cpp"
+#line 38271 "gram.cpp"
         break;
 
         case 1320: /* ReindexStmt: REINDEX SYSTEM_P name opt_force  */
 #line 9538 "gram.y"
         {
-            ReindexStmt* n = makeNode(ReindexStmt);
+            ReindexStmt* n = makeNode(resource, ReindexStmt);
             n->kind = OBJECT_DATABASE;
             n->name = (yyvsp[-1].str);
             n->relation = NULL;
@@ -29834,13 +29874,13 @@ yyreduce:
             n->do_user = false;
             (yyval.node) = (Node*) n;
         }
-#line 38283 "gram.cpp"
+#line 38285 "gram.cpp"
         break;
 
         case 1321: /* ReindexStmt: REINDEX DATABASE name opt_force  */
 #line 9548 "gram.y"
         {
-            ReindexStmt* n = makeNode(ReindexStmt);
+            ReindexStmt* n = makeNode(resource, ReindexStmt);
             n->kind = OBJECT_DATABASE;
             n->name = (yyvsp[-1].str);
             n->relation = NULL;
@@ -29848,7 +29888,7 @@ yyreduce:
             n->do_user = true;
             (yyval.node) = (Node*) n;
         }
-#line 38297 "gram.cpp"
+#line 38299 "gram.cpp"
         break;
 
         case 1322: /* reindex_type: INDEX  */
@@ -29856,7 +29896,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_INDEX;
         }
-#line 38303 "gram.cpp"
+#line 38305 "gram.cpp"
         break;
 
         case 1323: /* reindex_type: TABLE  */
@@ -29864,7 +29904,7 @@ yyreduce:
         {
             (yyval.objtype) = OBJECT_TABLE;
         }
-#line 38309 "gram.cpp"
+#line 38311 "gram.cpp"
         break;
 
         case 1324: /* opt_force: FORCE  */
@@ -29872,7 +29912,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 38315 "gram.cpp"
+#line 38317 "gram.cpp"
         break;
 
         case 1325: /* opt_force: %empty  */
@@ -29880,115 +29920,115 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 38321 "gram.cpp"
+#line 38323 "gram.cpp"
         break;
 
         case 1326: /* AlterTypeStmt: ALTER TYPE_P any_name SET DEFAULT ENCODING definition  */
 #line 9574 "gram.y"
         {
-            AlterTypeStmt* n = makeNode(AlterTypeStmt);
+            AlterTypeStmt* n = makeNode(resource, AlterTypeStmt);
 
             n->typeName = (yyvsp[-4].list);
             n->encoding = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 38333 "gram.cpp"
+#line 38335 "gram.cpp"
         break;
 
         case 1327: /* AlterTblSpcStmt: ALTER TABLESPACE name SET reloptions  */
 #line 9591 "gram.y"
         {
-            AlterTableSpaceOptionsStmt* n = makeNode(AlterTableSpaceOptionsStmt);
+            AlterTableSpaceOptionsStmt* n = makeNode(resource, AlterTableSpaceOptionsStmt);
             n->tablespacename = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             n->isReset = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 38346 "gram.cpp"
+#line 38348 "gram.cpp"
         break;
 
         case 1328: /* AlterTblSpcStmt: ALTER TABLESPACE name RESET reloptions  */
 #line 9600 "gram.y"
         {
-            AlterTableSpaceOptionsStmt* n = makeNode(AlterTableSpaceOptionsStmt);
+            AlterTableSpaceOptionsStmt* n = makeNode(resource, AlterTableSpaceOptionsStmt);
             n->tablespacename = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             n->isReset = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 38359 "gram.cpp"
+#line 38361 "gram.cpp"
         break;
 
         case 1329: /* RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name  */
 #line 9617 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_AGGREGATE;
             n->object = (yyvsp[-4].list);
-            n->objarg = extractAggrArgTypes((yyvsp[-3].list));
+            n->objarg = extractAggrArgTypes(resource, (yyvsp[-3].list));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38373 "gram.cpp"
+#line 38375 "gram.cpp"
         break;
 
         case 1330: /* RenameStmt: ALTER COLLATION any_name RENAME TO name  */
 #line 9627 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLLATION;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38386 "gram.cpp"
+#line 38388 "gram.cpp"
         break;
 
         case 1331: /* RenameStmt: ALTER CONVERSION_P any_name RENAME TO name  */
 #line 9636 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_CONVERSION;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38399 "gram.cpp"
+#line 38401 "gram.cpp"
         break;
 
         case 1332: /* RenameStmt: ALTER DATABASE database_name RENAME TO database_name  */
 #line 9645 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_DATABASE;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38412 "gram.cpp"
+#line 38414 "gram.cpp"
         break;
 
         case 1333: /* RenameStmt: ALTER DOMAIN_P any_name RENAME TO name  */
 #line 9654 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_DOMAIN;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38425 "gram.cpp"
+#line 38427 "gram.cpp"
         break;
 
         case 1334: /* RenameStmt: ALTER DOMAIN_P any_name RENAME CONSTRAINT name TO name  */
 #line 9663 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_CONSTRAINT;
             n->relationType = OBJECT_DOMAIN;
             n->object = (yyvsp[-5].list);
@@ -29996,26 +30036,26 @@ yyreduce:
             n->newname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 38439 "gram.cpp"
+#line 38441 "gram.cpp"
         break;
 
         case 1335: /* RenameStmt: ALTER FOREIGN DATA_P WRAPPER name RENAME TO name  */
 #line 9673 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_FDW;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38452 "gram.cpp"
+#line 38454 "gram.cpp"
         break;
 
         case 1336: /* RenameStmt: ALTER FUNCTION function_with_argtypes RENAME TO name  */
 #line 9682 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_FUNCTION;
             n->object = (yyvsp[-3].funwithargs)->funcname;
             n->objarg = (yyvsp[-3].funwithargs)->funcargs;
@@ -30023,93 +30063,93 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38466 "gram.cpp"
+#line 38468 "gram.cpp"
         break;
 
         case 1337: /* RenameStmt: ALTER GROUP_P RoleId RENAME TO RoleId  */
 #line 9692 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_ROLE;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38479 "gram.cpp"
+#line 38481 "gram.cpp"
         break;
 
         case 1338: /* RenameStmt: ALTER opt_procedural LANGUAGE name RENAME TO name  */
 #line 9701 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_LANGUAGE;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38492 "gram.cpp"
+#line 38494 "gram.cpp"
         break;
 
         case 1339: /* RenameStmt: ALTER OPERATOR CLASS any_name USING access_method RENAME TO name  */
 #line 9710 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_OPCLASS;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38506 "gram.cpp"
+#line 38508 "gram.cpp"
         break;
 
         case 1340: /* RenameStmt: ALTER OPERATOR FAMILY any_name USING access_method RENAME TO name  */
 #line 9720 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_OPFAMILY;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38520 "gram.cpp"
+#line 38522 "gram.cpp"
         break;
 
         case 1341: /* RenameStmt: ALTER SCHEMA name RENAME TO name  */
 #line 9730 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_SCHEMA;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38533 "gram.cpp"
+#line 38535 "gram.cpp"
         break;
 
         case 1342: /* RenameStmt: ALTER SERVER name RENAME TO name  */
 #line 9739 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_FOREIGN_SERVER;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38546 "gram.cpp"
+#line 38548 "gram.cpp"
         break;
 
         case 1343: /* RenameStmt: ALTER TABLE relation_expr RENAME TO name  */
 #line 9748 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TABLE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30117,13 +30157,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38560 "gram.cpp"
+#line 38562 "gram.cpp"
         break;
 
         case 1344: /* RenameStmt: ALTER TABLE IF_P EXISTS relation_expr RENAME TO name  */
 #line 9758 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TABLE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30131,13 +30171,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38574 "gram.cpp"
+#line 38576 "gram.cpp"
         break;
 
         case 1345: /* RenameStmt: ALTER SEQUENCE qualified_name RENAME TO name  */
 #line 9768 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_SEQUENCE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30145,13 +30185,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38588 "gram.cpp"
+#line 38590 "gram.cpp"
         break;
 
         case 1346: /* RenameStmt: ALTER SEQUENCE IF_P EXISTS qualified_name RENAME TO name  */
 #line 9778 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_SEQUENCE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30159,13 +30199,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38602 "gram.cpp"
+#line 38604 "gram.cpp"
         break;
 
         case 1347: /* RenameStmt: ALTER VIEW qualified_name RENAME TO name  */
 #line 9788 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_VIEW;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30173,13 +30213,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38616 "gram.cpp"
+#line 38618 "gram.cpp"
         break;
 
         case 1348: /* RenameStmt: ALTER VIEW IF_P EXISTS qualified_name RENAME TO name  */
 #line 9798 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_VIEW;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30187,13 +30227,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38630 "gram.cpp"
+#line 38632 "gram.cpp"
         break;
 
         case 1349: /* RenameStmt: ALTER MATERIALIZED VIEW qualified_name RENAME TO name  */
 #line 9808 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30201,13 +30241,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38644 "gram.cpp"
+#line 38646 "gram.cpp"
         break;
 
         case 1350: /* RenameStmt: ALTER MATERIALIZED VIEW IF_P EXISTS qualified_name RENAME TO name  */
 #line 9818 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30215,13 +30255,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38658 "gram.cpp"
+#line 38660 "gram.cpp"
         break;
 
         case 1351: /* RenameStmt: ALTER INDEX qualified_name RENAME TO name  */
 #line 9828 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_INDEX;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30229,13 +30269,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38672 "gram.cpp"
+#line 38674 "gram.cpp"
         break;
 
         case 1352: /* RenameStmt: ALTER INDEX IF_P EXISTS qualified_name RENAME TO name  */
 #line 9838 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_INDEX;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30243,13 +30283,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38686 "gram.cpp"
+#line 38688 "gram.cpp"
         break;
 
         case 1353: /* RenameStmt: ALTER FOREIGN TABLE relation_expr RENAME TO name  */
 #line 9848 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30257,13 +30297,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38700 "gram.cpp"
+#line 38702 "gram.cpp"
         break;
 
         case 1354: /* RenameStmt: ALTER FOREIGN TABLE IF_P EXISTS relation_expr RENAME TO name  */
 #line 9858 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-3].range);
             n->subname = NULL;
@@ -30271,13 +30311,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38714 "gram.cpp"
+#line 38716 "gram.cpp"
         break;
 
         case 1355: /* RenameStmt: ALTER TABLE relation_expr RENAME opt_column name TO name  */
 #line 9868 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_TABLE;
             n->relation = (yyvsp[-5].range);
@@ -30286,13 +30326,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38729 "gram.cpp"
+#line 38731 "gram.cpp"
         break;
 
         case 1356: /* RenameStmt: ALTER TABLE IF_P EXISTS relation_expr RENAME opt_column name TO name  */
 #line 9879 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_TABLE;
             n->relation = (yyvsp[-5].range);
@@ -30301,13 +30341,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38744 "gram.cpp"
+#line 38746 "gram.cpp"
         break;
 
         case 1357: /* RenameStmt: ALTER MATERIALIZED VIEW qualified_name RENAME opt_column name TO name  */
 #line 9890 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-5].range);
@@ -30316,13 +30356,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38759 "gram.cpp"
+#line 38761 "gram.cpp"
         break;
 
         case 1358: /* RenameStmt: ALTER MATERIALIZED VIEW IF_P EXISTS qualified_name RENAME opt_column name TO name  */
 #line 9901 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-5].range);
@@ -30331,13 +30371,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38774 "gram.cpp"
+#line 38776 "gram.cpp"
         break;
 
         case 1359: /* RenameStmt: ALTER TABLE relation_expr RENAME CONSTRAINT name TO name  */
 #line 9912 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_CONSTRAINT;
             n->relationType = OBJECT_TABLE;
             n->relation = (yyvsp[-5].range);
@@ -30345,13 +30385,13 @@ yyreduce:
             n->newname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 38788 "gram.cpp"
+#line 38790 "gram.cpp"
         break;
 
         case 1360: /* RenameStmt: ALTER FOREIGN TABLE relation_expr RENAME opt_column name TO name  */
 #line 9922 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-5].range);
@@ -30360,13 +30400,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38803 "gram.cpp"
+#line 38805 "gram.cpp"
         break;
 
         case 1361: /* RenameStmt: ALTER FOREIGN TABLE IF_P EXISTS relation_expr RENAME opt_column name TO name  */
 #line 9933 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_COLUMN;
             n->relationType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-5].range);
@@ -30375,13 +30415,13 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 38818 "gram.cpp"
+#line 38820 "gram.cpp"
         break;
 
         case 1362: /* RenameStmt: ALTER RULE name ON qualified_name RENAME TO name  */
 #line 9944 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_RULE;
             n->relation = (yyvsp[-3].range);
             n->subname = (yyvsp[-5].str);
@@ -30389,13 +30429,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38832 "gram.cpp"
+#line 38834 "gram.cpp"
         break;
 
         case 1363: /* RenameStmt: ALTER TRIGGER name ON qualified_name RENAME TO name  */
 #line 9954 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TRIGGER;
             n->relation = (yyvsp[-3].range);
             n->subname = (yyvsp[-5].str);
@@ -30403,151 +30443,151 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38846 "gram.cpp"
+#line 38848 "gram.cpp"
         break;
 
         case 1364: /* RenameStmt: ALTER EVENT TRIGGER name RENAME TO name  */
 #line 9964 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_EVENT_TRIGGER;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 38858 "gram.cpp"
+#line 38860 "gram.cpp"
         break;
 
         case 1365: /* RenameStmt: ALTER ROLE RoleId RENAME TO RoleId  */
 #line 9972 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_ROLE;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38871 "gram.cpp"
+#line 38873 "gram.cpp"
         break;
 
         case 1366: /* RenameStmt: ALTER USER RoleId RENAME TO RoleId  */
 #line 9981 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_ROLE;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38884 "gram.cpp"
+#line 38886 "gram.cpp"
         break;
 
         case 1367: /* RenameStmt: ALTER TABLESPACE name RENAME TO name  */
 #line 9990 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TABLESPACE;
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38897 "gram.cpp"
+#line 38899 "gram.cpp"
         break;
 
         case 1368: /* RenameStmt: ALTER TEXT_P SEARCH PARSER any_name RENAME TO name  */
 #line 9999 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TSPARSER;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38910 "gram.cpp"
+#line 38912 "gram.cpp"
         break;
 
         case 1369: /* RenameStmt: ALTER TEXT_P SEARCH DICTIONARY any_name RENAME TO name  */
 #line 10008 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TSDICTIONARY;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38923 "gram.cpp"
+#line 38925 "gram.cpp"
         break;
 
         case 1370: /* RenameStmt: ALTER TEXT_P SEARCH TEMPLATE any_name RENAME TO name  */
 #line 10017 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TSTEMPLATE;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38936 "gram.cpp"
+#line 38938 "gram.cpp"
         break;
 
         case 1371: /* RenameStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name RENAME TO name  */
 #line 10026 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TSCONFIGURATION;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38949 "gram.cpp"
+#line 38951 "gram.cpp"
         break;
 
         case 1372: /* RenameStmt: ALTER TYPE_P any_name RENAME TO name  */
 #line 10035 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_TYPE;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38962 "gram.cpp"
+#line 38964 "gram.cpp"
         break;
 
         case 1373: /* RenameStmt: ALTER TYPE_P any_name RENAME ATTRIBUTE name TO name opt_drop_behavior  */
 #line 10044 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_ATTRIBUTE;
             n->relationType = OBJECT_TYPE;
-            n->relation = makeRangeVarFromAnyName((yyvsp[-6].list), (yylsp[-6]), yyscanner);
+            n->relation = makeRangeVarFromAnyName(resource, (yyvsp[-6].list), (yylsp[-6]), yyscanner);
             n->subname = (yyvsp[-3].str);
             n->newname = (yyvsp[-1].str);
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 38978 "gram.cpp"
+#line 38980 "gram.cpp"
         break;
 
         case 1374: /* RenameStmt: ALTER PROTOCOL any_name RENAME TO name  */
 #line 10056 "gram.y"
         {
-            RenameStmt* n = makeNode(RenameStmt);
+            RenameStmt* n = makeNode(resource, RenameStmt);
             n->renameType = OBJECT_EXTPROTOCOL;
             n->object = (yyvsp[-3].list);
             n->newname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 38990 "gram.cpp"
+#line 38992 "gram.cpp"
         break;
 
         case 1375: /* opt_column: COLUMN  */
@@ -30555,7 +30595,7 @@ yyreduce:
         {
             (yyval.ival) = COLUMN;
         }
-#line 38996 "gram.cpp"
+#line 38998 "gram.cpp"
         break;
 
         case 1376: /* opt_column: %empty  */
@@ -30563,7 +30603,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 39002 "gram.cpp"
+#line 39004 "gram.cpp"
         break;
 
         case 1377: /* opt_set_data: SET DATA_P  */
@@ -30571,7 +30611,7 @@ yyreduce:
         {
             (yyval.ival) = 1;
         }
-#line 39008 "gram.cpp"
+#line 39010 "gram.cpp"
         break;
 
         case 1378: /* opt_set_data: %empty  */
@@ -30579,79 +30619,79 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 39014 "gram.cpp"
+#line 39016 "gram.cpp"
         break;
 
         case 1379: /* AlterObjectSchemaStmt: ALTER AGGREGATE func_name aggr_args SET SCHEMA name  */
 #line 10081 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_AGGREGATE;
             n->object = (yyvsp[-4].list);
-            n->objarg = extractAggrArgTypes((yyvsp[-3].list));
+            n->objarg = extractAggrArgTypes(resource, (yyvsp[-3].list));
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39028 "gram.cpp"
+#line 39030 "gram.cpp"
         break;
 
         case 1380: /* AlterObjectSchemaStmt: ALTER COLLATION any_name SET SCHEMA name  */
 #line 10091 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_COLLATION;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39041 "gram.cpp"
+#line 39043 "gram.cpp"
         break;
 
         case 1381: /* AlterObjectSchemaStmt: ALTER CONVERSION_P any_name SET SCHEMA name  */
 #line 10100 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_CONVERSION;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39054 "gram.cpp"
+#line 39056 "gram.cpp"
         break;
 
         case 1382: /* AlterObjectSchemaStmt: ALTER DOMAIN_P any_name SET SCHEMA name  */
 #line 10109 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_DOMAIN;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39067 "gram.cpp"
+#line 39069 "gram.cpp"
         break;
 
         case 1383: /* AlterObjectSchemaStmt: ALTER EXTENSION any_name SET SCHEMA name  */
 #line 10118 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_EXTENSION;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39080 "gram.cpp"
+#line 39082 "gram.cpp"
         break;
 
         case 1384: /* AlterObjectSchemaStmt: ALTER FUNCTION function_with_argtypes SET SCHEMA name  */
 #line 10127 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_FUNCTION;
             n->object = (yyvsp[-3].funwithargs)->funcname;
             n->objarg = (yyvsp[-3].funwithargs)->funcargs;
@@ -30659,13 +30699,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39094 "gram.cpp"
+#line 39096 "gram.cpp"
         break;
 
         case 1385: /* AlterObjectSchemaStmt: ALTER OPERATOR any_operator oper_argtypes SET SCHEMA name  */
 #line 10137 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_OPERATOR;
             n->object = (yyvsp[-4].list);
             n->objarg = (yyvsp[-3].list);
@@ -30673,481 +30713,481 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39108 "gram.cpp"
+#line 39110 "gram.cpp"
         break;
 
         case 1386: /* AlterObjectSchemaStmt: ALTER OPERATOR CLASS any_name USING access_method SET SCHEMA name  */
 #line 10147 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_OPCLASS;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39122 "gram.cpp"
+#line 39124 "gram.cpp"
         break;
 
         case 1387: /* AlterObjectSchemaStmt: ALTER OPERATOR FAMILY any_name USING access_method SET SCHEMA name  */
 #line 10157 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_OPFAMILY;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39136 "gram.cpp"
+#line 39138 "gram.cpp"
         break;
 
         case 1388: /* AlterObjectSchemaStmt: ALTER TABLE relation_expr SET SCHEMA name  */
 #line 10167 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TABLE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39149 "gram.cpp"
+#line 39151 "gram.cpp"
         break;
 
         case 1389: /* AlterObjectSchemaStmt: ALTER TABLE IF_P EXISTS relation_expr SET SCHEMA name  */
 #line 10176 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TABLE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 39162 "gram.cpp"
+#line 39164 "gram.cpp"
         break;
 
         case 1390: /* AlterObjectSchemaStmt: ALTER TEXT_P SEARCH PARSER any_name SET SCHEMA name  */
 #line 10185 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TSPARSER;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39175 "gram.cpp"
+#line 39177 "gram.cpp"
         break;
 
         case 1391: /* AlterObjectSchemaStmt: ALTER TEXT_P SEARCH DICTIONARY any_name SET SCHEMA name  */
 #line 10194 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TSDICTIONARY;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39188 "gram.cpp"
+#line 39190 "gram.cpp"
         break;
 
         case 1392: /* AlterObjectSchemaStmt: ALTER TEXT_P SEARCH TEMPLATE any_name SET SCHEMA name  */
 #line 10203 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TSTEMPLATE;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39201 "gram.cpp"
+#line 39203 "gram.cpp"
         break;
 
         case 1393: /* AlterObjectSchemaStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name SET SCHEMA name  */
 #line 10212 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TSCONFIGURATION;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39214 "gram.cpp"
+#line 39216 "gram.cpp"
         break;
 
         case 1394: /* AlterObjectSchemaStmt: ALTER SEQUENCE qualified_name SET SCHEMA name  */
 #line 10221 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_SEQUENCE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39227 "gram.cpp"
+#line 39229 "gram.cpp"
         break;
 
         case 1395: /* AlterObjectSchemaStmt: ALTER SEQUENCE IF_P EXISTS qualified_name SET SCHEMA name  */
 #line 10230 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_SEQUENCE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 39240 "gram.cpp"
+#line 39242 "gram.cpp"
         break;
 
         case 1396: /* AlterObjectSchemaStmt: ALTER VIEW qualified_name SET SCHEMA name  */
 #line 10239 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_VIEW;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39253 "gram.cpp"
+#line 39255 "gram.cpp"
         break;
 
         case 1397: /* AlterObjectSchemaStmt: ALTER VIEW IF_P EXISTS qualified_name SET SCHEMA name  */
 #line 10248 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_VIEW;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 39266 "gram.cpp"
+#line 39268 "gram.cpp"
         break;
 
         case 1398: /* AlterObjectSchemaStmt: ALTER MATERIALIZED VIEW qualified_name SET SCHEMA name  */
 #line 10257 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39279 "gram.cpp"
+#line 39281 "gram.cpp"
         break;
 
         case 1399: /* AlterObjectSchemaStmt: ALTER MATERIALIZED VIEW IF_P EXISTS qualified_name SET SCHEMA name  */
 #line 10266 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_MATVIEW;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 39292 "gram.cpp"
+#line 39294 "gram.cpp"
         break;
 
         case 1400: /* AlterObjectSchemaStmt: ALTER FOREIGN TABLE relation_expr SET SCHEMA name  */
 #line 10275 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39305 "gram.cpp"
+#line 39307 "gram.cpp"
         break;
 
         case 1401: /* AlterObjectSchemaStmt: ALTER FOREIGN TABLE IF_P EXISTS relation_expr SET SCHEMA name  */
 #line 10284 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_FOREIGN_TABLE;
             n->relation = (yyvsp[-3].range);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 39318 "gram.cpp"
+#line 39320 "gram.cpp"
         break;
 
         case 1402: /* AlterObjectSchemaStmt: ALTER TYPE_P any_name SET SCHEMA name  */
 #line 10293 "gram.y"
         {
-            AlterObjectSchemaStmt* n = makeNode(AlterObjectSchemaStmt);
+            AlterObjectSchemaStmt* n = makeNode(resource, AlterObjectSchemaStmt);
             n->objectType = OBJECT_TYPE;
             n->object = (yyvsp[-3].list);
             n->newschema = (yyvsp[0].str);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 39331 "gram.cpp"
+#line 39333 "gram.cpp"
         break;
 
         case 1403: /* AlterOwnerStmt: ALTER AGGREGATE func_name aggr_args OWNER TO RoleId  */
 #line 10310 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_AGGREGATE;
             n->object = (yyvsp[-4].list);
-            n->objarg = extractAggrArgTypes((yyvsp[-3].list));
+            n->objarg = extractAggrArgTypes(resource, (yyvsp[-3].list));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39344 "gram.cpp"
+#line 39346 "gram.cpp"
         break;
 
         case 1404: /* AlterOwnerStmt: ALTER COLLATION any_name OWNER TO RoleId  */
 #line 10319 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_COLLATION;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39356 "gram.cpp"
+#line 39358 "gram.cpp"
         break;
 
         case 1405: /* AlterOwnerStmt: ALTER CONVERSION_P any_name OWNER TO RoleId  */
 #line 10327 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_CONVERSION;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39368 "gram.cpp"
+#line 39370 "gram.cpp"
         break;
 
         case 1406: /* AlterOwnerStmt: ALTER DATABASE database_name OWNER TO RoleId  */
 #line 10335 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_DATABASE;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39380 "gram.cpp"
+#line 39382 "gram.cpp"
         break;
 
         case 1407: /* AlterOwnerStmt: ALTER DOMAIN_P any_name OWNER TO RoleId  */
 #line 10343 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_DOMAIN;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39392 "gram.cpp"
+#line 39394 "gram.cpp"
         break;
 
         case 1408: /* AlterOwnerStmt: ALTER FUNCTION function_with_argtypes OWNER TO RoleId  */
 #line 10351 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_FUNCTION;
             n->object = (yyvsp[-3].funwithargs)->funcname;
             n->objarg = (yyvsp[-3].funwithargs)->funcargs;
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39405 "gram.cpp"
+#line 39407 "gram.cpp"
         break;
 
         case 1409: /* AlterOwnerStmt: ALTER opt_procedural LANGUAGE name OWNER TO RoleId  */
 #line 10360 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_LANGUAGE;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39417 "gram.cpp"
+#line 39419 "gram.cpp"
         break;
 
         case 1410: /* AlterOwnerStmt: ALTER LARGE_P OBJECT_P NumericOnly OWNER TO RoleId  */
 #line 10368 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_LARGEOBJECT;
-            n->object = list_make1((yyvsp[-3].value));
+            n->object = list_make1(resource, (yyvsp[-3].value));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39429 "gram.cpp"
+#line 39431 "gram.cpp"
         break;
 
         case 1411: /* AlterOwnerStmt: ALTER OPERATOR any_operator oper_argtypes OWNER TO RoleId  */
 #line 10376 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_OPERATOR;
             n->object = (yyvsp[-4].list);
             n->objarg = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39442 "gram.cpp"
+#line 39444 "gram.cpp"
         break;
 
         case 1412: /* AlterOwnerStmt: ALTER OPERATOR CLASS any_name USING access_method OWNER TO RoleId  */
 #line 10385 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_OPCLASS;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39455 "gram.cpp"
+#line 39457 "gram.cpp"
         break;
 
         case 1413: /* AlterOwnerStmt: ALTER OPERATOR FAMILY any_name USING access_method OWNER TO RoleId  */
 #line 10394 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_OPFAMILY;
             n->object = (yyvsp[-5].list);
-            n->objarg = list_make1(makeString((yyvsp[-3].str)));
+            n->objarg = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39468 "gram.cpp"
+#line 39470 "gram.cpp"
         break;
 
         case 1414: /* AlterOwnerStmt: ALTER SCHEMA name OWNER TO RoleId  */
 #line 10403 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_SCHEMA;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39480 "gram.cpp"
+#line 39482 "gram.cpp"
         break;
 
         case 1415: /* AlterOwnerStmt: ALTER TYPE_P any_name OWNER TO RoleId  */
 #line 10411 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_TYPE;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39492 "gram.cpp"
+#line 39494 "gram.cpp"
         break;
 
         case 1416: /* AlterOwnerStmt: ALTER TABLESPACE name OWNER TO RoleId  */
 #line 10419 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_TABLESPACE;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39504 "gram.cpp"
+#line 39506 "gram.cpp"
         break;
 
         case 1417: /* AlterOwnerStmt: ALTER PROTOCOL name OWNER TO RoleId  */
 #line 10427 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_EXTPROTOCOL;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39516 "gram.cpp"
+#line 39518 "gram.cpp"
         break;
 
         case 1418: /* AlterOwnerStmt: ALTER TEXT_P SEARCH DICTIONARY any_name OWNER TO RoleId  */
 #line 10435 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_TSDICTIONARY;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39528 "gram.cpp"
+#line 39530 "gram.cpp"
         break;
 
         case 1419: /* AlterOwnerStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name OWNER TO RoleId  */
 #line 10443 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_TSCONFIGURATION;
             n->object = (yyvsp[-3].list);
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39540 "gram.cpp"
+#line 39542 "gram.cpp"
         break;
 
         case 1420: /* AlterOwnerStmt: ALTER FOREIGN DATA_P WRAPPER name OWNER TO RoleId  */
 #line 10451 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_FDW;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39552 "gram.cpp"
+#line 39554 "gram.cpp"
         break;
 
         case 1421: /* AlterOwnerStmt: ALTER SERVER name OWNER TO RoleId  */
 #line 10459 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_FOREIGN_SERVER;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39564 "gram.cpp"
+#line 39566 "gram.cpp"
         break;
 
         case 1422: /* AlterOwnerStmt: ALTER EVENT TRIGGER name OWNER TO RoleId  */
 #line 10467 "gram.y"
         {
-            AlterOwnerStmt* n = makeNode(AlterOwnerStmt);
+            AlterOwnerStmt* n = makeNode(resource, AlterOwnerStmt);
             n->objectType = OBJECT_EVENT_TRIGGER;
-            n->object = list_make1(makeString((yyvsp[-3].str)));
+            n->object = list_make1(resource, makeString(resource, (yyvsp[-3].str)));
             n->newowner = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39576 "gram.cpp"
+#line 39578 "gram.cpp"
         break;
 
         case 1423: /* RuleStmt: CREATE opt_or_replace RULE name AS ON event TO qualified_name where_clause DO opt_instead RuleActionList  */
 #line 10486 "gram.y"
         {
-            RuleStmt* n = makeNode(RuleStmt);
+            RuleStmt* n = makeNode(resource, RuleStmt);
             n->replace = (yyvsp[-11].boolean);
             n->relation = (yyvsp[-4].range);
             n->rulename = (yyvsp[-9].str);
@@ -31157,7 +31197,7 @@ yyreduce:
             n->actions = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 39592 "gram.cpp"
+#line 39594 "gram.cpp"
         break;
 
         case 1424: /* RuleActionList: NOTHING  */
@@ -31165,15 +31205,15 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 39598 "gram.cpp"
+#line 39600 "gram.cpp"
         break;
 
         case 1425: /* RuleActionList: RuleActionStmt  */
 #line 10501 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 39604 "gram.cpp"
+#line 39606 "gram.cpp"
         break;
 
         case 1426: /* RuleActionList: '(' RuleActionMulti ')'  */
@@ -31181,29 +31221,29 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 39610 "gram.cpp"
+#line 39612 "gram.cpp"
         break;
 
         case 1427: /* RuleActionMulti: RuleActionMulti ';' RuleActionStmtOrEmpty  */
 #line 10508 "gram.y"
         {
             if ((yyvsp[0].node) != NULL)
-                (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+                (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
             else
                 (yyval.list) = (yyvsp[-2].list);
         }
-#line 39620 "gram.cpp"
+#line 39622 "gram.cpp"
         break;
 
         case 1428: /* RuleActionMulti: RuleActionStmtOrEmpty  */
 #line 10514 "gram.y"
         {
             if ((yyvsp[0].node) != NULL)
-                (yyval.list) = list_make1((yyvsp[0].node));
+                (yyval.list) = list_make1(resource, (yyvsp[0].node));
             else
                 (yyval.list) = NIL;
         }
-#line 39630 "gram.cpp"
+#line 39632 "gram.cpp"
         break;
 
         case 1434: /* RuleActionStmtOrEmpty: RuleActionStmt  */
@@ -31211,7 +31251,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 39636 "gram.cpp"
+#line 39638 "gram.cpp"
         break;
 
         case 1435: /* RuleActionStmtOrEmpty: %empty  */
@@ -31219,7 +31259,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 39642 "gram.cpp"
+#line 39644 "gram.cpp"
         break;
 
         case 1436: /* event: SELECT  */
@@ -31227,7 +31267,7 @@ yyreduce:
         {
             (yyval.ival) = CMD_SELECT;
         }
-#line 39648 "gram.cpp"
+#line 39650 "gram.cpp"
         break;
 
         case 1437: /* event: UPDATE  */
@@ -31235,7 +31275,7 @@ yyreduce:
         {
             (yyval.ival) = CMD_UPDATE;
         }
-#line 39654 "gram.cpp"
+#line 39656 "gram.cpp"
         break;
 
         case 1438: /* event: DELETE_P  */
@@ -31243,7 +31283,7 @@ yyreduce:
         {
             (yyval.ival) = CMD_DELETE;
         }
-#line 39660 "gram.cpp"
+#line 39662 "gram.cpp"
         break;
 
         case 1439: /* event: INSERT  */
@@ -31251,7 +31291,7 @@ yyreduce:
         {
             (yyval.ival) = CMD_INSERT;
         }
-#line 39666 "gram.cpp"
+#line 39668 "gram.cpp"
         break;
 
         case 1440: /* opt_instead: INSTEAD  */
@@ -31259,7 +31299,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 39672 "gram.cpp"
+#line 39674 "gram.cpp"
         break;
 
         case 1441: /* opt_instead: ALSO  */
@@ -31267,7 +31307,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 39678 "gram.cpp"
+#line 39680 "gram.cpp"
         break;
 
         case 1442: /* opt_instead: %empty  */
@@ -31275,48 +31315,50 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 39684 "gram.cpp"
+#line 39686 "gram.cpp"
         break;
 
         case 1443: /* DropRuleStmt: DROP RULE name ON any_name opt_drop_behavior  */
 #line 10549 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_RULE;
-            n->objects = list_make1(lappend((yyvsp[-1].list), makeString((yyvsp[-3].str))));
+            n->objects =
+                list_make1(resource, lappend(resource, (yyvsp[-1].list), makeString(resource, (yyvsp[-3].str))));
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = false;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 39699 "gram.cpp"
+#line 39701 "gram.cpp"
         break;
 
         case 1444: /* DropRuleStmt: DROP RULE IF_P EXISTS name ON any_name opt_drop_behavior  */
 #line 10560 "gram.y"
         {
-            DropStmt* n = makeNode(DropStmt);
+            DropStmt* n = makeNode(resource, DropStmt);
             n->removeType = OBJECT_RULE;
-            n->objects = list_make1(lappend((yyvsp[-1].list), makeString((yyvsp[-3].str))));
+            n->objects =
+                list_make1(resource, lappend(resource, (yyvsp[-1].list), makeString(resource, (yyvsp[-3].str))));
             n->arguments = NIL;
             n->behavior = (yyvsp[0].dbehavior);
             n->missing_ok = true;
             n->concurrent = false;
             (yyval.node) = (Node*) n;
         }
-#line 39714 "gram.cpp"
+#line 39716 "gram.cpp"
         break;
 
         case 1445: /* NotifyStmt: NOTIFY ColId notify_payload  */
 #line 10582 "gram.y"
         {
-            NotifyStmt* n = makeNode(NotifyStmt);
+            NotifyStmt* n = makeNode(resource, NotifyStmt);
             n->conditionname = (yyvsp[-1].str);
             n->payload = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39725 "gram.cpp"
+#line 39727 "gram.cpp"
         break;
 
         case 1446: /* notify_payload: ',' Sconst  */
@@ -31324,7 +31366,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 39731 "gram.cpp"
+#line 39733 "gram.cpp"
         break;
 
         case 1447: /* notify_payload: %empty  */
@@ -31332,276 +31374,288 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 39737 "gram.cpp"
+#line 39739 "gram.cpp"
         break;
 
         case 1448: /* ListenStmt: LISTEN ColId  */
 #line 10596 "gram.y"
         {
-            ListenStmt* n = makeNode(ListenStmt);
+            ListenStmt* n = makeNode(resource, ListenStmt);
             n->conditionname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39747 "gram.cpp"
+#line 39749 "gram.cpp"
         break;
 
         case 1449: /* UnlistenStmt: UNLISTEN ColId  */
 #line 10605 "gram.y"
         {
-            UnlistenStmt* n = makeNode(UnlistenStmt);
+            UnlistenStmt* n = makeNode(resource, UnlistenStmt);
             n->conditionname = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39757 "gram.cpp"
+#line 39759 "gram.cpp"
         break;
 
         case 1450: /* UnlistenStmt: UNLISTEN '*'  */
 #line 10611 "gram.y"
         {
-            UnlistenStmt* n = makeNode(UnlistenStmt);
+            UnlistenStmt* n = makeNode(resource, UnlistenStmt);
             n->conditionname = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 39767 "gram.cpp"
+#line 39769 "gram.cpp"
         break;
 
         case 1451: /* TransactionStmt: ABORT_P opt_transaction  */
 #line 10630 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_ROLLBACK;
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 39778 "gram.cpp"
+#line 39780 "gram.cpp"
         break;
 
         case 1452: /* TransactionStmt: BEGIN_P opt_transaction transaction_mode_list_or_empty  */
 #line 10637 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_BEGIN;
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 39789 "gram.cpp"
+#line 39791 "gram.cpp"
         break;
 
         case 1453: /* TransactionStmt: START TRANSACTION transaction_mode_list_or_empty  */
 #line 10644 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_START;
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 39800 "gram.cpp"
+#line 39802 "gram.cpp"
         break;
 
         case 1454: /* TransactionStmt: COMMIT opt_transaction  */
 #line 10651 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_COMMIT;
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 39811 "gram.cpp"
+#line 39813 "gram.cpp"
         break;
 
         case 1455: /* TransactionStmt: END_P opt_transaction  */
 #line 10658 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_COMMIT;
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 39822 "gram.cpp"
+#line 39824 "gram.cpp"
         break;
 
         case 1456: /* TransactionStmt: ROLLBACK opt_transaction  */
 #line 10665 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_ROLLBACK;
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 39833 "gram.cpp"
+#line 39835 "gram.cpp"
         break;
 
         case 1457: /* TransactionStmt: SAVEPOINT ColId  */
 #line 10672 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_SAVEPOINT;
-            n->options = list_make1(makeDefElem("savepoint_name", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource,
+                           makeDefElem(resource, "savepoint_name", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 39845 "gram.cpp"
+#line 39847 "gram.cpp"
         break;
 
         case 1458: /* TransactionStmt: RELEASE SAVEPOINT ColId  */
 #line 10680 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_RELEASE;
-            n->options = list_make1(makeDefElem("savepoint_name", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource,
+                           makeDefElem(resource, "savepoint_name", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 39857 "gram.cpp"
+#line 39859 "gram.cpp"
         break;
 
         case 1459: /* TransactionStmt: RELEASE ColId  */
 #line 10688 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_RELEASE;
-            n->options = list_make1(makeDefElem("savepoint_name", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource,
+                           makeDefElem(resource, "savepoint_name", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 39869 "gram.cpp"
+#line 39871 "gram.cpp"
         break;
 
         case 1460: /* TransactionStmt: ROLLBACK opt_transaction TO SAVEPOINT ColId  */
 #line 10696 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_ROLLBACK_TO;
-            n->options = list_make1(makeDefElem("savepoint_name", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource,
+                           makeDefElem(resource, "savepoint_name", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 39881 "gram.cpp"
+#line 39883 "gram.cpp"
         break;
 
         case 1461: /* TransactionStmt: ROLLBACK opt_transaction TO ColId  */
 #line 10704 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_ROLLBACK_TO;
-            n->options = list_make1(makeDefElem("savepoint_name", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource,
+                           makeDefElem(resource, "savepoint_name", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 39893 "gram.cpp"
+#line 39895 "gram.cpp"
         break;
 
         case 1462: /* TransactionStmt: PREPARE TRANSACTION Sconst  */
 #line 10712 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_PREPARE;
             n->gid = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39904 "gram.cpp"
+#line 39906 "gram.cpp"
         break;
 
         case 1463: /* TransactionStmt: COMMIT PREPARED Sconst  */
 #line 10719 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_COMMIT_PREPARED;
             n->gid = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39915 "gram.cpp"
+#line 39917 "gram.cpp"
         break;
 
         case 1464: /* TransactionStmt: ROLLBACK PREPARED Sconst  */
 #line 10726 "gram.y"
         {
-            TransactionStmt* n = makeNode(TransactionStmt);
+            TransactionStmt* n = makeNode(resource, TransactionStmt);
             n->kind = TRANS_STMT_ROLLBACK_PREPARED;
             n->gid = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 39926 "gram.cpp"
+#line 39928 "gram.cpp"
         break;
 
         case 1465: /* opt_transaction: WORK  */
 #line 10734 "gram.y"
         {
         }
-#line 39932 "gram.cpp"
+#line 39934 "gram.cpp"
         break;
 
         case 1466: /* opt_transaction: TRANSACTION  */
 #line 10735 "gram.y"
         {
         }
-#line 39938 "gram.cpp"
+#line 39940 "gram.cpp"
         break;
 
         case 1467: /* opt_transaction: %empty  */
 #line 10736 "gram.y"
         {
         }
-#line 39944 "gram.cpp"
+#line 39946 "gram.cpp"
         break;
 
         case 1468: /* transaction_mode_item: ISOLATION LEVEL iso_level  */
 #line 10741 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("transaction_isolation", makeStringConst((yyvsp[0].str), (yylsp[0])));
+            (yyval.defelt) =
+                makeDefElem(resource, "transaction_isolation", makeStringConst(resource, (yyvsp[0].str), (yylsp[0])));
         }
-#line 39951 "gram.cpp"
+#line 39953 "gram.cpp"
         break;
 
         case 1469: /* transaction_mode_item: READ ONLY  */
 #line 10744 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("transaction_read_only", makeIntConst(TRUE, (yylsp[-1])));
+            (yyval.defelt) = makeDefElem(resource, "transaction_read_only", makeIntConst(resource, TRUE, (yylsp[-1])));
         }
-#line 39958 "gram.cpp"
+#line 39960 "gram.cpp"
         break;
 
         case 1470: /* transaction_mode_item: READ WRITE  */
 #line 10747 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("transaction_read_only", makeIntConst(FALSE, (yylsp[-1])));
+            (yyval.defelt) = makeDefElem(resource, "transaction_read_only", makeIntConst(resource, FALSE, (yylsp[-1])));
         }
-#line 39965 "gram.cpp"
+#line 39967 "gram.cpp"
         break;
 
         case 1471: /* transaction_mode_item: DEFERRABLE  */
 #line 10750 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("transaction_deferrable", makeIntConst(TRUE, (yylsp[0])));
+            (yyval.defelt) = makeDefElem(resource, "transaction_deferrable", makeIntConst(resource, TRUE, (yylsp[0])));
         }
-#line 39972 "gram.cpp"
+#line 39974 "gram.cpp"
         break;
 
         case 1472: /* transaction_mode_item: NOT DEFERRABLE  */
 #line 10753 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("transaction_deferrable", makeIntConst(FALSE, (yylsp[-1])));
+            (yyval.defelt) =
+                makeDefElem(resource, "transaction_deferrable", makeIntConst(resource, FALSE, (yylsp[-1])));
         }
-#line 39979 "gram.cpp"
+#line 39981 "gram.cpp"
         break;
 
         case 1473: /* transaction_mode_list: transaction_mode_item  */
 #line 10760 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 39985 "gram.cpp"
+#line 39987 "gram.cpp"
         break;
 
         case 1474: /* transaction_mode_list: transaction_mode_list ',' transaction_mode_item  */
 #line 10762 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 39991 "gram.cpp"
+#line 39993 "gram.cpp"
         break;
 
         case 1475: /* transaction_mode_list: transaction_mode_list transaction_mode_item  */
 #line 10764 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 39997 "gram.cpp"
+#line 39999 "gram.cpp"
         break;
 
         case 1477: /* transaction_mode_list_or_empty: %empty  */
@@ -31609,13 +31663,13 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 40003 "gram.cpp"
+#line 40005 "gram.cpp"
         break;
 
         case 1478: /* ViewStmt: CREATE OptTemp VIEW qualified_name opt_column_list opt_reloptions AS SelectStmt opt_check_option  */
 #line 10784 "gram.y"
         {
-            ViewStmt* n = makeNode(ViewStmt);
+            ViewStmt* n = makeNode(resource, ViewStmt);
             n->view = (yyvsp[-5].range);
             n->view->relpersistence = (yyvsp[-7].ival);
             n->aliases = (yyvsp[-4].list);
@@ -31625,13 +31679,13 @@ yyreduce:
             n->withCheckOption = static_cast<ViewCheckOption>((yyvsp[0].ival));
             (yyval.node) = (Node*) n;
         }
-#line 40019 "gram.cpp"
+#line 40021 "gram.cpp"
         break;
 
         case 1479: /* ViewStmt: CREATE OR REPLACE OptTemp VIEW qualified_name opt_column_list opt_reloptions AS SelectStmt opt_check_option  */
 #line 10797 "gram.y"
         {
-            ViewStmt* n = makeNode(ViewStmt);
+            ViewStmt* n = makeNode(resource, ViewStmt);
             n->view = (yyvsp[-5].range);
             n->view->relpersistence = (yyvsp[-7].ival);
             n->aliases = (yyvsp[-4].list);
@@ -31641,17 +31695,17 @@ yyreduce:
             n->withCheckOption = static_cast<ViewCheckOption>((yyvsp[0].ival));
             (yyval.node) = (Node*) n;
         }
-#line 40035 "gram.cpp"
+#line 40037 "gram.cpp"
         break;
 
         case 1480: /* ViewStmt: CREATE OptTemp RECURSIVE VIEW qualified_name '(' columnList ')' opt_reloptions AS SelectStmt opt_check_option  */
 #line 10810 "gram.y"
         {
-            ViewStmt* n = makeNode(ViewStmt);
+            ViewStmt* n = makeNode(resource, ViewStmt);
             n->view = (yyvsp[-7].range);
             n->view->relpersistence = (yyvsp[-10].ival);
             n->aliases = (yyvsp[-5].list);
-            n->query = makeRecursiveViewSelect(n->view->relname, n->aliases, (yyvsp[-1].node));
+            n->query = makeRecursiveViewSelect(resource, n->view->relname, n->aliases, (yyvsp[-1].node));
             n->replace = false;
             n->options = (yyvsp[-3].list);
             n->withCheckOption = static_cast<ViewCheckOption>((yyvsp[0].ival));
@@ -31662,17 +31716,17 @@ yyreduce:
                         parser_errposition((yylsp[0])));
             (yyval.node) = (Node*) n;
         }
-#line 40056 "gram.cpp"
+#line 40058 "gram.cpp"
         break;
 
         case 1481: /* ViewStmt: CREATE OR REPLACE OptTemp RECURSIVE VIEW qualified_name '(' columnList ')' opt_reloptions AS SelectStmt opt_check_option  */
 #line 10828 "gram.y"
         {
-            ViewStmt* n = makeNode(ViewStmt);
+            ViewStmt* n = makeNode(resource, ViewStmt);
             n->view = (yyvsp[-7].range);
             n->view->relpersistence = (yyvsp[-10].ival);
             n->aliases = (yyvsp[-5].list);
-            n->query = makeRecursiveViewSelect(n->view->relname, n->aliases, (yyvsp[-1].node));
+            n->query = makeRecursiveViewSelect(resource, n->view->relname, n->aliases, (yyvsp[-1].node));
             n->replace = true;
             n->options = (yyvsp[-3].list);
             n->withCheckOption = static_cast<ViewCheckOption>((yyvsp[0].ival));
@@ -31683,7 +31737,7 @@ yyreduce:
                         parser_errposition((yylsp[0])));
             (yyval.node) = (Node*) n;
         }
-#line 40077 "gram.cpp"
+#line 40079 "gram.cpp"
         break;
 
         case 1482: /* opt_check_option: WITH CHECK OPTION  */
@@ -31691,7 +31745,7 @@ yyreduce:
         {
             (yyval.ival) = CASCADED_CHECK_OPTION;
         }
-#line 40083 "gram.cpp"
+#line 40085 "gram.cpp"
         break;
 
         case 1483: /* opt_check_option: WITH CASCADED CHECK OPTION  */
@@ -31699,7 +31753,7 @@ yyreduce:
         {
             (yyval.ival) = CASCADED_CHECK_OPTION;
         }
-#line 40089 "gram.cpp"
+#line 40091 "gram.cpp"
         break;
 
         case 1484: /* opt_check_option: WITH LOCAL CHECK OPTION  */
@@ -31707,7 +31761,7 @@ yyreduce:
         {
             (yyval.ival) = LOCAL_CHECK_OPTION;
         }
-#line 40095 "gram.cpp"
+#line 40097 "gram.cpp"
         break;
 
         case 1485: /* opt_check_option: %empty  */
@@ -31715,36 +31769,36 @@ yyreduce:
         {
             (yyval.ival) = NO_CHECK_OPTION;
         }
-#line 40101 "gram.cpp"
+#line 40103 "gram.cpp"
         break;
 
         case 1486: /* LoadStmt: LOAD file_name  */
 #line 10861 "gram.y"
         {
-            LoadStmt* n = makeNode(LoadStmt);
+            LoadStmt* n = makeNode(resource, LoadStmt);
             n->filename = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 40111 "gram.cpp"
+#line 40113 "gram.cpp"
         break;
 
         case 1487: /* CreatedbStmt: CREATE DATABASE database_name opt_with createdb_opt_list  */
 #line 10877 "gram.y"
         {
-            CreatedbStmt* n = makeNode(CreatedbStmt);
+            CreatedbStmt* n = makeNode(resource, CreatedbStmt);
             n->dbname = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40122 "gram.cpp"
+#line 40124 "gram.cpp"
         break;
 
         case 1488: /* createdb_opt_list: createdb_opt_list createdb_opt_item  */
 #line 10886 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 40128 "gram.cpp"
+#line 40130 "gram.cpp"
         break;
 
         case 1489: /* createdb_opt_list: %empty  */
@@ -31752,190 +31806,191 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 40134 "gram.cpp"
+#line 40136 "gram.cpp"
         break;
 
         case 1490: /* createdb_opt_item: TABLESPACE opt_equal name  */
 #line 10892 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("tablespace", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "tablespace", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40142 "gram.cpp"
+#line 40144 "gram.cpp"
         break;
 
         case 1491: /* createdb_opt_item: TABLESPACE opt_equal DEFAULT  */
 #line 10896 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("tablespace", NULL);
+            (yyval.defelt) = makeDefElem(resource, "tablespace", NULL);
         }
-#line 40150 "gram.cpp"
+#line 40152 "gram.cpp"
         break;
 
         case 1492: /* createdb_opt_item: LOCATION opt_equal Sconst  */
 #line 10900 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("location", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "location", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40158 "gram.cpp"
+#line 40160 "gram.cpp"
         break;
 
         case 1493: /* createdb_opt_item: LOCATION opt_equal DEFAULT  */
 #line 10904 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("location", NULL);
+            (yyval.defelt) = makeDefElem(resource, "location", NULL);
         }
-#line 40166 "gram.cpp"
+#line 40168 "gram.cpp"
         break;
 
         case 1494: /* createdb_opt_item: TEMPLATE opt_equal name  */
 #line 10908 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("template", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "template", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40174 "gram.cpp"
+#line 40176 "gram.cpp"
         break;
 
         case 1495: /* createdb_opt_item: TEMPLATE opt_equal DEFAULT  */
 #line 10912 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("template", NULL);
+            (yyval.defelt) = makeDefElem(resource, "template", NULL);
         }
-#line 40182 "gram.cpp"
+#line 40184 "gram.cpp"
         break;
 
         case 1496: /* createdb_opt_item: ENCODING opt_equal Sconst  */
 #line 10916 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "encoding", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40190 "gram.cpp"
+#line 40192 "gram.cpp"
         break;
 
         case 1497: /* createdb_opt_item: ENCODING opt_equal Iconst  */
 #line 10920 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "encoding", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 40198 "gram.cpp"
+#line 40200 "gram.cpp"
         break;
 
         case 1498: /* createdb_opt_item: ENCODING opt_equal DEFAULT  */
 #line 10924 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("encoding", NULL);
+            (yyval.defelt) = makeDefElem(resource, "encoding", NULL);
         }
-#line 40206 "gram.cpp"
+#line 40208 "gram.cpp"
         break;
 
         case 1499: /* createdb_opt_item: LC_COLLATE_P opt_equal Sconst  */
 #line 10928 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("lc_collate", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "lc_collate", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40214 "gram.cpp"
+#line 40216 "gram.cpp"
         break;
 
         case 1500: /* createdb_opt_item: LC_COLLATE_P opt_equal DEFAULT  */
 #line 10932 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("lc_collate", NULL);
+            (yyval.defelt) = makeDefElem(resource, "lc_collate", NULL);
         }
-#line 40222 "gram.cpp"
+#line 40224 "gram.cpp"
         break;
 
         case 1501: /* createdb_opt_item: LC_CTYPE_P opt_equal Sconst  */
 #line 10936 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("lc_ctype", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "lc_ctype", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40230 "gram.cpp"
+#line 40232 "gram.cpp"
         break;
 
         case 1502: /* createdb_opt_item: LC_CTYPE_P opt_equal DEFAULT  */
 #line 10940 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("lc_ctype", NULL);
+            (yyval.defelt) = makeDefElem(resource, "lc_ctype", NULL);
         }
-#line 40238 "gram.cpp"
+#line 40240 "gram.cpp"
         break;
 
         case 1503: /* createdb_opt_item: CONNECTION LIMIT opt_equal SignedIconst  */
 #line 10944 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("connectionlimit", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "connectionlimit", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 40246 "gram.cpp"
+#line 40248 "gram.cpp"
         break;
 
         case 1504: /* createdb_opt_item: OWNER opt_equal name  */
 #line 10948 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("owner", (Node*) makeString((yyvsp[0].str)));
+            (yyval.defelt) = makeDefElem(resource, "owner", (Node*) makeString(resource, (yyvsp[0].str)));
         }
-#line 40254 "gram.cpp"
+#line 40256 "gram.cpp"
         break;
 
         case 1505: /* createdb_opt_item: OWNER opt_equal DEFAULT  */
 #line 10952 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("owner", NULL);
+            (yyval.defelt) = makeDefElem(resource, "owner", NULL);
         }
-#line 40262 "gram.cpp"
+#line 40264 "gram.cpp"
         break;
 
         case 1506: /* opt_equal: '='  */
 #line 10961 "gram.y"
         {
         }
-#line 40268 "gram.cpp"
+#line 40270 "gram.cpp"
         break;
 
         case 1507: /* opt_equal: %empty  */
 #line 10962 "gram.y"
         {
         }
-#line 40274 "gram.cpp"
+#line 40276 "gram.cpp"
         break;
 
         case 1508: /* AlterDatabaseStmt: ALTER DATABASE database_name opt_with alterdb_opt_list  */
 #line 10974 "gram.y"
         {
-            AlterDatabaseStmt* n = makeNode(AlterDatabaseStmt);
+            AlterDatabaseStmt* n = makeNode(resource, AlterDatabaseStmt);
             n->dbname = (yyvsp[-2].str);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40285 "gram.cpp"
+#line 40287 "gram.cpp"
         break;
 
         case 1509: /* AlterDatabaseStmt: ALTER DATABASE database_name SET TABLESPACE name  */
 #line 10981 "gram.y"
         {
-            AlterDatabaseStmt* n = makeNode(AlterDatabaseStmt);
+            AlterDatabaseStmt* n = makeNode(resource, AlterDatabaseStmt);
             n->dbname = (yyvsp[-3].str);
-            n->options = list_make1(makeDefElem("tablespace", (Node*) makeString((yyvsp[0].str))));
+            n->options =
+                list_make1(resource, makeDefElem(resource, "tablespace", (Node*) makeString(resource, (yyvsp[0].str))));
             (yyval.node) = (Node*) n;
         }
-#line 40297 "gram.cpp"
+#line 40299 "gram.cpp"
         break;
 
         case 1510: /* AlterDatabaseSetStmt: ALTER DATABASE database_name SetResetClause  */
 #line 10992 "gram.y"
         {
-            AlterDatabaseSetStmt* n = makeNode(AlterDatabaseSetStmt);
+            AlterDatabaseSetStmt* n = makeNode(resource, AlterDatabaseSetStmt);
             n->dbname = (yyvsp[-1].str);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 40308 "gram.cpp"
+#line 40310 "gram.cpp"
         break;
 
         case 1511: /* alterdb_opt_list: alterdb_opt_list alterdb_opt_item  */
 #line 11002 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].defelt));
         }
-#line 40314 "gram.cpp"
+#line 40316 "gram.cpp"
         break;
 
         case 1512: /* alterdb_opt_list: %empty  */
@@ -31943,121 +31998,121 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 40320 "gram.cpp"
+#line 40322 "gram.cpp"
         break;
 
         case 1513: /* alterdb_opt_item: CONNECTION LIMIT opt_equal SignedIconst  */
 #line 11008 "gram.y"
         {
-            (yyval.defelt) = makeDefElem("connectionlimit", (Node*) makeInteger((yyvsp[0].ival)));
+            (yyval.defelt) = makeDefElem(resource, "connectionlimit", (Node*) makeInteger(resource, (yyvsp[0].ival)));
         }
-#line 40328 "gram.cpp"
+#line 40330 "gram.cpp"
         break;
 
         case 1514: /* DropdbStmt: DROP DATABASE database_name  */
 #line 11022 "gram.y"
         {
-            DropdbStmt* n = makeNode(DropdbStmt);
+            DropdbStmt* n = makeNode(resource, DropdbStmt);
             n->dbname = (yyvsp[0].str);
             n->missing_ok = FALSE;
             (yyval.node) = (Node*) n;
         }
-#line 40339 "gram.cpp"
+#line 40341 "gram.cpp"
         break;
 
         case 1515: /* DropdbStmt: DROP DATABASE IF_P EXISTS database_name  */
 #line 11029 "gram.y"
         {
-            DropdbStmt* n = makeNode(DropdbStmt);
+            DropdbStmt* n = makeNode(resource, DropdbStmt);
             n->dbname = (yyvsp[0].str);
             n->missing_ok = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 40350 "gram.cpp"
+#line 40352 "gram.cpp"
         break;
 
         case 1516: /* AlterSystemStmt: ALTER SYSTEM_P SET generic_set  */
 #line 11047 "gram.y"
         {
-            AlterSystemStmt* n = makeNode(AlterSystemStmt);
+            AlterSystemStmt* n = makeNode(resource, AlterSystemStmt);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 40360 "gram.cpp"
+#line 40362 "gram.cpp"
         break;
 
         case 1517: /* AlterSystemStmt: ALTER SYSTEM_P RESET generic_reset  */
 #line 11053 "gram.y"
         {
-            AlterSystemStmt* n = makeNode(AlterSystemStmt);
+            AlterSystemStmt* n = makeNode(resource, AlterSystemStmt);
             n->setstmt = (yyvsp[0].vsetstmt);
             (yyval.node) = (Node*) n;
         }
-#line 40370 "gram.cpp"
+#line 40372 "gram.cpp"
         break;
 
         case 1518: /* CreateDomainStmt: CREATE DOMAIN_P any_name opt_as Typename ColQualList  */
 #line 11069 "gram.y"
         {
-            CreateDomainStmt* n = makeNode(CreateDomainStmt);
+            CreateDomainStmt* n = makeNode(resource, CreateDomainStmt);
             n->domainname = (yyvsp[-3].list);
             n->typeName = (yyvsp[-1].typnam);
             SplitColQualList((yyvsp[0].list), &n->constraints, &n->collClause, yyscanner);
             (yyval.node) = (Node*) n;
         }
-#line 40383 "gram.cpp"
+#line 40385 "gram.cpp"
         break;
 
         case 1519: /* AlterDomainStmt: ALTER DOMAIN_P any_name alter_column_default  */
 #line 11082 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'T';
             n->typeName = (yyvsp[-1].list);
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 40395 "gram.cpp"
+#line 40397 "gram.cpp"
         break;
 
         case 1520: /* AlterDomainStmt: ALTER DOMAIN_P any_name DROP NOT NULL_P  */
 #line 11091 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'N';
             n->typeName = (yyvsp[-3].list);
             (yyval.node) = (Node*) n;
         }
-#line 40406 "gram.cpp"
+#line 40408 "gram.cpp"
         break;
 
         case 1521: /* AlterDomainStmt: ALTER DOMAIN_P any_name SET NOT NULL_P  */
 #line 11099 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'O';
             n->typeName = (yyvsp[-3].list);
             (yyval.node) = (Node*) n;
         }
-#line 40417 "gram.cpp"
+#line 40419 "gram.cpp"
         break;
 
         case 1522: /* AlterDomainStmt: ALTER DOMAIN_P any_name ADD_P TableConstraint  */
 #line 11107 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'C';
             n->typeName = (yyvsp[-2].list);
             n->def = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 40429 "gram.cpp"
+#line 40431 "gram.cpp"
         break;
 
         case 1523: /* AlterDomainStmt: ALTER DOMAIN_P any_name DROP CONSTRAINT name opt_drop_behavior  */
 #line 11116 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'X';
             n->typeName = (yyvsp[-4].list);
             n->name = (yyvsp[-1].str);
@@ -32065,13 +32120,13 @@ yyreduce:
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 40443 "gram.cpp"
+#line 40445 "gram.cpp"
         break;
 
         case 1524: /* AlterDomainStmt: ALTER DOMAIN_P any_name DROP CONSTRAINT IF_P EXISTS name opt_drop_behavior  */
 #line 11127 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'X';
             n->typeName = (yyvsp[-6].list);
             n->name = (yyvsp[-1].str);
@@ -32079,50 +32134,50 @@ yyreduce:
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 40457 "gram.cpp"
+#line 40459 "gram.cpp"
         break;
 
         case 1525: /* AlterDomainStmt: ALTER DOMAIN_P any_name VALIDATE CONSTRAINT name  */
 #line 11138 "gram.y"
         {
-            AlterDomainStmt* n = makeNode(AlterDomainStmt);
+            AlterDomainStmt* n = makeNode(resource, AlterDomainStmt);
             n->subtype = 'V';
             n->typeName = (yyvsp[-3].list);
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 40469 "gram.cpp"
+#line 40471 "gram.cpp"
         break;
 
         case 1526: /* opt_as: AS  */
 #line 11147 "gram.y"
         {
         }
-#line 40475 "gram.cpp"
+#line 40477 "gram.cpp"
         break;
 
         case 1527: /* opt_as: %empty  */
 #line 11148 "gram.y"
         {
         }
-#line 40481 "gram.cpp"
+#line 40483 "gram.cpp"
         break;
 
         case 1528: /* AlterTSDictionaryStmt: ALTER TEXT_P SEARCH DICTIONARY any_name definition  */
 #line 11160 "gram.y"
         {
-            AlterTSDictionaryStmt* n = makeNode(AlterTSDictionaryStmt);
+            AlterTSDictionaryStmt* n = makeNode(resource, AlterTSDictionaryStmt);
             n->dictname = (yyvsp[-1].list);
             n->options = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40492 "gram.cpp"
+#line 40494 "gram.cpp"
         break;
 
         case 1529: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name ADD_P MAPPING FOR name_list WITH any_name_list  */
 #line 11170 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_ADD_MAPPING;
             n->cfgname = (yyvsp[-6].list);
             n->tokentype = (yyvsp[-2].list);
@@ -32131,13 +32186,13 @@ yyreduce:
             n->replace = false;
             (yyval.node) = (Node*) n;
         }
-#line 40507 "gram.cpp"
+#line 40509 "gram.cpp"
         break;
 
         case 1530: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name ALTER MAPPING FOR name_list WITH any_name_list  */
 #line 11181 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_ALTER_MAPPING_FOR_TOKEN;
             n->cfgname = (yyvsp[-6].list);
             n->tokentype = (yyvsp[-2].list);
@@ -32146,69 +32201,69 @@ yyreduce:
             n->replace = false;
             (yyval.node) = (Node*) n;
         }
-#line 40522 "gram.cpp"
+#line 40524 "gram.cpp"
         break;
 
         case 1531: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name ALTER MAPPING REPLACE any_name WITH any_name  */
 #line 11192 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_REPLACE_DICT;
             n->cfgname = (yyvsp[-6].list);
             n->tokentype = NIL;
-            n->dicts = list_make2((yyvsp[-2].list), (yyvsp[0].list));
+            n->dicts = list_make2(resource, (yyvsp[-2].list), (yyvsp[0].list));
             n->override = false;
             n->replace = true;
             (yyval.node) = (Node*) n;
         }
-#line 40537 "gram.cpp"
+#line 40539 "gram.cpp"
         break;
 
         case 1532: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name ALTER MAPPING FOR name_list REPLACE any_name WITH any_name  */
 #line 11203 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_REPLACE_DICT_FOR_TOKEN;
             n->cfgname = (yyvsp[-8].list);
             n->tokentype = (yyvsp[-4].list);
-            n->dicts = list_make2((yyvsp[-2].list), (yyvsp[0].list));
+            n->dicts = list_make2(resource, (yyvsp[-2].list), (yyvsp[0].list));
             n->override = false;
             n->replace = true;
             (yyval.node) = (Node*) n;
         }
-#line 40552 "gram.cpp"
+#line 40554 "gram.cpp"
         break;
 
         case 1533: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name DROP MAPPING FOR name_list  */
 #line 11214 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_DROP_MAPPING;
             n->cfgname = (yyvsp[-4].list);
             n->tokentype = (yyvsp[0].list);
             n->missing_ok = false;
             (yyval.node) = (Node*) n;
         }
-#line 40565 "gram.cpp"
+#line 40567 "gram.cpp"
         break;
 
         case 1534: /* AlterTSConfigurationStmt: ALTER TEXT_P SEARCH CONFIGURATION any_name DROP MAPPING IF_P EXISTS FOR name_list  */
 #line 11223 "gram.y"
         {
-            AlterTSConfigurationStmt* n = makeNode(AlterTSConfigurationStmt);
+            AlterTSConfigurationStmt* n = makeNode(resource, AlterTSConfigurationStmt);
             n->kind = ALTER_TSCONFIG_DROP_MAPPING;
             n->cfgname = (yyvsp[-6].list);
             n->tokentype = (yyvsp[0].list);
             n->missing_ok = true;
             (yyval.node) = (Node*) n;
         }
-#line 40578 "gram.cpp"
+#line 40580 "gram.cpp"
         break;
 
         case 1535: /* CreateConversionStmt: CREATE opt_default CONVERSION_P any_name FOR Sconst TO Sconst FROM any_name  */
 #line 11246 "gram.y"
         {
-            CreateConversionStmt* n = makeNode(CreateConversionStmt);
+            CreateConversionStmt* n = makeNode(resource, CreateConversionStmt);
             n->conversion_name = (yyvsp[-6].list);
             n->for_encoding_name = (yyvsp[-4].str);
             n->to_encoding_name = (yyvsp[-2].str);
@@ -32216,43 +32271,43 @@ yyreduce:
             n->def = (yyvsp[-8].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 40592 "gram.cpp"
+#line 40594 "gram.cpp"
         break;
 
         case 1536: /* ClusterStmt: CLUSTER opt_verbose qualified_name cluster_index_specification  */
 #line 11268 "gram.y"
         {
-            ClusterStmt* n = makeNode(ClusterStmt);
+            ClusterStmt* n = makeNode(resource, ClusterStmt);
             n->relation = (yyvsp[-1].range);
             n->indexname = (yyvsp[0].str);
             n->verbose = (yyvsp[-2].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 40604 "gram.cpp"
+#line 40606 "gram.cpp"
         break;
 
         case 1537: /* ClusterStmt: CLUSTER opt_verbose  */
 #line 11276 "gram.y"
         {
-            ClusterStmt* n = makeNode(ClusterStmt);
+            ClusterStmt* n = makeNode(resource, ClusterStmt);
             n->relation = NULL;
             n->indexname = NULL;
             n->verbose = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 40616 "gram.cpp"
+#line 40618 "gram.cpp"
         break;
 
         case 1538: /* ClusterStmt: CLUSTER opt_verbose index_name ON qualified_name  */
 #line 11285 "gram.y"
         {
-            ClusterStmt* n = makeNode(ClusterStmt);
+            ClusterStmt* n = makeNode(resource, ClusterStmt);
             n->relation = (yyvsp[0].range);
             n->indexname = (yyvsp[-2].str);
             n->verbose = (yyvsp[-3].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 40628 "gram.cpp"
+#line 40630 "gram.cpp"
         break;
 
         case 1539: /* cluster_index_specification: USING index_name  */
@@ -32260,7 +32315,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 40634 "gram.cpp"
+#line 40636 "gram.cpp"
         break;
 
         case 1540: /* cluster_index_specification: %empty  */
@@ -32268,13 +32323,13 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 40640 "gram.cpp"
+#line 40642 "gram.cpp"
         break;
 
         case 1541: /* VacuumStmt: VACUUM opt_full opt_freeze opt_verbose  */
 #line 11309 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_VACUUM;
             if ((yyvsp[-2].boolean))
                 n->options |= VACOPT_FULL;
@@ -32288,13 +32343,13 @@ yyreduce:
             n->va_cols = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 40660 "gram.cpp"
+#line 40662 "gram.cpp"
         break;
 
         case 1542: /* VacuumStmt: VACUUM opt_full opt_freeze opt_verbose qualified_name  */
 #line 11325 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_VACUUM;
             if ((yyvsp[-3].boolean))
                 n->options |= VACOPT_FULL;
@@ -32308,7 +32363,7 @@ yyreduce:
             n->va_cols = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 40680 "gram.cpp"
+#line 40682 "gram.cpp"
         break;
 
         case 1543: /* VacuumStmt: VACUUM opt_full opt_freeze opt_verbose AnalyzeStmt  */
@@ -32326,13 +32381,13 @@ yyreduce:
             n->multixact_freeze_table_age = (yyvsp[-2].boolean) ? 0 : -1;
             (yyval.node) = (Node*) n;
         }
-#line 40698 "gram.cpp"
+#line 40700 "gram.cpp"
         break;
 
         case 1544: /* VacuumStmt: VACUUM '(' vacuum_option_list ')'  */
 #line 11355 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_VACUUM | (yyvsp[-1].ival);
             if (n->options & VACOPT_FREEZE) {
                 n->freeze_min_age = n->freeze_table_age = 0;
@@ -32347,13 +32402,13 @@ yyreduce:
             n->va_cols = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 40722 "gram.cpp"
+#line 40724 "gram.cpp"
         break;
 
         case 1545: /* VacuumStmt: VACUUM '(' vacuum_option_list ')' qualified_name opt_name_list  */
 #line 11375 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_VACUUM | (yyvsp[-3].ival);
             if (n->options & VACOPT_FREEZE) {
                 n->freeze_min_age = n->freeze_table_age = 0;
@@ -32370,7 +32425,7 @@ yyreduce:
                 n->options |= VACOPT_ANALYZE;
             (yyval.node) = (Node*) n;
         }
-#line 40748 "gram.cpp"
+#line 40750 "gram.cpp"
         break;
 
         case 1546: /* vacuum_option_list: vacuum_option_elem  */
@@ -32378,7 +32433,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 40754 "gram.cpp"
+#line 40756 "gram.cpp"
         break;
 
         case 1547: /* vacuum_option_list: vacuum_option_list ',' vacuum_option_elem  */
@@ -32386,7 +32441,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-2].ival) | (yyvsp[0].ival);
         }
-#line 40760 "gram.cpp"
+#line 40762 "gram.cpp"
         break;
 
         case 1548: /* vacuum_option_elem: analyze_keyword  */
@@ -32394,7 +32449,7 @@ yyreduce:
         {
             (yyval.ival) = VACOPT_ANALYZE;
         }
-#line 40766 "gram.cpp"
+#line 40768 "gram.cpp"
         break;
 
         case 1549: /* vacuum_option_elem: VERBOSE  */
@@ -32402,7 +32457,7 @@ yyreduce:
         {
             (yyval.ival) = VACOPT_VERBOSE;
         }
-#line 40772 "gram.cpp"
+#line 40774 "gram.cpp"
         break;
 
         case 1550: /* vacuum_option_elem: FREEZE  */
@@ -32410,7 +32465,7 @@ yyreduce:
         {
             (yyval.ival) = VACOPT_FREEZE;
         }
-#line 40778 "gram.cpp"
+#line 40780 "gram.cpp"
         break;
 
         case 1551: /* vacuum_option_elem: FULL  */
@@ -32418,7 +32473,7 @@ yyreduce:
         {
             (yyval.ival) = VACOPT_FULL;
         }
-#line 40784 "gram.cpp"
+#line 40786 "gram.cpp"
         break;
 
         case 1552: /* vacuum_option_elem: YEZZEY  */
@@ -32426,13 +32481,13 @@ yyreduce:
         {
             (yyval.ival) = VACOPT_YEZZEY;
         }
-#line 40790 "gram.cpp"
+#line 40792 "gram.cpp"
         break;
 
         case 1553: /* AnalyzeStmt: analyze_keyword opt_verbose opt_rootonly_all  */
 #line 11413 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_ANALYZE;
             if ((yyvsp[-1].boolean))
                 n->options |= VACOPT_VERBOSE;
@@ -32446,13 +32501,13 @@ yyreduce:
             n->va_cols = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 40810 "gram.cpp"
+#line 40812 "gram.cpp"
         break;
 
         case 1554: /* AnalyzeStmt: analyze_keyword opt_verbose qualified_name opt_name_list  */
 #line 11429 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_ANALYZE;
             if ((yyvsp[-2].boolean))
                 n->options |= VACOPT_VERBOSE;
@@ -32464,13 +32519,13 @@ yyreduce:
             n->va_cols = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40828 "gram.cpp"
+#line 40830 "gram.cpp"
         break;
 
         case 1555: /* AnalyzeStmt: analyze_keyword opt_verbose FULLSCAN qualified_name opt_name_list  */
 #line 11443 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_ANALYZE;
             if ((yyvsp[-3].boolean))
                 n->options |= VACOPT_VERBOSE;
@@ -32480,13 +32535,13 @@ yyreduce:
             n->va_cols = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40844 "gram.cpp"
+#line 40846 "gram.cpp"
         break;
 
         case 1556: /* AnalyzeStmt: analyze_keyword opt_verbose ROOTPARTITION qualified_name opt_name_list  */
 #line 11455 "gram.y"
         {
-            VacuumStmt* n = makeNode(VacuumStmt);
+            VacuumStmt* n = makeNode(resource, VacuumStmt);
             n->options = VACOPT_ANALYZE;
             if ((yyvsp[-3].boolean))
                 n->options |= VACOPT_VERBOSE;
@@ -32496,21 +32551,21 @@ yyreduce:
             n->va_cols = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 40860 "gram.cpp"
+#line 40862 "gram.cpp"
         break;
 
         case 1557: /* analyze_keyword: ANALYZE  */
 #line 11469 "gram.y"
         {
         }
-#line 40866 "gram.cpp"
+#line 40868 "gram.cpp"
         break;
 
         case 1558: /* analyze_keyword: ANALYSE  */
 #line 11470 "gram.y"
         {
         }
-#line 40872 "gram.cpp"
+#line 40874 "gram.cpp"
         break;
 
         case 1559: /* opt_verbose: VERBOSE  */
@@ -32518,7 +32573,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 40878 "gram.cpp"
+#line 40880 "gram.cpp"
         break;
 
         case 1560: /* opt_verbose: %empty  */
@@ -32526,7 +32581,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 40884 "gram.cpp"
+#line 40886 "gram.cpp"
         break;
 
         case 1561: /* opt_rootonly_all: ROOTPARTITION ALL  */
@@ -32534,7 +32589,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 40890 "gram.cpp"
+#line 40892 "gram.cpp"
         break;
 
         case 1562: /* opt_rootonly_all: %empty  */
@@ -32542,7 +32597,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 40896 "gram.cpp"
+#line 40898 "gram.cpp"
         break;
 
         case 1563: /* opt_full: FULL  */
@@ -32550,7 +32605,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 40902 "gram.cpp"
+#line 40904 "gram.cpp"
         break;
 
         case 1564: /* opt_full: %empty  */
@@ -32558,7 +32613,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 40908 "gram.cpp"
+#line 40910 "gram.cpp"
         break;
 
         case 1565: /* opt_freeze: FREEZE  */
@@ -32566,7 +32621,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 40914 "gram.cpp"
+#line 40916 "gram.cpp"
         break;
 
         case 1566: /* opt_freeze: %empty  */
@@ -32574,7 +32629,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 40920 "gram.cpp"
+#line 40922 "gram.cpp"
         break;
 
         case 1567: /* opt_name_list: '(' name_list ')'  */
@@ -32582,7 +32637,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 40926 "gram.cpp"
+#line 40928 "gram.cpp"
         break;
 
         case 1568: /* opt_name_list: %empty  */
@@ -32590,57 +32645,57 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 40932 "gram.cpp"
+#line 40934 "gram.cpp"
         break;
 
         case 1569: /* ExplainStmt: EXPLAIN ExplainableStmt  */
 #line 11507 "gram.y"
         {
-            ExplainStmt* n = makeNode(ExplainStmt);
+            ExplainStmt* n = makeNode(resource, ExplainStmt);
             n->query = (yyvsp[0].node);
             n->options = NIL;
             (yyval.node) = (Node*) n;
         }
-#line 40943 "gram.cpp"
+#line 40945 "gram.cpp"
         break;
 
         case 1570: /* ExplainStmt: EXPLAIN analyze_keyword opt_verbose opt_dxl ExplainableStmt  */
 #line 11514 "gram.y"
         {
-            ExplainStmt* n = makeNode(ExplainStmt);
+            ExplainStmt* n = makeNode(resource, ExplainStmt);
             n->query = (yyvsp[0].node);
-            n->options = list_make1(makeDefElem("analyze", NULL));
+            n->options = list_make1(resource, makeDefElem(resource, "analyze", NULL));
             if ((yyvsp[-2].boolean))
-                n->options = lappend(n->options, makeDefElem("verbose", NULL));
+                n->options = lappend(resource, n->options, makeDefElem(resource, "verbose", NULL));
             if ((yyvsp[-1].boolean))
-                n->options = lappend(n->options, makeDefElem("dxl", NULL));
+                n->options = lappend(resource, n->options, makeDefElem(resource, "dxl", NULL));
             (yyval.node) = (Node*) n;
         }
-#line 40960 "gram.cpp"
+#line 40962 "gram.cpp"
         break;
 
         case 1571: /* ExplainStmt: EXPLAIN VERBOSE opt_dxl ExplainableStmt  */
 #line 11527 "gram.y"
         {
-            ExplainStmt* n = makeNode(ExplainStmt);
+            ExplainStmt* n = makeNode(resource, ExplainStmt);
             n->query = (yyvsp[0].node);
-            n->options = list_make1(makeDefElem("verbose", NULL));
+            n->options = list_make1(resource, makeDefElem(resource, "verbose", NULL));
             if ((yyvsp[-1].boolean))
-                n->options = lappend(n->options, makeDefElem("dxl", NULL));
+                n->options = lappend(resource, n->options, makeDefElem(resource, "dxl", NULL));
             (yyval.node) = (Node*) n;
         }
-#line 40974 "gram.cpp"
+#line 40976 "gram.cpp"
         break;
 
         case 1572: /* ExplainStmt: EXPLAIN '(' explain_option_list ')' ExplainableStmt  */
 #line 11537 "gram.y"
         {
-            ExplainStmt* n = makeNode(ExplainStmt);
+            ExplainStmt* n = makeNode(resource, ExplainStmt);
             n->query = (yyvsp[0].node);
             n->options = (yyvsp[-2].list);
             (yyval.node) = (Node*) n;
         }
-#line 40985 "gram.cpp"
+#line 40987 "gram.cpp"
         break;
 
         case 1582: /* ExplainableStmt: CreateStmt  */
@@ -32651,7 +32706,7 @@ yyreduce:
                     errmsg("cannot EXPLAIN CREATE TABLE without AS "
                            "clause"));
         }
-#line 40996 "gram.cpp"
+#line 40998 "gram.cpp"
         break;
 
         case 1583: /* opt_dxl: DXL  */
@@ -32659,7 +32714,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 41002 "gram.cpp"
+#line 41004 "gram.cpp"
         break;
 
         case 1584: /* opt_dxl: %empty  */
@@ -32667,31 +32722,31 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 41008 "gram.cpp"
+#line 41010 "gram.cpp"
         break;
 
         case 1585: /* explain_option_list: explain_option_elem  */
 #line 11570 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].defelt));
+            (yyval.list) = list_make1(resource, (yyvsp[0].defelt));
         }
-#line 41016 "gram.cpp"
+#line 41018 "gram.cpp"
         break;
 
         case 1586: /* explain_option_list: explain_option_list ',' explain_option_elem  */
 #line 11574 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].defelt));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].defelt));
         }
-#line 41024 "gram.cpp"
+#line 41026 "gram.cpp"
         break;
 
         case 1587: /* explain_option_elem: explain_option_name explain_option_arg  */
 #line 11581 "gram.y"
         {
-            (yyval.defelt) = makeDefElem((yyvsp[-1].str), (yyvsp[0].node));
+            (yyval.defelt) = makeDefElem(resource, (yyvsp[-1].str), (yyvsp[0].node));
         }
-#line 41032 "gram.cpp"
+#line 41034 "gram.cpp"
         break;
 
         case 1588: /* explain_option_name: NonReservedWord  */
@@ -32699,7 +32754,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 41038 "gram.cpp"
+#line 41040 "gram.cpp"
         break;
 
         case 1589: /* explain_option_name: analyze_keyword  */
@@ -32707,15 +32762,15 @@ yyreduce:
         {
             (yyval.str) = "analyze";
         }
-#line 41044 "gram.cpp"
+#line 41046 "gram.cpp"
         break;
 
         case 1590: /* explain_option_arg: opt_boolean_or_string  */
 #line 11592 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 41050 "gram.cpp"
+#line 41052 "gram.cpp"
         break;
 
         case 1591: /* explain_option_arg: NumericOnly  */
@@ -32723,7 +32778,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].value);
         }
-#line 41056 "gram.cpp"
+#line 41058 "gram.cpp"
         break;
 
         case 1592: /* explain_option_arg: %empty  */
@@ -32731,19 +32786,19 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 41062 "gram.cpp"
+#line 41064 "gram.cpp"
         break;
 
         case 1593: /* PrepareStmt: PREPARE name prep_type_clause AS PreparableStmt  */
 #line 11605 "gram.y"
         {
-            PrepareStmt* n = makeNode(PrepareStmt);
+            PrepareStmt* n = makeNode(resource, PrepareStmt);
             n->name = (yyvsp[-3].str);
             n->argtypes = (yyvsp[-2].list);
             n->query = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 41074 "gram.cpp"
+#line 41076 "gram.cpp"
         break;
 
         case 1594: /* prep_type_clause: '(' type_list ')'  */
@@ -32751,7 +32806,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 41080 "gram.cpp"
+#line 41082 "gram.cpp"
         break;
 
         case 1595: /* prep_type_clause: %empty  */
@@ -32759,25 +32814,25 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 41086 "gram.cpp"
+#line 41088 "gram.cpp"
         break;
 
         case 1600: /* ExecuteStmt: EXECUTE name execute_param_clause  */
 #line 11633 "gram.y"
         {
-            ExecuteStmt* n = makeNode(ExecuteStmt);
+            ExecuteStmt* n = makeNode(resource, ExecuteStmt);
             n->name = (yyvsp[-1].str);
             n->params = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 41097 "gram.cpp"
+#line 41099 "gram.cpp"
         break;
 
         case 1601: /* ExecuteStmt: CREATE OptTemp TABLE create_as_target AS EXECUTE name execute_param_clause opt_with_data  */
 #line 11641 "gram.y"
         {
-            CreateTableAsStmt* ctas = makeNode(CreateTableAsStmt);
-            ExecuteStmt* n = makeNode(ExecuteStmt);
+            CreateTableAsStmt* ctas = makeNode(resource, CreateTableAsStmt);
+            ExecuteStmt* n = makeNode(resource, ExecuteStmt);
             n->name = (yyvsp[-2].str);
             n->params = (yyvsp[-1].list);
             ctas->query = (Node*) n;
@@ -32789,7 +32844,7 @@ yyreduce:
             (yyvsp[-5].into)->skipData = !((yyvsp[0].boolean));
             (yyval.node) = (Node*) ctas;
         }
-#line 41116 "gram.cpp"
+#line 41118 "gram.cpp"
         break;
 
         case 1602: /* execute_param_clause: '(' expr_list ')'  */
@@ -32797,7 +32852,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 41122 "gram.cpp"
+#line 41124 "gram.cpp"
         break;
 
         case 1603: /* execute_param_clause: %empty  */
@@ -32805,55 +32860,55 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 41128 "gram.cpp"
+#line 41130 "gram.cpp"
         break;
 
         case 1604: /* DeallocateStmt: DEALLOCATE name  */
 #line 11669 "gram.y"
         {
-            DeallocateStmt* n = makeNode(DeallocateStmt);
+            DeallocateStmt* n = makeNode(resource, DeallocateStmt);
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 41138 "gram.cpp"
+#line 41140 "gram.cpp"
         break;
 
         case 1605: /* DeallocateStmt: DEALLOCATE PREPARE name  */
 #line 11675 "gram.y"
         {
-            DeallocateStmt* n = makeNode(DeallocateStmt);
+            DeallocateStmt* n = makeNode(resource, DeallocateStmt);
             n->name = (yyvsp[0].str);
             (yyval.node) = (Node*) n;
         }
-#line 41148 "gram.cpp"
+#line 41150 "gram.cpp"
         break;
 
         case 1606: /* DeallocateStmt: DEALLOCATE ALL  */
 #line 11681 "gram.y"
         {
-            DeallocateStmt* n = makeNode(DeallocateStmt);
+            DeallocateStmt* n = makeNode(resource, DeallocateStmt);
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 41158 "gram.cpp"
+#line 41160 "gram.cpp"
         break;
 
         case 1607: /* DeallocateStmt: DEALLOCATE PREPARE ALL  */
 #line 11687 "gram.y"
         {
-            DeallocateStmt* n = makeNode(DeallocateStmt);
+            DeallocateStmt* n = makeNode(resource, DeallocateStmt);
             n->name = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 41168 "gram.cpp"
+#line 41170 "gram.cpp"
         break;
 
         case 1608: /* cdb_string_list: cdb_string  */
 #line 11702 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 41174 "gram.cpp"
+#line 41176 "gram.cpp"
         break;
 
         case 1609: /* cdb_string_list: cdb_string_list ',' cdb_string  */
@@ -32864,17 +32919,17 @@ yyreduce:
                         errcode(ERRCODE_INVALID_TABLE_DEFINITION),
                         errmsg("duplicate location uri"),
                         parser_errposition((yylsp[0])));
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 41187 "gram.cpp"
+#line 41189 "gram.cpp"
         break;
 
         case 1610: /* cdb_string: Sconst  */
 #line 11717 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 41195 "gram.cpp"
+#line 41197 "gram.cpp"
         break;
 
         case 1611: /* InsertStmt: opt_with_clause INSERT INTO relation_expr_opt_alias insert_rest returning_clause  */
@@ -32885,65 +32940,65 @@ yyreduce:
             (yyvsp[-1].istmt)->withClause = (yyvsp[-5].with);
             (yyval.node) = (Node*) (yyvsp[-1].istmt);
         }
-#line 41206 "gram.cpp"
+#line 41208 "gram.cpp"
         break;
 
         case 1612: /* insert_rest: SelectStmt  */
 #line 11741 "gram.y"
         {
-            (yyval.istmt) = makeNode(InsertStmt);
+            (yyval.istmt) = makeNode(resource, InsertStmt);
             (yyval.istmt)->cols = NIL;
             (yyval.istmt)->selectStmt = (yyvsp[0].node);
         }
-#line 41216 "gram.cpp"
+#line 41218 "gram.cpp"
         break;
 
         case 1613: /* insert_rest: '(' insert_column_list ')' SelectStmt  */
 #line 11747 "gram.y"
         {
-            (yyval.istmt) = makeNode(InsertStmt);
+            (yyval.istmt) = makeNode(resource, InsertStmt);
             (yyval.istmt)->cols = (yyvsp[-2].list);
             (yyval.istmt)->selectStmt = (yyvsp[0].node);
         }
-#line 41226 "gram.cpp"
+#line 41228 "gram.cpp"
         break;
 
         case 1614: /* insert_rest: DEFAULT VALUES  */
 #line 11753 "gram.y"
         {
-            (yyval.istmt) = makeNode(InsertStmt);
+            (yyval.istmt) = makeNode(resource, InsertStmt);
             (yyval.istmt)->cols = NIL;
             (yyval.istmt)->selectStmt = NULL;
         }
-#line 41236 "gram.cpp"
+#line 41238 "gram.cpp"
         break;
 
         case 1615: /* insert_column_list: insert_column_item  */
 #line 11762 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].target));
+            (yyval.list) = list_make1(resource, (yyvsp[0].target));
         }
-#line 41242 "gram.cpp"
+#line 41244 "gram.cpp"
         break;
 
         case 1616: /* insert_column_list: insert_column_list ',' insert_column_item  */
 #line 11764 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].target));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].target));
         }
-#line 41248 "gram.cpp"
+#line 41250 "gram.cpp"
         break;
 
         case 1617: /* insert_column_item: ColId opt_indirection  */
 #line 11769 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[-1].str);
             (yyval.target)->indirection = check_indirection((yyvsp[0].list), yyscanner);
             (yyval.target)->val = NULL;
             (yyval.target)->location = (yylsp[-1]);
         }
-#line 41260 "gram.cpp"
+#line 41262 "gram.cpp"
         break;
 
         case 1618: /* returning_clause: RETURNING target_list  */
@@ -32951,7 +33006,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 41266 "gram.cpp"
+#line 41268 "gram.cpp"
         break;
 
         case 1619: /* returning_clause: %empty  */
@@ -32959,13 +33014,13 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 41272 "gram.cpp"
+#line 41274 "gram.cpp"
         break;
 
         case 1620: /* DeleteStmt: opt_with_clause DELETE_P FROM relation_expr_opt_alias using_clause where_or_current_clause returning_clause  */
 #line 11793 "gram.y"
         {
-            DeleteStmt* n = makeNode(DeleteStmt);
+            DeleteStmt* n = makeNode(resource, DeleteStmt);
             n->relation = (yyvsp[-3].range);
             n->usingClause = (yyvsp[-2].list);
             n->whereClause = (yyvsp[-1].node);
@@ -32973,7 +33028,7 @@ yyreduce:
             n->withClause = (yyvsp[-6].with);
             (yyval.node) = (Node*) n;
         }
-#line 41286 "gram.cpp"
+#line 41288 "gram.cpp"
         break;
 
         case 1621: /* using_clause: USING from_list  */
@@ -32981,7 +33036,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 41292 "gram.cpp"
+#line 41294 "gram.cpp"
         break;
 
         case 1622: /* using_clause: %empty  */
@@ -32989,13 +33044,13 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 41298 "gram.cpp"
+#line 41300 "gram.cpp"
         break;
 
         case 1623: /* LockStmt: LOCK_P opt_table relation_expr_list opt_lock opt_nowait opt_masteronly  */
 #line 11818 "gram.y"
         {
-            LockStmt* n = makeNode(LockStmt);
+            LockStmt* n = makeNode(resource, LockStmt);
 
             n->relations = (yyvsp[-3].list);
             n->mode = (yyvsp[-2].ival);
@@ -33010,7 +33065,7 @@ yyreduce:
             }
             (yyval.node) = (Node*) n;
         }
-#line 41320 "gram.cpp"
+#line 41322 "gram.cpp"
         break;
 
         case 1624: /* opt_lock: IN_P lock_type MODE  */
@@ -33018,7 +33073,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-1].ival);
         }
-#line 41326 "gram.cpp"
+#line 41328 "gram.cpp"
         break;
 
         case 1625: /* opt_lock: %empty  */
@@ -33026,7 +33081,7 @@ yyreduce:
         {
             (yyval.ival) = AccessExclusiveLock;
         }
-#line 41332 "gram.cpp"
+#line 41334 "gram.cpp"
         break;
 
         case 1626: /* lock_type: ACCESS SHARE  */
@@ -33034,7 +33089,7 @@ yyreduce:
         {
             (yyval.ival) = AccessShareLock;
         }
-#line 41338 "gram.cpp"
+#line 41340 "gram.cpp"
         break;
 
         case 1627: /* lock_type: ROW SHARE  */
@@ -33042,7 +33097,7 @@ yyreduce:
         {
             (yyval.ival) = RowShareLock;
         }
-#line 41344 "gram.cpp"
+#line 41346 "gram.cpp"
         break;
 
         case 1628: /* lock_type: ROW EXCLUSIVE  */
@@ -33050,7 +33105,7 @@ yyreduce:
         {
             (yyval.ival) = RowExclusiveLock;
         }
-#line 41350 "gram.cpp"
+#line 41352 "gram.cpp"
         break;
 
         case 1629: /* lock_type: SHARE UPDATE EXCLUSIVE  */
@@ -33058,7 +33113,7 @@ yyreduce:
         {
             (yyval.ival) = ShareUpdateExclusiveLock;
         }
-#line 41356 "gram.cpp"
+#line 41358 "gram.cpp"
         break;
 
         case 1630: /* lock_type: SHARE  */
@@ -33066,7 +33121,7 @@ yyreduce:
         {
             (yyval.ival) = ShareLock;
         }
-#line 41362 "gram.cpp"
+#line 41364 "gram.cpp"
         break;
 
         case 1631: /* lock_type: SHARE ROW EXCLUSIVE  */
@@ -33074,7 +33129,7 @@ yyreduce:
         {
             (yyval.ival) = ShareRowExclusiveLock;
         }
-#line 41368 "gram.cpp"
+#line 41370 "gram.cpp"
         break;
 
         case 1632: /* lock_type: EXCLUSIVE  */
@@ -33082,7 +33137,7 @@ yyreduce:
         {
             (yyval.ival) = ExclusiveLock;
         }
-#line 41374 "gram.cpp"
+#line 41376 "gram.cpp"
         break;
 
         case 1633: /* lock_type: ACCESS EXCLUSIVE  */
@@ -33090,7 +33145,7 @@ yyreduce:
         {
             (yyval.ival) = AccessExclusiveLock;
         }
-#line 41380 "gram.cpp"
+#line 41382 "gram.cpp"
         break;
 
         case 1634: /* opt_nowait: NOWAIT  */
@@ -33098,7 +33153,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 41386 "gram.cpp"
+#line 41388 "gram.cpp"
         break;
 
         case 1635: /* opt_nowait: %empty  */
@@ -33106,7 +33161,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 41392 "gram.cpp"
+#line 41394 "gram.cpp"
         break;
 
         case 1636: /* opt_masteronly: MASTER ONLY  */
@@ -33114,7 +33169,7 @@ yyreduce:
         {
             (yyval.boolean) = true;
         }
-#line 41398 "gram.cpp"
+#line 41400 "gram.cpp"
         break;
 
         case 1637: /* opt_masteronly: %empty  */
@@ -33122,13 +33177,13 @@ yyreduce:
         {
             (yyval.boolean) = false;
         }
-#line 41404 "gram.cpp"
+#line 41406 "gram.cpp"
         break;
 
         case 1638: /* UpdateStmt: opt_with_clause UPDATE relation_expr_opt_alias SET set_clause_list from_clause where_or_current_clause returning_clause  */
 #line 11871 "gram.y"
         {
-            UpdateStmt* n = makeNode(UpdateStmt);
+            UpdateStmt* n = makeNode(resource, UpdateStmt);
             n->relation = (yyvsp[-5].range);
             n->targetList = (yyvsp[-3].list);
             n->fromClause = (yyvsp[-2].list);
@@ -33137,7 +33192,7 @@ yyreduce:
             n->withClause = (yyvsp[-7].with);
             (yyval.node) = (Node*) n;
         }
-#line 41419 "gram.cpp"
+#line 41421 "gram.cpp"
         break;
 
         case 1639: /* set_clause_list: set_clause  */
@@ -33145,7 +33200,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 41425 "gram.cpp"
+#line 41427 "gram.cpp"
         break;
 
         case 1640: /* set_clause_list: set_clause_list ',' set_clause  */
@@ -33153,15 +33208,15 @@ yyreduce:
         {
             (yyval.list) = list_concat((yyvsp[-2].list), (yyvsp[0].list));
         }
-#line 41431 "gram.cpp"
+#line 41433 "gram.cpp"
         break;
 
         case 1641: /* set_clause: single_set_clause  */
 #line 11889 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].target));
+            (yyval.list) = list_make1(resource, (yyvsp[0].target));
         }
-#line 41437 "gram.cpp"
+#line 41439 "gram.cpp"
         break;
 
         case 1642: /* set_clause: multiple_set_clause  */
@@ -33169,7 +33224,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 41443 "gram.cpp"
+#line 41445 "gram.cpp"
         break;
 
         case 1643: /* single_set_clause: set_target '=' ctext_expr  */
@@ -33178,7 +33233,7 @@ yyreduce:
             (yyval.target) = (yyvsp[-2].target);
             (yyval.target)->val = (Node*) (yyvsp[0].node);
         }
-#line 41452 "gram.cpp"
+#line 41454 "gram.cpp"
         break;
 
         case 1644: /* multiple_set_clause: '(' set_target_list ')' '=' ctext_row  */
@@ -33206,48 +33261,48 @@ yyreduce:
 
             (yyval.list) = (yyvsp[-3].list);
         }
-#line 41481 "gram.cpp"
+#line 41483 "gram.cpp"
         break;
 
         case 1645: /* set_target: ColId opt_indirection  */
 #line 11931 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[-1].str);
             (yyval.target)->indirection = check_indirection((yyvsp[0].list), yyscanner);
             (yyval.target)->val = NULL; /* upper production sets this */
             (yyval.target)->location = (yylsp[-1]);
         }
-#line 41493 "gram.cpp"
+#line 41495 "gram.cpp"
         break;
 
         case 1646: /* set_target_list: set_target  */
 #line 11941 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].target));
+            (yyval.list) = list_make1(resource, (yyvsp[0].target));
         }
-#line 41499 "gram.cpp"
+#line 41501 "gram.cpp"
         break;
 
         case 1647: /* set_target_list: set_target_list ',' set_target  */
 #line 11942 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].target));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].target));
         }
-#line 41505 "gram.cpp"
+#line 41507 "gram.cpp"
         break;
 
         case 1648: /* DeclareCursorStmt: DECLARE cursor_name cursor_options CURSOR opt_hold FOR SelectStmt  */
 #line 11953 "gram.y"
         {
-            DeclareCursorStmt* n = makeNode(DeclareCursorStmt);
+            DeclareCursorStmt* n = makeNode(resource, DeclareCursorStmt);
             n->portalname = (yyvsp[-5].str);
             /* currently we always set FAST_PLAN option */
             n->options = (yyvsp[-4].ival) | (yyvsp[-2].ival) | CURSOR_OPT_FAST_PLAN;
             n->query = (yyvsp[0].node);
             (yyval.node) = (Node*) n;
         }
-#line 41518 "gram.cpp"
+#line 41520 "gram.cpp"
         break;
 
         case 1649: /* cursor_name: name  */
@@ -33255,7 +33310,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 41524 "gram.cpp"
+#line 41526 "gram.cpp"
         break;
 
         case 1650: /* cursor_options: %empty  */
@@ -33263,7 +33318,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 41530 "gram.cpp"
+#line 41532 "gram.cpp"
         break;
 
         case 1651: /* cursor_options: cursor_options NO SCROLL  */
@@ -33271,7 +33326,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-2].ival) | CURSOR_OPT_NO_SCROLL;
         }
-#line 41536 "gram.cpp"
+#line 41538 "gram.cpp"
         break;
 
         case 1652: /* cursor_options: cursor_options SCROLL  */
@@ -33279,7 +33334,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-1].ival) | CURSOR_OPT_SCROLL;
         }
-#line 41542 "gram.cpp"
+#line 41544 "gram.cpp"
         break;
 
         case 1653: /* cursor_options: cursor_options BINARY  */
@@ -33287,7 +33342,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-1].ival) | CURSOR_OPT_BINARY;
         }
-#line 41548 "gram.cpp"
+#line 41550 "gram.cpp"
         break;
 
         case 1654: /* cursor_options: cursor_options INSENSITIVE  */
@@ -33295,7 +33350,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-1].ival) | CURSOR_OPT_INSENSITIVE;
         }
-#line 41554 "gram.cpp"
+#line 41556 "gram.cpp"
         break;
 
         case 1655: /* cursor_options: cursor_options PARALLEL RETRIEVE  */
@@ -33303,7 +33358,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[-2].ival) | CURSOR_OPT_PARALLEL_RETRIEVE;
         }
-#line 41560 "gram.cpp"
+#line 41562 "gram.cpp"
         break;
 
         case 1656: /* opt_hold: %empty  */
@@ -33311,7 +33366,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 41566 "gram.cpp"
+#line 41568 "gram.cpp"
         break;
 
         case 1657: /* opt_hold: WITH HOLD  */
@@ -33319,7 +33374,7 @@ yyreduce:
         {
             (yyval.ival) = CURSOR_OPT_HOLD;
         }
-#line 41572 "gram.cpp"
+#line 41574 "gram.cpp"
         break;
 
         case 1658: /* opt_hold: WITHOUT HOLD  */
@@ -33327,30 +33382,30 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 41578 "gram.cpp"
+#line 41580 "gram.cpp"
         break;
 
         case 1661: /* RetrieveStmt: RETRIEVE SignedIconst FROM ENDPOINT name  */
 #line 12030 "gram.y"
         {
-            RetrieveStmt* n = makeNode(RetrieveStmt);
+            RetrieveStmt* n = makeNode(resource, RetrieveStmt);
             n->endpoint_name = (yyvsp[0].str);
             n->count = (yyvsp[-3].ival);
             (yyval.node) = (Node*) n;
         }
-#line 41589 "gram.cpp"
+#line 41591 "gram.cpp"
         break;
 
         case 1662: /* RetrieveStmt: RETRIEVE ALL FROM ENDPOINT name  */
 #line 12037 "gram.y"
         {
-            RetrieveStmt* n = makeNode(RetrieveStmt);
+            RetrieveStmt* n = makeNode(resource, RetrieveStmt);
             n->endpoint_name = (yyvsp[0].str);
             n->count = -1;
             n->is_all = true;
             (yyval.node) = (Node*) n;
         }
-#line 41601 "gram.cpp"
+#line 41603 "gram.cpp"
         break;
 
         case 1663: /* select_with_parens: '(' select_no_parens ')'  */
@@ -33358,7 +33413,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 41607 "gram.cpp"
+#line 41609 "gram.cpp"
         break;
 
         case 1664: /* select_with_parens: '(' select_with_parens ')'  */
@@ -33366,7 +33421,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 41613 "gram.cpp"
+#line 41615 "gram.cpp"
         break;
 
         case 1665: /* select_no_parens: simple_select  */
@@ -33374,7 +33429,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 41619 "gram.cpp"
+#line 41621 "gram.cpp"
         break;
 
         case 1666: /* select_no_parens: select_clause sort_clause  */
@@ -33383,7 +33438,7 @@ yyreduce:
             insertSelectOptions((SelectStmt*) (yyvsp[-1].node), (yyvsp[0].list), NIL, NULL, NULL, NULL, yyscanner);
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 41630 "gram.cpp"
+#line 41632 "gram.cpp"
         break;
 
         case 1667: /* select_no_parens: select_clause opt_sort_clause for_locking_clause opt_select_limit  */
@@ -33398,7 +33453,7 @@ yyreduce:
                                 yyscanner);
             (yyval.node) = (yyvsp[-3].node);
         }
-#line 41642 "gram.cpp"
+#line 41644 "gram.cpp"
         break;
 
         case 1668: /* select_no_parens: select_clause opt_sort_clause select_limit opt_for_locking_clause  */
@@ -33413,7 +33468,7 @@ yyreduce:
                                 yyscanner);
             (yyval.node) = (yyvsp[-3].node);
         }
-#line 41654 "gram.cpp"
+#line 41656 "gram.cpp"
         break;
 
         case 1669: /* select_no_parens: with_clause select_clause  */
@@ -33422,7 +33477,7 @@ yyreduce:
             insertSelectOptions((SelectStmt*) (yyvsp[0].node), NULL, NIL, NULL, NULL, (yyvsp[-1].with), yyscanner);
             (yyval.node) = (yyvsp[0].node);
         }
-#line 41666 "gram.cpp"
+#line 41668 "gram.cpp"
         break;
 
         case 1670: /* select_no_parens: with_clause select_clause sort_clause  */
@@ -33437,7 +33492,7 @@ yyreduce:
                                 yyscanner);
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 41678 "gram.cpp"
+#line 41680 "gram.cpp"
         break;
 
         case 1671: /* select_no_parens: with_clause select_clause opt_sort_clause for_locking_clause opt_select_limit  */
@@ -33452,7 +33507,7 @@ yyreduce:
                                 yyscanner);
             (yyval.node) = (yyvsp[-3].node);
         }
-#line 41690 "gram.cpp"
+#line 41692 "gram.cpp"
         break;
 
         case 1672: /* select_no_parens: with_clause select_clause opt_sort_clause select_limit opt_for_locking_clause  */
@@ -33467,7 +33522,7 @@ yyreduce:
                                 yyscanner);
             (yyval.node) = (yyvsp[-3].node);
         }
-#line 41702 "gram.cpp"
+#line 41704 "gram.cpp"
         break;
 
         case 1673: /* select_clause: simple_select  */
@@ -33475,7 +33530,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 41708 "gram.cpp"
+#line 41710 "gram.cpp"
         break;
 
         case 1674: /* select_clause: select_with_parens  */
@@ -33483,13 +33538,13 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 41714 "gram.cpp"
+#line 41716 "gram.cpp"
         break;
 
         case 1675: /* simple_select: SELECT opt_distinct opt_target_list into_clause from_clause where_clause group_clause having_clause window_clause  */
 #line 12153 "gram.y"
         {
-            SelectStmt* n = makeNode(SelectStmt);
+            SelectStmt* n = makeNode(resource, SelectStmt);
             n->distinctClause = (yyvsp[-7].list);
             n->targetList = (yyvsp[-6].list);
             n->intoClause = (yyvsp[-5].into);
@@ -33500,7 +33555,7 @@ yyreduce:
             n->windowClause = (yyvsp[0].list);
             (yyval.node) = (Node*) n;
         }
-#line 41731 "gram.cpp"
+#line 41733 "gram.cpp"
         break;
 
         case 1676: /* simple_select: values_clause  */
@@ -33508,18 +33563,18 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 41737 "gram.cpp"
+#line 41739 "gram.cpp"
         break;
 
         case 1677: /* simple_select: TABLE relation_expr  */
 #line 12167 "gram.y"
         {
             /* same as SELECT * FROM relation_expr */
-            ColumnRef* cr = makeNode(ColumnRef);
-            ResTarget* rt = makeNode(ResTarget);
-            SelectStmt* n = makeNode(SelectStmt);
+            ColumnRef* cr = makeNode(resource, ColumnRef);
+            ResTarget* rt = makeNode(resource, ResTarget);
+            SelectStmt* n = makeNode(resource, SelectStmt);
 
-            cr->fields = list_make1(makeNode(A_Star));
+            cr->fields = list_make1(resource, makeNode(resource, A_Star));
             cr->location = -1;
 
             rt->name = NULL;
@@ -33527,86 +33582,86 @@ yyreduce:
             rt->val = (Node*) cr;
             rt->location = -1;
 
-            n->targetList = list_make1(rt);
-            n->fromClause = list_make1((yyvsp[0].range));
+            n->targetList = list_make1(resource, rt);
+            n->fromClause = list_make1(resource, (yyvsp[0].range));
             (yyval.node) = (Node*) n;
         }
-#line 41760 "gram.cpp"
+#line 41762 "gram.cpp"
         break;
 
         case 1678: /* simple_select: select_clause UNION opt_all select_clause  */
 #line 12186 "gram.y"
         {
-            (yyval.node) = makeSetOp(SETOP_UNION, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
+            (yyval.node) = makeSetOp(resource, SETOP_UNION, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
         }
-#line 41768 "gram.cpp"
+#line 41770 "gram.cpp"
         break;
 
         case 1679: /* simple_select: select_clause INTERSECT opt_all select_clause  */
 #line 12190 "gram.y"
         {
-            (yyval.node) = makeSetOp(SETOP_INTERSECT, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
+            (yyval.node) = makeSetOp(resource, SETOP_INTERSECT, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
         }
-#line 41776 "gram.cpp"
+#line 41778 "gram.cpp"
         break;
 
         case 1680: /* simple_select: select_clause EXCEPT opt_all select_clause  */
 #line 12194 "gram.y"
         {
-            (yyval.node) = makeSetOp(SETOP_EXCEPT, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
+            (yyval.node) = makeSetOp(resource, SETOP_EXCEPT, (yyvsp[-1].boolean), (yyvsp[-3].node), (yyvsp[0].node));
         }
-#line 41784 "gram.cpp"
+#line 41786 "gram.cpp"
         break;
 
         case 1681: /* with_clause: WITH cte_list  */
 #line 12209 "gram.y"
         {
-            (yyval.with) = makeNode(WithClause);
+            (yyval.with) = makeNode(resource, WithClause);
             (yyval.with)->ctes = (yyvsp[0].list);
             (yyval.with)->recursive = false;
             (yyval.with)->location = (yylsp[-1]);
         }
-#line 41795 "gram.cpp"
+#line 41797 "gram.cpp"
         break;
 
         case 1682: /* with_clause: WITH RECURSIVE cte_list  */
 #line 12216 "gram.y"
         {
-            (yyval.with) = makeNode(WithClause);
+            (yyval.with) = makeNode(resource, WithClause);
             (yyval.with)->ctes = (yyvsp[0].list);
             (yyval.with)->recursive = true;
             (yyval.with)->location = (yylsp[-2]);
         }
-#line 41806 "gram.cpp"
+#line 41808 "gram.cpp"
         break;
 
         case 1683: /* cte_list: common_table_expr  */
 #line 12225 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 41812 "gram.cpp"
+#line 41814 "gram.cpp"
         break;
 
         case 1684: /* cte_list: cte_list ',' common_table_expr  */
 #line 12226 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 41818 "gram.cpp"
+#line 41820 "gram.cpp"
         break;
 
         case 1685: /* common_table_expr: name opt_name_list AS '(' PreparableStmt ')'  */
 #line 12230 "gram.y"
         {
-            CommonTableExpr* n = makeNode(CommonTableExpr);
+            CommonTableExpr* n = makeNode(resource, CommonTableExpr);
             n->ctename = (yyvsp[-5].str);
             n->aliascolnames = (yyvsp[-4].list);
             n->ctequery = (yyvsp[-1].node);
             n->location = (yylsp[-5]);
             (yyval.node) = (Node*) n;
         }
-#line 41831 "gram.cpp"
+#line 41833 "gram.cpp"
         break;
 
         case 1686: /* opt_with_clause: with_clause  */
@@ -33614,7 +33669,7 @@ yyreduce:
         {
             (yyval.with) = (yyvsp[0].with);
         }
-#line 41837 "gram.cpp"
+#line 41839 "gram.cpp"
         break;
 
         case 1687: /* opt_with_clause: %empty  */
@@ -33622,13 +33677,13 @@ yyreduce:
         {
             (yyval.with) = NULL;
         }
-#line 41843 "gram.cpp"
+#line 41845 "gram.cpp"
         break;
 
         case 1688: /* into_clause: INTO OptTempTableName  */
 #line 12247 "gram.y"
         {
-            (yyval.into) = makeNode(IntoClause);
+            (yyval.into) = makeNode(resource, IntoClause);
             (yyval.into)->rel = (yyvsp[0].range);
             (yyval.into)->colNames = NIL;
             (yyval.into)->options = NIL;
@@ -33637,7 +33692,7 @@ yyreduce:
             (yyval.into)->viewQuery = NULL;
             (yyval.into)->skipData = false;
         }
-#line 41858 "gram.cpp"
+#line 41860 "gram.cpp"
         break;
 
         case 1689: /* into_clause: %empty  */
@@ -33645,7 +33700,7 @@ yyreduce:
         {
             (yyval.into) = NULL;
         }
-#line 41864 "gram.cpp"
+#line 41866 "gram.cpp"
         break;
 
         case 1690: /* OptTempTableName: TEMPORARY opt_table qualified_name  */
@@ -33654,7 +33709,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41873 "gram.cpp"
+#line 41875 "gram.cpp"
         break;
 
         case 1691: /* OptTempTableName: TEMP opt_table qualified_name  */
@@ -33663,7 +33718,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41882 "gram.cpp"
+#line 41884 "gram.cpp"
         break;
 
         case 1692: /* OptTempTableName: LOCAL TEMPORARY opt_table qualified_name  */
@@ -33672,7 +33727,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41891 "gram.cpp"
+#line 41893 "gram.cpp"
         break;
 
         case 1693: /* OptTempTableName: LOCAL TEMP opt_table qualified_name  */
@@ -33681,7 +33736,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41900 "gram.cpp"
+#line 41902 "gram.cpp"
         break;
 
         case 1694: /* OptTempTableName: GLOBAL TEMPORARY opt_table qualified_name  */
@@ -33693,7 +33748,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41912 "gram.cpp"
+#line 41914 "gram.cpp"
         break;
 
         case 1695: /* OptTempTableName: GLOBAL TEMP opt_table qualified_name  */
@@ -33705,7 +33760,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_TEMP;
         }
-#line 41924 "gram.cpp"
+#line 41926 "gram.cpp"
         break;
 
         case 1696: /* OptTempTableName: UNLOGGED opt_table qualified_name  */
@@ -33714,7 +33769,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_UNLOGGED;
         }
-#line 41933 "gram.cpp"
+#line 41935 "gram.cpp"
         break;
 
         case 1697: /* OptTempTableName: TABLE qualified_name  */
@@ -33723,7 +33778,7 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_PERMANENT;
         }
-#line 41942 "gram.cpp"
+#line 41944 "gram.cpp"
         break;
 
         case 1698: /* OptTempTableName: qualified_name  */
@@ -33732,21 +33787,21 @@ yyreduce:
             (yyval.range) = (yyvsp[0].range);
             (yyval.range)->relpersistence = RELPERSISTENCE_PERMANENT;
         }
-#line 41951 "gram.cpp"
+#line 41953 "gram.cpp"
         break;
 
         case 1699: /* opt_table: TABLE  */
 #line 12319 "gram.y"
         {
         }
-#line 41957 "gram.cpp"
+#line 41959 "gram.cpp"
         break;
 
         case 1700: /* opt_table: %empty  */
 #line 12320 "gram.y"
         {
         }
-#line 41963 "gram.cpp"
+#line 41965 "gram.cpp"
         break;
 
         case 1701: /* opt_all: ALL  */
@@ -33754,7 +33809,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 41969 "gram.cpp"
+#line 41971 "gram.cpp"
         break;
 
         case 1702: /* opt_all: DISTINCT  */
@@ -33762,7 +33817,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 41975 "gram.cpp"
+#line 41977 "gram.cpp"
         break;
 
         case 1703: /* opt_all: %empty  */
@@ -33770,15 +33825,15 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 41981 "gram.cpp"
+#line 41983 "gram.cpp"
         break;
 
         case 1704: /* opt_distinct: DISTINCT  */
 #line 12332 "gram.y"
         {
-            (yyval.list) = list_make1(NIL);
+            (yyval.list) = list_make1(resource, NIL);
         }
-#line 41987 "gram.cpp"
+#line 41989 "gram.cpp"
         break;
 
         case 1705: /* opt_distinct: DISTINCT ON '(' expr_list ')'  */
@@ -33786,7 +33841,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 41993 "gram.cpp"
+#line 41995 "gram.cpp"
         break;
 
         case 1706: /* opt_distinct: ALL  */
@@ -33794,7 +33849,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 41999 "gram.cpp"
+#line 42001 "gram.cpp"
         break;
 
         case 1707: /* opt_distinct: %empty  */
@@ -33802,7 +33857,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42005 "gram.cpp"
+#line 42007 "gram.cpp"
         break;
 
         case 1708: /* opt_sort_clause: sort_clause  */
@@ -33810,7 +33865,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42011 "gram.cpp"
+#line 42013 "gram.cpp"
         break;
 
         case 1709: /* opt_sort_clause: %empty  */
@@ -33818,7 +33873,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42017 "gram.cpp"
+#line 42019 "gram.cpp"
         break;
 
         case 1710: /* sort_clause: ORDER BY sortby_list  */
@@ -33826,81 +33881,81 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42023 "gram.cpp"
+#line 42025 "gram.cpp"
         break;
 
         case 1711: /* sortby_list: sortby  */
 #line 12348 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].sortby));
+            (yyval.list) = list_make1(resource, (yyvsp[0].sortby));
         }
-#line 42029 "gram.cpp"
+#line 42031 "gram.cpp"
         break;
 
         case 1712: /* sortby_list: sortby_list ',' sortby  */
 #line 12349 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].sortby));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].sortby));
         }
-#line 42035 "gram.cpp"
+#line 42037 "gram.cpp"
         break;
 
         case 1713: /* sortby: a_expr USING qual_all_Op opt_nulls_order  */
 #line 12353 "gram.y"
         {
-            (yyval.sortby) = makeNode(SortBy);
+            (yyval.sortby) = makeNode(resource, SortBy);
             (yyval.sortby)->node = (yyvsp[-3].node);
             (yyval.sortby)->sortby_dir = SORTBY_USING;
             (yyval.sortby)->sortby_nulls = static_cast<SortByNulls>((yyvsp[0].ival));
             (yyval.sortby)->useOp = (yyvsp[-1].list);
             (yyval.sortby)->location = (yylsp[-1]);
         }
-#line 42048 "gram.cpp"
+#line 42050 "gram.cpp"
         break;
 
         case 1714: /* sortby: a_expr opt_asc_desc opt_nulls_order  */
 #line 12362 "gram.y"
         {
-            (yyval.sortby) = makeNode(SortBy);
+            (yyval.sortby) = makeNode(resource, SortBy);
             (yyval.sortby)->node = (yyvsp[-2].node);
             (yyval.sortby)->sortby_dir = static_cast<SortByDir>((yyvsp[-1].ival));
             (yyval.sortby)->sortby_nulls = static_cast<SortByNulls>((yyvsp[0].ival));
             (yyval.sortby)->useOp = NIL;
             (yyval.sortby)->location = -1; /* no operator */
         }
-#line 42061 "gram.cpp"
+#line 42063 "gram.cpp"
         break;
 
         case 1715: /* select_limit: limit_clause offset_clause  */
 #line 12374 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[0].node), (yyvsp[-1].node));
+            (yyval.list) = list_make2(resource, (yyvsp[0].node), (yyvsp[-1].node));
         }
-#line 42067 "gram.cpp"
+#line 42069 "gram.cpp"
         break;
 
         case 1716: /* select_limit: offset_clause limit_clause  */
 #line 12375 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-1].node), (yyvsp[0].node));
+            (yyval.list) = list_make2(resource, (yyvsp[-1].node), (yyvsp[0].node));
         }
-#line 42073 "gram.cpp"
+#line 42075 "gram.cpp"
         break;
 
         case 1717: /* select_limit: limit_clause  */
 #line 12376 "gram.y"
         {
-            (yyval.list) = list_make2(NULL, (yyvsp[0].node));
+            (yyval.list) = list_make2(resource, NULL, (yyvsp[0].node));
         }
-#line 42079 "gram.cpp"
+#line 42081 "gram.cpp"
         break;
 
         case 1718: /* select_limit: offset_clause  */
 #line 12377 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[0].node), NULL);
+            (yyval.list) = list_make2(resource, (yyvsp[0].node), NULL);
         }
-#line 42085 "gram.cpp"
+#line 42087 "gram.cpp"
         break;
 
         case 1719: /* opt_select_limit: select_limit  */
@@ -33908,15 +33963,15 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42091 "gram.cpp"
+#line 42093 "gram.cpp"
         break;
 
         case 1720: /* opt_select_limit: %empty  */
 #line 12382 "gram.y"
         {
-            (yyval.list) = list_make2(NULL, NULL);
+            (yyval.list) = list_make2(resource, NULL, NULL);
         }
-#line 42097 "gram.cpp"
+#line 42099 "gram.cpp"
         break;
 
         case 1721: /* limit_clause: LIMIT select_limit_value  */
@@ -33924,7 +33979,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42103 "gram.cpp"
+#line 42105 "gram.cpp"
         break;
 
         case 1722: /* limit_clause: LIMIT select_limit_value ',' select_offset_value  */
@@ -33937,7 +33992,7 @@ yyreduce:
                     errhint("Use separate LIMIT and OFFSET clauses."),
                     parser_errposition((yylsp[-3])));
         }
-#line 42116 "gram.cpp"
+#line 42118 "gram.cpp"
         break;
 
         case 1723: /* limit_clause: FETCH first_or_next select_fetch_first_value row_or_rows ONLY  */
@@ -33945,15 +34000,15 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-2].node);
         }
-#line 42122 "gram.cpp"
+#line 42124 "gram.cpp"
         break;
 
         case 1724: /* limit_clause: FETCH first_or_next row_or_rows ONLY  */
 #line 12407 "gram.y"
         {
-            (yyval.node) = makeIntConst(1, -1);
+            (yyval.node) = makeIntConst(resource, 1, -1);
         }
-#line 42128 "gram.cpp"
+#line 42130 "gram.cpp"
         break;
 
         case 1725: /* offset_clause: OFFSET select_offset_value  */
@@ -33961,7 +34016,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42134 "gram.cpp"
+#line 42136 "gram.cpp"
         break;
 
         case 1726: /* offset_clause: OFFSET select_fetch_first_value row_or_rows  */
@@ -33969,7 +34024,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 42140 "gram.cpp"
+#line 42142 "gram.cpp"
         break;
 
         case 1727: /* select_limit_value: a_expr  */
@@ -33977,16 +34032,16 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42146 "gram.cpp"
+#line 42148 "gram.cpp"
         break;
 
         case 1728: /* select_limit_value: ALL  */
 #line 12421 "gram.y"
         {
             /* LIMIT ALL is represented as a NULL constant */
-            (yyval.node) = makeNullAConst((yylsp[0]));
+            (yyval.node) = makeNullAConst(resource, (yylsp[0]));
         }
-#line 42155 "gram.cpp"
+#line 42157 "gram.cpp"
         break;
 
         case 1729: /* select_offset_value: a_expr  */
@@ -33994,7 +34049,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42161 "gram.cpp"
+#line 42163 "gram.cpp"
         break;
 
         case 1730: /* select_fetch_first_value: c_expr  */
@@ -34002,39 +34057,39 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42167 "gram.cpp"
+#line 42169 "gram.cpp"
         break;
 
         case 1731: /* select_fetch_first_value: '+' I_or_F_const  */
 #line 12450 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 42173 "gram.cpp"
+#line 42175 "gram.cpp"
         break;
 
         case 1732: /* select_fetch_first_value: '-' I_or_F_const  */
 #line 12452 "gram.y"
         {
-            (yyval.node) = doNegate((yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = doNegate(resource, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 42179 "gram.cpp"
+#line 42181 "gram.cpp"
         break;
 
         case 1733: /* I_or_F_const: Iconst  */
 #line 12456 "gram.y"
         {
-            (yyval.node) = makeIntConst((yyvsp[0].ival), (yylsp[0]));
+            (yyval.node) = makeIntConst(resource, (yyvsp[0].ival), (yylsp[0]));
         }
-#line 42185 "gram.cpp"
+#line 42187 "gram.cpp"
         break;
 
         case 1734: /* I_or_F_const: FCONST  */
 #line 12457 "gram.y"
         {
-            (yyval.node) = makeFloatConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeFloatConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 42191 "gram.cpp"
+#line 42193 "gram.cpp"
         break;
 
         case 1735: /* row_or_rows: ROW  */
@@ -34042,7 +34097,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 42197 "gram.cpp"
+#line 42199 "gram.cpp"
         break;
 
         case 1736: /* row_or_rows: ROWS  */
@@ -34050,7 +34105,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 42203 "gram.cpp"
+#line 42205 "gram.cpp"
         break;
 
         case 1737: /* first_or_next: FIRST_P  */
@@ -34058,7 +34113,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 42209 "gram.cpp"
+#line 42211 "gram.cpp"
         break;
 
         case 1738: /* first_or_next: NEXT  */
@@ -34066,7 +34121,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 42215 "gram.cpp"
+#line 42217 "gram.cpp"
         break;
 
         case 1739: /* group_clause: GROUP_P BY group_elem_list  */
@@ -34074,7 +34129,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42221 "gram.cpp"
+#line 42223 "gram.cpp"
         break;
 
         case 1740: /* group_clause: %empty  */
@@ -34082,7 +34137,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42227 "gram.cpp"
+#line 42229 "gram.cpp"
         break;
 
         case 1741: /* group_elem_list: group_elem  */
@@ -34090,7 +34145,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42233 "gram.cpp"
+#line 42235 "gram.cpp"
         break;
 
         case 1742: /* group_elem_list: group_elem_list ',' group_elem  */
@@ -34098,59 +34153,59 @@ yyreduce:
         {
             (yyval.list) = list_concat((yyvsp[-2].list), (yyvsp[0].list));
         }
-#line 42239 "gram.cpp"
+#line 42241 "gram.cpp"
         break;
 
         case 1743: /* group_elem: a_expr  */
 #line 12481 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 42245 "gram.cpp"
+#line 42247 "gram.cpp"
         break;
 
         case 1744: /* group_elem: ROLLUP '(' expr_list ')'  */
 #line 12483 "gram.y"
         {
-            GroupingClause* n = makeNode(GroupingClause);
+            GroupingClause* n = makeNode(resource, GroupingClause);
             n->groupType = GROUPINGTYPE_ROLLUP;
             n->groupsets = (yyvsp[-1].list);
             n->location = (yylsp[-3]);
-            (yyval.list) = list_make1((Node*) n);
+            (yyval.list) = list_make1(resource, (Node*) n);
         }
-#line 42257 "gram.cpp"
+#line 42259 "gram.cpp"
         break;
 
         case 1745: /* group_elem: CUBE '(' expr_list ')'  */
 #line 12491 "gram.y"
         {
-            GroupingClause* n = makeNode(GroupingClause);
+            GroupingClause* n = makeNode(resource, GroupingClause);
             n->groupType = GROUPINGTYPE_CUBE;
             n->groupsets = (yyvsp[-1].list);
             n->location = (yylsp[-3]);
-            (yyval.list) = list_make1((Node*) n);
+            (yyval.list) = list_make1(resource, (Node*) n);
         }
-#line 42269 "gram.cpp"
+#line 42271 "gram.cpp"
         break;
 
         case 1746: /* group_elem: GROUPING SETS '(' group_elem_list ')'  */
 #line 12499 "gram.y"
         {
-            GroupingClause* n = makeNode(GroupingClause);
+            GroupingClause* n = makeNode(resource, GroupingClause);
             n->groupType = GROUPINGTYPE_GROUPING_SETS;
             n->groupsets = (yyvsp[-1].list);
             n->location = (yylsp[-4]);
-            (yyval.list) = list_make1((Node*) n);
+            (yyval.list) = list_make1(resource, (Node*) n);
         }
-#line 42281 "gram.cpp"
+#line 42283 "gram.cpp"
         break;
 
         case 1747: /* group_elem: '(' ')'  */
 #line 12507 "gram.y"
         {
-            (yyval.list) = list_make1(NIL);
+            (yyval.list) = list_make1(resource, NIL);
         }
-#line 42287 "gram.cpp"
+#line 42289 "gram.cpp"
         break;
 
         case 1748: /* having_clause: HAVING a_expr  */
@@ -34158,7 +34213,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42293 "gram.cpp"
+#line 42295 "gram.cpp"
         break;
 
         case 1749: /* having_clause: %empty  */
@@ -34166,7 +34221,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 42299 "gram.cpp"
+#line 42301 "gram.cpp"
         break;
 
         case 1750: /* for_locking_clause: for_locking_items  */
@@ -34174,7 +34229,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42305 "gram.cpp"
+#line 42307 "gram.cpp"
         break;
 
         case 1751: /* for_locking_clause: FOR READ ONLY  */
@@ -34182,7 +34237,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42311 "gram.cpp"
+#line 42313 "gram.cpp"
         break;
 
         case 1752: /* opt_for_locking_clause: for_locking_clause  */
@@ -34190,7 +34245,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42317 "gram.cpp"
+#line 42319 "gram.cpp"
         break;
 
         case 1753: /* opt_for_locking_clause: %empty  */
@@ -34198,35 +34253,35 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42323 "gram.cpp"
+#line 42325 "gram.cpp"
         break;
 
         case 1754: /* for_locking_items: for_locking_item  */
 #line 12526 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 42329 "gram.cpp"
+#line 42331 "gram.cpp"
         break;
 
         case 1755: /* for_locking_items: for_locking_items for_locking_item  */
 #line 12527 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 42335 "gram.cpp"
+#line 42337 "gram.cpp"
         break;
 
         case 1756: /* for_locking_item: for_locking_strength locked_rels_list opt_nowait  */
 #line 12532 "gram.y"
         {
-            LockingClause* n = makeNode(LockingClause);
+            LockingClause* n = makeNode(resource, LockingClause);
             n->lockedRels = (yyvsp[-1].list);
             n->strength = static_cast<LockClauseStrength>((yyvsp[-2].ival));
             n->noWait = (yyvsp[0].boolean);
             (yyval.node) = (Node*) n;
         }
-#line 42347 "gram.cpp"
+#line 42349 "gram.cpp"
         break;
 
         case 1757: /* for_locking_strength: FOR UPDATE  */
@@ -34234,7 +34289,7 @@ yyreduce:
         {
             (yyval.ival) = LCS_FORUPDATE;
         }
-#line 42353 "gram.cpp"
+#line 42355 "gram.cpp"
         break;
 
         case 1758: /* for_locking_strength: FOR NO KEY UPDATE  */
@@ -34242,7 +34297,7 @@ yyreduce:
         {
             (yyval.ival) = LCS_FORNOKEYUPDATE;
         }
-#line 42359 "gram.cpp"
+#line 42361 "gram.cpp"
         break;
 
         case 1759: /* for_locking_strength: FOR SHARE  */
@@ -34250,7 +34305,7 @@ yyreduce:
         {
             (yyval.ival) = LCS_FORSHARE;
         }
-#line 42365 "gram.cpp"
+#line 42367 "gram.cpp"
         break;
 
         case 1760: /* for_locking_strength: FOR KEY SHARE  */
@@ -34258,7 +34313,7 @@ yyreduce:
         {
             (yyval.ival) = LCS_FORKEYSHARE;
         }
-#line 42371 "gram.cpp"
+#line 42373 "gram.cpp"
         break;
 
         case 1761: /* locked_rels_list: OF qualified_name_list  */
@@ -34266,7 +34321,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42377 "gram.cpp"
+#line 42379 "gram.cpp"
         break;
 
         case 1762: /* locked_rels_list: %empty  */
@@ -34274,27 +34329,27 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42383 "gram.cpp"
+#line 42385 "gram.cpp"
         break;
 
         case 1763: /* values_clause: VALUES ctext_row  */
 #line 12556 "gram.y"
         {
-            SelectStmt* n = makeNode(SelectStmt);
-            n->valuesLists = list_make1((yyvsp[0].list));
+            SelectStmt* n = makeNode(resource, SelectStmt);
+            n->valuesLists = list_make1(resource, (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 42393 "gram.cpp"
+#line 42395 "gram.cpp"
         break;
 
         case 1764: /* values_clause: values_clause ',' ctext_row  */
 #line 12562 "gram.y"
         {
             SelectStmt* n = (SelectStmt*) (yyvsp[-2].node);
-            n->valuesLists = lappend(n->valuesLists, (yyvsp[0].list));
+            n->valuesLists = lappend(resource, n->valuesLists, (yyvsp[0].list));
             (yyval.node) = (Node*) n;
         }
-#line 42403 "gram.cpp"
+#line 42405 "gram.cpp"
         break;
 
         case 1765: /* from_clause: FROM from_list  */
@@ -34302,7 +34357,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42409 "gram.cpp"
+#line 42411 "gram.cpp"
         break;
 
         case 1766: /* from_clause: %empty  */
@@ -34310,23 +34365,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42415 "gram.cpp"
+#line 42417 "gram.cpp"
         break;
 
         case 1767: /* from_list: table_ref  */
 #line 12584 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 42421 "gram.cpp"
+#line 42423 "gram.cpp"
         break;
 
         case 1768: /* from_list: from_list ',' table_ref  */
 #line 12585 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 42427 "gram.cpp"
+#line 42429 "gram.cpp"
         break;
 
         case 1769: /* table_ref: relation_expr opt_alias_clause  */
@@ -34335,7 +34390,7 @@ yyreduce:
             (yyvsp[-1].range)->alias = (yyvsp[0].alias);
             (yyval.node) = (Node*) (yyvsp[-1].range);
         }
-#line 42436 "gram.cpp"
+#line 42438 "gram.cpp"
         break;
 
         case 1770: /* table_ref: func_table func_alias_clause  */
@@ -34346,7 +34401,7 @@ yyreduce:
             n->coldeflist = reinterpret_cast<List*>(lsecond((yyvsp[0].list)));
             (yyval.node) = (Node*) n;
         }
-#line 42447 "gram.cpp"
+#line 42449 "gram.cpp"
         break;
 
         case 1771: /* table_ref: LATERAL_P func_table func_alias_clause  */
@@ -34358,13 +34413,13 @@ yyreduce:
             n->coldeflist = reinterpret_cast<List*>(lsecond((yyvsp[0].list)));
             (yyval.node) = (Node*) n;
         }
-#line 42459 "gram.cpp"
+#line 42461 "gram.cpp"
         break;
 
         case 1772: /* table_ref: select_with_parens opt_alias_clause  */
 #line 12612 "gram.y"
         {
-            RangeSubselect* n = makeNode(RangeSubselect);
+            RangeSubselect* n = makeNode(resource, RangeSubselect);
             n->lateral = false;
             n->subquery = (yyvsp[-1].node);
             n->alias = (yyvsp[0].alias);
@@ -34395,13 +34450,13 @@ yyreduce:
             }
             (yyval.node) = (Node*) n;
         }
-#line 42498 "gram.cpp"
+#line 42500 "gram.cpp"
         break;
 
         case 1773: /* table_ref: LATERAL_P select_with_parens opt_alias_clause  */
 #line 12647 "gram.y"
         {
-            RangeSubselect* n = makeNode(RangeSubselect);
+            RangeSubselect* n = makeNode(resource, RangeSubselect);
             n->lateral = true;
             n->subquery = (yyvsp[-1].node);
             n->alias = (yyvsp[0].alias);
@@ -34422,7 +34477,7 @@ yyreduce:
             }
             (yyval.node) = (Node*) n;
         }
-#line 42527 "gram.cpp"
+#line 42529 "gram.cpp"
         break;
 
         case 1774: /* table_ref: joined_table  */
@@ -34430,7 +34485,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].jexpr);
         }
-#line 42535 "gram.cpp"
+#line 42537 "gram.cpp"
         break;
 
         case 1775: /* table_ref: '(' joined_table ')' alias_clause  */
@@ -34439,7 +34494,7 @@ yyreduce:
             (yyvsp[-2].jexpr)->alias = (yyvsp[0].alias);
             (yyval.node) = (Node*) (yyvsp[-2].jexpr);
         }
-#line 42544 "gram.cpp"
+#line 42546 "gram.cpp"
         break;
 
         case 1776: /* joined_table: '(' joined_table ')'  */
@@ -34447,14 +34502,14 @@ yyreduce:
         {
             (yyval.jexpr) = (yyvsp[-1].jexpr);
         }
-#line 42552 "gram.cpp"
+#line 42554 "gram.cpp"
         break;
 
         case 1777: /* joined_table: table_ref CROSS JOIN table_ref  */
 #line 12706 "gram.y"
         {
             /* CROSS JOIN is same as unqualified inner join */
-            JoinExpr* n = makeNode(JoinExpr);
+            JoinExpr* n = makeNode(resource, JoinExpr);
             n->jointype = JOIN_INNER;
             n->isNatural = FALSE;
             n->larg = (yyvsp[-3].node);
@@ -34463,13 +34518,13 @@ yyreduce:
             n->quals = NULL;
             (yyval.jexpr) = n;
         }
-#line 42568 "gram.cpp"
+#line 42570 "gram.cpp"
         break;
 
         case 1778: /* joined_table: table_ref join_type JOIN table_ref join_qual  */
 #line 12718 "gram.y"
         {
-            JoinExpr* n = makeNode(JoinExpr);
+            JoinExpr* n = makeNode(resource, JoinExpr);
             n->jointype = (yyvsp[-3].jtype);
             n->isNatural = FALSE;
             n->larg = (yyvsp[-4].node);
@@ -34480,14 +34535,14 @@ yyreduce:
                 n->quals = (yyvsp[0].node); /* ON clause */
             (yyval.jexpr) = n;
         }
-#line 42585 "gram.cpp"
+#line 42587 "gram.cpp"
         break;
 
         case 1779: /* joined_table: table_ref JOIN table_ref join_qual  */
 #line 12731 "gram.y"
         {
             /* letting join_type reduce to empty doesn't work */
-            JoinExpr* n = makeNode(JoinExpr);
+            JoinExpr* n = makeNode(resource, JoinExpr);
             n->jointype = JOIN_INNER;
             n->isNatural = FALSE;
             n->larg = (yyvsp[-3].node);
@@ -34498,13 +34553,13 @@ yyreduce:
                 n->quals = (yyvsp[0].node); /* ON clause */
             (yyval.jexpr) = n;
         }
-#line 42603 "gram.cpp"
+#line 42605 "gram.cpp"
         break;
 
         case 1780: /* joined_table: table_ref NATURAL join_type JOIN table_ref  */
 #line 12745 "gram.y"
         {
-            JoinExpr* n = makeNode(JoinExpr);
+            JoinExpr* n = makeNode(resource, JoinExpr);
             n->jointype = (yyvsp[-2].jtype);
             n->isNatural = TRUE;
             n->larg = (yyvsp[-4].node);
@@ -34513,14 +34568,14 @@ yyreduce:
             n->quals = NULL;      /* fill later */
             (yyval.jexpr) = n;
         }
-#line 42618 "gram.cpp"
+#line 42620 "gram.cpp"
         break;
 
         case 1781: /* joined_table: table_ref NATURAL JOIN table_ref  */
 #line 12756 "gram.y"
         {
             /* letting join_type reduce to empty doesn't work */
-            JoinExpr* n = makeNode(JoinExpr);
+            JoinExpr* n = makeNode(resource, JoinExpr);
             n->jointype = JOIN_INNER;
             n->isNatural = TRUE;
             n->larg = (yyvsp[-3].node);
@@ -34529,45 +34584,45 @@ yyreduce:
             n->quals = NULL;      /* fill later */
             (yyval.jexpr) = n;
         }
-#line 42634 "gram.cpp"
+#line 42636 "gram.cpp"
         break;
 
         case 1782: /* alias_clause: AS ColId '(' name_list ')'  */
 #line 12771 "gram.y"
         {
-            (yyval.alias) = makeNode(Alias);
+            (yyval.alias) = makeNode(resource, Alias);
             (yyval.alias)->aliasname = (yyvsp[-3].str);
             (yyval.alias)->colnames = (yyvsp[-1].list);
         }
-#line 42644 "gram.cpp"
+#line 42646 "gram.cpp"
         break;
 
         case 1783: /* alias_clause: AS ColId  */
 #line 12777 "gram.y"
         {
-            (yyval.alias) = makeNode(Alias);
+            (yyval.alias) = makeNode(resource, Alias);
             (yyval.alias)->aliasname = (yyvsp[0].str);
         }
-#line 42653 "gram.cpp"
+#line 42655 "gram.cpp"
         break;
 
         case 1784: /* alias_clause: ColId '(' name_list ')'  */
 #line 12782 "gram.y"
         {
-            (yyval.alias) = makeNode(Alias);
+            (yyval.alias) = makeNode(resource, Alias);
             (yyval.alias)->aliasname = (yyvsp[-3].str);
             (yyval.alias)->colnames = (yyvsp[-1].list);
         }
-#line 42663 "gram.cpp"
+#line 42665 "gram.cpp"
         break;
 
         case 1785: /* alias_clause: ColId  */
 #line 12788 "gram.y"
         {
-            (yyval.alias) = makeNode(Alias);
+            (yyval.alias) = makeNode(resource, Alias);
             (yyval.alias)->aliasname = (yyvsp[0].str);
         }
-#line 42672 "gram.cpp"
+#line 42674 "gram.cpp"
         break;
 
         case 1786: /* opt_alias_clause: alias_clause  */
@@ -34575,7 +34630,7 @@ yyreduce:
         {
             (yyval.alias) = (yyvsp[0].alias);
         }
-#line 42678 "gram.cpp"
+#line 42680 "gram.cpp"
         break;
 
         case 1787: /* opt_alias_clause: %empty  */
@@ -34583,51 +34638,51 @@ yyreduce:
         {
             (yyval.alias) = NULL;
         }
-#line 42684 "gram.cpp"
+#line 42686 "gram.cpp"
         break;
 
         case 1788: /* func_alias_clause: alias_clause  */
 #line 12804 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[0].alias), NIL);
+            (yyval.list) = list_make2(resource, (yyvsp[0].alias), NIL);
         }
-#line 42692 "gram.cpp"
+#line 42694 "gram.cpp"
         break;
 
         case 1789: /* func_alias_clause: AS '(' TableFuncElementList ')'  */
 #line 12808 "gram.y"
         {
-            (yyval.list) = list_make2(NULL, (yyvsp[-1].list));
+            (yyval.list) = list_make2(resource, NULL, (yyvsp[-1].list));
         }
-#line 42700 "gram.cpp"
+#line 42702 "gram.cpp"
         break;
 
         case 1790: /* func_alias_clause: AS ColId '(' TableFuncElementList ')'  */
 #line 12812 "gram.y"
         {
-            Alias* a = makeNode(Alias);
+            Alias* a = makeNode(resource, Alias);
             a->aliasname = (yyvsp[-3].str);
-            (yyval.list) = list_make2(a, (yyvsp[-1].list));
+            (yyval.list) = list_make2(resource, a, (yyvsp[-1].list));
         }
-#line 42710 "gram.cpp"
+#line 42712 "gram.cpp"
         break;
 
         case 1791: /* func_alias_clause: ColId '(' TableFuncElementList ')'  */
 #line 12818 "gram.y"
         {
-            Alias* a = makeNode(Alias);
+            Alias* a = makeNode(resource, Alias);
             a->aliasname = (yyvsp[-3].str);
-            (yyval.list) = list_make2(a, (yyvsp[-1].list));
+            (yyval.list) = list_make2(resource, a, (yyvsp[-1].list));
         }
-#line 42720 "gram.cpp"
+#line 42722 "gram.cpp"
         break;
 
         case 1792: /* func_alias_clause: %empty  */
 #line 12824 "gram.y"
         {
-            (yyval.list) = list_make2(NULL, NIL);
+            (yyval.list) = list_make2(resource, NULL, NIL);
         }
-#line 42728 "gram.cpp"
+#line 42730 "gram.cpp"
         break;
 
         case 1793: /* join_type: FULL join_outer  */
@@ -34635,7 +34690,7 @@ yyreduce:
         {
             (yyval.jtype) = JOIN_FULL;
         }
-#line 42734 "gram.cpp"
+#line 42736 "gram.cpp"
         break;
 
         case 1794: /* join_type: LEFT join_outer  */
@@ -34643,7 +34698,7 @@ yyreduce:
         {
             (yyval.jtype) = JOIN_LEFT;
         }
-#line 42740 "gram.cpp"
+#line 42742 "gram.cpp"
         break;
 
         case 1795: /* join_type: RIGHT join_outer  */
@@ -34651,7 +34706,7 @@ yyreduce:
         {
             (yyval.jtype) = JOIN_RIGHT;
         }
-#line 42746 "gram.cpp"
+#line 42748 "gram.cpp"
         break;
 
         case 1796: /* join_type: INNER_P  */
@@ -34659,7 +34714,7 @@ yyreduce:
         {
             (yyval.jtype) = JOIN_INNER;
         }
-#line 42752 "gram.cpp"
+#line 42754 "gram.cpp"
         break;
 
         case 1797: /* join_outer: OUTER_P  */
@@ -34667,7 +34722,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 42758 "gram.cpp"
+#line 42760 "gram.cpp"
         break;
 
         case 1798: /* join_outer: %empty  */
@@ -34675,7 +34730,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 42764 "gram.cpp"
+#line 42766 "gram.cpp"
         break;
 
         case 1799: /* join_qual: USING '(' name_list ')'  */
@@ -34683,7 +34738,7 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[-1].list);
         }
-#line 42770 "gram.cpp"
+#line 42772 "gram.cpp"
         break;
 
         case 1800: /* join_qual: ON a_expr  */
@@ -34691,7 +34746,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42776 "gram.cpp"
+#line 42778 "gram.cpp"
         break;
 
         case 1801: /* relation_expr: qualified_name  */
@@ -34702,7 +34757,7 @@ yyreduce:
             (yyval.range)->inhOpt = INH_DEFAULT;
             (yyval.range)->alias = NULL;
         }
-#line 42787 "gram.cpp"
+#line 42789 "gram.cpp"
         break;
 
         case 1802: /* relation_expr: qualified_name '*'  */
@@ -34713,7 +34768,7 @@ yyreduce:
             (yyval.range)->inhOpt = INH_YES;
             (yyval.range)->alias = NULL;
         }
-#line 42798 "gram.cpp"
+#line 42800 "gram.cpp"
         break;
 
         case 1803: /* relation_expr: ONLY qualified_name  */
@@ -34724,7 +34779,7 @@ yyreduce:
             (yyval.range)->inhOpt = INH_NO;
             (yyval.range)->alias = NULL;
         }
-#line 42809 "gram.cpp"
+#line 42811 "gram.cpp"
         break;
 
         case 1804: /* relation_expr: ONLY '(' qualified_name ')'  */
@@ -34735,23 +34790,23 @@ yyreduce:
             (yyval.range)->inhOpt = INH_NO;
             (yyval.range)->alias = NULL;
         }
-#line 42820 "gram.cpp"
+#line 42822 "gram.cpp"
         break;
 
         case 1805: /* relation_expr_list: relation_expr  */
 #line 12887 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].range));
+            (yyval.list) = list_make1(resource, (yyvsp[0].range));
         }
-#line 42826 "gram.cpp"
+#line 42828 "gram.cpp"
         break;
 
         case 1806: /* relation_expr_list: relation_expr_list ',' relation_expr  */
 #line 12888 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].range));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].range));
         }
-#line 42832 "gram.cpp"
+#line 42834 "gram.cpp"
         break;
 
         case 1807: /* relation_expr_opt_alias: relation_expr  */
@@ -34759,49 +34814,49 @@ yyreduce:
         {
             (yyval.range) = (yyvsp[0].range);
         }
-#line 42840 "gram.cpp"
+#line 42842 "gram.cpp"
         break;
 
         case 1808: /* relation_expr_opt_alias: relation_expr ColId  */
 #line 12906 "gram.y"
         {
-            Alias* alias = makeNode(Alias);
+            Alias* alias = makeNode(resource, Alias);
             alias->aliasname = (yyvsp[0].str);
             (yyvsp[-1].range)->alias = alias;
             (yyval.range) = (yyvsp[-1].range);
         }
-#line 42851 "gram.cpp"
+#line 42853 "gram.cpp"
         break;
 
         case 1809: /* relation_expr_opt_alias: relation_expr AS ColId  */
 #line 12913 "gram.y"
         {
-            Alias* alias = makeNode(Alias);
+            Alias* alias = makeNode(resource, Alias);
             alias->aliasname = (yyvsp[0].str);
             (yyvsp[-2].range)->alias = alias;
             (yyval.range) = (yyvsp[-2].range);
         }
-#line 42862 "gram.cpp"
+#line 42864 "gram.cpp"
         break;
 
         case 1810: /* func_table: func_expr_windowless opt_ordinality  */
 #line 12934 "gram.y"
         {
-            RangeFunction* n = makeNode(RangeFunction);
+            RangeFunction* n = makeNode(resource, RangeFunction);
             n->lateral = false;
             n->ordinality = (yyvsp[0].boolean);
             n->is_rowsfrom = false;
-            n->functions = list_make1(list_make2((yyvsp[-1].node), NIL));
+            n->functions = list_make1(resource, list_make2(resource, (yyvsp[-1].node), NIL));
             /* alias and coldeflist are set by table_ref production */
             (yyval.node) = (Node*) n;
         }
-#line 42876 "gram.cpp"
+#line 42878 "gram.cpp"
         break;
 
         case 1811: /* func_table: ROWS FROM '(' rowsfrom_list ')' opt_ordinality  */
 #line 12944 "gram.y"
         {
-            RangeFunction* n = makeNode(RangeFunction);
+            RangeFunction* n = makeNode(resource, RangeFunction);
             n->lateral = false;
             n->ordinality = (yyvsp[0].boolean);
             n->is_rowsfrom = true;
@@ -34809,31 +34864,31 @@ yyreduce:
             /* alias and coldeflist are set by table_ref production */
             (yyval.node) = (Node*) n;
         }
-#line 42890 "gram.cpp"
+#line 42892 "gram.cpp"
         break;
 
         case 1812: /* rowsfrom_item: func_expr_windowless opt_col_def_list  */
 #line 12956 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-1].node), (yyvsp[0].list));
+            (yyval.list) = list_make2(resource, (yyvsp[-1].node), (yyvsp[0].list));
         }
-#line 42896 "gram.cpp"
+#line 42898 "gram.cpp"
         break;
 
         case 1813: /* rowsfrom_list: rowsfrom_item  */
 #line 12960 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].list));
+            (yyval.list) = list_make1(resource, (yyvsp[0].list));
         }
-#line 42902 "gram.cpp"
+#line 42904 "gram.cpp"
         break;
 
         case 1814: /* rowsfrom_list: rowsfrom_list ',' rowsfrom_item  */
 #line 12961 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].list));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].list));
         }
-#line 42908 "gram.cpp"
+#line 42910 "gram.cpp"
         break;
 
         case 1815: /* opt_col_def_list: AS '(' TableFuncElementList ')'  */
@@ -34841,7 +34896,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 42914 "gram.cpp"
+#line 42916 "gram.cpp"
         break;
 
         case 1816: /* opt_col_def_list: %empty  */
@@ -34849,7 +34904,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42920 "gram.cpp"
+#line 42922 "gram.cpp"
         break;
 
         case 1817: /* opt_ordinality: WITH_ORDINALITY  */
@@ -34857,7 +34912,7 @@ yyreduce:
         {
             (yyval.boolean) = true;
         }
-#line 42926 "gram.cpp"
+#line 42928 "gram.cpp"
         break;
 
         case 1818: /* opt_ordinality: %empty  */
@@ -34865,7 +34920,7 @@ yyreduce:
         {
             (yyval.boolean) = false;
         }
-#line 42932 "gram.cpp"
+#line 42934 "gram.cpp"
         break;
 
         case 1819: /* where_clause: WHERE a_expr  */
@@ -34873,7 +34928,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42938 "gram.cpp"
+#line 42940 "gram.cpp"
         break;
 
         case 1820: /* where_clause: %empty  */
@@ -34881,7 +34936,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 42944 "gram.cpp"
+#line 42946 "gram.cpp"
         break;
 
         case 1821: /* where_or_current_clause: WHERE a_expr  */
@@ -34889,19 +34944,19 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 42950 "gram.cpp"
+#line 42952 "gram.cpp"
         break;
 
         case 1822: /* where_or_current_clause: WHERE CURRENT_P OF cursor_name  */
 #line 12982 "gram.y"
         {
-            CurrentOfExpr* n = makeNode(CurrentOfExpr);
+            CurrentOfExpr* n = makeNode(resource, CurrentOfExpr);
             /* cvarno is filled in by parse analysis */
             n->cursor_name = (yyvsp[0].str);
             n->cursor_param = 0;
             (yyval.node) = (Node*) n;
         }
-#line 42962 "gram.cpp"
+#line 42964 "gram.cpp"
         break;
 
         case 1823: /* where_or_current_clause: %empty  */
@@ -34909,7 +34964,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 42968 "gram.cpp"
+#line 42970 "gram.cpp"
         break;
 
         case 1824: /* OptTableFuncElementList: TableFuncElementList  */
@@ -34917,7 +34972,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 42974 "gram.cpp"
+#line 42976 "gram.cpp"
         break;
 
         case 1825: /* OptTableFuncElementList: %empty  */
@@ -34925,29 +34980,29 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 42980 "gram.cpp"
+#line 42982 "gram.cpp"
         break;
 
         case 1826: /* TableFuncElementList: TableFuncElement  */
 #line 13000 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 42988 "gram.cpp"
+#line 42990 "gram.cpp"
         break;
 
         case 1827: /* TableFuncElementList: TableFuncElementList ',' TableFuncElement  */
 #line 13004 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 42996 "gram.cpp"
+#line 42998 "gram.cpp"
         break;
 
         case 1828: /* TableFuncElement: ColId Typename opt_collate_clause  */
 #line 13010 "gram.y"
         {
-            ColumnDef* n = makeNode(ColumnDef);
+            ColumnDef* n = makeNode(resource, ColumnDef);
             n->colname = (yyvsp[-2].str);
             n->typeName = (yyvsp[-1].typnam);
             n->inhcount = 0;
@@ -34963,7 +35018,7 @@ yyreduce:
             n->location = (yylsp[-2]);
             (yyval.node) = (Node*) n;
         }
-#line 43018 "gram.cpp"
+#line 43020 "gram.cpp"
         break;
 
         case 1829: /* Typename: SimpleTypename opt_array_bounds  */
@@ -34972,7 +35027,7 @@ yyreduce:
             (yyval.typnam) = (yyvsp[-1].typnam);
             (yyval.typnam)->arrayBounds = (yyvsp[0].list);
         }
-#line 43027 "gram.cpp"
+#line 43029 "gram.cpp"
         break;
 
         case 1830: /* Typename: SETOF SimpleTypename opt_array_bounds  */
@@ -34982,61 +35037,61 @@ yyreduce:
             (yyval.typnam)->arrayBounds = (yyvsp[0].list);
             (yyval.typnam)->setof = TRUE;
         }
-#line 43037 "gram.cpp"
+#line 43039 "gram.cpp"
         break;
 
         case 1831: /* Typename: SimpleTypename ARRAY '[' Iconst ']'  */
 #line 13052 "gram.y"
         {
             (yyval.typnam) = (yyvsp[-4].typnam);
-            (yyval.typnam)->arrayBounds = list_make1(makeInteger((yyvsp[-1].ival)));
+            (yyval.typnam)->arrayBounds = list_make1(resource, makeInteger(resource, (yyvsp[-1].ival)));
         }
-#line 43046 "gram.cpp"
+#line 43048 "gram.cpp"
         break;
 
         case 1832: /* Typename: SETOF SimpleTypename ARRAY '[' Iconst ']'  */
 #line 13057 "gram.y"
         {
             (yyval.typnam) = (yyvsp[-4].typnam);
-            (yyval.typnam)->arrayBounds = list_make1(makeInteger((yyvsp[-1].ival)));
+            (yyval.typnam)->arrayBounds = list_make1(resource, makeInteger(resource, (yyvsp[-1].ival)));
             (yyval.typnam)->setof = TRUE;
         }
-#line 43056 "gram.cpp"
+#line 43058 "gram.cpp"
         break;
 
         case 1833: /* Typename: SimpleTypename ARRAY  */
 #line 13063 "gram.y"
         {
             (yyval.typnam) = (yyvsp[-1].typnam);
-            (yyval.typnam)->arrayBounds = list_make1(makeInteger(-1));
+            (yyval.typnam)->arrayBounds = list_make1(resource, makeInteger(resource, -1));
         }
-#line 43065 "gram.cpp"
+#line 43067 "gram.cpp"
         break;
 
         case 1834: /* Typename: SETOF SimpleTypename ARRAY  */
 #line 13068 "gram.y"
         {
             (yyval.typnam) = (yyvsp[-1].typnam);
-            (yyval.typnam)->arrayBounds = list_make1(makeInteger(-1));
+            (yyval.typnam)->arrayBounds = list_make1(resource, makeInteger(resource, -1));
             (yyval.typnam)->setof = TRUE;
         }
-#line 43075 "gram.cpp"
+#line 43077 "gram.cpp"
         break;
 
         case 1835: /* opt_array_bounds: opt_array_bounds '[' ']'  */
 #line 13077 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeInteger(-1));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeInteger(resource, -1));
         }
-#line 43081 "gram.cpp"
+#line 43083 "gram.cpp"
         break;
 
         case 1836: /* opt_array_bounds: opt_array_bounds '[' Iconst ']'  */
 #line 13079 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-3].list), makeInteger((yyvsp[-1].ival)));
+            (yyval.list) = lappend(resource, (yyvsp[-3].list), makeInteger(resource, (yyvsp[-1].ival)));
         }
-#line 43087 "gram.cpp"
+#line 43089 "gram.cpp"
         break;
 
         case 1837: /* opt_array_bounds: %empty  */
@@ -35044,7 +35099,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 43093 "gram.cpp"
+#line 43095 "gram.cpp"
         break;
 
         case 1838: /* SimpleTypename: GenericType  */
@@ -35052,7 +35107,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43099 "gram.cpp"
+#line 43101 "gram.cpp"
         break;
 
         case 1839: /* SimpleTypename: Numeric  */
@@ -35060,7 +35115,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43105 "gram.cpp"
+#line 43107 "gram.cpp"
         break;
 
         case 1840: /* SimpleTypename: Bit  */
@@ -35068,7 +35123,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43111 "gram.cpp"
+#line 43113 "gram.cpp"
         break;
 
         case 1841: /* SimpleTypename: Character  */
@@ -35076,7 +35131,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43117 "gram.cpp"
+#line 43119 "gram.cpp"
         break;
 
         case 1842: /* SimpleTypename: ConstDatetime  */
@@ -35084,7 +35139,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43123 "gram.cpp"
+#line 43125 "gram.cpp"
         break;
 
         case 1843: /* SimpleTypename: ConstInterval opt_interval  */
@@ -35093,7 +35148,7 @@ yyreduce:
             (yyval.typnam) = (yyvsp[-1].typnam);
             (yyval.typnam)->typmods = (yyvsp[0].list);
         }
-#line 43132 "gram.cpp"
+#line 43134 "gram.cpp"
         break;
 
         case 1844: /* SimpleTypename: ConstInterval '(' Iconst ')' opt_interval  */
@@ -35106,12 +35161,14 @@ yyreduce:
                             errcode(ERRCODE_SYNTAX_ERROR),
                             errmsg("interval precision specified twice"),
                             parser_errposition((yylsp[-4])));
-                (yyval.typnam)->typmods = lappend((yyvsp[0].list), makeIntConst((yyvsp[-2].ival), (yylsp[-2])));
-            } else
                 (yyval.typnam)->typmods =
-                    list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1), makeIntConst((yyvsp[-2].ival), (yylsp[-2])));
+                    lappend(resource, (yyvsp[0].list), makeIntConst(resource, (yyvsp[-2].ival), (yylsp[-2])));
+            } else
+                (yyval.typnam)->typmods = list_make2(resource,
+                                                     makeIntConst(resource, INTERVAL_FULL_RANGE, -1),
+                                                     makeIntConst(resource, (yyvsp[-2].ival), (yylsp[-2])));
         }
-#line 43152 "gram.cpp"
+#line 43154 "gram.cpp"
         break;
 
         case 1845: /* ConstTypename: Numeric  */
@@ -35119,7 +35176,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43158 "gram.cpp"
+#line 43160 "gram.cpp"
         break;
 
         case 1846: /* ConstTypename: ConstBit  */
@@ -35127,7 +35184,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43164 "gram.cpp"
+#line 43166 "gram.cpp"
         break;
 
         case 1847: /* ConstTypename: ConstCharacter  */
@@ -35135,7 +35192,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43170 "gram.cpp"
+#line 43172 "gram.cpp"
         break;
 
         case 1848: /* ConstTypename: ConstDatetime  */
@@ -35143,27 +35200,29 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43176 "gram.cpp"
+#line 43178 "gram.cpp"
         break;
 
         case 1849: /* GenericType: type_function_name opt_type_modifiers  */
 #line 13140 "gram.y"
         {
-            (yyval.typnam) = makeTypeName((yyvsp[-1].str));
+            (yyval.typnam) = makeTypeName(resource, (yyvsp[-1].str));
             (yyval.typnam)->typmods = (yyvsp[0].list);
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43186 "gram.cpp"
+#line 43188 "gram.cpp"
         break;
 
         case 1850: /* GenericType: type_function_name attrs opt_type_modifiers  */
 #line 13146 "gram.y"
         {
-            (yyval.typnam) = makeTypeNameFromNameList(lcons(makeString((yyvsp[-2].str)), (yyvsp[-1].list)));
+            (yyval.typnam) =
+                makeTypeNameFromNameList(resource,
+                                         lcons(resource, makeString(resource, (yyvsp[-2].str)), (yyvsp[-1].list)));
             (yyval.typnam)->typmods = (yyvsp[0].list);
             (yyval.typnam)->location = (yylsp[-2]);
         }
-#line 43196 "gram.cpp"
+#line 43198 "gram.cpp"
         break;
 
         case 1851: /* opt_type_modifiers: '(' expr_list ')'  */
@@ -35171,7 +35230,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 43202 "gram.cpp"
+#line 43204 "gram.cpp"
         break;
 
         case 1852: /* opt_type_modifiers: %empty  */
@@ -35179,52 +35238,52 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 43208 "gram.cpp"
+#line 43210 "gram.cpp"
         break;
 
         case 1853: /* Numeric: INT_P  */
 #line 13161 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("int4");
+            (yyval.typnam) = SystemTypeName(resource, "int4");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43217 "gram.cpp"
+#line 43219 "gram.cpp"
         break;
 
         case 1854: /* Numeric: INTEGER  */
 #line 13166 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("int4");
+            (yyval.typnam) = SystemTypeName(resource, "int4");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43226 "gram.cpp"
+#line 43228 "gram.cpp"
         break;
 
         case 1855: /* Numeric: SMALLINT  */
 #line 13171 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("int2");
+            (yyval.typnam) = SystemTypeName(resource, "int2");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43235 "gram.cpp"
+#line 43237 "gram.cpp"
         break;
 
         case 1856: /* Numeric: BIGINT  */
 #line 13176 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("int8_t");
+            (yyval.typnam) = SystemTypeName(resource, "int8_t");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43244 "gram.cpp"
+#line 43246 "gram.cpp"
         break;
 
         case 1857: /* Numeric: REAL  */
 #line 13181 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("float4");
+            (yyval.typnam) = SystemTypeName(resource, "float4");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43253 "gram.cpp"
+#line 43255 "gram.cpp"
         break;
 
         case 1858: /* Numeric: FLOAT_P opt_float  */
@@ -35233,55 +35292,55 @@ yyreduce:
             (yyval.typnam) = (yyvsp[0].typnam);
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43262 "gram.cpp"
+#line 43264 "gram.cpp"
         break;
 
         case 1859: /* Numeric: DOUBLE_P PRECISION  */
 #line 13191 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("float8");
+            (yyval.typnam) = SystemTypeName(resource, "float8");
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43271 "gram.cpp"
+#line 43273 "gram.cpp"
         break;
 
         case 1860: /* Numeric: DECIMAL_P opt_type_modifiers  */
 #line 13196 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("numeric");
+            (yyval.typnam) = SystemTypeName(resource, "numeric");
             (yyval.typnam)->typmods = (yyvsp[0].list);
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43281 "gram.cpp"
+#line 43283 "gram.cpp"
         break;
 
         case 1861: /* Numeric: DEC opt_type_modifiers  */
 #line 13202 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("numeric");
+            (yyval.typnam) = SystemTypeName(resource, "numeric");
             (yyval.typnam)->typmods = (yyvsp[0].list);
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43291 "gram.cpp"
+#line 43293 "gram.cpp"
         break;
 
         case 1862: /* Numeric: NUMERIC opt_type_modifiers  */
 #line 13208 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("numeric");
+            (yyval.typnam) = SystemTypeName(resource, "numeric");
             (yyval.typnam)->typmods = (yyvsp[0].list);
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43301 "gram.cpp"
+#line 43303 "gram.cpp"
         break;
 
         case 1863: /* Numeric: BOOLEAN_P  */
 #line 13214 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("bool");
+            (yyval.typnam) = SystemTypeName(resource, "bool");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43310 "gram.cpp"
+#line 43312 "gram.cpp"
         break;
 
         case 1864: /* opt_float: '(' Iconst ')'  */
@@ -35297,24 +35356,24 @@ yyreduce:
                         errmsg("precision for type float must be at least 1 bit"),
                         parser_errposition((yylsp[-1])));
             else if ((yyvsp[-1].ival) <= 24)
-                (yyval.typnam) = SystemTypeName("float4");
+                (yyval.typnam) = SystemTypeName(resource, "float4");
             else if ((yyvsp[-1].ival) <= 53)
-                (yyval.typnam) = SystemTypeName("float8");
+                (yyval.typnam) = SystemTypeName(resource, "float8");
             else
                 ereport(ERROR,
                         errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                         errmsg("precision for type float must be less than 54 bits"),
                         parser_errposition((yylsp[-1])));
         }
-#line 43335 "gram.cpp"
+#line 43337 "gram.cpp"
         break;
 
         case 1865: /* opt_float: %empty  */
 #line 13242 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("float4");
+            (yyval.typnam) = SystemTypeName(resource, "float4");
         }
-#line 43343 "gram.cpp"
+#line 43345 "gram.cpp"
         break;
 
         case 1866: /* Bit: BitWithLength  */
@@ -35322,7 +35381,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43351 "gram.cpp"
+#line 43353 "gram.cpp"
         break;
 
         case 1867: /* Bit: BitWithoutLength  */
@@ -35330,7 +35389,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43359 "gram.cpp"
+#line 43361 "gram.cpp"
         break;
 
         case 1868: /* ConstBit: BitWithLength  */
@@ -35338,7 +35397,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43367 "gram.cpp"
+#line 43369 "gram.cpp"
         break;
 
         case 1869: /* ConstBit: BitWithoutLength  */
@@ -35347,7 +35406,7 @@ yyreduce:
             (yyval.typnam) = (yyvsp[0].typnam);
             (yyval.typnam)->typmods = NIL;
         }
-#line 43376 "gram.cpp"
+#line 43378 "gram.cpp"
         break;
 
         case 1870: /* BitWithLength: BIT opt_varying '(' expr_list ')'  */
@@ -35355,12 +35414,12 @@ yyreduce:
         {
             char* typname;
 
-            typname = (yyvsp[-3].boolean) ? pstrdup("varbit") : pstrdup("bit");
-            (yyval.typnam) = SystemTypeName(typname);
+            typname = (yyvsp[-3].boolean) ? pstrdup(resource, "varbit") : pstrdup(resource, "bit");
+            (yyval.typnam) = SystemTypeName(resource, typname);
             (yyval.typnam)->typmods = (yyvsp[-1].list);
             (yyval.typnam)->location = (yylsp[-4]);
         }
-#line 43389 "gram.cpp"
+#line 43391 "gram.cpp"
         break;
 
         case 1871: /* BitWithoutLength: BIT opt_varying  */
@@ -35368,14 +35427,14 @@ yyreduce:
         {
             /* bit defaults to bit(1), varbit to no limit */
             if ((yyvsp[0].boolean)) {
-                (yyval.typnam) = SystemTypeName("varbit");
+                (yyval.typnam) = SystemTypeName(resource, "varbit");
             } else {
-                (yyval.typnam) = SystemTypeName("bit");
-                (yyval.typnam)->typmods = list_make1(makeIntConst(1, -1));
+                (yyval.typnam) = SystemTypeName(resource, "bit");
+                (yyval.typnam)->typmods = list_make1(resource, makeIntConst(resource, 1, -1));
             }
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43407 "gram.cpp"
+#line 43409 "gram.cpp"
         break;
 
         case 1872: /* Character: CharacterWithLength  */
@@ -35383,7 +35442,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43415 "gram.cpp"
+#line 43417 "gram.cpp"
         break;
 
         case 1873: /* Character: CharacterWithoutLength  */
@@ -35391,7 +35450,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43423 "gram.cpp"
+#line 43425 "gram.cpp"
         break;
 
         case 1874: /* ConstCharacter: CharacterWithLength  */
@@ -35399,7 +35458,7 @@ yyreduce:
         {
             (yyval.typnam) = (yyvsp[0].typnam);
         }
-#line 43431 "gram.cpp"
+#line 43433 "gram.cpp"
         break;
 
         case 1875: /* ConstCharacter: CharacterWithoutLength  */
@@ -35414,85 +35473,85 @@ yyreduce:
             (yyval.typnam) = (yyvsp[0].typnam);
             (yyval.typnam)->typmods = NIL;
         }
-#line 43446 "gram.cpp"
+#line 43448 "gram.cpp"
         break;
 
         case 1876: /* CharacterWithLength: character '(' Iconst ')' opt_charset  */
 #line 13336 "gram.y"
         {
             if (((yyvsp[0].str) != NULL) && (strcmp((yyvsp[0].str), "sql_text") != 0))
-                (yyvsp[-4].str) = psprintf("%s_%s", (yyvsp[-4].str), (yyvsp[0].str));
+                (yyvsp[-4].str) = psprintf(resource, "%s_%s", (yyvsp[-4].str), (yyvsp[0].str));
 
-            (yyval.typnam) = SystemTypeName((yyvsp[-4].str));
-            (yyval.typnam)->typmods = list_make1(makeIntConst((yyvsp[-2].ival), (yylsp[-2])));
+            (yyval.typnam) = SystemTypeName(resource, (yyvsp[-4].str));
+            (yyval.typnam)->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-2].ival), (yylsp[-2])));
             (yyval.typnam)->location = (yylsp[-4]);
         }
-#line 43459 "gram.cpp"
+#line 43461 "gram.cpp"
         break;
 
         case 1877: /* CharacterWithoutLength: character opt_charset  */
 #line 13347 "gram.y"
         {
             if (((yyvsp[0].str) != NULL) && (strcmp((yyvsp[0].str), "sql_text") != 0))
-                (yyvsp[-1].str) = psprintf("%s_%s", (yyvsp[-1].str), (yyvsp[0].str));
+                (yyvsp[-1].str) = psprintf(resource, "%s_%s", (yyvsp[-1].str), (yyvsp[0].str));
 
-            (yyval.typnam) = SystemTypeName((yyvsp[-1].str));
+            (yyval.typnam) = SystemTypeName(resource, (yyvsp[-1].str));
 
             /* char defaults to char(1), varchar to no limit */
             if (strcmp((yyvsp[-1].str), "bpchar") == 0)
-                (yyval.typnam)->typmods = list_make1(makeIntConst(1, -1));
+                (yyval.typnam)->typmods = list_make1(resource, makeIntConst(resource, 1, -1));
 
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43476 "gram.cpp"
+#line 43478 "gram.cpp"
         break;
 
         case 1878: /* character: CHARACTER opt_varying  */
 #line 13362 "gram.y"
         {
-            (yyval.str) = (yyvsp[0].boolean) ? pstrdup("varchar") : pstrdup("bpchar");
+            (yyval.str) = (yyvsp[0].boolean) ? pstrdup(resource, "varchar") : pstrdup(resource, "bpchar");
         }
-#line 43482 "gram.cpp"
+#line 43484 "gram.cpp"
         break;
 
         case 1879: /* character: CHAR_P opt_varying  */
 #line 13364 "gram.y"
         {
-            (yyval.str) = (yyvsp[0].boolean) ? pstrdup("varchar") : pstrdup("bpchar");
+            (yyval.str) = (yyvsp[0].boolean) ? pstrdup(resource, "varchar") : pstrdup(resource, "bpchar");
         }
-#line 43488 "gram.cpp"
+#line 43490 "gram.cpp"
         break;
 
         case 1880: /* character: VARCHAR  */
 #line 13366 "gram.y"
         {
-            (yyval.str) = pstrdup("varchar");
+            (yyval.str) = pstrdup(resource, "varchar");
         }
-#line 43494 "gram.cpp"
+#line 43496 "gram.cpp"
         break;
 
         case 1881: /* character: NATIONAL CHARACTER opt_varying  */
 #line 13368 "gram.y"
         {
-            (yyval.str) = (yyvsp[0].boolean) ? pstrdup("varchar") : pstrdup("bpchar");
+            (yyval.str) = (yyvsp[0].boolean) ? pstrdup(resource, "varchar") : pstrdup(resource, "bpchar");
         }
-#line 43500 "gram.cpp"
+#line 43502 "gram.cpp"
         break;
 
         case 1882: /* character: NATIONAL CHAR_P opt_varying  */
 #line 13370 "gram.y"
         {
-            (yyval.str) = (yyvsp[0].boolean) ? pstrdup("varchar") : pstrdup("bpchar");
+            (yyval.str) = (yyvsp[0].boolean) ? pstrdup(resource, "varchar") : pstrdup(resource, "bpchar");
         }
-#line 43506 "gram.cpp"
+#line 43508 "gram.cpp"
         break;
 
         case 1883: /* character: NCHAR opt_varying  */
 #line 13372 "gram.y"
         {
-            (yyval.str) = (yyvsp[0].boolean) ? pstrdup("varchar") : pstrdup("bpchar");
+            (yyval.str) = (yyvsp[0].boolean) ? pstrdup(resource, "varchar") : pstrdup(resource, "bpchar");
         }
-#line 43512 "gram.cpp"
+#line 43514 "gram.cpp"
         break;
 
         case 1884: /* opt_varying: VARYING  */
@@ -35500,7 +35559,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 43518 "gram.cpp"
+#line 43520 "gram.cpp"
         break;
 
         case 1885: /* opt_varying: %empty  */
@@ -35508,7 +35567,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 43524 "gram.cpp"
+#line 43526 "gram.cpp"
         break;
 
         case 1886: /* opt_charset: CHARACTER SET ColId  */
@@ -35516,7 +35575,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 43530 "gram.cpp"
+#line 43532 "gram.cpp"
         break;
 
         case 1887: /* opt_charset: %empty  */
@@ -35524,66 +35583,66 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 43536 "gram.cpp"
+#line 43538 "gram.cpp"
         break;
 
         case 1888: /* ConstDatetime: TIMESTAMP '(' Iconst ')' opt_timezone  */
 #line 13390 "gram.y"
         {
             if ((yyvsp[0].boolean))
-                (yyval.typnam) = SystemTypeName("timestamptz");
+                (yyval.typnam) = SystemTypeName(resource, "timestamptz");
             else
-                (yyval.typnam) = SystemTypeName("timestamp");
-            (yyval.typnam)->typmods = list_make1(makeIntConst((yyvsp[-2].ival), (yylsp[-2])));
+                (yyval.typnam) = SystemTypeName(resource, "timestamp");
+            (yyval.typnam)->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-2].ival), (yylsp[-2])));
             (yyval.typnam)->location = (yylsp[-4]);
         }
-#line 43549 "gram.cpp"
+#line 43551 "gram.cpp"
         break;
 
         case 1889: /* ConstDatetime: TIMESTAMP opt_timezone  */
 #line 13399 "gram.y"
         {
             if ((yyvsp[0].boolean))
-                (yyval.typnam) = SystemTypeName("timestamptz");
+                (yyval.typnam) = SystemTypeName(resource, "timestamptz");
             else
-                (yyval.typnam) = SystemTypeName("timestamp");
+                (yyval.typnam) = SystemTypeName(resource, "timestamp");
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43561 "gram.cpp"
+#line 43563 "gram.cpp"
         break;
 
         case 1890: /* ConstDatetime: TIME '(' Iconst ')' opt_timezone  */
 #line 13407 "gram.y"
         {
             if ((yyvsp[0].boolean))
-                (yyval.typnam) = SystemTypeName("timetz");
+                (yyval.typnam) = SystemTypeName(resource, "timetz");
             else
-                (yyval.typnam) = SystemTypeName("time");
-            (yyval.typnam)->typmods = list_make1(makeIntConst((yyvsp[-2].ival), (yylsp[-2])));
+                (yyval.typnam) = SystemTypeName(resource, "time");
+            (yyval.typnam)->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-2].ival), (yylsp[-2])));
             (yyval.typnam)->location = (yylsp[-4]);
         }
-#line 43574 "gram.cpp"
+#line 43576 "gram.cpp"
         break;
 
         case 1891: /* ConstDatetime: TIME opt_timezone  */
 #line 13416 "gram.y"
         {
             if ((yyvsp[0].boolean))
-                (yyval.typnam) = SystemTypeName("timetz");
+                (yyval.typnam) = SystemTypeName(resource, "timetz");
             else
-                (yyval.typnam) = SystemTypeName("time");
+                (yyval.typnam) = SystemTypeName(resource, "time");
             (yyval.typnam)->location = (yylsp[-1]);
         }
-#line 43586 "gram.cpp"
+#line 43588 "gram.cpp"
         break;
 
         case 1892: /* ConstInterval: INTERVAL  */
 #line 13427 "gram.y"
         {
-            (yyval.typnam) = SystemTypeName("interval");
+            (yyval.typnam) = SystemTypeName(resource, "interval");
             (yyval.typnam)->location = (yylsp[0]);
         }
-#line 43595 "gram.cpp"
+#line 43597 "gram.cpp"
         break;
 
         case 1893: /* opt_timezone: WITH_TIME ZONE  */
@@ -35591,7 +35650,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 43601 "gram.cpp"
+#line 43603 "gram.cpp"
         break;
 
         case 1894: /* opt_timezone: WITHOUT TIME ZONE  */
@@ -35599,7 +35658,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 43607 "gram.cpp"
+#line 43609 "gram.cpp"
         break;
 
         case 1895: /* opt_timezone: %empty  */
@@ -35607,47 +35666,47 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 43613 "gram.cpp"
+#line 43615 "gram.cpp"
         break;
 
         case 1896: /* opt_interval: YEAR_P  */
 #line 13441 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(YEAR), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(YEAR), (yylsp[0])));
         }
-#line 43619 "gram.cpp"
+#line 43621 "gram.cpp"
         break;
 
         case 1897: /* opt_interval: MONTH_P  */
 #line 13443 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(MONTH), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(MONTH), (yylsp[0])));
         }
-#line 43625 "gram.cpp"
+#line 43627 "gram.cpp"
         break;
 
         case 1898: /* opt_interval: DAY_P  */
 #line 13445 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(DAY), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(DAY), (yylsp[0])));
         }
-#line 43631 "gram.cpp"
+#line 43633 "gram.cpp"
         break;
 
         case 1899: /* opt_interval: HOUR_P  */
 #line 13447 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(HOUR), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(HOUR), (yylsp[0])));
         }
-#line 43637 "gram.cpp"
+#line 43639 "gram.cpp"
         break;
 
         case 1900: /* opt_interval: MINUTE_P  */
 #line 13449 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(MINUTE), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(MINUTE), (yylsp[0])));
         }
-#line 43643 "gram.cpp"
+#line 43645 "gram.cpp"
         break;
 
         case 1901: /* opt_interval: interval_second  */
@@ -35655,32 +35714,35 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 43649 "gram.cpp"
+#line 43651 "gram.cpp"
         break;
 
         case 1902: /* opt_interval: YEAR_P TO MONTH_P  */
 #line 13453 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(YEAR) | INTERVAL_MASK(MONTH), (yylsp[-2])));
+            (yyval.list) =
+                list_make1(resource, makeIntConst(resource, INTERVAL_MASK(YEAR) | INTERVAL_MASK(MONTH), (yylsp[-2])));
         }
-#line 43658 "gram.cpp"
+#line 43660 "gram.cpp"
         break;
 
         case 1903: /* opt_interval: DAY_P TO HOUR_P  */
 #line 13458 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR), (yylsp[-2])));
+            (yyval.list) =
+                list_make1(resource, makeIntConst(resource, INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR), (yylsp[-2])));
         }
-#line 43667 "gram.cpp"
+#line 43669 "gram.cpp"
         break;
 
         case 1904: /* opt_interval: DAY_P TO MINUTE_P  */
 #line 13463 "gram.y"
         {
-            (yyval.list) =
-                list_make1(makeIntConst(INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE), (yylsp[-2])));
+            (yyval.list) = list_make1(
+                resource,
+                makeIntConst(resource, INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE), (yylsp[-2])));
         }
-#line 43677 "gram.cpp"
+#line 43679 "gram.cpp"
         break;
 
         case 1905: /* opt_interval: DAY_P TO interval_second  */
@@ -35688,37 +35750,40 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
             linitial((yyval.list)) =
-                makeIntConst(INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND),
+                makeIntConst(resource,
+                             INTERVAL_MASK(DAY) | INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND),
                              (yylsp[-2]));
         }
-#line 43689 "gram.cpp"
+#line 43691 "gram.cpp"
         break;
 
         case 1906: /* opt_interval: HOUR_P TO MINUTE_P  */
 #line 13477 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE), (yylsp[-2])));
+            (yyval.list) =
+                list_make1(resource, makeIntConst(resource, INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE), (yylsp[-2])));
         }
-#line 43698 "gram.cpp"
+#line 43700 "gram.cpp"
         break;
 
         case 1907: /* opt_interval: HOUR_P TO interval_second  */
 #line 13482 "gram.y"
         {
             (yyval.list) = (yyvsp[0].list);
-            linitial((yyval.list)) =
-                makeIntConst(INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND), (yylsp[-2]));
+            linitial((yyval.list)) = makeIntConst(resource,
+                                                  INTERVAL_MASK(HOUR) | INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND),
+                                                  (yylsp[-2]));
         }
-#line 43709 "gram.cpp"
+#line 43711 "gram.cpp"
         break;
 
         case 1908: /* opt_interval: MINUTE_P TO interval_second  */
 #line 13489 "gram.y"
         {
             (yyval.list) = (yyvsp[0].list);
-            linitial((yyval.list)) = makeIntConst(INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND), (yylsp[-2]));
+            linitial((yyval.list)) = makeIntConst(resource, INTERVAL_MASK(MINUTE) | INTERVAL_MASK(SECOND), (yylsp[-2]));
         }
-#line 43719 "gram.cpp"
+#line 43721 "gram.cpp"
         break;
 
         case 1909: /* opt_interval: %empty  */
@@ -35726,24 +35791,25 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 43725 "gram.cpp"
+#line 43727 "gram.cpp"
         break;
 
         case 1910: /* interval_second: SECOND_P  */
 #line 13500 "gram.y"
         {
-            (yyval.list) = list_make1(makeIntConst(INTERVAL_MASK(SECOND), (yylsp[0])));
+            (yyval.list) = list_make1(resource, makeIntConst(resource, INTERVAL_MASK(SECOND), (yylsp[0])));
         }
-#line 43733 "gram.cpp"
+#line 43735 "gram.cpp"
         break;
 
         case 1911: /* interval_second: SECOND_P '(' Iconst ')'  */
 #line 13504 "gram.y"
         {
-            (yyval.list) = list_make2(makeIntConst(INTERVAL_MASK(SECOND), (yylsp[-3])),
-                                      makeIntConst((yyvsp[-1].ival), (yylsp[-1])));
+            (yyval.list) = list_make2(resource,
+                                      makeIntConst(resource, INTERVAL_MASK(SECOND), (yylsp[-3])),
+                                      makeIntConst(resource, (yyvsp[-1].ival), (yylsp[-1])));
         }
-#line 43742 "gram.cpp"
+#line 43744 "gram.cpp"
         break;
 
         case 1912: /* a_expr: c_expr  */
@@ -35751,334 +35817,363 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 43748 "gram.cpp"
+#line 43750 "gram.cpp"
         break;
 
         case 1913: /* a_expr: a_expr TYPECAST Typename  */
 #line 13535 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
         }
-#line 43754 "gram.cpp"
+#line 43756 "gram.cpp"
         break;
 
         case 1914: /* a_expr: a_expr COLLATE any_name  */
 #line 13537 "gram.y"
         {
-            CollateClause* n = makeNode(CollateClause);
+            CollateClause* n = makeNode(resource, CollateClause);
             n->arg = (yyvsp[-2].node);
             n->collname = (yyvsp[0].list);
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 43766 "gram.cpp"
+#line 43768 "gram.cpp"
         break;
 
         case 1915: /* a_expr: a_expr AT TIME ZONE a_expr  */
 #line 13545 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("timezone"),
-                                                list_make2((yyvsp[0].node), (yyvsp[-4].node)),
+            (yyval.node) = (Node*) makeFuncCall(resource,
+                                                SystemFuncName(resource, "timezone"),
+                                                list_make2(resource, (yyvsp[0].node), (yyvsp[-4].node)),
                                                 (yylsp[-3]));
         }
-#line 43776 "gram.cpp"
+#line 43778 "gram.cpp"
         break;
 
         case 1916: /* a_expr: '+' a_expr  */
 #line 13560 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43782 "gram.cpp"
+#line 43784 "gram.cpp"
         break;
 
         case 1917: /* a_expr: '-' a_expr  */
 #line 13562 "gram.y"
         {
-            (yyval.node) = doNegate((yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = doNegate(resource, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43788 "gram.cpp"
+#line 43790 "gram.cpp"
         break;
 
         case 1918: /* a_expr: a_expr '+' a_expr  */
 #line 13564 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "+", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "+", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43794 "gram.cpp"
+#line 43796 "gram.cpp"
         break;
 
         case 1919: /* a_expr: a_expr '-' a_expr  */
 #line 13566 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "-", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "-", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43800 "gram.cpp"
+#line 43802 "gram.cpp"
         break;
 
         case 1920: /* a_expr: a_expr '*' a_expr  */
 #line 13568 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43806 "gram.cpp"
+#line 43808 "gram.cpp"
         break;
 
         case 1921: /* a_expr: a_expr '/' a_expr  */
 #line 13570 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "/", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "/", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43812 "gram.cpp"
+#line 43814 "gram.cpp"
         break;
 
         case 1922: /* a_expr: a_expr '%' a_expr  */
 #line 13572 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "%", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "%", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43818 "gram.cpp"
+#line 43820 "gram.cpp"
         break;
 
         case 1923: /* a_expr: a_expr '^' a_expr  */
 #line 13574 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "^", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "^", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43824 "gram.cpp"
+#line 43826 "gram.cpp"
         break;
 
         case 1924: /* a_expr: a_expr '<' a_expr  */
 #line 13576 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "<", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43830 "gram.cpp"
+#line 43832 "gram.cpp"
         break;
 
         case 1925: /* a_expr: a_expr '>' a_expr  */
 #line 13578 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, ">", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43836 "gram.cpp"
+#line 43838 "gram.cpp"
         break;
 
         case 1926: /* a_expr: a_expr '=' a_expr  */
 #line 13580 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43842 "gram.cpp"
+#line 43844 "gram.cpp"
         break;
 
         case 1927: /* a_expr: a_expr qual_Op a_expr  */
 #line 13583 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeA_Expr(AEXPR_OP, (yyvsp[-1].list), (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*)
+                makeA_Expr(resource, AEXPR_OP, (yyvsp[-1].list), (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43848 "gram.cpp"
+#line 43850 "gram.cpp"
         break;
 
         case 1928: /* a_expr: qual_Op a_expr  */
 #line 13585 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_OP, (yyvsp[-1].list), NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_OP, (yyvsp[-1].list), NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43854 "gram.cpp"
+#line 43856 "gram.cpp"
         break;
 
         case 1929: /* a_expr: a_expr qual_Op  */
 #line 13587 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_OP, (yyvsp[0].list), (yyvsp[-1].node), NULL, (yylsp[0]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_OP, (yyvsp[0].list), (yyvsp[-1].node), NULL, (yylsp[0]));
         }
-#line 43860 "gram.cpp"
+#line 43862 "gram.cpp"
         break;
 
         case 1930: /* a_expr: a_expr AND a_expr  */
 #line 13590 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_AND, NIL, (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_AND, NIL, (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43866 "gram.cpp"
+#line 43868 "gram.cpp"
         break;
 
         case 1931: /* a_expr: a_expr OR a_expr  */
 #line 13592 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_OR, NIL, (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_OR, NIL, (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43872 "gram.cpp"
+#line 43874 "gram.cpp"
         break;
 
         case 1932: /* a_expr: NOT a_expr  */
 #line 13594 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_NOT, NIL, NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_NOT, NIL, NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43878 "gram.cpp"
+#line 43880 "gram.cpp"
         break;
 
         case 1933: /* a_expr: a_expr LIKE a_expr  */
 #line 13597 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~~", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~~", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43884 "gram.cpp"
+#line 43886 "gram.cpp"
         break;
 
         case 1934: /* a_expr: a_expr LIKE a_expr ESCAPE a_expr  */
 #line 13599 "gram.y"
         {
-            FuncCall* n =
-                makeFuncCall(SystemFuncName("like_escape"), list_make2((yyvsp[-2].node), (yyvsp[0].node)), (yylsp[-3]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~~", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "like_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
+                                       (yylsp[-3]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~~", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
         }
-#line 43895 "gram.cpp"
+#line 43897 "gram.cpp"
         break;
 
         case 1935: /* a_expr: a_expr NOT LIKE a_expr  */
 #line 13606 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~~", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~~", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
         }
-#line 43901 "gram.cpp"
+#line 43903 "gram.cpp"
         break;
 
         case 1936: /* a_expr: a_expr NOT LIKE a_expr ESCAPE a_expr  */
 #line 13608 "gram.y"
         {
-            FuncCall* n =
-                makeFuncCall(SystemFuncName("like_escape"), list_make2((yyvsp[-2].node), (yyvsp[0].node)), (yylsp[-4]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~~", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "like_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
+                                       (yylsp[-4]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~~", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
         }
-#line 43912 "gram.cpp"
+#line 43914 "gram.cpp"
         break;
 
         case 1937: /* a_expr: a_expr ILIKE a_expr  */
 #line 13615 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~~*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~~*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 43918 "gram.cpp"
+#line 43920 "gram.cpp"
         break;
 
         case 1938: /* a_expr: a_expr ILIKE a_expr ESCAPE a_expr  */
 #line 13617 "gram.y"
         {
-            FuncCall* n =
-                makeFuncCall(SystemFuncName("like_escape"), list_make2((yyvsp[-2].node), (yyvsp[0].node)), (yylsp[-3]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~~*", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "like_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
+                                       (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~~*", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
         }
-#line 43929 "gram.cpp"
+#line 43931 "gram.cpp"
         break;
 
         case 1939: /* a_expr: a_expr NOT ILIKE a_expr  */
 #line 13624 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~~*", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~~*", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
         }
-#line 43935 "gram.cpp"
+#line 43937 "gram.cpp"
         break;
 
         case 1940: /* a_expr: a_expr NOT ILIKE a_expr ESCAPE a_expr  */
 #line 13626 "gram.y"
         {
-            FuncCall* n =
-                makeFuncCall(SystemFuncName("like_escape"), list_make2((yyvsp[-2].node), (yyvsp[0].node)), (yylsp[-4]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~~*", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "like_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
+                                       (yylsp[-4]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~~*", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
         }
-#line 43946 "gram.cpp"
+#line 43948 "gram.cpp"
         break;
 
         case 1941: /* a_expr: a_expr SIMILAR TO a_expr  */
 #line 13634 "gram.y"
         {
-            FuncCall* n = makeFuncCall(SystemFuncName("similar_escape"),
-                                       list_make2((yyvsp[0].node), makeNullAConst(-1)),
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "similar_escape"),
+                                       list_make2(resource, (yyvsp[0].node), makeNullAConst(resource, -1)),
                                        (yylsp[-2]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~", (yyvsp[-3].node), (Node*) n, (yylsp[-2]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~", (yyvsp[-3].node), (Node*) n, (yylsp[-2]));
         }
-#line 43957 "gram.cpp"
+#line 43959 "gram.cpp"
         break;
 
         case 1942: /* a_expr: a_expr SIMILAR TO a_expr ESCAPE a_expr  */
 #line 13641 "gram.y"
         {
-            FuncCall* n = makeFuncCall(SystemFuncName("similar_escape"),
-                                       list_make2((yyvsp[-2].node), (yyvsp[0].node)),
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "similar_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
                                        (yylsp[-4]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "~", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "~", (yyvsp[-5].node), (Node*) n, (yylsp[-4]));
         }
-#line 43968 "gram.cpp"
+#line 43970 "gram.cpp"
         break;
 
         case 1943: /* a_expr: a_expr NOT SIMILAR TO a_expr  */
 #line 13648 "gram.y"
         {
-            FuncCall* n = makeFuncCall(SystemFuncName("similar_escape"),
-                                       list_make2((yyvsp[0].node), makeNullAConst(-1)),
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "similar_escape"),
+                                       list_make2(resource, (yyvsp[0].node), makeNullAConst(resource, -1)),
                                        (yylsp[-3]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~", (yyvsp[-4].node), (Node*) n, (yylsp[-3]));
         }
-#line 43979 "gram.cpp"
+#line 43981 "gram.cpp"
         break;
 
         case 1944: /* a_expr: a_expr NOT SIMILAR TO a_expr ESCAPE a_expr  */
 #line 13655 "gram.y"
         {
-            FuncCall* n = makeFuncCall(SystemFuncName("similar_escape"),
-                                       list_make2((yyvsp[-2].node), (yyvsp[0].node)),
+            FuncCall* n = makeFuncCall(resource,
+                                       SystemFuncName(resource, "similar_escape"),
+                                       list_make2(resource, (yyvsp[-2].node), (yyvsp[0].node)),
                                        (yylsp[-5]));
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "!~", (yyvsp[-6].node), (Node*) n, (yylsp[-5]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "!~", (yyvsp[-6].node), (Node*) n, (yylsp[-5]));
         }
-#line 43990 "gram.cpp"
+#line 43992 "gram.cpp"
         break;
 
         case 1945: /* a_expr: a_expr IS NULL_P  */
 #line 13672 "gram.y"
         {
-            NullTest* n = makeNode(NullTest);
+            NullTest* n = makeNode(resource, NullTest);
             n->arg = (Expr*) (yyvsp[-2].node);
             n->nulltesttype = IS_NULL;
             (yyval.node) = (Node*) n;
         }
-#line 44001 "gram.cpp"
+#line 44003 "gram.cpp"
         break;
 
         case 1946: /* a_expr: a_expr ISNULL  */
 #line 13679 "gram.y"
         {
-            NullTest* n = makeNode(NullTest);
+            NullTest* n = makeNode(resource, NullTest);
             n->arg = (Expr*) (yyvsp[-1].node);
             n->nulltesttype = IS_NULL;
             (yyval.node) = (Node*) n;
         }
-#line 44012 "gram.cpp"
+#line 44014 "gram.cpp"
         break;
 
         case 1947: /* a_expr: a_expr IS NOT NULL_P  */
 #line 13686 "gram.y"
         {
-            NullTest* n = makeNode(NullTest);
+            NullTest* n = makeNode(resource, NullTest);
             n->arg = (Expr*) (yyvsp[-3].node);
             n->nulltesttype = IS_NOT_NULL;
             (yyval.node) = (Node*) n;
         }
-#line 44023 "gram.cpp"
+#line 44025 "gram.cpp"
         break;
 
         case 1948: /* a_expr: a_expr NOTNULL  */
 #line 13693 "gram.y"
         {
-            NullTest* n = makeNode(NullTest);
+            NullTest* n = makeNode(resource, NullTest);
             n->arg = (Expr*) (yyvsp[-1].node);
             n->nulltesttype = IS_NOT_NULL;
             (yyval.node) = (Node*) n;
         }
-#line 44034 "gram.cpp"
+#line 44036 "gram.cpp"
         break;
 
         case 1949: /* a_expr: row OVERLAPS row  */
@@ -36094,190 +36189,200 @@ yyreduce:
                         errcode(ERRCODE_SYNTAX_ERROR),
                         errmsg("wrong number of parameters on right side of OVERLAPS expression"),
                         parser_errposition((yylsp[0])));
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("overlaps"),
+            (yyval.node) = (Node*) makeFuncCall(resource,
+                                                SystemFuncName(resource, "overlaps"),
                                                 list_concat((yyvsp[-2].list), (yyvsp[0].list)),
                                                 (yylsp[-1]));
         }
-#line 44054 "gram.cpp"
+#line 44056 "gram.cpp"
         break;
 
         case 1950: /* a_expr: a_expr IS TRUE_P  */
 #line 13716 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-2].node);
             b->booltesttype = IS_TRUE;
             (yyval.node) = (Node*) b;
         }
-#line 44065 "gram.cpp"
+#line 44067 "gram.cpp"
         break;
 
         case 1951: /* a_expr: a_expr IS NOT TRUE_P  */
 #line 13723 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-3].node);
             b->booltesttype = IS_NOT_TRUE;
             (yyval.node) = (Node*) b;
         }
-#line 44076 "gram.cpp"
+#line 44078 "gram.cpp"
         break;
 
         case 1952: /* a_expr: a_expr IS FALSE_P  */
 #line 13730 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-2].node);
             b->booltesttype = IS_FALSE;
             (yyval.node) = (Node*) b;
         }
-#line 44087 "gram.cpp"
+#line 44089 "gram.cpp"
         break;
 
         case 1953: /* a_expr: a_expr IS NOT FALSE_P  */
 #line 13737 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-3].node);
             b->booltesttype = IS_NOT_FALSE;
             (yyval.node) = (Node*) b;
         }
-#line 44098 "gram.cpp"
+#line 44100 "gram.cpp"
         break;
 
         case 1954: /* a_expr: a_expr IS UNKNOWN  */
 #line 13744 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-2].node);
             b->booltesttype = IS_UNKNOWN;
             (yyval.node) = (Node*) b;
         }
-#line 44109 "gram.cpp"
+#line 44111 "gram.cpp"
         break;
 
         case 1955: /* a_expr: a_expr IS NOT UNKNOWN  */
 #line 13751 "gram.y"
         {
-            BooleanTest* b = makeNode(BooleanTest);
+            BooleanTest* b = makeNode(resource, BooleanTest);
             b->arg = (Expr*) (yyvsp[-3].node);
             b->booltesttype = IS_NOT_UNKNOWN;
             (yyval.node) = (Node*) b;
         }
-#line 44120 "gram.cpp"
+#line 44122 "gram.cpp"
         break;
 
         case 1956: /* a_expr: a_expr IS DISTINCT FROM a_expr  */
 #line 13758 "gram.y"
         {
             (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_DISTINCT, "=", (yyvsp[-4].node), (yyvsp[0].node), (yylsp[-3]));
+                (Node*) makeSimpleA_Expr(resource, AEXPR_DISTINCT, "=", (yyvsp[-4].node), (yyvsp[0].node), (yylsp[-3]));
         }
-#line 44128 "gram.cpp"
+#line 44130 "gram.cpp"
         break;
 
         case 1957: /* a_expr: a_expr IS NOT DISTINCT FROM a_expr  */
 #line 13762 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_NOT,
                 NIL,
                 NULL,
-                (Node*) makeSimpleA_Expr(AEXPR_DISTINCT, "=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_DISTINCT, "=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
                 (yylsp[-4]));
 
         }
-#line 44140 "gram.cpp"
+#line 44142 "gram.cpp"
         break;
 
         case 1958: /* a_expr: a_expr IS OF '(' type_list ')'  */
 #line 13770 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_OF, "=", (yyvsp[-5].node), (Node*) (yyvsp[-1].list), (yylsp[-4]));
+            (yyval.node) = (Node*)
+                makeSimpleA_Expr(resource, AEXPR_OF, "=", (yyvsp[-5].node), (Node*) (yyvsp[-1].list), (yylsp[-4]));
         }
-#line 44148 "gram.cpp"
+#line 44150 "gram.cpp"
         break;
 
         case 1959: /* a_expr: a_expr IS NOT OF '(' type_list ')'  */
 #line 13774 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_OF, "<>", (yyvsp[-6].node), (Node*) (yyvsp[-1].list), (yylsp[-5]));
+            (yyval.node) = (Node*)
+                makeSimpleA_Expr(resource, AEXPR_OF, "<>", (yyvsp[-6].node), (Node*) (yyvsp[-1].list), (yylsp[-5]));
         }
-#line 44156 "gram.cpp"
+#line 44158 "gram.cpp"
         break;
 
         case 1960: /* a_expr: a_expr BETWEEN opt_asymmetric b_expr AND b_expr  */
 #line 13784 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_AND,
                 NIL,
-                (Node*) makeSimpleA_Expr(AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
-                (Node*) makeSimpleA_Expr(AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
                 (yylsp[-4]));
         }
-#line 44167 "gram.cpp"
+#line 44169 "gram.cpp"
         break;
 
         case 1961: /* a_expr: a_expr NOT BETWEEN opt_asymmetric b_expr AND b_expr  */
 #line 13791 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_OR,
                 NIL,
-                (Node*) makeSimpleA_Expr(AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
-                (Node*) makeSimpleA_Expr(AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
                 (yylsp[-5]));
         }
-#line 44178 "gram.cpp"
+#line 44180 "gram.cpp"
         break;
 
         case 1962: /* a_expr: a_expr BETWEEN SYMMETRIC b_expr AND b_expr  */
 #line 13798 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_OR,
                 NIL,
                 (Node*) makeA_Expr(
+                    resource,
                     AEXPR_AND,
                     NIL,
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
                     (yylsp[-4])),
                 (Node*) makeA_Expr(
+                    resource,
                     AEXPR_AND,
                     NIL,
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<=", (yyvsp[-5].node), (yyvsp[-2].node), (yylsp[-4])),
                     (yylsp[-4])),
                 (yylsp[-4]));
         }
-#line 44195 "gram.cpp"
+#line 44197 "gram.cpp"
         break;
 
         case 1963: /* a_expr: a_expr NOT BETWEEN SYMMETRIC b_expr AND b_expr  */
 #line 13811 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_AND,
                 NIL,
                 (Node*) makeA_Expr(
+                    resource,
                     AEXPR_OR,
                     NIL,
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
                     (yylsp[-5])),
                 (Node*) makeA_Expr(
+                    resource,
                     AEXPR_OR,
                     NIL,
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
-                    (Node*) makeSimpleA_Expr(AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<", (yyvsp[-6].node), (yyvsp[0].node), (yylsp[-5])),
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">", (yyvsp[-6].node), (yyvsp[-2].node), (yylsp[-5])),
                     (yylsp[-5])),
                 (yylsp[-5]));
         }
-#line 44212 "gram.cpp"
+#line 44214 "gram.cpp"
         break;
 
         case 1964: /* a_expr: a_expr IN_P in_expr  */
@@ -36289,15 +36394,16 @@ yyreduce:
                 SubLink* n = (SubLink*) (yyvsp[0].node);
                 n->subLinkType = ANY_SUBLINK;
                 n->testexpr = (yyvsp[-2].node);
-                n->operName = list_make1(makeString("="));
+                n->operName = list_make1(resource, makeString(resource, "="));
                 n->location = (yylsp[-1]);
                 (yyval.node) = (Node*) n;
             } else {
                 /* generate scalar IN expression */
-                (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_IN, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+                (yyval.node) =
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_IN, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
             }
         }
-#line 44235 "gram.cpp"
+#line 44237 "gram.cpp"
         break;
 
         case 1965: /* a_expr: a_expr NOT IN_P in_expr  */
@@ -36310,22 +36416,23 @@ yyreduce:
                 SubLink* n = (SubLink*) (yyvsp[0].node);
                 n->subLinkType = ANY_SUBLINK;
                 n->testexpr = (yyvsp[-3].node);
-                n->operName = list_make1(makeString("="));
+                n->operName = list_make1(resource, makeString(resource, "="));
                 n->location = (yylsp[-1]);
                 /* Stick a NOT on top */
-                (yyval.node) = (Node*) makeA_Expr(AEXPR_NOT, NIL, NULL, (Node*) n, (yylsp[-2]));
+                (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_NOT, NIL, NULL, (Node*) n, (yylsp[-2]));
             } else {
                 /* generate scalar NOT IN expression */
-                (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_IN, "<>", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
+                (yyval.node) =
+                    (Node*) makeSimpleA_Expr(resource, AEXPR_IN, "<>", (yyvsp[-3].node), (yyvsp[0].node), (yylsp[-2]));
             }
         }
-#line 44260 "gram.cpp"
+#line 44262 "gram.cpp"
         break;
 
         case 1966: /* a_expr: a_expr subquery_Op sub_type select_with_parens  */
 #line 13864 "gram.y"
         {
-            SubLink* n = makeNode(SubLink);
+            SubLink* n = makeNode(resource, SubLink);
             n->subLinkType = static_cast<SubLinkType>((yyvsp[-1].ival));
             n->testexpr = (yyvsp[-3].node);
             n->operName = (yyvsp[-2].list);
@@ -36333,20 +36440,28 @@ yyreduce:
             n->location = (yylsp[-2]);
             (yyval.node) = (Node*) n;
         }
-#line 44274 "gram.cpp"
+#line 44276 "gram.cpp"
         break;
 
         case 1967: /* a_expr: a_expr subquery_Op sub_type '(' a_expr ')'  */
 #line 13874 "gram.y"
         {
             if ((yyvsp[-3].ival) == ANY_SUBLINK)
-                (yyval.node) =
-                    (Node*) makeA_Expr(AEXPR_OP_ANY, (yyvsp[-4].list), (yyvsp[-5].node), (yyvsp[-1].node), (yylsp[-4]));
+                (yyval.node) = (Node*) makeA_Expr(resource,
+                                                  AEXPR_OP_ANY,
+                                                  (yyvsp[-4].list),
+                                                  (yyvsp[-5].node),
+                                                  (yyvsp[-1].node),
+                                                  (yylsp[-4]));
             else
-                (yyval.node) =
-                    (Node*) makeA_Expr(AEXPR_OP_ALL, (yyvsp[-4].list), (yyvsp[-5].node), (yyvsp[-1].node), (yylsp[-4]));
+                (yyval.node) = (Node*) makeA_Expr(resource,
+                                                  AEXPR_OP_ALL,
+                                                  (yyvsp[-4].list),
+                                                  (yyvsp[-5].node),
+                                                  (yyvsp[-1].node),
+                                                  (yylsp[-4]));
         }
-#line 44285 "gram.cpp"
+#line 44287 "gram.cpp"
         break;
 
         case 1968: /* a_expr: UNIQUE select_with_parens  */
@@ -36366,28 +36481,30 @@ yyreduce:
                     errmsg("UNIQUE predicate is not yet implemented"),
                     parser_errposition((yylsp[-1])));
         }
-#line 44305 "gram.cpp"
+#line 44307 "gram.cpp"
         break;
 
         case 1969: /* a_expr: a_expr IS DOCUMENT_P  */
 #line 13897 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_DOCUMENT, NULL, NIL, list_make1((yyvsp[-2].node)), (yylsp[-1]));
+            (yyval.node) =
+                makeXmlExpr(resource, IS_DOCUMENT, NULL, NIL, list_make1(resource, (yyvsp[-2].node)), (yylsp[-1]));
         }
-#line 44314 "gram.cpp"
+#line 44316 "gram.cpp"
         break;
 
         case 1970: /* a_expr: a_expr IS NOT DOCUMENT_P  */
 #line 13902 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeA_Expr(AEXPR_NOT,
-                                   NIL,
-                                   NULL,
-                                   makeXmlExpr(IS_DOCUMENT, NULL, NIL, list_make1((yyvsp[-3].node)), (yylsp[-2])),
-                                   (yylsp[-2]));
+            (yyval.node) = (Node*) makeA_Expr(
+                resource,
+                AEXPR_NOT,
+                NIL,
+                NULL,
+                makeXmlExpr(resource, IS_DOCUMENT, NULL, NIL, list_make1(resource, (yyvsp[-3].node)), (yylsp[-2])),
+                (yylsp[-2]));
         }
-#line 44325 "gram.cpp"
+#line 44327 "gram.cpp"
         break;
 
         case 1971: /* b_expr: c_expr  */
@@ -36395,189 +36512,201 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44331 "gram.cpp"
+#line 44333 "gram.cpp"
         break;
 
         case 1972: /* b_expr: b_expr TYPECAST Typename  */
 #line 13922 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-2].node), (yyvsp[0].typnam), (yylsp[-1]));
         }
-#line 44337 "gram.cpp"
+#line 44339 "gram.cpp"
         break;
 
         case 1973: /* b_expr: '+' b_expr  */
 #line 13924 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "+", NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44343 "gram.cpp"
+#line 44345 "gram.cpp"
         break;
 
         case 1974: /* b_expr: '-' b_expr  */
 #line 13926 "gram.y"
         {
-            (yyval.node) = doNegate((yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = doNegate(resource, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44349 "gram.cpp"
+#line 44351 "gram.cpp"
         break;
 
         case 1975: /* b_expr: b_expr '+' b_expr  */
 #line 13928 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "+", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "+", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44355 "gram.cpp"
+#line 44357 "gram.cpp"
         break;
 
         case 1976: /* b_expr: b_expr '-' b_expr  */
 #line 13930 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "-", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "-", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44361 "gram.cpp"
+#line 44363 "gram.cpp"
         break;
 
         case 1977: /* b_expr: b_expr '*' b_expr  */
 #line 13932 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "*", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44367 "gram.cpp"
+#line 44369 "gram.cpp"
         break;
 
         case 1978: /* b_expr: b_expr '/' b_expr  */
 #line 13934 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "/", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "/", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44373 "gram.cpp"
+#line 44375 "gram.cpp"
         break;
 
         case 1979: /* b_expr: b_expr '%' b_expr  */
 #line 13936 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "%", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "%", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44379 "gram.cpp"
+#line 44381 "gram.cpp"
         break;
 
         case 1980: /* b_expr: b_expr '^' b_expr  */
 #line 13938 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "^", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "^", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44385 "gram.cpp"
+#line 44387 "gram.cpp"
         break;
 
         case 1981: /* b_expr: b_expr '<' b_expr  */
 #line 13940 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "<", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "<", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44391 "gram.cpp"
+#line 44393 "gram.cpp"
         break;
 
         case 1982: /* b_expr: b_expr '>' b_expr  */
 #line 13942 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, ">", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, ">", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44397 "gram.cpp"
+#line 44399 "gram.cpp"
         break;
 
         case 1983: /* b_expr: b_expr '=' b_expr  */
 #line 13944 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_OP, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "=", (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44403 "gram.cpp"
+#line 44405 "gram.cpp"
         break;
 
         case 1984: /* b_expr: b_expr qual_Op b_expr  */
 #line 13946 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeA_Expr(AEXPR_OP, (yyvsp[-1].list), (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*)
+                makeA_Expr(resource, AEXPR_OP, (yyvsp[-1].list), (yyvsp[-2].node), (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44409 "gram.cpp"
+#line 44411 "gram.cpp"
         break;
 
         case 1985: /* b_expr: qual_Op b_expr  */
 #line 13948 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_OP, (yyvsp[-1].list), NULL, (yyvsp[0].node), (yylsp[-1]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_OP, (yyvsp[-1].list), NULL, (yyvsp[0].node), (yylsp[-1]));
         }
-#line 44415 "gram.cpp"
+#line 44417 "gram.cpp"
         break;
 
         case 1986: /* b_expr: b_expr qual_Op  */
 #line 13950 "gram.y"
         {
-            (yyval.node) = (Node*) makeA_Expr(AEXPR_OP, (yyvsp[0].list), (yyvsp[-1].node), NULL, (yylsp[0]));
+            (yyval.node) = (Node*) makeA_Expr(resource, AEXPR_OP, (yyvsp[0].list), (yyvsp[-1].node), NULL, (yylsp[0]));
         }
-#line 44421 "gram.cpp"
+#line 44423 "gram.cpp"
         break;
 
         case 1987: /* b_expr: b_expr IS DISTINCT FROM b_expr  */
 #line 13952 "gram.y"
         {
             (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_DISTINCT, "=", (yyvsp[-4].node), (yyvsp[0].node), (yylsp[-3]));
+                (Node*) makeSimpleA_Expr(resource, AEXPR_DISTINCT, "=", (yyvsp[-4].node), (yyvsp[0].node), (yylsp[-3]));
         }
-#line 44429 "gram.cpp"
+#line 44431 "gram.cpp"
         break;
 
         case 1988: /* b_expr: b_expr IS NOT DISTINCT FROM b_expr  */
 #line 13956 "gram.y"
         {
             (yyval.node) = (Node*) makeA_Expr(
+                resource,
                 AEXPR_NOT,
                 NIL,
                 NULL,
-                (Node*) makeSimpleA_Expr(AEXPR_DISTINCT, "=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
+                (Node*) makeSimpleA_Expr(resource, AEXPR_DISTINCT, "=", (yyvsp[-5].node), (yyvsp[0].node), (yylsp[-4])),
                 (yylsp[-4]));
         }
-#line 44438 "gram.cpp"
+#line 44440 "gram.cpp"
         break;
 
         case 1989: /* b_expr: b_expr IS OF '(' type_list ')'  */
 #line 13961 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_OF, "=", (yyvsp[-5].node), (Node*) (yyvsp[-1].list), (yylsp[-4]));
+            (yyval.node) = (Node*)
+                makeSimpleA_Expr(resource, AEXPR_OF, "=", (yyvsp[-5].node), (Node*) (yyvsp[-1].list), (yylsp[-4]));
         }
-#line 44446 "gram.cpp"
+#line 44448 "gram.cpp"
         break;
 
         case 1990: /* b_expr: b_expr IS NOT OF '(' type_list ')'  */
 #line 13965 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeSimpleA_Expr(AEXPR_OF, "<>", (yyvsp[-6].node), (Node*) (yyvsp[-1].list), (yylsp[-5]));
+            (yyval.node) = (Node*)
+                makeSimpleA_Expr(resource, AEXPR_OF, "<>", (yyvsp[-6].node), (Node*) (yyvsp[-1].list), (yylsp[-5]));
         }
-#line 44454 "gram.cpp"
+#line 44456 "gram.cpp"
         break;
 
         case 1991: /* b_expr: b_expr IS DOCUMENT_P  */
 #line 13969 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_DOCUMENT, NULL, NIL, list_make1((yyvsp[-2].node)), (yylsp[-1]));
+            (yyval.node) =
+                makeXmlExpr(resource, IS_DOCUMENT, NULL, NIL, list_make1(resource, (yyvsp[-2].node)), (yylsp[-1]));
         }
-#line 44463 "gram.cpp"
+#line 44465 "gram.cpp"
         break;
 
         case 1992: /* b_expr: b_expr IS NOT DOCUMENT_P  */
 #line 13974 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeA_Expr(AEXPR_NOT,
-                                   NIL,
-                                   NULL,
-                                   makeXmlExpr(IS_DOCUMENT, NULL, NIL, list_make1((yyvsp[-3].node)), (yylsp[-2])),
-                                   (yylsp[-2]));
+            (yyval.node) = (Node*) makeA_Expr(
+                resource,
+                AEXPR_NOT,
+                NIL,
+                NULL,
+                makeXmlExpr(resource, IS_DOCUMENT, NULL, NIL, list_make1(resource, (yyvsp[-3].node)), (yylsp[-2])),
+                (yylsp[-2]));
         }
-#line 44474 "gram.cpp"
+#line 44476 "gram.cpp"
         break;
 
         case 1993: /* c_expr: columnref  */
@@ -36585,7 +36714,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44480 "gram.cpp"
+#line 44482 "gram.cpp"
         break;
 
         case 1994: /* c_expr: AexprConst  */
@@ -36593,38 +36722,38 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44486 "gram.cpp"
+#line 44488 "gram.cpp"
         break;
 
         case 1995: /* c_expr: PARAM opt_indirection  */
 #line 13993 "gram.y"
         {
-            ParamRef* p = makeNode(ParamRef);
+            ParamRef* p = makeNode(resource, ParamRef);
             p->number = (yyvsp[-1].ival);
             p->location = (yylsp[-1]);
             if ((yyvsp[0].list) != NIL) {
-                A_Indirection* n = makeNode(A_Indirection);
+                A_Indirection* n = makeNode(resource, A_Indirection);
                 n->arg = (Node*) p;
                 n->indirection = check_indirection((yyvsp[0].list), yyscanner);
                 (yyval.node) = (Node*) n;
             } else
                 (yyval.node) = (Node*) p;
         }
-#line 44505 "gram.cpp"
+#line 44507 "gram.cpp"
         break;
 
         case 1996: /* c_expr: '(' a_expr ')' opt_indirection  */
 #line 14008 "gram.y"
         {
             if ((yyvsp[0].list) != NIL) {
-                A_Indirection* n = makeNode(A_Indirection);
+                A_Indirection* n = makeNode(resource, A_Indirection);
                 n->arg = (yyvsp[-2].node);
                 n->indirection = check_indirection((yyvsp[0].list), yyscanner);
                 (yyval.node) = (Node*) n;
             } else
                 (yyval.node) = (yyvsp[-2].node);
         }
-#line 44521 "gram.cpp"
+#line 44523 "gram.cpp"
         break;
 
         case 1997: /* c_expr: case_expr  */
@@ -36632,7 +36761,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44527 "gram.cpp"
+#line 44529 "gram.cpp"
         break;
 
         case 1998: /* c_expr: func_expr  */
@@ -36640,7 +36769,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44533 "gram.cpp"
+#line 44535 "gram.cpp"
         break;
 
         case 1999: /* c_expr: decode_expr  */
@@ -36648,13 +36777,13 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44539 "gram.cpp"
+#line 44541 "gram.cpp"
         break;
 
         case 2000: /* c_expr: select_with_parens  */
 #line 14026 "gram.y"
         {
-            SubLink* n = makeNode(SubLink);
+            SubLink* n = makeNode(resource, SubLink);
             n->subLinkType = EXPR_SUBLINK;
             n->testexpr = NULL;
             n->operName = NIL;
@@ -36662,7 +36791,7 @@ yyreduce:
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 44553 "gram.cpp"
+#line 44555 "gram.cpp"
         break;
 
         case 2001: /* c_expr: select_with_parens indirection  */
@@ -36678,8 +36807,8 @@ yyreduce:
 					 * subscripting or field selection to a sub-SELECT result,
 					 * we need this redundant-looking production.
 					 */
-            SubLink* n = makeNode(SubLink);
-            A_Indirection* a = makeNode(A_Indirection);
+            SubLink* n = makeNode(resource, SubLink);
+            A_Indirection* a = makeNode(resource, A_Indirection);
             n->subLinkType = EXPR_SUBLINK;
             n->testexpr = NULL;
             n->operName = NIL;
@@ -36689,13 +36818,13 @@ yyreduce:
             a->indirection = check_indirection((yyvsp[0].list), yyscanner);
             (yyval.node) = (Node*) a;
         }
-#line 44580 "gram.cpp"
+#line 44582 "gram.cpp"
         break;
 
         case 2002: /* c_expr: EXISTS select_with_parens  */
 #line 14059 "gram.y"
         {
-            SubLink* n = makeNode(SubLink);
+            SubLink* n = makeNode(resource, SubLink);
             n->subLinkType = EXISTS_SUBLINK;
             n->testexpr = NULL;
             n->operName = NIL;
@@ -36703,13 +36832,13 @@ yyreduce:
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 44594 "gram.cpp"
+#line 44596 "gram.cpp"
         break;
 
         case 2003: /* c_expr: ARRAY select_with_parens  */
 #line 14069 "gram.y"
         {
-            SubLink* n = makeNode(SubLink);
+            SubLink* n = makeNode(resource, SubLink);
             n->subLinkType = ARRAY_SUBLINK;
             n->testexpr = NULL;
             n->operName = NIL;
@@ -36717,7 +36846,7 @@ yyreduce:
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 44608 "gram.cpp"
+#line 44610 "gram.cpp"
         break;
 
         case 2004: /* c_expr: ARRAY array_expr  */
@@ -36729,31 +36858,31 @@ yyreduce:
             n->location = (yylsp[-1]);
             (yyval.node) = (Node*) n;
         }
-#line 44620 "gram.cpp"
+#line 44622 "gram.cpp"
         break;
 
         case 2005: /* c_expr: TABLE '(' table_value_select_clause ')'  */
 #line 14087 "gram.y"
         {
-            TableValueExpr* n = makeNode(TableValueExpr);
+            TableValueExpr* n = makeNode(resource, TableValueExpr);
             n->subquery = (yyvsp[-1].node);
             n->location = (yylsp[-3]);
             (yyval.node) = (Node*) n;
         }
-#line 44631 "gram.cpp"
+#line 44633 "gram.cpp"
         break;
 
         case 2006: /* c_expr: row  */
 #line 14094 "gram.y"
         {
-            RowExpr* r = makeNode(RowExpr);
+            RowExpr* r = makeNode(resource, RowExpr);
             r->args = (yyvsp[0].list);
             r->row_typeid = InvalidOid; /* not analyzed yet */
             r->colnames = NIL;          /* to be filled in during analysis */
             r->location = (yylsp[0]);
             (yyval.node) = (Node*) r;
         }
-#line 44644 "gram.cpp"
+#line 44646 "gram.cpp"
         break;
 
         case 2007: /* scatter_clause: %empty  */
@@ -36761,15 +36890,15 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 44650 "gram.cpp"
+#line 44652 "gram.cpp"
         break;
 
         case 2008: /* scatter_clause: SCATTER RANDOMLY  */
 #line 14106 "gram.y"
         {
-            (yyval.list) = list_make1(NULL);
+            (yyval.list) = list_make1(resource, NULL);
         }
-#line 44656 "gram.cpp"
+#line 44658 "gram.cpp"
         break;
 
         case 2009: /* scatter_clause: SCATTER BY expr_list  */
@@ -36777,7 +36906,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 44662 "gram.cpp"
+#line 44664 "gram.cpp"
         break;
 
         case 2010: /* table_value_select_clause: SelectStmt scatter_clause  */
@@ -36787,53 +36916,56 @@ yyreduce:
             s->scatterClause = (yyvsp[0].list);
             (yyval.node) = (Node*) s;
         }
-#line 44672 "gram.cpp"
+#line 44674 "gram.cpp"
         break;
 
         case 2011: /* func_application: func_name '(' ')'  */
 #line 14120 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall((yyvsp[-2].list), NIL, (yylsp[-2]));
+            (yyval.node) = (Node*) makeFuncCall(resource, (yyvsp[-2].list), NIL, (yylsp[-2]));
         }
-#line 44680 "gram.cpp"
+#line 44682 "gram.cpp"
         break;
 
         case 2012: /* func_application: func_name '(' func_arg_list opt_sort_clause ')'  */
 #line 14124 "gram.y"
         {
-            FuncCall* n = makeFuncCall((yyvsp[-4].list), (yyvsp[-2].list), (yylsp[-4]));
+            FuncCall* n = makeFuncCall(resource, (yyvsp[-4].list), (yyvsp[-2].list), (yylsp[-4]));
             n->agg_order = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 44690 "gram.cpp"
+#line 44692 "gram.cpp"
         break;
 
         case 2013: /* func_application: func_name '(' VARIADIC func_arg_expr opt_sort_clause ')'  */
 #line 14130 "gram.y"
         {
-            FuncCall* n = makeFuncCall((yyvsp[-5].list), list_make1((yyvsp[-2].node)), (yylsp[-5]));
+            FuncCall* n = makeFuncCall(resource, (yyvsp[-5].list), list_make1(resource, (yyvsp[-2].node)), (yylsp[-5]));
             n->func_variadic = TRUE;
             n->agg_order = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 44701 "gram.cpp"
+#line 44703 "gram.cpp"
         break;
 
         case 2014: /* func_application: func_name '(' func_arg_list ',' VARIADIC func_arg_expr opt_sort_clause ')'  */
 #line 14137 "gram.y"
         {
-            FuncCall* n = makeFuncCall((yyvsp[-7].list), lappend((yyvsp[-5].list), (yyvsp[-2].node)), (yylsp[-7]));
+            FuncCall* n = makeFuncCall(resource,
+                                       (yyvsp[-7].list),
+                                       lappend(resource, (yyvsp[-5].list), (yyvsp[-2].node)),
+                                       (yylsp[-7]));
             n->func_variadic = TRUE;
             n->agg_order = (yyvsp[-1].list);
             (yyval.node) = (Node*) n;
         }
-#line 44712 "gram.cpp"
+#line 44714 "gram.cpp"
         break;
 
         case 2015: /* func_application: func_name '(' ALL func_arg_list opt_sort_clause ')'  */
 #line 14144 "gram.y"
         {
-            FuncCall* n = makeFuncCall((yyvsp[-5].list), (yyvsp[-2].list), (yylsp[-5]));
+            FuncCall* n = makeFuncCall(resource, (yyvsp[-5].list), (yyvsp[-2].list), (yylsp[-5]));
             n->agg_order = (yyvsp[-1].list);
             /* Ideally we'd mark the FuncCall node to indicate
 					 * "must be an aggregate", but there's no provision
@@ -36844,18 +36976,18 @@ yyreduce:
             n->over = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 44729 "gram.cpp"
+#line 44731 "gram.cpp"
         break;
 
         case 2016: /* func_application: func_name '(' DISTINCT func_arg_list opt_sort_clause ')'  */
 #line 14157 "gram.y"
         {
-            FuncCall* n = makeFuncCall((yyvsp[-5].list), (yyvsp[-2].list), (yylsp[-5]));
+            FuncCall* n = makeFuncCall(resource, (yyvsp[-5].list), (yyvsp[-2].list), (yylsp[-5]));
             n->agg_order = (yyvsp[-1].list);
             n->agg_distinct = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 44740 "gram.cpp"
+#line 44742 "gram.cpp"
         break;
 
         case 2017: /* func_application: func_name '(' '*' ')'  */
@@ -36871,11 +37003,11 @@ yyreduce:
 					 * so that later processing can detect what the argument
 					 * really was.
 					 */
-            FuncCall* n = makeFuncCall((yyvsp[-3].list), NIL, (yylsp[-3]));
+            FuncCall* n = makeFuncCall(resource, (yyvsp[-3].list), NIL, (yylsp[-3]));
             n->agg_star = TRUE;
             (yyval.node) = (Node*) n;
         }
-#line 44760 "gram.cpp"
+#line 44762 "gram.cpp"
         break;
 
         case 2018: /* func_expr: func_application within_group_clause filter_clause over_clause  */
@@ -36913,7 +37045,7 @@ yyreduce:
             n->over = (yyvsp[0].windef);
             (yyval.node) = (Node*) n;
         }
-#line 44799 "gram.cpp"
+#line 44801 "gram.cpp"
         break;
 
         case 2019: /* func_expr: func_expr_common_subexpr  */
@@ -36921,7 +37053,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44805 "gram.cpp"
+#line 44807 "gram.cpp"
         break;
 
         case 2020: /* func_expr_windowless: func_application  */
@@ -36929,7 +37061,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44811 "gram.cpp"
+#line 44813 "gram.cpp"
         break;
 
         case 2021: /* func_expr_windowless: func_expr_common_subexpr  */
@@ -36937,16 +37069,18 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 44817 "gram.cpp"
+#line 44819 "gram.cpp"
         break;
 
         case 2022: /* func_expr_common_subexpr: COLLATION FOR '(' a_expr ')'  */
 #line 14246 "gram.y"
         {
-            (yyval.node) =
-                (Node*) makeFuncCall(SystemFuncName("pg_collation_for"), list_make1((yyvsp[-1].node)), (yylsp[-4]));
+            (yyval.node) = (Node*) makeFuncCall(resource,
+                                                SystemFuncName(resource, "pg_collation_for"),
+                                                list_make1(resource, (yyvsp[-1].node)),
+                                                (yylsp[-4]));
         }
-#line 44827 "gram.cpp"
+#line 44829 "gram.cpp"
         break;
 
         case 2023: /* func_expr_common_subexpr: CURRENT_DATE  */
@@ -36973,10 +37107,10 @@ yyreduce:
 					 * to appear to be replaceable constants).
 					 */
             Node* n;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            (yyval.node) = makeTypeCast(n, SystemTypeName("date"), (yylsp[0]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            (yyval.node) = makeTypeCast(resource, n, SystemTypeName(resource, "date"), (yylsp[0]));
         }
-#line 44857 "gram.cpp"
+#line 44859 "gram.cpp"
         break;
 
         case 2024: /* func_expr_common_subexpr: CURRENT_TIME  */
@@ -36987,10 +37121,10 @@ yyreduce:
 					 * See comments for CURRENT_DATE.
 					 */
             Node* n;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            (yyval.node) = makeTypeCast(n, SystemTypeName("timetz"), (yylsp[0]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            (yyval.node) = makeTypeCast(resource, n, SystemTypeName(resource, "timetz"), (yylsp[0]));
         }
-#line 44871 "gram.cpp"
+#line 44873 "gram.cpp"
         break;
 
         case 2025: /* func_expr_common_subexpr: CURRENT_TIME '(' Iconst ')'  */
@@ -37002,12 +37136,12 @@ yyreduce:
 					 */
             Node* n;
             TypeName* d;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            d = SystemTypeName("timetz");
-            d->typmods = list_make1(makeIntConst((yyvsp[-1].ival), (yylsp[-1])));
-            (yyval.node) = makeTypeCast(n, d, (yylsp[-3]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            d = SystemTypeName(resource, "timetz");
+            d->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-1].ival), (yylsp[-1])));
+            (yyval.node) = makeTypeCast(resource, n, d, (yylsp[-3]));
         }
-#line 44888 "gram.cpp"
+#line 44890 "gram.cpp"
         break;
 
         case 2026: /* func_expr_common_subexpr: CURRENT_TIMESTAMP  */
@@ -37017,9 +37151,9 @@ yyreduce:
 					 * Translate as "now()", since we have a function that
 					 * does exactly what is needed.
 					 */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("now"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "now"), NIL, (yylsp[0]));
         }
-#line 44900 "gram.cpp"
+#line 44902 "gram.cpp"
         break;
 
         case 2027: /* func_expr_common_subexpr: CURRENT_TIMESTAMP '(' Iconst ')'  */
@@ -37031,12 +37165,12 @@ yyreduce:
 					 */
             Node* n;
             TypeName* d;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            d = SystemTypeName("timestamptz");
-            d->typmods = list_make1(makeIntConst((yyvsp[-1].ival), (yylsp[-1])));
-            (yyval.node) = makeTypeCast(n, d, (yylsp[-3]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            d = SystemTypeName(resource, "timestamptz");
+            d->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-1].ival), (yylsp[-1])));
+            (yyval.node) = makeTypeCast(resource, n, d, (yylsp[-3]));
         }
-#line 44917 "gram.cpp"
+#line 44919 "gram.cpp"
         break;
 
         case 2028: /* func_expr_common_subexpr: LOCALTIME  */
@@ -37047,10 +37181,10 @@ yyreduce:
 					 * See comments for CURRENT_DATE.
 					 */
             Node* n;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            (yyval.node) = makeTypeCast((Node*) n, SystemTypeName("time"), (yylsp[0]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            (yyval.node) = makeTypeCast(resource, (Node*) n, SystemTypeName(resource, "time"), (yylsp[0]));
         }
-#line 44931 "gram.cpp"
+#line 44933 "gram.cpp"
         break;
 
         case 2029: /* func_expr_common_subexpr: LOCALTIME '(' Iconst ')'  */
@@ -37062,12 +37196,12 @@ yyreduce:
 					 */
             Node* n;
             TypeName* d;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            d = SystemTypeName("time");
-            d->typmods = list_make1(makeIntConst((yyvsp[-1].ival), (yylsp[-1])));
-            (yyval.node) = makeTypeCast((Node*) n, d, (yylsp[-3]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            d = SystemTypeName(resource, "time");
+            d->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-1].ival), (yylsp[-1])));
+            (yyval.node) = makeTypeCast(resource, (Node*) n, d, (yylsp[-3]));
         }
-#line 44948 "gram.cpp"
+#line 44950 "gram.cpp"
         break;
 
         case 2030: /* func_expr_common_subexpr: LOCALTIMESTAMP  */
@@ -37078,10 +37212,10 @@ yyreduce:
 					 * See comments for CURRENT_DATE.
 					 */
             Node* n;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            (yyval.node) = makeTypeCast(n, SystemTypeName("timestamp"), (yylsp[0]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            (yyval.node) = makeTypeCast(resource, n, SystemTypeName(resource, "timestamp"), (yylsp[0]));
         }
-#line 44962 "gram.cpp"
+#line 44964 "gram.cpp"
         break;
 
         case 2031: /* func_expr_common_subexpr: LOCALTIMESTAMP '(' Iconst ')'  */
@@ -37093,76 +37227,78 @@ yyreduce:
 					 */
             Node* n;
             TypeName* d;
-            n = makeStringConstCast("now", -1, SystemTypeName("text"));
-            d = SystemTypeName("timestamp");
-            d->typmods = list_make1(makeIntConst((yyvsp[-1].ival), (yylsp[-1])));
-            (yyval.node) = makeTypeCast(n, d, (yylsp[-3]));
+            n = makeStringConstCast(resource, "now", -1, SystemTypeName(resource, "text"));
+            d = SystemTypeName(resource, "timestamp");
+            d->typmods = list_make1(resource, makeIntConst(resource, (yyvsp[-1].ival), (yylsp[-1])));
+            (yyval.node) = makeTypeCast(resource, n, d, (yylsp[-3]));
         }
-#line 44979 "gram.cpp"
+#line 44981 "gram.cpp"
         break;
 
         case 2032: /* func_expr_common_subexpr: CURRENT_ROLE  */
 #line 14368 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("current_user"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "current_user"), NIL, (yylsp[0]));
         }
-#line 44987 "gram.cpp"
+#line 44989 "gram.cpp"
         break;
 
         case 2033: /* func_expr_common_subexpr: CURRENT_USER  */
 #line 14372 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("current_user"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "current_user"), NIL, (yylsp[0]));
         }
-#line 44995 "gram.cpp"
+#line 44997 "gram.cpp"
         break;
 
         case 2034: /* func_expr_common_subexpr: SESSION_USER  */
 #line 14376 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("session_user"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "session_user"), NIL, (yylsp[0]));
         }
-#line 45003 "gram.cpp"
+#line 45005 "gram.cpp"
         break;
 
         case 2035: /* func_expr_common_subexpr: USER  */
 #line 14380 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("current_user"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "current_user"), NIL, (yylsp[0]));
         }
-#line 45011 "gram.cpp"
+#line 45013 "gram.cpp"
         break;
 
         case 2036: /* func_expr_common_subexpr: CURRENT_CATALOG  */
 #line 14384 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("current_database"), NIL, (yylsp[0]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "current_database"), NIL, (yylsp[0]));
         }
-#line 45019 "gram.cpp"
+#line 45021 "gram.cpp"
         break;
 
         case 2037: /* func_expr_common_subexpr: CURRENT_SCHEMA  */
 #line 14388 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("current_schema"), NIL, (yylsp[0]));
+            (yyval.node) = (Node*) makeFuncCall(resource, SystemFuncName(resource, "current_schema"), NIL, (yylsp[0]));
         }
-#line 45027 "gram.cpp"
+#line 45029 "gram.cpp"
         break;
 
         case 2038: /* func_expr_common_subexpr: CAST '(' a_expr AS Typename ')'  */
 #line 14392 "gram.y"
         {
-            (yyval.node) = makeTypeCast((yyvsp[-3].node), (yyvsp[-1].typnam), (yylsp[-5]));
+            (yyval.node) = makeTypeCast(resource, (yyvsp[-3].node), (yyvsp[-1].typnam), (yylsp[-5]));
         }
-#line 45033 "gram.cpp"
+#line 45035 "gram.cpp"
         break;
 
         case 2039: /* func_expr_common_subexpr: EXTRACT '(' extract_list ')'  */
 #line 14394 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("date_part"), (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "date_part"), (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45041 "gram.cpp"
+#line 45043 "gram.cpp"
         break;
 
         case 2040: /* func_expr_common_subexpr: OVERLAY '(' overlay_list ')'  */
@@ -37173,18 +37309,20 @@ yyreduce:
 					 * overlay(A PLACING B FROM C) is converted to
 					 * overlay(A, B, C)
 					 */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("overlay"), (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "overlay"), (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45054 "gram.cpp"
+#line 45056 "gram.cpp"
         break;
 
         case 2041: /* func_expr_common_subexpr: POSITION '(' position_list ')'  */
 #line 14407 "gram.y"
         {
             /* position(A in B) is converted to position(B, A) */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("position"), (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "position"), (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45063 "gram.cpp"
+#line 45065 "gram.cpp"
         break;
 
         case 2042: /* func_expr_common_subexpr: SUBSTRING '(' substr_list ')'  */
@@ -37193,9 +37331,10 @@ yyreduce:
             /* substring(A from B for C) is converted to
 					 * substring(A, B, C) - thomas 2000-11-28
 					 */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("substring"), (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "substring"), (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45074 "gram.cpp"
+#line 45076 "gram.cpp"
         break;
 
         case 2043: /* func_expr_common_subexpr: TREAT '(' a_expr AS Typename ')'  */
@@ -37210,11 +37349,13 @@ yyreduce:
 					 * Convert SystemTypeName() to SystemFuncName() even though
 					 * at the moment they result in the same thing.
 					 */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName(((Value*) llast((yyvsp[-1].typnam)->names))->val.str),
-                                                list_make1((yyvsp[-3].node)),
-                                                (yylsp[-5]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource,
+                                     SystemFuncName(resource, ((Value*) llast((yyvsp[-1].typnam)->names))->val.str),
+                                     list_make1(resource, (yyvsp[-3].node)),
+                                     (yylsp[-5]));
         }
-#line 45093 "gram.cpp"
+#line 45095 "gram.cpp"
         break;
 
         case 2044: /* func_expr_common_subexpr: TRIM '(' BOTH trim_list ')'  */
@@ -37223,95 +37364,100 @@ yyreduce:
             /* various trim expressions are defined in SQL
 					 * - thomas 1997-07-19
 					 */
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("btrim"), (yyvsp[-1].list), (yylsp[-4]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "btrim"), (yyvsp[-1].list), (yylsp[-4]));
         }
-#line 45104 "gram.cpp"
+#line 45106 "gram.cpp"
         break;
 
         case 2045: /* func_expr_common_subexpr: TRIM '(' LEADING trim_list ')'  */
 #line 14441 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("ltrim"), (yyvsp[-1].list), (yylsp[-4]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "ltrim"), (yyvsp[-1].list), (yylsp[-4]));
         }
-#line 45112 "gram.cpp"
+#line 45114 "gram.cpp"
         break;
 
         case 2046: /* func_expr_common_subexpr: TRIM '(' TRAILING trim_list ')'  */
 #line 14445 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("rtrim"), (yyvsp[-1].list), (yylsp[-4]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "rtrim"), (yyvsp[-1].list), (yylsp[-4]));
         }
-#line 45120 "gram.cpp"
+#line 45122 "gram.cpp"
         break;
 
         case 2047: /* func_expr_common_subexpr: TRIM '(' trim_list ')'  */
 #line 14449 "gram.y"
         {
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("btrim"), (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) =
+                (Node*) makeFuncCall(resource, SystemFuncName(resource, "btrim"), (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45128 "gram.cpp"
+#line 45130 "gram.cpp"
         break;
 
         case 2048: /* func_expr_common_subexpr: NULLIF '(' a_expr ',' a_expr ')'  */
 #line 14453 "gram.y"
         {
-            (yyval.node) = (Node*) makeSimpleA_Expr(AEXPR_NULLIF, "=", (yyvsp[-3].node), (yyvsp[-1].node), (yylsp[-5]));
+            (yyval.node) =
+                (Node*) makeSimpleA_Expr(resource, AEXPR_NULLIF, "=", (yyvsp[-3].node), (yyvsp[-1].node), (yylsp[-5]));
         }
-#line 45136 "gram.cpp"
+#line 45138 "gram.cpp"
         break;
 
         case 2049: /* func_expr_common_subexpr: COALESCE '(' expr_list ')'  */
 #line 14457 "gram.y"
         {
-            CoalesceExpr* c = makeNode(CoalesceExpr);
+            CoalesceExpr* c = makeNode(resource, CoalesceExpr);
             c->args = (yyvsp[-1].list);
             c->location = (yylsp[-3]);
             (yyval.node) = (Node*) c;
         }
-#line 45147 "gram.cpp"
+#line 45149 "gram.cpp"
         break;
 
         case 2050: /* func_expr_common_subexpr: GREATEST '(' expr_list ')'  */
 #line 14464 "gram.y"
         {
-            MinMaxExpr* v = makeNode(MinMaxExpr);
+            MinMaxExpr* v = makeNode(resource, MinMaxExpr);
             v->args = (yyvsp[-1].list);
             v->op = IS_GREATEST;
             v->location = (yylsp[-3]);
             (yyval.node) = (Node*) v;
         }
-#line 45159 "gram.cpp"
+#line 45161 "gram.cpp"
         break;
 
         case 2051: /* func_expr_common_subexpr: LEAST '(' expr_list ')'  */
 #line 14472 "gram.y"
         {
-            MinMaxExpr* v = makeNode(MinMaxExpr);
+            MinMaxExpr* v = makeNode(resource, MinMaxExpr);
             v->args = (yyvsp[-1].list);
             v->op = IS_LEAST;
             v->location = (yylsp[-3]);
             (yyval.node) = (Node*) v;
         }
-#line 45171 "gram.cpp"
+#line 45173 "gram.cpp"
         break;
 
         case 2052: /* func_expr_common_subexpr: GROUPING '(' expr_list ')'  */
 #line 14480 "gram.y"
         {
-            GroupingFunc* f = makeNode(GroupingFunc);
+            GroupingFunc* f = makeNode(resource, GroupingFunc);
             f->args = (yyvsp[-1].list);
             (yyval.node) = (Node*) f;
         }
-#line 45181 "gram.cpp"
+#line 45183 "gram.cpp"
         break;
 
         case 2053: /* func_expr_common_subexpr: GROUP_ID '(' ')'  */
 #line 14487 "gram.y"
         {
-            GroupId* gid = makeNode(GroupId);
+            GroupId* gid = makeNode(resource, GroupId);
             (yyval.node) = (Node*) gid;
         }
-#line 45190 "gram.cpp"
+#line 45192 "gram.cpp"
         break;
 
         case 2054: /* func_expr_common_subexpr: MEDIAN '(' a_expr ')'  */
@@ -37325,17 +37471,18 @@ yyreduce:
             FuncCall* n;
             SortBy* sortby;
 
-            n = makeNode(FuncCall);
-            n->funcname = SystemFuncName("median");
-            n->args = list_make1(makeAConst(makeFloat(pstrdup("0.5")), (yylsp[-3])));
+            n = makeNode(resource, FuncCall);
+            n->funcname = SystemFuncName(resource, "median");
+            n->args =
+                list_make1(resource, makeAConst(resource, makeFloat(resource, pstrdup(resource, "0.5")), (yylsp[-3])));
 
-            sortby = makeNode(SortBy);
+            sortby = makeNode(resource, SortBy);
             sortby->node = (yyvsp[-1].node);
             sortby->sortby_dir = SORTBY_DEFAULT;
             sortby->sortby_nulls = SORTBY_NULLS_DEFAULT;
             sortby->useOp = NIL;
             sortby->location = -1; /* no operator */
-            n->agg_order = list_make1(sortby);
+            n->agg_order = list_make1(resource, sortby);
 
             n->agg_within_group = TRUE;
             n->agg_filter = NULL;
@@ -37343,15 +37490,15 @@ yyreduce:
             n->location = (yylsp[-3]);
             (yyval.node) = (Node*) n;
         }
-#line 45222 "gram.cpp"
+#line 45224 "gram.cpp"
         break;
 
         case 2055: /* func_expr_common_subexpr: DECODE '(' a_expr ',' a_expr ')'  */
 #line 14520 "gram.y"
         {
-            FuncCall* n = makeNode(FuncCall);
-            n->funcname = list_make1(makeString("decode"));
-            n->args = list_make2((yyvsp[-3].node), (yyvsp[-1].node));
+            FuncCall* n = makeNode(resource, FuncCall);
+            n->funcname = list_make1(resource, makeString(resource, "decode"));
+            n->args = list_make2(resource, (yyvsp[-3].node), (yyvsp[-1].node));
             n->agg_order = NIL;
             n->agg_star = FALSE;
             n->agg_distinct = FALSE;
@@ -37361,47 +37508,48 @@ yyreduce:
             n->over = NULL;
             (yyval.node) = (Node*) n;
         }
-#line 45240 "gram.cpp"
+#line 45242 "gram.cpp"
         break;
 
         case 2056: /* func_expr_common_subexpr: XMLCONCAT '(' expr_list ')'  */
 #line 14534 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLCONCAT, NULL, NIL, (yyvsp[-1].list), (yylsp[-3]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLCONCAT, NULL, NIL, (yyvsp[-1].list), (yylsp[-3]));
         }
-#line 45248 "gram.cpp"
+#line 45250 "gram.cpp"
         break;
 
         case 2057: /* func_expr_common_subexpr: XMLELEMENT '(' NAME_P ColLabel ')'  */
 #line 14538 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLELEMENT, (yyvsp[-1].str), NIL, NIL, (yylsp[-4]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLELEMENT, (yyvsp[-1].str), NIL, NIL, (yylsp[-4]));
         }
-#line 45256 "gram.cpp"
+#line 45258 "gram.cpp"
         break;
 
         case 2058: /* func_expr_common_subexpr: XMLELEMENT '(' NAME_P ColLabel ',' xml_attributes ')'  */
 #line 14542 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLELEMENT, (yyvsp[-3].str), (yyvsp[-1].list), NIL, (yylsp[-6]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLELEMENT, (yyvsp[-3].str), (yyvsp[-1].list), NIL, (yylsp[-6]));
         }
-#line 45264 "gram.cpp"
+#line 45266 "gram.cpp"
         break;
 
         case 2059: /* func_expr_common_subexpr: XMLELEMENT '(' NAME_P ColLabel ',' expr_list ')'  */
 #line 14546 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLELEMENT, (yyvsp[-3].str), NIL, (yyvsp[-1].list), (yylsp[-6]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLELEMENT, (yyvsp[-3].str), NIL, (yyvsp[-1].list), (yylsp[-6]));
         }
-#line 45272 "gram.cpp"
+#line 45274 "gram.cpp"
         break;
 
         case 2060: /* func_expr_common_subexpr: XMLELEMENT '(' NAME_P ColLabel ',' xml_attributes ',' expr_list ')'  */
 #line 14550 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLELEMENT, (yyvsp[-5].str), (yyvsp[-3].list), (yyvsp[-1].list), (yylsp[-8]));
+            (yyval.node) =
+                makeXmlExpr(resource, IS_XMLELEMENT, (yyvsp[-5].str), (yyvsp[-3].list), (yyvsp[-1].list), (yylsp[-8]));
         }
-#line 45280 "gram.cpp"
+#line 45282 "gram.cpp"
         break;
 
         case 2061: /* func_expr_common_subexpr: XMLEXISTS '(' c_expr xmlexists_argument ')'  */
@@ -37409,19 +37557,20 @@ yyreduce:
         {
             /* xmlexists(A PASSING [BY REF] B [BY REF]) is
 					 * converted to xmlexists(A, B)*/
-            (yyval.node) = (Node*) makeFuncCall(SystemFuncName("xmlexists"),
-                                                list_make2((yyvsp[-2].node), (yyvsp[-1].node)),
+            (yyval.node) = (Node*) makeFuncCall(resource,
+                                                SystemFuncName(resource, "xmlexists"),
+                                                list_make2(resource, (yyvsp[-2].node), (yyvsp[-1].node)),
                                                 (yylsp[-4]));
         }
-#line 45290 "gram.cpp"
+#line 45292 "gram.cpp"
         break;
 
         case 2062: /* func_expr_common_subexpr: XMLEXISTS '(' a_expr ',' a_expr ')'  */
 #line 14568 "gram.y"
         {
-            FuncCall* n = makeNode(FuncCall);
-            n->funcname = SystemFuncName("xmlexists");
-            n->args = list_make2((yyvsp[-3].node), (yyvsp[-1].node));
+            FuncCall* n = makeNode(resource, FuncCall);
+            n->funcname = SystemFuncName(resource, "xmlexists");
+            n->args = list_make2(resource, (yyvsp[-3].node), (yyvsp[-1].node));
             n->agg_order = NIL;
             n->agg_star = FALSE;
             n->agg_distinct = FALSE;
@@ -37430,70 +37579,78 @@ yyreduce:
             n->location = (yylsp[-5]);
             (yyval.node) = (Node*) n;
         }
-#line 45307 "gram.cpp"
+#line 45309 "gram.cpp"
         break;
 
         case 2063: /* func_expr_common_subexpr: XMLFOREST '(' xml_attribute_list ')'  */
 #line 14581 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLFOREST, NULL, (yyvsp[-1].list), NIL, (yylsp[-3]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLFOREST, NULL, (yyvsp[-1].list), NIL, (yylsp[-3]));
         }
-#line 45315 "gram.cpp"
+#line 45317 "gram.cpp"
         break;
 
         case 2064: /* func_expr_common_subexpr: XMLPARSE '(' document_or_content a_expr xml_whitespace_option ')'  */
 #line 14585 "gram.y"
         {
-            XmlExpr* x = (XmlExpr*) makeXmlExpr(IS_XMLPARSE,
-                                                NULL,
-                                                NIL,
-                                                list_make2((yyvsp[-2].node), makeBoolAConst((yyvsp[-1].boolean), -1)),
-                                                (yylsp[-5]));
+            XmlExpr* x = (XmlExpr*) makeXmlExpr(
+                resource,
+                IS_XMLPARSE,
+                NULL,
+                NIL,
+                list_make2(resource, (yyvsp[-2].node), makeBoolAConst(resource, (yyvsp[-1].boolean), -1)),
+                (yylsp[-5]));
             x->xmloption = static_cast<XmlOptionType>((yyvsp[-3].ival));
             (yyval.node) = (Node*) x;
         }
-#line 45328 "gram.cpp"
+#line 45330 "gram.cpp"
         break;
 
         case 2065: /* func_expr_common_subexpr: XMLPI '(' NAME_P ColLabel ')'  */
 #line 14594 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLPI, (yyvsp[-1].str), NULL, NIL, (yylsp[-4]));
+            (yyval.node) = makeXmlExpr(resource, IS_XMLPI, (yyvsp[-1].str), NULL, NIL, (yylsp[-4]));
         }
-#line 45336 "gram.cpp"
+#line 45338 "gram.cpp"
         break;
 
         case 2066: /* func_expr_common_subexpr: XMLPI '(' NAME_P ColLabel ',' a_expr ')'  */
 #line 14598 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLPI, (yyvsp[-3].str), NULL, list_make1((yyvsp[-1].node)), (yylsp[-6]));
+            (yyval.node) = makeXmlExpr(resource,
+                                       IS_XMLPI,
+                                       (yyvsp[-3].str),
+                                       NULL,
+                                       list_make1(resource, (yyvsp[-1].node)),
+                                       (yylsp[-6]));
         }
-#line 45344 "gram.cpp"
+#line 45346 "gram.cpp"
         break;
 
         case 2067: /* func_expr_common_subexpr: XMLROOT '(' a_expr ',' xml_root_version opt_xml_root_standalone ')'  */
 #line 14602 "gram.y"
         {
-            (yyval.node) = makeXmlExpr(IS_XMLROOT,
+            (yyval.node) = makeXmlExpr(resource,
+                                       IS_XMLROOT,
                                        NULL,
                                        NIL,
-                                       list_make3((yyvsp[-4].node), (yyvsp[-2].node), (yyvsp[-1].node)),
+                                       list_make3(resource, (yyvsp[-4].node), (yyvsp[-2].node), (yyvsp[-1].node)),
                                        (yylsp[-6]));
         }
-#line 45353 "gram.cpp"
+#line 45355 "gram.cpp"
         break;
 
         case 2068: /* func_expr_common_subexpr: XMLSERIALIZE '(' document_or_content a_expr AS SimpleTypename ')'  */
 #line 14607 "gram.y"
         {
-            XmlSerialize* n = makeNode(XmlSerialize);
+            XmlSerialize* n = makeNode(resource, XmlSerialize);
             n->xmloption = static_cast<XmlOptionType>((yyvsp[-4].ival));
             n->expr = (yyvsp[-3].node);
             n->typeName = (yyvsp[-1].typnam);
             n->location = (yylsp[-6]);
             (yyval.node) = (Node*) n;
         }
-#line 45366 "gram.cpp"
+#line 45368 "gram.cpp"
         break;
 
         case 2069: /* xml_root_version: VERSION_P a_expr  */
@@ -37501,47 +37658,47 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 45372 "gram.cpp"
+#line 45374 "gram.cpp"
         break;
 
         case 2070: /* xml_root_version: VERSION_P NO VALUE_P  */
 #line 14623 "gram.y"
         {
-            (yyval.node) = makeNullAConst(-1);
+            (yyval.node) = makeNullAConst(resource, -1);
         }
-#line 45378 "gram.cpp"
+#line 45380 "gram.cpp"
         break;
 
         case 2071: /* opt_xml_root_standalone: ',' STANDALONE_P YES_P  */
 #line 14627 "gram.y"
         {
-            (yyval.node) = makeIntConst(XML_STANDALONE_YES, -1);
+            (yyval.node) = makeIntConst(resource, XML_STANDALONE_YES, -1);
         }
-#line 45384 "gram.cpp"
+#line 45386 "gram.cpp"
         break;
 
         case 2072: /* opt_xml_root_standalone: ',' STANDALONE_P NO  */
 #line 14629 "gram.y"
         {
-            (yyval.node) = makeIntConst(XML_STANDALONE_NO, -1);
+            (yyval.node) = makeIntConst(resource, XML_STANDALONE_NO, -1);
         }
-#line 45390 "gram.cpp"
+#line 45392 "gram.cpp"
         break;
 
         case 2073: /* opt_xml_root_standalone: ',' STANDALONE_P NO VALUE_P  */
 #line 14631 "gram.y"
         {
-            (yyval.node) = makeIntConst(XML_STANDALONE_NO_VALUE, -1);
+            (yyval.node) = makeIntConst(resource, XML_STANDALONE_NO_VALUE, -1);
         }
-#line 45396 "gram.cpp"
+#line 45398 "gram.cpp"
         break;
 
         case 2074: /* opt_xml_root_standalone: %empty  */
 #line 14633 "gram.y"
         {
-            (yyval.node) = makeIntConst(XML_STANDALONE_OMITTED, -1);
+            (yyval.node) = makeIntConst(resource, XML_STANDALONE_OMITTED, -1);
         }
-#line 45402 "gram.cpp"
+#line 45404 "gram.cpp"
         break;
 
         case 2075: /* xml_attributes: XMLATTRIBUTES '(' xml_attribute_list ')'  */
@@ -37549,47 +37706,47 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45408 "gram.cpp"
+#line 45410 "gram.cpp"
         break;
 
         case 2076: /* xml_attribute_list: xml_attribute_el  */
 #line 14639 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].target));
+            (yyval.list) = list_make1(resource, (yyvsp[0].target));
         }
-#line 45414 "gram.cpp"
+#line 45416 "gram.cpp"
         break;
 
         case 2077: /* xml_attribute_list: xml_attribute_list ',' xml_attribute_el  */
 #line 14640 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].target));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].target));
         }
-#line 45420 "gram.cpp"
+#line 45422 "gram.cpp"
         break;
 
         case 2078: /* xml_attribute_el: a_expr AS ColLabel  */
 #line 14644 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[0].str);
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[-2].node);
             (yyval.target)->location = (yylsp[-2]);
         }
-#line 45432 "gram.cpp"
+#line 45434 "gram.cpp"
         break;
 
         case 2079: /* xml_attribute_el: a_expr  */
 #line 14652 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = NULL;
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[0].node);
             (yyval.target)->location = (yylsp[0]);
         }
-#line 45444 "gram.cpp"
+#line 45446 "gram.cpp"
         break;
 
         case 2080: /* document_or_content: DOCUMENT_P  */
@@ -37597,7 +37754,7 @@ yyreduce:
         {
             (yyval.ival) = XMLOPTION_DOCUMENT;
         }
-#line 45450 "gram.cpp"
+#line 45452 "gram.cpp"
         break;
 
         case 2081: /* document_or_content: CONTENT_P  */
@@ -37605,7 +37762,7 @@ yyreduce:
         {
             (yyval.ival) = XMLOPTION_CONTENT;
         }
-#line 45456 "gram.cpp"
+#line 45458 "gram.cpp"
         break;
 
         case 2082: /* xml_whitespace_option: PRESERVE WHITESPACE_P  */
@@ -37613,7 +37770,7 @@ yyreduce:
         {
             (yyval.boolean) = TRUE;
         }
-#line 45462 "gram.cpp"
+#line 45464 "gram.cpp"
         break;
 
         case 2083: /* xml_whitespace_option: STRIP_P WHITESPACE_P  */
@@ -37621,7 +37778,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 45468 "gram.cpp"
+#line 45470 "gram.cpp"
         break;
 
         case 2084: /* xml_whitespace_option: %empty  */
@@ -37629,7 +37786,7 @@ yyreduce:
         {
             (yyval.boolean) = FALSE;
         }
-#line 45474 "gram.cpp"
+#line 45476 "gram.cpp"
         break;
 
         case 2085: /* xmlexists_argument: PASSING c_expr  */
@@ -37637,7 +37794,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 45482 "gram.cpp"
+#line 45484 "gram.cpp"
         break;
 
         case 2086: /* xmlexists_argument: PASSING c_expr BY REF  */
@@ -37645,7 +37802,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-2].node);
         }
-#line 45490 "gram.cpp"
+#line 45492 "gram.cpp"
         break;
 
         case 2087: /* xmlexists_argument: PASSING BY REF c_expr  */
@@ -37653,7 +37810,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 45498 "gram.cpp"
+#line 45500 "gram.cpp"
         break;
 
         case 2088: /* xmlexists_argument: PASSING BY REF c_expr BY REF  */
@@ -37661,7 +37818,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-2].node);
         }
-#line 45506 "gram.cpp"
+#line 45508 "gram.cpp"
         break;
 
         case 2089: /* within_group_clause: WITHIN GROUP_P '(' sort_clause ')'  */
@@ -37669,7 +37826,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45512 "gram.cpp"
+#line 45514 "gram.cpp"
         break;
 
         case 2090: /* within_group_clause: %empty  */
@@ -37677,7 +37834,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 45518 "gram.cpp"
+#line 45520 "gram.cpp"
         break;
 
         case 2091: /* filter_clause: FILTER '(' WHERE a_expr ')'  */
@@ -37685,7 +37842,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[-1].node);
         }
-#line 45524 "gram.cpp"
+#line 45526 "gram.cpp"
         break;
 
         case 2092: /* filter_clause: %empty  */
@@ -37693,7 +37850,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 45530 "gram.cpp"
+#line 45532 "gram.cpp"
         break;
 
         case 2093: /* window_clause: WINDOW window_definition_list  */
@@ -37701,7 +37858,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 45536 "gram.cpp"
+#line 45538 "gram.cpp"
         break;
 
         case 2094: /* window_clause: %empty  */
@@ -37709,23 +37866,23 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 45542 "gram.cpp"
+#line 45544 "gram.cpp"
         break;
 
         case 2095: /* window_definition_list: window_definition  */
 #line 14714 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].windef));
+            (yyval.list) = list_make1(resource, (yyvsp[0].windef));
         }
-#line 45548 "gram.cpp"
+#line 45550 "gram.cpp"
         break;
 
         case 2096: /* window_definition_list: window_definition_list ',' window_definition  */
 #line 14716 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].windef));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].windef));
         }
-#line 45554 "gram.cpp"
+#line 45556 "gram.cpp"
         break;
 
         case 2097: /* window_definition: ColId AS window_specification  */
@@ -37735,7 +37892,7 @@ yyreduce:
             n->name = (yyvsp[-2].str);
             (yyval.windef) = n;
         }
-#line 45564 "gram.cpp"
+#line 45566 "gram.cpp"
         break;
 
         case 2098: /* over_clause: OVER window_specification  */
@@ -37743,13 +37900,13 @@ yyreduce:
         {
             (yyval.windef) = (yyvsp[0].windef);
         }
-#line 45570 "gram.cpp"
+#line 45572 "gram.cpp"
         break;
 
         case 2099: /* over_clause: OVER ColId  */
 #line 14731 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->name = (yyvsp[0].str);
             n->refname = NULL;
             n->partitionClause = NIL;
@@ -37760,7 +37917,7 @@ yyreduce:
             n->location = (yylsp[0]);
             (yyval.windef) = n;
         }
-#line 45587 "gram.cpp"
+#line 45589 "gram.cpp"
         break;
 
         case 2100: /* over_clause: %empty  */
@@ -37768,13 +37925,13 @@ yyreduce:
         {
             (yyval.windef) = NULL;
         }
-#line 45593 "gram.cpp"
+#line 45595 "gram.cpp"
         break;
 
         case 2101: /* window_specification: '(' opt_existing_window_name opt_partition_clause opt_sort_clause opt_frame_clause ')'  */
 #line 14749 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->name = NULL;
             n->refname = (yyvsp[-4].str);
             n->partitionClause = (yyvsp[-3].list);
@@ -37786,7 +37943,7 @@ yyreduce:
             n->location = (yylsp[-5]);
             (yyval.windef) = n;
         }
-#line 45611 "gram.cpp"
+#line 45613 "gram.cpp"
         break;
 
         case 2102: /* opt_existing_window_name: ColId  */
@@ -37794,7 +37951,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 45617 "gram.cpp"
+#line 45619 "gram.cpp"
         break;
 
         case 2103: /* opt_existing_window_name: %empty  */
@@ -37802,7 +37959,7 @@ yyreduce:
         {
             (yyval.str) = NULL;
         }
-#line 45623 "gram.cpp"
+#line 45625 "gram.cpp"
         break;
 
         case 2104: /* opt_partition_clause: PARTITION BY sortby_list  */
@@ -37810,7 +37967,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 45629 "gram.cpp"
+#line 45631 "gram.cpp"
         break;
 
         case 2105: /* opt_partition_clause: %empty  */
@@ -37818,7 +37975,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 45635 "gram.cpp"
+#line 45637 "gram.cpp"
         break;
 
         case 2106: /* opt_frame_clause: RANGE frame_extent window_frame_exclusion  */
@@ -37842,7 +37999,7 @@ yyreduce:
 #endif
             (yyval.windef) = n;
         }
-#line 45659 "gram.cpp"
+#line 45661 "gram.cpp"
         break;
 
         case 2107: /* opt_frame_clause: ROWS frame_extent window_frame_exclusion  */
@@ -37852,19 +38009,19 @@ yyreduce:
             n->frameOptions |= FRAMEOPTION_NONDEFAULT | FRAMEOPTION_ROWS;
             (yyval.windef) = n;
         }
-#line 45669 "gram.cpp"
+#line 45671 "gram.cpp"
         break;
 
         case 2108: /* opt_frame_clause: %empty  */
 #line 14819 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_DEFAULTS;
             n->startOffset = NULL;
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45681 "gram.cpp"
+#line 45683 "gram.cpp"
         break;
 
         case 2109: /* frame_extent: frame_bound  */
@@ -37885,7 +38042,7 @@ yyreduce:
             n->frameOptions |= FRAMEOPTION_END_CURRENT_ROW;
             (yyval.windef) = n;
         }
-#line 45702 "gram.cpp"
+#line 45704 "gram.cpp"
         break;
 
         case 2110: /* frame_extent: BETWEEN frame_bound AND frame_bound  */
@@ -37924,67 +38081,67 @@ yyreduce:
             n1->endOffset = n2->startOffset;
             (yyval.windef) = n1;
         }
-#line 45743 "gram.cpp"
+#line 45745 "gram.cpp"
         break;
 
         case 2111: /* frame_bound: UNBOUNDED PRECEDING  */
 #line 14891 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_START_UNBOUNDED_PRECEDING;
             n->startOffset = NULL;
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45755 "gram.cpp"
+#line 45757 "gram.cpp"
         break;
 
         case 2112: /* frame_bound: UNBOUNDED FOLLOWING  */
 #line 14899 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_START_UNBOUNDED_FOLLOWING;
             n->startOffset = NULL;
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45767 "gram.cpp"
+#line 45769 "gram.cpp"
         break;
 
         case 2113: /* frame_bound: CURRENT_P ROW  */
 #line 14907 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_START_CURRENT_ROW;
             n->startOffset = NULL;
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45779 "gram.cpp"
+#line 45781 "gram.cpp"
         break;
 
         case 2114: /* frame_bound: a_expr PRECEDING  */
 #line 14915 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_START_VALUE_PRECEDING;
             n->startOffset = (yyvsp[-1].node);
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45791 "gram.cpp"
+#line 45793 "gram.cpp"
         break;
 
         case 2115: /* frame_bound: a_expr FOLLOWING  */
 #line 14923 "gram.y"
         {
-            WindowDef* n = makeNode(WindowDef);
+            WindowDef* n = makeNode(resource, WindowDef);
             n->frameOptions = FRAMEOPTION_START_VALUE_FOLLOWING;
             n->startOffset = (yyvsp[-1].node);
             n->endOffset = NULL;
             (yyval.windef) = n;
         }
-#line 45803 "gram.cpp"
+#line 45805 "gram.cpp"
         break;
 
         case 2116: /* window_frame_exclusion: EXCLUDE CURRENT_P ROW  */
@@ -37993,7 +38150,7 @@ yyreduce:
             checkWindowExclude();
             (yyval.ival) = 0;
         }
-#line 45809 "gram.cpp"
+#line 45811 "gram.cpp"
         break;
 
         case 2117: /* window_frame_exclusion: EXCLUDE GROUP_P  */
@@ -38002,7 +38159,7 @@ yyreduce:
             checkWindowExclude();
             (yyval.ival) = 0;
         }
-#line 45815 "gram.cpp"
+#line 45817 "gram.cpp"
         break;
 
         case 2118: /* window_frame_exclusion: EXCLUDE TIES  */
@@ -38011,7 +38168,7 @@ yyreduce:
             checkWindowExclude();
             (yyval.ival) = 0;
         }
-#line 45821 "gram.cpp"
+#line 45823 "gram.cpp"
         break;
 
         case 2119: /* window_frame_exclusion: EXCLUDE NO OTHERS  */
@@ -38020,7 +38177,7 @@ yyreduce:
             checkWindowExclude();
             (yyval.ival) = 0;
         }
-#line 45827 "gram.cpp"
+#line 45829 "gram.cpp"
         break;
 
         case 2120: /* window_frame_exclusion: %empty  */
@@ -38028,7 +38185,7 @@ yyreduce:
         {
             (yyval.ival) = 0;
         }
-#line 45833 "gram.cpp"
+#line 45835 "gram.cpp"
         break;
 
         case 2121: /* row: ROW '(' expr_list ')'  */
@@ -38036,7 +38193,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45839 "gram.cpp"
+#line 45841 "gram.cpp"
         break;
 
         case 2122: /* row: ROW '(' ')'  */
@@ -38044,15 +38201,15 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 45845 "gram.cpp"
+#line 45847 "gram.cpp"
         break;
 
         case 2123: /* row: '(' expr_list ',' a_expr ')'  */
 #line 14952 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-3].list), (yyvsp[-1].node));
+            (yyval.list) = lappend(resource, (yyvsp[-3].list), (yyvsp[-1].node));
         }
-#line 45851 "gram.cpp"
+#line 45853 "gram.cpp"
         break;
 
         case 2124: /* sub_type: ANY  */
@@ -38060,7 +38217,7 @@ yyreduce:
         {
             (yyval.ival) = ANY_SUBLINK;
         }
-#line 45857 "gram.cpp"
+#line 45859 "gram.cpp"
         break;
 
         case 2125: /* sub_type: SOME  */
@@ -38068,7 +38225,7 @@ yyreduce:
         {
             (yyval.ival) = ANY_SUBLINK;
         }
-#line 45863 "gram.cpp"
+#line 45865 "gram.cpp"
         break;
 
         case 2126: /* sub_type: ALL  */
@@ -38076,7 +38233,7 @@ yyreduce:
         {
             (yyval.ival) = ALL_SUBLINK;
         }
-#line 45869 "gram.cpp"
+#line 45871 "gram.cpp"
         break;
 
         case 2127: /* all_Op: Op  */
@@ -38084,7 +38241,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 45875 "gram.cpp"
+#line 45877 "gram.cpp"
         break;
 
         case 2128: /* all_Op: MathOp  */
@@ -38092,7 +38249,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 45881 "gram.cpp"
+#line 45883 "gram.cpp"
         break;
 
         case 2129: /* MathOp: '+'  */
@@ -38100,7 +38257,7 @@ yyreduce:
         {
             (yyval.str) = "+";
         }
-#line 45887 "gram.cpp"
+#line 45889 "gram.cpp"
         break;
 
         case 2130: /* MathOp: '-'  */
@@ -38108,7 +38265,7 @@ yyreduce:
         {
             (yyval.str) = "-";
         }
-#line 45893 "gram.cpp"
+#line 45895 "gram.cpp"
         break;
 
         case 2131: /* MathOp: '*'  */
@@ -38116,7 +38273,7 @@ yyreduce:
         {
             (yyval.str) = "*";
         }
-#line 45899 "gram.cpp"
+#line 45901 "gram.cpp"
         break;
 
         case 2132: /* MathOp: '/'  */
@@ -38124,7 +38281,7 @@ yyreduce:
         {
             (yyval.str) = "/";
         }
-#line 45905 "gram.cpp"
+#line 45907 "gram.cpp"
         break;
 
         case 2133: /* MathOp: '%'  */
@@ -38132,7 +38289,7 @@ yyreduce:
         {
             (yyval.str) = "%";
         }
-#line 45911 "gram.cpp"
+#line 45913 "gram.cpp"
         break;
 
         case 2134: /* MathOp: '^'  */
@@ -38140,7 +38297,7 @@ yyreduce:
         {
             (yyval.str) = "^";
         }
-#line 45917 "gram.cpp"
+#line 45919 "gram.cpp"
         break;
 
         case 2135: /* MathOp: '<'  */
@@ -38148,7 +38305,7 @@ yyreduce:
         {
             (yyval.str) = "<";
         }
-#line 45923 "gram.cpp"
+#line 45925 "gram.cpp"
         break;
 
         case 2136: /* MathOp: '>'  */
@@ -38156,7 +38313,7 @@ yyreduce:
         {
             (yyval.str) = ">";
         }
-#line 45929 "gram.cpp"
+#line 45931 "gram.cpp"
         break;
 
         case 2137: /* MathOp: '='  */
@@ -38164,15 +38321,15 @@ yyreduce:
         {
             (yyval.str) = "=";
         }
-#line 45935 "gram.cpp"
+#line 45937 "gram.cpp"
         break;
 
         case 2138: /* qual_Op: Op  */
 #line 14976 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 45941 "gram.cpp"
+#line 45943 "gram.cpp"
         break;
 
         case 2139: /* qual_Op: OPERATOR '(' any_operator ')'  */
@@ -38180,15 +38337,15 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45947 "gram.cpp"
+#line 45949 "gram.cpp"
         break;
 
         case 2140: /* qual_all_Op: all_Op  */
 #line 14983 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 45953 "gram.cpp"
+#line 45955 "gram.cpp"
         break;
 
         case 2141: /* qual_all_Op: OPERATOR '(' any_operator ')'  */
@@ -38196,15 +38353,15 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45959 "gram.cpp"
+#line 45961 "gram.cpp"
         break;
 
         case 2142: /* subquery_Op: all_Op  */
 #line 14990 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 45965 "gram.cpp"
+#line 45967 "gram.cpp"
         break;
 
         case 2143: /* subquery_Op: OPERATOR '(' any_operator ')'  */
@@ -38212,71 +38369,71 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 45971 "gram.cpp"
+#line 45973 "gram.cpp"
         break;
 
         case 2144: /* subquery_Op: LIKE  */
 #line 14994 "gram.y"
         {
-            (yyval.list) = list_make1(makeString("~~"));
+            (yyval.list) = list_make1(resource, makeString(resource, "~~"));
         }
-#line 45977 "gram.cpp"
+#line 45979 "gram.cpp"
         break;
 
         case 2145: /* subquery_Op: NOT LIKE  */
 #line 14996 "gram.y"
         {
-            (yyval.list) = list_make1(makeString("!~~"));
+            (yyval.list) = list_make1(resource, makeString(resource, "!~~"));
         }
-#line 45983 "gram.cpp"
+#line 45985 "gram.cpp"
         break;
 
         case 2146: /* subquery_Op: ILIKE  */
 #line 14998 "gram.y"
         {
-            (yyval.list) = list_make1(makeString("~~*"));
+            (yyval.list) = list_make1(resource, makeString(resource, "~~*"));
         }
-#line 45989 "gram.cpp"
+#line 45991 "gram.cpp"
         break;
 
         case 2147: /* subquery_Op: NOT ILIKE  */
 #line 15000 "gram.y"
         {
-            (yyval.list) = list_make1(makeString("!~~*"));
+            (yyval.list) = list_make1(resource, makeString(resource, "!~~*"));
         }
-#line 45995 "gram.cpp"
+#line 45997 "gram.cpp"
         break;
 
         case 2148: /* expr_list: a_expr  */
 #line 15012 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46003 "gram.cpp"
+#line 46005 "gram.cpp"
         break;
 
         case 2149: /* expr_list: expr_list ',' a_expr  */
 #line 15016 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 46011 "gram.cpp"
+#line 46013 "gram.cpp"
         break;
 
         case 2150: /* func_arg_list: func_arg_expr  */
 #line 15023 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46019 "gram.cpp"
+#line 46021 "gram.cpp"
         break;
 
         case 2151: /* func_arg_list: func_arg_list ',' func_arg_expr  */
 #line 15027 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 46027 "gram.cpp"
+#line 46029 "gram.cpp"
         break;
 
         case 2152: /* func_arg_expr: a_expr  */
@@ -38284,84 +38441,85 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46035 "gram.cpp"
+#line 46037 "gram.cpp"
         break;
 
         case 2153: /* func_arg_expr: param_name COLON_EQUALS a_expr  */
 #line 15037 "gram.y"
         {
-            NamedArgExpr* na = makeNode(NamedArgExpr);
+            NamedArgExpr* na = makeNode(resource, NamedArgExpr);
             na->name = (yyvsp[-2].str);
             na->arg = (Expr*) (yyvsp[0].node);
             na->argnumber = -1; /* until determined */
             na->location = (yylsp[-2]);
             (yyval.node) = (Node*) na;
         }
-#line 46048 "gram.cpp"
+#line 46050 "gram.cpp"
         break;
 
         case 2154: /* type_list: Typename  */
 #line 15047 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].typnam));
+            (yyval.list) = list_make1(resource, (yyvsp[0].typnam));
         }
-#line 46054 "gram.cpp"
+#line 46056 "gram.cpp"
         break;
 
         case 2155: /* type_list: type_list ',' Typename  */
 #line 15048 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].typnam));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].typnam));
         }
-#line 46060 "gram.cpp"
+#line 46062 "gram.cpp"
         break;
 
         case 2156: /* array_expr: '[' expr_list ']'  */
 #line 15052 "gram.y"
         {
-            (yyval.node) = makeAArrayExpr((yyvsp[-1].list), (yylsp[-2]));
+            (yyval.node) = makeAArrayExpr(resource, (yyvsp[-1].list), (yylsp[-2]));
         }
-#line 46068 "gram.cpp"
+#line 46070 "gram.cpp"
         break;
 
         case 2157: /* array_expr: '[' array_expr_list ']'  */
 #line 15056 "gram.y"
         {
-            (yyval.node) = makeAArrayExpr((yyvsp[-1].list), (yylsp[-2]));
+            (yyval.node) = makeAArrayExpr(resource, (yyvsp[-1].list), (yylsp[-2]));
         }
-#line 46076 "gram.cpp"
+#line 46078 "gram.cpp"
         break;
 
         case 2158: /* array_expr: '[' ']'  */
 #line 15060 "gram.y"
         {
-            (yyval.node) = makeAArrayExpr(NIL, (yylsp[-1]));
+            (yyval.node) = makeAArrayExpr(resource, NIL, (yylsp[-1]));
         }
-#line 46084 "gram.cpp"
+#line 46086 "gram.cpp"
         break;
 
         case 2159: /* array_expr_list: array_expr  */
 #line 15065 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46090 "gram.cpp"
+#line 46092 "gram.cpp"
         break;
 
         case 2160: /* array_expr_list: array_expr_list ',' array_expr  */
 #line 15066 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 46096 "gram.cpp"
+#line 46098 "gram.cpp"
         break;
 
         case 2161: /* extract_list: extract_arg FROM a_expr  */
 #line 15072 "gram.y"
         {
-            (yyval.list) = list_make2(makeStringConst((yyvsp[-2].str), (yylsp[-2])), (yyvsp[0].node));
+            (yyval.list) =
+                list_make2(resource, makeStringConst(resource, (yyvsp[-2].str), (yylsp[-2])), (yyvsp[0].node));
         }
-#line 46104 "gram.cpp"
+#line 46106 "gram.cpp"
         break;
 
         case 2162: /* extract_list: %empty  */
@@ -38369,7 +38527,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 46110 "gram.cpp"
+#line 46112 "gram.cpp"
         break;
 
         case 2163: /* extract_arg: IDENT  */
@@ -38377,7 +38535,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46116 "gram.cpp"
+#line 46118 "gram.cpp"
         break;
 
         case 2164: /* extract_arg: YEAR_P  */
@@ -38385,7 +38543,7 @@ yyreduce:
         {
             (yyval.str) = "year";
         }
-#line 46122 "gram.cpp"
+#line 46124 "gram.cpp"
         break;
 
         case 2165: /* extract_arg: MONTH_P  */
@@ -38393,7 +38551,7 @@ yyreduce:
         {
             (yyval.str) = "month";
         }
-#line 46128 "gram.cpp"
+#line 46130 "gram.cpp"
         break;
 
         case 2166: /* extract_arg: DAY_P  */
@@ -38401,7 +38559,7 @@ yyreduce:
         {
             (yyval.str) = "day";
         }
-#line 46134 "gram.cpp"
+#line 46136 "gram.cpp"
         break;
 
         case 2167: /* extract_arg: HOUR_P  */
@@ -38409,7 +38567,7 @@ yyreduce:
         {
             (yyval.str) = "hour";
         }
-#line 46140 "gram.cpp"
+#line 46142 "gram.cpp"
         break;
 
         case 2168: /* extract_arg: MINUTE_P  */
@@ -38417,7 +38575,7 @@ yyreduce:
         {
             (yyval.str) = "minute";
         }
-#line 46146 "gram.cpp"
+#line 46148 "gram.cpp"
         break;
 
         case 2169: /* extract_arg: SECOND_P  */
@@ -38425,7 +38583,7 @@ yyreduce:
         {
             (yyval.str) = "second";
         }
-#line 46152 "gram.cpp"
+#line 46154 "gram.cpp"
         break;
 
         case 2170: /* extract_arg: Sconst  */
@@ -38433,23 +38591,23 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46158 "gram.cpp"
+#line 46160 "gram.cpp"
         break;
 
         case 2171: /* overlay_list: a_expr overlay_placing substr_from substr_for  */
 #line 15100 "gram.y"
         {
-            (yyval.list) = list_make4((yyvsp[-3].node), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
+            (yyval.list) = list_make4(resource, (yyvsp[-3].node), (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
         }
-#line 46166 "gram.cpp"
+#line 46168 "gram.cpp"
         break;
 
         case 2172: /* overlay_list: a_expr overlay_placing substr_from  */
 #line 15104 "gram.y"
         {
-            (yyval.list) = list_make3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
+            (yyval.list) = list_make3(resource, (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
         }
-#line 46174 "gram.cpp"
+#line 46176 "gram.cpp"
         break;
 
         case 2173: /* overlay_placing: PLACING a_expr  */
@@ -38457,15 +38615,15 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46180 "gram.cpp"
+#line 46182 "gram.cpp"
         break;
 
         case 2174: /* position_list: b_expr IN_P b_expr  */
 #line 15117 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[0].node), (yyvsp[-2].node));
+            (yyval.list) = list_make2(resource, (yyvsp[0].node), (yyvsp[-2].node));
         }
-#line 46186 "gram.cpp"
+#line 46188 "gram.cpp"
         break;
 
         case 2175: /* position_list: %empty  */
@@ -38473,32 +38631,32 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 46192 "gram.cpp"
+#line 46194 "gram.cpp"
         break;
 
         case 2176: /* substr_list: a_expr substr_from substr_for  */
 #line 15135 "gram.y"
         {
-            (yyval.list) = list_make3((yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
+            (yyval.list) = list_make3(resource, (yyvsp[-2].node), (yyvsp[-1].node), (yyvsp[0].node));
         }
-#line 46200 "gram.cpp"
+#line 46202 "gram.cpp"
         break;
 
         case 2177: /* substr_list: a_expr substr_for substr_from  */
 #line 15139 "gram.y"
         {
             /* not legal per SQL99, but might as well allow it */
-            (yyval.list) = list_make3((yyvsp[-2].node), (yyvsp[0].node), (yyvsp[-1].node));
+            (yyval.list) = list_make3(resource, (yyvsp[-2].node), (yyvsp[0].node), (yyvsp[-1].node));
         }
-#line 46209 "gram.cpp"
+#line 46211 "gram.cpp"
         break;
 
         case 2178: /* substr_list: a_expr substr_from  */
 #line 15144 "gram.y"
         {
-            (yyval.list) = list_make2((yyvsp[-1].node), (yyvsp[0].node));
+            (yyval.list) = list_make2(resource, (yyvsp[-1].node), (yyvsp[0].node));
         }
-#line 46217 "gram.cpp"
+#line 46219 "gram.cpp"
         break;
 
         case 2179: /* substr_list: a_expr substr_for  */
@@ -38513,11 +38671,12 @@ yyreduce:
 					 * which it is likely to do if the second argument
 					 * is unknown or doesn't have an implicit cast to int4.
 					 */
-            (yyval.list) = list_make3((yyvsp[-1].node),
-                                      makeIntConst(1, -1),
-                                      makeTypeCast((yyvsp[0].node), SystemTypeName("int4"), -1));
+            (yyval.list) = list_make3(resource,
+                                      (yyvsp[-1].node),
+                                      makeIntConst(resource, 1, -1),
+                                      makeTypeCast(resource, (yyvsp[0].node), SystemTypeName(resource, "int4"), -1));
         }
-#line 46236 "gram.cpp"
+#line 46238 "gram.cpp"
         break;
 
         case 2180: /* substr_list: expr_list  */
@@ -38525,7 +38684,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 46244 "gram.cpp"
+#line 46246 "gram.cpp"
         break;
 
         case 2181: /* substr_list: %empty  */
@@ -38533,7 +38692,7 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 46250 "gram.cpp"
+#line 46252 "gram.cpp"
         break;
 
         case 2182: /* substr_from: FROM a_expr  */
@@ -38541,7 +38700,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46256 "gram.cpp"
+#line 46258 "gram.cpp"
         break;
 
         case 2183: /* substr_for: FOR a_expr  */
@@ -38549,15 +38708,15 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46262 "gram.cpp"
+#line 46264 "gram.cpp"
         break;
 
         case 2184: /* trim_list: a_expr FROM expr_list  */
 #line 15177 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[0].list), (yyvsp[-2].node));
+            (yyval.list) = lappend(resource, (yyvsp[0].list), (yyvsp[-2].node));
         }
-#line 46268 "gram.cpp"
+#line 46270 "gram.cpp"
         break;
 
         case 2185: /* trim_list: FROM expr_list  */
@@ -38565,7 +38724,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 46274 "gram.cpp"
+#line 46276 "gram.cpp"
         break;
 
         case 2186: /* trim_list: expr_list  */
@@ -38573,18 +38732,18 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 46280 "gram.cpp"
+#line 46282 "gram.cpp"
         break;
 
         case 2187: /* in_expr: select_with_parens  */
 #line 15183 "gram.y"
         {
-            SubLink* n = makeNode(SubLink);
+            SubLink* n = makeNode(resource, SubLink);
             n->subselect = (yyvsp[0].node);
             /* other fields will be filled later */
             (yyval.node) = (Node*) n;
         }
-#line 46291 "gram.cpp"
+#line 46293 "gram.cpp"
         break;
 
         case 2188: /* in_expr: '(' expr_list ')'  */
@@ -38592,13 +38751,13 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[-1].list);
         }
-#line 46297 "gram.cpp"
+#line 46299 "gram.cpp"
         break;
 
         case 2189: /* case_expr: CASE case_arg when_clause_list case_default END_P  */
 #line 15200 "gram.y"
         {
-            CaseExpr* c = makeNode(CaseExpr);
+            CaseExpr* c = makeNode(resource, CaseExpr);
             c->casetype = InvalidOid; /* not analyzed yet */
             c->arg = (Expr*) (yyvsp[-3].node);
             c->args = (yyvsp[-2].list);
@@ -38606,35 +38765,35 @@ yyreduce:
             c->location = (yylsp[-4]);
             (yyval.node) = (Node*) c;
         }
-#line 46311 "gram.cpp"
+#line 46313 "gram.cpp"
         break;
 
         case 2190: /* when_clause_list: when_clause  */
 #line 15213 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46317 "gram.cpp"
+#line 46319 "gram.cpp"
         break;
 
         case 2191: /* when_clause_list: when_clause_list when_clause  */
 #line 15214 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 46323 "gram.cpp"
+#line 46325 "gram.cpp"
         break;
 
         case 2192: /* when_clause: WHEN when_operand THEN a_expr  */
 #line 15219 "gram.y"
         {
-            CaseWhen* w = makeNode(CaseWhen);
+            CaseWhen* w = makeNode(resource, CaseWhen);
             w->expr = (Expr*) (yyvsp[-2].node);
             w->result = (Expr*) (yyvsp[0].node);
             w->location = (yylsp[-3]);
             (yyval.node) = (Node*) w;
         }
-#line 46335 "gram.cpp"
+#line 46337 "gram.cpp"
         break;
 
         case 2193: /* when_operand: a_expr  */
@@ -38642,15 +38801,15 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46341 "gram.cpp"
+#line 46343 "gram.cpp"
         break;
 
         case 2194: /* when_operand: IS NOT DISTINCT FROM a_expr  */
 #line 15230 "gram.y"
         {
-            (yyval.node) = makeIsNotDistinctFromNode((yyvsp[0].node), (yylsp[-3]));
+            (yyval.node) = makeIsNotDistinctFromNode(resource, (yyvsp[0].node), (yylsp[-3]));
         }
-#line 46347 "gram.cpp"
+#line 46349 "gram.cpp"
         break;
 
         case 2195: /* case_default: ELSE a_expr  */
@@ -38658,7 +38817,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46353 "gram.cpp"
+#line 46355 "gram.cpp"
         break;
 
         case 2196: /* case_default: %empty  */
@@ -38666,7 +38825,7 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 46359 "gram.cpp"
+#line 46361 "gram.cpp"
         break;
 
         case 2197: /* case_arg: a_expr  */
@@ -38674,7 +38833,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46365 "gram.cpp"
+#line 46367 "gram.cpp"
         break;
 
         case 2198: /* case_arg: %empty  */
@@ -38682,48 +38841,48 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 46371 "gram.cpp"
+#line 46373 "gram.cpp"
         break;
 
         case 2199: /* decode_expr: DECODE '(' a_expr search_result_list decode_default ')'  */
 #line 15254 "gram.y"
         {
-            CaseExpr* c = makeNode(CaseExpr);
+            CaseExpr* c = makeNode(resource, CaseExpr);
             c->casetype = InvalidOid; /* not analyzed yet */
             c->arg = (Expr*) (yyvsp[-3].node);
             c->args = (yyvsp[-2].list);
             c->defresult = (Expr*) (yyvsp[-1].node);
             (yyval.node) = (Node*) c;
         }
-#line 46384 "gram.cpp"
+#line 46386 "gram.cpp"
         break;
 
         case 2200: /* search_result_list: search_result  */
 #line 15265 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46390 "gram.cpp"
+#line 46392 "gram.cpp"
         break;
 
         case 2201: /* search_result_list: search_result_list search_result  */
 #line 15266 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 46396 "gram.cpp"
+#line 46398 "gram.cpp"
         break;
 
         case 2202: /* search_result: ',' a_expr ',' a_expr  */
 #line 15271 "gram.y"
         {
-            Node* n = makeIsNotDistinctFromNode((yyvsp[-2].node), (yylsp[-2]));
-            CaseWhen* w = makeNode(CaseWhen);
+            Node* n = makeIsNotDistinctFromNode(resource, (yyvsp[-2].node), (yylsp[-2]));
+            CaseWhen* w = makeNode(resource, CaseWhen);
             w->expr = (Expr*) n;
             w->result = (Expr*) (yyvsp[0].node);
             (yyval.node) = (Node*) w;
         }
-#line 46408 "gram.cpp"
+#line 46410 "gram.cpp"
         break;
 
         case 2203: /* decode_default: ',' a_expr  */
@@ -38731,7 +38890,7 @@ yyreduce:
         {
             (yyval.node) = (yyvsp[0].node);
         }
-#line 46414 "gram.cpp"
+#line 46416 "gram.cpp"
         break;
 
         case 2204: /* decode_default: %empty  */
@@ -38739,77 +38898,77 @@ yyreduce:
         {
             (yyval.node) = NULL;
         }
-#line 46420 "gram.cpp"
+#line 46422 "gram.cpp"
         break;
 
         case 2205: /* columnref: ColId  */
 #line 15287 "gram.y"
         {
-            (yyval.node) = makeColumnRef((yyvsp[0].str), NIL, (yylsp[0]), yyscanner);
+            (yyval.node) = makeColumnRef(resource, (yyvsp[0].str), NIL, (yylsp[0]), yyscanner);
         }
-#line 46428 "gram.cpp"
+#line 46430 "gram.cpp"
         break;
 
         case 2206: /* columnref: ColId indirection  */
 #line 15291 "gram.y"
         {
-            (yyval.node) = makeColumnRef((yyvsp[-1].str), (yyvsp[0].list), (yylsp[-1]), yyscanner);
+            (yyval.node) = makeColumnRef(resource, (yyvsp[-1].str), (yyvsp[0].list), (yylsp[-1]), yyscanner);
         }
-#line 46436 "gram.cpp"
+#line 46438 "gram.cpp"
         break;
 
         case 2207: /* indirection_el: '.' attr_name  */
 #line 15298 "gram.y"
         {
-            (yyval.node) = (Node*) makeString((yyvsp[0].str));
+            (yyval.node) = (Node*) makeString(resource, (yyvsp[0].str));
         }
-#line 46444 "gram.cpp"
+#line 46446 "gram.cpp"
         break;
 
         case 2208: /* indirection_el: '.' '*'  */
 #line 15302 "gram.y"
         {
-            (yyval.node) = (Node*) makeNode(A_Star);
+            (yyval.node) = (Node*) makeNode(resource, A_Star);
         }
-#line 46452 "gram.cpp"
+#line 46454 "gram.cpp"
         break;
 
         case 2209: /* indirection_el: '[' a_expr ']'  */
 #line 15306 "gram.y"
         {
-            A_Indices* ai = makeNode(A_Indices);
+            A_Indices* ai = makeNode(resource, A_Indices);
             ai->lidx = NULL;
             ai->uidx = (yyvsp[-1].node);
             (yyval.node) = (Node*) ai;
         }
-#line 46463 "gram.cpp"
+#line 46465 "gram.cpp"
         break;
 
         case 2210: /* indirection_el: '[' a_expr ':' a_expr ']'  */
 #line 15313 "gram.y"
         {
-            A_Indices* ai = makeNode(A_Indices);
+            A_Indices* ai = makeNode(resource, A_Indices);
             ai->lidx = (yyvsp[-3].node);
             ai->uidx = (yyvsp[-1].node);
             (yyval.node) = (Node*) ai;
         }
-#line 46474 "gram.cpp"
+#line 46476 "gram.cpp"
         break;
 
         case 2211: /* indirection: indirection_el  */
 #line 15322 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46480 "gram.cpp"
+#line 46482 "gram.cpp"
         break;
 
         case 2212: /* indirection: indirection indirection_el  */
 #line 15323 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 46486 "gram.cpp"
+#line 46488 "gram.cpp"
         break;
 
         case 2213: /* opt_indirection: %empty  */
@@ -38817,15 +38976,15 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 46492 "gram.cpp"
+#line 46494 "gram.cpp"
         break;
 
         case 2214: /* opt_indirection: opt_indirection indirection_el  */
 #line 15328 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-1].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-1].list), (yyvsp[0].node));
         }
-#line 46498 "gram.cpp"
+#line 46500 "gram.cpp"
         break;
 
         case 2217: /* ctext_expr: a_expr  */
@@ -38833,33 +38992,33 @@ yyreduce:
         {
             (yyval.node) = (Node*) (yyvsp[0].node);
         }
-#line 46504 "gram.cpp"
+#line 46506 "gram.cpp"
         break;
 
         case 2218: /* ctext_expr: DEFAULT  */
 #line 15345 "gram.y"
         {
-            SetToDefault* n = makeNode(SetToDefault);
+            SetToDefault* n = makeNode(resource, SetToDefault);
             n->location = (yylsp[0]);
             (yyval.node) = (Node*) n;
         }
-#line 46514 "gram.cpp"
+#line 46516 "gram.cpp"
         break;
 
         case 2219: /* ctext_expr_list: ctext_expr  */
 #line 15353 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].node));
+            (yyval.list) = list_make1(resource, (yyvsp[0].node));
         }
-#line 46520 "gram.cpp"
+#line 46522 "gram.cpp"
         break;
 
         case 2220: /* ctext_expr_list: ctext_expr_list ',' ctext_expr  */
 #line 15354 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].node));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].node));
         }
-#line 46526 "gram.cpp"
+#line 46528 "gram.cpp"
         break;
 
         case 2221: /* ctext_row: '(' ctext_expr_list ')'  */
@@ -38867,7 +39026,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[-1].list);
         }
-#line 46532 "gram.cpp"
+#line 46534 "gram.cpp"
         break;
 
         case 2222: /* opt_target_list: target_list  */
@@ -38875,7 +39034,7 @@ yyreduce:
         {
             (yyval.list) = (yyvsp[0].list);
         }
-#line 46538 "gram.cpp"
+#line 46540 "gram.cpp"
         break;
 
         case 2223: /* opt_target_list: %empty  */
@@ -38883,118 +39042,118 @@ yyreduce:
         {
             (yyval.list) = NIL;
         }
-#line 46544 "gram.cpp"
+#line 46546 "gram.cpp"
         break;
 
         case 2224: /* target_list: target_el  */
 #line 15377 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].target));
+            (yyval.list) = list_make1(resource, (yyvsp[0].target));
         }
-#line 46550 "gram.cpp"
+#line 46552 "gram.cpp"
         break;
 
         case 2225: /* target_list: target_list ',' target_el  */
 #line 15378 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].target));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].target));
         }
-#line 46556 "gram.cpp"
+#line 46558 "gram.cpp"
         break;
 
         case 2226: /* target_el: a_expr AS ColLabel  */
 #line 15382 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[0].str);
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[-2].node);
             (yyval.target)->location = (yylsp[-2]);
         }
-#line 46568 "gram.cpp"
+#line 46570 "gram.cpp"
         break;
 
         case 2227: /* target_el: a_expr IDENT  */
 #line 15404 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[0].str);
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[-1].node);
             (yyval.target)->location = (yylsp[-1]);
         }
-#line 46580 "gram.cpp"
+#line 46582 "gram.cpp"
         break;
 
         case 2228: /* target_el: a_expr ColLabelNoAs  */
 #line 15412 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = (yyvsp[0].str);
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[-1].node);
             (yyval.target)->location = (yylsp[-1]);
         }
-#line 46592 "gram.cpp"
+#line 46594 "gram.cpp"
         break;
 
         case 2229: /* target_el: a_expr  */
 #line 15420 "gram.y"
         {
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = NULL;
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) (yyvsp[0].node);
             (yyval.target)->location = (yylsp[0]);
         }
-#line 46604 "gram.cpp"
+#line 46606 "gram.cpp"
         break;
 
         case 2230: /* target_el: '*'  */
 #line 15428 "gram.y"
         {
-            ColumnRef* n = makeNode(ColumnRef);
-            n->fields = list_make1(makeNode(A_Star));
+            ColumnRef* n = makeNode(resource, ColumnRef);
+            n->fields = list_make1(resource, makeNode(resource, A_Star));
             n->location = (yylsp[0]);
 
-            (yyval.target) = makeNode(ResTarget);
+            (yyval.target) = makeNode(resource, ResTarget);
             (yyval.target)->name = NULL;
             (yyval.target)->indirection = NIL;
             (yyval.target)->val = (Node*) n;
             (yyval.target)->location = (yylsp[0]);
         }
-#line 46620 "gram.cpp"
+#line 46622 "gram.cpp"
         break;
 
         case 2231: /* qualified_name_list: qualified_name  */
 #line 15449 "gram.y"
         {
-            (yyval.list) = list_make1((yyvsp[0].range));
+            (yyval.list) = list_make1(resource, (yyvsp[0].range));
         }
-#line 46626 "gram.cpp"
+#line 46628 "gram.cpp"
         break;
 
         case 2232: /* qualified_name_list: qualified_name_list ',' qualified_name  */
 #line 15450 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), (yyvsp[0].range));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), (yyvsp[0].range));
         }
-#line 46632 "gram.cpp"
+#line 46634 "gram.cpp"
         break;
 
         case 2233: /* qualified_name: ColId  */
 #line 15462 "gram.y"
         {
-            (yyval.range) = makeRangeVar(NULL, (yyvsp[0].str), (yylsp[0]));
+            (yyval.range) = makeRangeVar(resource, NULL, (yyvsp[0].str), (yylsp[0]));
         }
-#line 46640 "gram.cpp"
+#line 46642 "gram.cpp"
         break;
 
         case 2234: /* qualified_name: ColId indirection  */
 #line 15466 "gram.y"
         {
             check_qualified_name((yyvsp[0].list), yyscanner);
-            (yyval.range) = makeRangeVar(NULL, NULL, (yylsp[-1]));
+            (yyval.range) = makeRangeVar(resource, NULL, NULL, (yylsp[-1]));
             switch (list_length((yyvsp[0].list))) {
                 case 1:
                     (yyval.range)->uid = NULL;
@@ -39018,28 +39177,28 @@ yyreduce:
                     //ereport(ERROR, mdxn: ereport NameListToString
                     //		errcode(ERRCODE_SYNTAX_ERROR),
                     //		 errmsg("improper qualified name (too many dotted names): %s",
-                    //				NameListToString(lcons(makeString($1), $2))),
+                    //				NameListToString(lcons(resource, makeString(resource, $1), $2))),
                     //		 parser_errposition(@1));
                     break;
             }
         }
-#line 46677 "gram.cpp"
+#line 46679 "gram.cpp"
         break;
 
         case 2235: /* name_list: name  */
 #line 15501 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 46683 "gram.cpp"
+#line 46685 "gram.cpp"
         break;
 
         case 2236: /* name_list: name_list ',' name  */
 #line 15503 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeString((yyvsp[0].str)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[0].str)));
         }
-#line 46689 "gram.cpp"
+#line 46691 "gram.cpp"
         break;
 
         case 2237: /* name: ColId  */
@@ -39047,7 +39206,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46695 "gram.cpp"
+#line 46697 "gram.cpp"
         break;
 
         case 2238: /* database_name: ColId  */
@@ -39055,7 +39214,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46701 "gram.cpp"
+#line 46703 "gram.cpp"
         break;
 
         case 2239: /* access_method: ColId  */
@@ -39063,7 +39222,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46707 "gram.cpp"
+#line 46709 "gram.cpp"
         break;
 
         case 2240: /* attr_name: ColLabel  */
@@ -39071,7 +39230,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46713 "gram.cpp"
+#line 46715 "gram.cpp"
         break;
 
         case 2241: /* index_name: ColId  */
@@ -39079,7 +39238,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46719 "gram.cpp"
+#line 46721 "gram.cpp"
         break;
 
         case 2242: /* file_name: Sconst  */
@@ -39087,55 +39246,56 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46725 "gram.cpp"
+#line 46727 "gram.cpp"
         break;
 
         case 2243: /* func_name: type_function_name  */
 #line 15530 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 46731 "gram.cpp"
+#line 46733 "gram.cpp"
         break;
 
         case 2244: /* func_name: ColId indirection  */
 #line 15532 "gram.y"
         {
-            (yyval.list) = check_func_name(lcons(makeString((yyvsp[-1].str)), (yyvsp[0].list)), yyscanner);
+            (yyval.list) =
+                check_func_name(lcons(resource, makeString(resource, (yyvsp[-1].str)), (yyvsp[0].list)), yyscanner);
         }
-#line 46740 "gram.cpp"
+#line 46742 "gram.cpp"
         break;
 
         case 2245: /* AexprConst: Iconst  */
 #line 15543 "gram.y"
         {
-            (yyval.node) = makeIntConst((yyvsp[0].ival), (yylsp[0]));
+            (yyval.node) = makeIntConst(resource, (yyvsp[0].ival), (yylsp[0]));
         }
-#line 46748 "gram.cpp"
+#line 46750 "gram.cpp"
         break;
 
         case 2246: /* AexprConst: FCONST  */
 #line 15547 "gram.y"
         {
-            (yyval.node) = makeFloatConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeFloatConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 46756 "gram.cpp"
+#line 46758 "gram.cpp"
         break;
 
         case 2247: /* AexprConst: Sconst  */
 #line 15551 "gram.y"
         {
-            (yyval.node) = makeStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 46764 "gram.cpp"
+#line 46766 "gram.cpp"
         break;
 
         case 2248: /* AexprConst: BCONST  */
 #line 15555 "gram.y"
         {
-            (yyval.node) = makeBitStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeBitStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 46772 "gram.cpp"
+#line 46774 "gram.cpp"
         break;
 
         case 2249: /* AexprConst: XCONST  */
@@ -39146,27 +39306,27 @@ yyreduce:
 					 * a <general literal> shall not be a
 					 * <bit string literal> or a <hex string literal>.
 					 */
-            (yyval.node) = makeBitStringConst((yyvsp[0].str), (yylsp[0]));
+            (yyval.node) = makeBitStringConst(resource, (yyvsp[0].str), (yylsp[0]));
         }
-#line 46785 "gram.cpp"
+#line 46787 "gram.cpp"
         break;
 
         case 2250: /* AexprConst: func_name Sconst  */
 #line 15568 "gram.y"
         {
             /* generic type 'literal' syntax */
-            TypeName* t = makeTypeNameFromNameList((yyvsp[-1].list));
+            TypeName* t = makeTypeNameFromNameList(resource, (yyvsp[-1].list));
             t->location = (yylsp[-1]);
-            (yyval.node) = makeStringConstCast((yyvsp[0].str), (yylsp[0]), t);
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[0].str), (yylsp[0]), t);
         }
-#line 46796 "gram.cpp"
+#line 46798 "gram.cpp"
         break;
 
         case 2251: /* AexprConst: func_name '(' func_arg_list opt_sort_clause ')' Sconst  */
 #line 15575 "gram.y"
         {
             /* generic syntax with a type modifier */
-            TypeName* t = makeTypeNameFromNameList((yyvsp[-5].list));
+            TypeName* t = makeTypeNameFromNameList(resource, (yyvsp[-5].list));
             ListCell* lc;
 
             /*
@@ -39192,17 +39352,17 @@ yyreduce:
 
             t->typmods = (yyvsp[-3].list);
             t->location = (yylsp[-5]);
-            (yyval.node) = makeStringConstCast((yyvsp[0].str), (yylsp[0]), t);
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[0].str), (yylsp[0]), t);
         }
-#line 46832 "gram.cpp"
+#line 46834 "gram.cpp"
         break;
 
         case 2252: /* AexprConst: ConstTypename Sconst  */
 #line 15607 "gram.y"
         {
-            (yyval.node) = makeStringConstCast((yyvsp[0].str), (yylsp[0]), (yyvsp[-1].typnam));
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[0].str), (yylsp[0]), (yyvsp[-1].typnam));
         }
-#line 46840 "gram.cpp"
+#line 46842 "gram.cpp"
         break;
 
         case 2253: /* AexprConst: ConstInterval Sconst opt_interval  */
@@ -39210,9 +39370,9 @@ yyreduce:
         {
             TypeName* t = (yyvsp[-2].typnam);
             t->typmods = (yyvsp[0].list);
-            (yyval.node) = makeStringConstCast((yyvsp[-1].str), (yylsp[-1]), t);
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[-1].str), (yylsp[-1]), t);
         }
-#line 46850 "gram.cpp"
+#line 46852 "gram.cpp"
         break;
 
         case 2254: /* AexprConst: ConstInterval '(' Iconst ')' Sconst opt_interval  */
@@ -39225,37 +39385,38 @@ yyreduce:
                             errcode(ERRCODE_SYNTAX_ERROR),
                             errmsg("interval precision specified twice"),
                             parser_errposition((yylsp[-5])));
-                t->typmods = lappend((yyvsp[0].list), makeIntConst((yyvsp[-3].ival), (yylsp[-3])));
+                t->typmods = lappend(resource, (yyvsp[0].list), makeIntConst(resource, (yyvsp[-3].ival), (yylsp[-3])));
             } else
-                t->typmods =
-                    list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1), makeIntConst((yyvsp[-3].ival), (yylsp[-3])));
-            (yyval.node) = makeStringConstCast((yyvsp[-1].str), (yylsp[-1]), t);
+                t->typmods = list_make2(resource,
+                                        makeIntConst(resource, INTERVAL_FULL_RANGE, -1),
+                                        makeIntConst(resource, (yyvsp[-3].ival), (yylsp[-3])));
+            (yyval.node) = makeStringConstCast(resource, (yyvsp[-1].str), (yylsp[-1]), t);
         }
-#line 46871 "gram.cpp"
+#line 46873 "gram.cpp"
         break;
 
         case 2255: /* AexprConst: TRUE_P  */
 #line 15634 "gram.y"
         {
-            (yyval.node) = makeBoolAConst(TRUE, (yylsp[0]));
+            (yyval.node) = makeBoolAConst(resource, TRUE, (yylsp[0]));
         }
-#line 46879 "gram.cpp"
+#line 46881 "gram.cpp"
         break;
 
         case 2256: /* AexprConst: FALSE_P  */
 #line 15638 "gram.y"
         {
-            (yyval.node) = makeBoolAConst(FALSE, (yylsp[0]));
+            (yyval.node) = makeBoolAConst(resource, FALSE, (yylsp[0]));
         }
-#line 46887 "gram.cpp"
+#line 46889 "gram.cpp"
         break;
 
         case 2257: /* AexprConst: NULL_P  */
 #line 15642 "gram.y"
         {
-            (yyval.node) = makeNullAConst((yylsp[0]));
+            (yyval.node) = makeNullAConst(resource, (yylsp[0]));
         }
-#line 46895 "gram.cpp"
+#line 46897 "gram.cpp"
         break;
 
         case 2258: /* Iconst: ICONST  */
@@ -39263,7 +39424,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 46901 "gram.cpp"
+#line 46903 "gram.cpp"
         break;
 
         case 2259: /* Sconst: SCONST  */
@@ -39271,7 +39432,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46907 "gram.cpp"
+#line 46909 "gram.cpp"
         break;
 
         case 2260: /* RoleId: NonReservedWord  */
@@ -39279,7 +39440,7 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46913 "gram.cpp"
+#line 46915 "gram.cpp"
         break;
 
         case 2261: /* QueueId: NonReservedWord  */
@@ -39287,23 +39448,23 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46919 "gram.cpp"
+#line 46921 "gram.cpp"
         break;
 
         case 2262: /* role_list: RoleId  */
 #line 15653 "gram.y"
         {
-            (yyval.list) = list_make1(makeString((yyvsp[0].str)));
+            (yyval.list) = list_make1(resource, makeString(resource, (yyvsp[0].str)));
         }
-#line 46925 "gram.cpp"
+#line 46927 "gram.cpp"
         break;
 
         case 2263: /* role_list: role_list ',' RoleId  */
 #line 15655 "gram.y"
         {
-            (yyval.list) = lappend((yyvsp[-2].list), makeString((yyvsp[0].str)));
+            (yyval.list) = lappend(resource, (yyvsp[-2].list), makeString(resource, (yyvsp[0].str)));
         }
-#line 46931 "gram.cpp"
+#line 46933 "gram.cpp"
         break;
 
         case 2264: /* SignedIconst: Iconst  */
@@ -39311,7 +39472,7 @@ yyreduce:
         {
             (yyval.ival) = (yyvsp[0].ival);
         }
-#line 46937 "gram.cpp"
+#line 46939 "gram.cpp"
         break;
 
         case 2265: /* SignedIconst: '+' Iconst  */
@@ -39319,7 +39480,7 @@ yyreduce:
         {
             (yyval.ival) = +(yyvsp[0].ival);
         }
-#line 46943 "gram.cpp"
+#line 46945 "gram.cpp"
         break;
 
         case 2266: /* SignedIconst: '-' Iconst  */
@@ -39327,7 +39488,7 @@ yyreduce:
         {
             (yyval.ival) = -(yyvsp[0].ival);
         }
-#line 46949 "gram.cpp"
+#line 46951 "gram.cpp"
         break;
 
         case 2267: /* ColId: IDENT  */
@@ -39335,23 +39496,23 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46955 "gram.cpp"
+#line 46957 "gram.cpp"
         break;
 
         case 2268: /* ColId: unreserved_keyword  */
 #line 15677 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 46961 "gram.cpp"
+#line 46963 "gram.cpp"
         break;
 
         case 2269: /* ColId: col_name_keyword  */
 #line 15678 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 46967 "gram.cpp"
+#line 46969 "gram.cpp"
         break;
 
         case 2270: /* type_function_name: IDENT  */
@@ -39359,23 +39520,23 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46973 "gram.cpp"
+#line 46975 "gram.cpp"
         break;
 
         case 2271: /* type_function_name: unreserved_keyword  */
 #line 15684 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 46979 "gram.cpp"
+#line 46981 "gram.cpp"
         break;
 
         case 2272: /* type_function_name: type_func_name_keyword  */
 #line 15685 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 46985 "gram.cpp"
+#line 46987 "gram.cpp"
         break;
 
         case 2273: /* NonReservedWord: IDENT  */
@@ -39383,31 +39544,31 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 46991 "gram.cpp"
+#line 46993 "gram.cpp"
         break;
 
         case 2274: /* NonReservedWord: unreserved_keyword  */
 #line 15691 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 46997 "gram.cpp"
+#line 46999 "gram.cpp"
         break;
 
         case 2275: /* NonReservedWord: col_name_keyword  */
 #line 15692 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47003 "gram.cpp"
+#line 47005 "gram.cpp"
         break;
 
         case 2276: /* NonReservedWord: type_func_name_keyword  */
 #line 15693 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47009 "gram.cpp"
+#line 47011 "gram.cpp"
         break;
 
         case 2277: /* ColLabel: IDENT  */
@@ -39415,66 +39576,66 @@ yyreduce:
         {
             (yyval.str) = (yyvsp[0].str);
         }
-#line 47015 "gram.cpp"
+#line 47017 "gram.cpp"
         break;
 
         case 2278: /* ColLabel: unreserved_keyword  */
 #line 15700 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47021 "gram.cpp"
+#line 47023 "gram.cpp"
         break;
 
         case 2279: /* ColLabel: col_name_keyword  */
 #line 15701 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47027 "gram.cpp"
+#line 47029 "gram.cpp"
         break;
 
         case 2280: /* ColLabel: type_func_name_keyword  */
 #line 15702 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47033 "gram.cpp"
+#line 47035 "gram.cpp"
         break;
 
         case 2281: /* ColLabel: reserved_keyword  */
 #line 15703 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47039 "gram.cpp"
+#line 47041 "gram.cpp"
         break;
 
         case 2598: /* ColLabelNoAs: keywords_ok_in_alias_no_as  */
 #line 16052 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47045 "gram.cpp"
+#line 47047 "gram.cpp"
         break;
 
         case 2604: /* PartitionColId: PartitionIdentKeyword  */
 #line 16062 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].keyword));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].keyword));
         }
-#line 47051 "gram.cpp"
+#line 47053 "gram.cpp"
         break;
 
         case 2605: /* PartitionColId: IDENT  */
 #line 16063 "gram.y"
         {
-            (yyval.str) = pstrdup((yyvsp[0].str));
+            (yyval.str) = pstrdup(resource, (yyvsp[0].str));
         }
-#line 47057 "gram.cpp"
+#line 47059 "gram.cpp"
         break;
 
-#line 47061 "gram.cpp"
+#line 47063 "gram.cpp"
 
         default:
             break;
@@ -39519,7 +39680,7 @@ yyerrlab:
     /* If not already recovering from an error, report this error.  */
     if (!yyerrstatus) {
         ++yynerrs;
-        yyerror(&yylloc, yyscanner, YY_("syntax error"));
+        yyerror(&yylloc, resource, yyscanner, YY_("syntax error"));
     }
 
     yyerror_range[1] = yylloc;
@@ -39532,7 +39693,7 @@ yyerrlab:
             if (yychar == YYEOF)
                 YYABORT;
         } else {
-            yydestruct("Error: discarding", yytoken, &yylval, &yylloc, yyscanner);
+            yydestruct("Error: discarding", yytoken, &yylval, &yylloc, resource, yyscanner);
             yychar = YYEMPTY;
         }
     }
@@ -39582,7 +39743,7 @@ yyerrlab1:
             YYABORT;
 
         yyerror_range[1] = *yylsp;
-        yydestruct("Error: popping", YY_ACCESSING_SYMBOL(yystate), yyvsp, yylsp, yyscanner);
+        yydestruct("Error: popping", YY_ACCESSING_SYMBOL(yystate), yyvsp, yylsp, resource, yyscanner);
         YYPOPSTACK(1);
         yystate = *yyssp;
         YY_STACK_PRINT(yyss, yyssp);
@@ -39620,7 +39781,7 @@ yyabortlab:
 | yyexhaustedlab -- YYNOMEM (memory exhaustion) comes here.  |
 `-----------------------------------------------------------*/
 yyexhaustedlab:
-    yyerror(&yylloc, yyscanner, YY_("memory exhausted"));
+    yyerror(&yylloc, resource, yyscanner, YY_("memory exhausted"));
     yyresult = 2;
     goto yyreturnlab;
 
@@ -39632,14 +39793,14 @@ yyreturnlab:
         /* Make sure we have latest lookahead translation.  See comments at
          user semantic actions for why this is necessary.  */
         yytoken = YYTRANSLATE(yychar);
-        yydestruct("Cleanup: discarding lookahead", yytoken, &yylval, &yylloc, yyscanner);
+        yydestruct("Cleanup: discarding lookahead", yytoken, &yylval, &yylloc, resource, yyscanner);
     }
     /* Do not reclaim the symbols of the rule whose action triggered
      this YYABORT or YYACCEPT.  */
     YYPOPSTACK(yylen);
     YY_STACK_PRINT(yyss, yyssp);
     while (yyssp != yyss) {
-        yydestruct("Cleanup: popping", YY_ACCESSING_SYMBOL(+*yyssp), yyvsp, yylsp, yyscanner);
+        yydestruct("Cleanup: popping", YY_ACCESSING_SYMBOL(+*yyssp), yyvsp, yylsp, resource, yyscanner);
         YYPOPSTACK(1);
     }
 #ifndef yyoverflow
@@ -39657,33 +39818,40 @@ yyreturnlab:
  * ignore the passed yylloc and instead use the last token position
  * available from the scanner.
  */
-static void base_yyerror(YYLTYPE* yylloc, core_yyscan_t yyscanner, const char* msg) { parser_yyerror(msg); }
+static void
+base_yyerror(YYLTYPE* yylloc, std::pmr::memory_resource* resource, core_yyscan_t yyscanner, const char* msg) {
+    parser_yyerror(msg);
+}
 
-static Node* makeColumnRef(char* colname, List* indirection, int location, core_yyscan_t yyscanner) {
+static Node* makeColumnRef(std::pmr::memory_resource* resource,
+                           char* colname,
+                           List* indirection,
+                           int location,
+                           core_yyscan_t yyscanner) {
     /*
 	 * Generate a ColumnRef node, with an A_Indirection node added if there
 	 * is any subscripting in the specified indirection list.  However,
 	 * any field selection at the start of the indirection list must be
 	 * transposed into the "fields" part of the ColumnRef node.
 	 */
-    ColumnRef* c = makeNode(ColumnRef);
+    ColumnRef* c = makeNode(resource, ColumnRef);
     int nfields = 0;
     ListCell* l;
 
     c->location = location;
     foreach (l, indirection) {
         if (IsA(lfirst(l), A_Indices)) {
-            A_Indirection* i = makeNode(A_Indirection);
+            A_Indirection* i = makeNode(resource, A_Indirection);
 
             if (nfields == 0) {
                 /* easy case - all indirection goes to A_Indirection */
-                c->fields = list_make1(makeString(colname));
+                c->fields = list_make1(resource, makeString(resource, colname));
                 i->indirection = check_indirection(indirection, yyscanner);
             } else {
                 /* got to split the list in two */
-                i->indirection = check_indirection(list_copy_tail(indirection, nfields), yyscanner);
+                i->indirection = check_indirection(list_copy_tail(resource, indirection, nfields), yyscanner);
                 indirection = list_truncate(indirection, nfields);
-                c->fields = lcons(makeString(colname), indirection);
+                c->fields = lcons(resource, makeString(resource, colname), indirection);
             }
             i->arg = reinterpret_cast<Node*>(c);
             return reinterpret_cast<Node*>(i);
@@ -39695,20 +39863,20 @@ static Node* makeColumnRef(char* colname, List* indirection, int location, core_
         nfields++;
     }
     /* No subscripting, so all indirection gets added to field list */
-    c->fields = lcons(makeString(colname), indirection);
+    c->fields = lcons(resource, makeString(resource, colname), indirection);
     return reinterpret_cast<Node*>(c);
 }
 
-static Node* makeTypeCast(Node* arg, TypeName* type, int location) {
-    TypeCast* n = makeNode(TypeCast);
+static Node* makeTypeCast(std::pmr::memory_resource* resource, Node* arg, TypeName* type, int location) {
+    TypeCast* n = makeNode(resource, TypeCast);
     n->arg = arg;
     n->typeName = type;
     n->location = location;
     return (Node*) n;
 }
 
-static Node* makeStringConst(char* str, int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeStringConst(std::pmr::memory_resource* resource, char* str, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_String;
     n->val.val.str = str;
@@ -39717,14 +39885,14 @@ static Node* makeStringConst(char* str, int location) {
     return (Node*) n;
 }
 
-static Node* makeStringConstCast(char* str, int location, TypeName* type) {
-    Node* s = makeStringConst(str, location);
+static Node* makeStringConstCast(std::pmr::memory_resource* resource, char* str, int location, TypeName* type) {
+    Node* s = makeStringConst(resource, str, location);
 
-    return makeTypeCast(s, type, -1);
+    return makeTypeCast(resource, s, type, -1);
 }
 
-static Node* makeIntConst(int val, int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeIntConst(std::pmr::memory_resource* resource, int val, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_Integer;
     n->val.val.ival = val;
@@ -39733,8 +39901,8 @@ static Node* makeIntConst(int val, int location) {
     return (Node*) n;
 }
 
-static Node* makeFloatConst(char* str, int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeFloatConst(std::pmr::memory_resource* resource, char* str, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_Float;
     n->val.val.str = str;
@@ -39743,8 +39911,8 @@ static Node* makeFloatConst(char* str, int location) {
     return reinterpret_cast<Node*>(n);
 }
 
-static Node* makeBitStringConst(char* str, int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeBitStringConst(std::pmr::memory_resource* resource, char* str, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_BitString;
     n->val.val.str = str;
@@ -39753,8 +39921,8 @@ static Node* makeBitStringConst(char* str, int location) {
     return reinterpret_cast<Node*>(n);
 }
 
-static Node* makeNullAConst(int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeNullAConst(std::pmr::memory_resource* resource, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_Null;
     n->location = location;
@@ -39762,21 +39930,21 @@ static Node* makeNullAConst(int location) {
     return reinterpret_cast<Node*>(n);
 }
 
-static Node* makeAConst(Value* v, int location) {
+static Node* makeAConst(std::pmr::memory_resource* resource, Value* v, int location) {
     Node* n;
 
     switch (v->type) {
         case T_Float:
-            n = makeFloatConst(v->val.str, location);
+            n = makeFloatConst(resource, v->val.str, location);
             break;
 
         case T_Integer:
-            n = makeIntConst(v->val.ival, location);
+            n = makeIntConst(resource, v->val.ival, location);
             break;
 
         case T_String:
         default:
-            n = makeStringConst(v->val.str, location);
+            n = makeStringConst(resource, v->val.str, location);
             break;
     }
 
@@ -39786,14 +39954,14 @@ static Node* makeAConst(Value* v, int location) {
 /* makeBoolAConst()
  * Create an A_Const string node and put it inside a boolean cast.
  */
-static Node* makeBoolAConst(bool state, int location) {
-    A_Const* n = makeNode(A_Const);
+static Node* makeBoolAConst(std::pmr::memory_resource* resource, bool state, int location) {
+    A_Const* n = makeNode(resource, A_Const);
 
     n->val.type = T_String;
-    n->val.val.str = (state ? pstrdup("t") : pstrdup("f"));
+    n->val.val.str = (state ? pstrdup(resource, "t") : pstrdup(resource, "f"));
     n->location = location;
 
-    return makeTypeCast(reinterpret_cast<Node*>(n), SystemTypeName("bool"), -1);
+    return makeTypeCast(resource, reinterpret_cast<Node*>(n), SystemTypeName(resource, "bool"), -1);
 }
 
 /* check_qualified_name --- check the result of qualified_name production
@@ -39848,7 +40016,7 @@ static List* check_indirection(List* indirection, core_yyscan_t yyscanner) {
  * is needed to look up an existing function, which is what is wanted by
  * the productions that use this call.
  */
-static List* extractArgTypes(List* parameters) {
+static List* extractArgTypes(std::pmr::memory_resource* resource, List* parameters) {
     List* result = NIL;
     ListCell* i;
 
@@ -39856,7 +40024,7 @@ static List* extractArgTypes(List* parameters) {
         FunctionParameter* p = reinterpret_cast<FunctionParameter*>(lfirst(i));
 
         if (p->mode != FUNC_PARAM_OUT && p->mode != FUNC_PARAM_TABLE)
-            result = lappend(result, p->argType);
+            result = lappend(resource, result, p->argType);
     }
     return result;
 }
@@ -39864,9 +40032,9 @@ static List* extractArgTypes(List* parameters) {
 /* extractAggrArgTypes()
  * As above, but work from the output of the aggr_args production.
  */
-static List* extractAggrArgTypes(List* aggrargs) {
+static List* extractAggrArgTypes(std::pmr::memory_resource* resource, List* aggrargs) {
     Assert(list_length(aggrargs) == 2);
-    return extractArgTypes(reinterpret_cast<List*>(linitial(aggrargs)));
+    return extractArgTypes(resource, reinterpret_cast<List*>(linitial(aggrargs)));
 }
 
 /* makeOrderedSetArgs()
@@ -39874,7 +40042,8 @@ static List* extractAggrArgTypes(List* aggrargs) {
  * This handles only the case where both given lists are nonempty, so that
  * we have to deal with multiple VARIADIC arguments.
  */
-static List* makeOrderedSetArgs(List* directargs, List* orderedargs, core_yyscan_t yyscanner) {
+static List*
+makeOrderedSetArgs(std::pmr::memory_resource* resource, List* directargs, List* orderedargs, core_yyscan_t yyscanner) {
     FunctionParameter* lastd = reinterpret_cast<FunctionParameter*>(llast(directargs));
     int ndirectargs;
 
@@ -39901,7 +40070,7 @@ static List* makeOrderedSetArgs(List* directargs, List* orderedargs, core_yyscan
     /* don't merge into the next line, as list_concat changes directargs */
     ndirectargs = list_length(directargs);
 
-    return list_make2(list_concat(directargs, orderedargs), makeInteger(ndirectargs));
+    return list_make2(resource, list_concat(directargs, orderedargs), makeInteger(resource, ndirectargs));
 }
 
 /* insertSelectOptions()
@@ -39958,8 +40127,8 @@ static void insertSelectOptions(SelectStmt* stmt,
     }
 }
 
-static Node* makeSetOp(SetOperation op, bool all, Node* larg, Node* rarg) {
-    SelectStmt* n = makeNode(SelectStmt);
+static Node* makeSetOp(std::pmr::memory_resource* resource, SetOperation op, bool all, Node* larg, Node* rarg) {
+    SelectStmt* n = makeNode(resource, SelectStmt);
 
     n->op = op;
     n->all = all;
@@ -39971,7 +40140,9 @@ static Node* makeSetOp(SetOperation op, bool all, Node* larg, Node* rarg) {
 /* SystemFuncName()
  * Build a properly-qualified reference to a built-in function.
  */
-List* SystemFuncName(char* name) { return list_make2(makeString("pg_catalog"), makeString(name)); }
+List* SystemFuncName(std::pmr::memory_resource* resource, char* name) {
+    return list_make2(resource, makeString(resource, "pg_catalog"), makeString(resource, name));
+}
 
 /* SystemTypeName()
  * Build a properly-qualified reference to a built-in type.
@@ -39979,8 +40150,10 @@ List* SystemFuncName(char* name) { return list_make2(makeString("pg_catalog"), m
  * typmod is defaulted, but may be changed afterwards by caller.
  * Likewise for the location.
  */
-TypeName* SystemTypeName(char* name) {
-    return makeTypeNameFromNameList(list_make2(makeString("pg_catalog"), makeString(name)));
+TypeName* SystemTypeName(std::pmr::memory_resource* resource, char* name) {
+    return makeTypeNameFromNameList(
+        resource,
+        list_make2(resource, makeString(resource, "pg_catalog"), makeString(resource, name)));
 }
 
 /* doNegate()
@@ -39996,7 +40169,7 @@ TypeName* SystemTypeName(char* name) {
  * negative constants.	It's better to leave "-123.456" in string form
  * until we know what the desired type is.
  */
-static Node* doNegate(Node* n, int location) {
+static Node* doNegate(std::pmr::memory_resource* resource, Node* n, int location) {
     if (IsA(n, A_Const)) {
         A_Const* con = reinterpret_cast<A_Const*>(n);
 
@@ -40008,15 +40181,15 @@ static Node* doNegate(Node* n, int location) {
             return n;
         }
         if (con->val.type == T_Float) {
-            doNegateFloat(&con->val);
+            doNegateFloat(resource, &con->val);
             return n;
         }
     }
 
-    return (Node*) makeSimpleA_Expr(AEXPR_OP, "-", NULL, n, location);
+    return (Node*) makeSimpleA_Expr(resource, AEXPR_OP, "-", NULL, n, location);
 }
 
-static void doNegateFloat(Value* v) {
+static void doNegateFloat(std::pmr::memory_resource* resource, Value* v) {
     char* oldval = v->val.str;
 
     Assert(IsA(v, Float));
@@ -40025,19 +40198,20 @@ static void doNegateFloat(Value* v) {
     if (*oldval == '-')
         v->val.str = oldval + 1; /* just strip the '-' */
     else
-        v->val.str = psprintf("-%s", oldval);
+        v->val.str = psprintf(resource, "-%s", oldval);
 }
 
-static Node* makeAArrayExpr(List* elements, int location) {
-    A_ArrayExpr* n = makeNode(A_ArrayExpr);
+static Node* makeAArrayExpr(std::pmr::memory_resource* resource, List* elements, int location) {
+    A_ArrayExpr* n = makeNode(resource, A_ArrayExpr);
 
     n->elements = elements;
     n->location = location;
     return (Node*) n;
 }
 
-static Node* makeXmlExpr(XmlExprOp op, char* name, List* named_args, List* args, int location) {
-    XmlExpr* x = makeNode(XmlExpr);
+static Node*
+makeXmlExpr(std::pmr::memory_resource* resource, XmlExprOp op, char* name, List* named_args, List* args, int location) {
+    XmlExpr* x = makeNode(resource, XmlExpr);
 
     x->op = op;
     x->name = name;
@@ -40095,15 +40269,15 @@ static List* mergeTableFuncParameters(List* func_args, List* columns) {
  * Determine return type of a TABLE function.  A single result column
  * returns setof that column's type; otherwise return setof record.
  */
-static TypeName* TableFuncTypeName(List* columns) {
+static TypeName* TableFuncTypeName(std::pmr::memory_resource* resource, List* columns) {
     TypeName* result;
 
     if (list_length(columns) == 1) {
         FunctionParameter* p = reinterpret_cast<FunctionParameter*>(linitial(columns));
 
-        result = reinterpret_cast<TypeName*>(copyObject(p->argType));
+        result = reinterpret_cast<TypeName*>(copyObject(resource, p->argType));
     } else
-        result = SystemTypeName("record");
+        result = SystemTypeName(resource, "record");
 
     result->setof = true;
 
@@ -40127,12 +40301,13 @@ static void checkWindowExclude(void) {
  * Create the IS_NOT_DISTINCT_FROM expression node
  *     used by CASE x WHEN IS NOT DISTINCT FROM and DECODE()
  */
-static Node* makeIsNotDistinctFromNode(Node* expr, int position) {
+static Node* makeIsNotDistinctFromNode(std::pmr::memory_resource* resource, Node* expr, int position) {
     Node* n = reinterpret_cast<Node*>(
-        makeA_Expr(AEXPR_NOT,
+        makeA_Expr(resource,
+                   AEXPR_NOT,
                    NIL,
                    NULL,
-                   reinterpret_cast<Node*>(makeSimpleA_Expr(AEXPR_DISTINCT, "=", NULL, expr, position)),
+                   reinterpret_cast<Node*>(makeSimpleA_Expr(resource, AEXPR_DISTINCT, "=", NULL, expr, position)),
                    position));
     return n;
 }
@@ -40142,8 +40317,9 @@ static Node* makeIsNotDistinctFromNode(Node* expr, int position) {
  * makeRangeVarFromNameList, but with position support).  The
  * "AnyName" refers to the any_name production in the grammar.
  */
-static RangeVar* makeRangeVarFromAnyName(List* names, int position, core_yyscan_t yyscanner) {
-    RangeVar* r = makeNode(RangeVar);
+static RangeVar*
+makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List* names, int position, core_yyscan_t yyscanner) {
+    RangeVar* r = makeNode(resource, RangeVar);
 
     switch (list_length(names)) {
         case 1:
@@ -40287,10 +40463,10 @@ static void processCASbits(int cas_bits,
  * view definition as the query.
  * ----------
  */
-static Node* makeRecursiveViewSelect(char* relname, List* aliases, Node* query) {
-    SelectStmt* s = makeNode(SelectStmt);
-    WithClause* w = makeNode(WithClause);
-    CommonTableExpr* cte = makeNode(CommonTableExpr);
+static Node* makeRecursiveViewSelect(std::pmr::memory_resource* resource, char* relname, List* aliases, Node* query) {
+    SelectStmt* s = makeNode(resource, SelectStmt);
+    WithClause* w = makeNode(resource, WithClause);
+    CommonTableExpr* cte = makeNode(resource, CommonTableExpr);
     List* tl = NIL;
     ListCell* lc;
 
@@ -40302,27 +40478,27 @@ static Node* makeRecursiveViewSelect(char* relname, List* aliases, Node* query) 
 
     /* create WITH clause and attach CTE */
     w->recursive = true;
-    w->ctes = list_make1(cte);
+    w->ctes = list_make1(resource, cte);
     w->location = -1;
 
     /* create target list for the new SELECT from the alias list of the
 	 * recursive view specification */
     foreach (lc, aliases) {
-        ResTarget* rt = makeNode(ResTarget);
+        ResTarget* rt = makeNode(resource, ResTarget);
 
         rt->name = NULL;
         rt->indirection = NIL;
-        rt->val = makeColumnRef(strVal(lfirst(lc)), NIL, -1, 0);
+        rt->val = makeColumnRef(resource, strVal(lfirst(lc)), NIL, -1, 0);
         rt->location = -1;
 
-        tl = lappend(tl, rt);
+        tl = lappend(resource, tl, rt);
     }
 
     /* create new SELECT combining WITH clause, target list, and fake FROM
 	 * clause */
     s->withClause = w;
     s->targetList = tl;
-    s->fromClause = list_make1(makeRangeVar(NULL, relname, -1));
+    s->fromClause = list_make1(resource, makeRangeVar(resource, NULL, relname, -1));
 
     return reinterpret_cast<Node*>(s);
 }

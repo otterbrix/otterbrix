@@ -75,8 +75,8 @@ namespace otterbrix {
         wait(approved_session);
     }
 
-    auto wrapper_dispatcher_t::create_database(const session_id_t& session,
-                                               const database_name_t& database) -> cursor_t_ptr {
+    auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
+        -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_create_database(resource(), {database, {}});
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
@@ -293,7 +293,8 @@ namespace otterbrix {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
-        auto parse_result = raw_parser(query.c_str())->lst.front().data;
+        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         if (auto result = transformer_.transform(pg_cell_to_node_cast(parse_result)).finalize();
             std::holds_alternative<bind_error>(result)) {
             return make_cursor(resource(),

@@ -118,11 +118,11 @@ namespace otterbrix {
         auto schema_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
 
         // due to hashing, incoming session can be unusable, and has to be replaced
-        session_id_t init(const session_id_t& session);
-        components::cursor::cursor_t_ptr wait_result(const session_id_t& session);
-        size_t wait_size(const session_id_t& session);
+        session_id_t init(const session_id_t& session, void* local_storage);
         void wait(const session_id_t& session);
         void notify(const session_id_t& session);
+        void notify(const session_id_t& session, size_t size);
+        void notify(const session_id_t& session, components::cursor::cursor_t_ptr cursor);
 
         auto send_plan(const session_id_t& session,
                        components::logical_plan::node_ptr node,
@@ -136,8 +136,6 @@ namespace otterbrix {
         spin_lock input_mtx_;
         std::condition_variable cv_;
         impl::session_block_t blocker_;
-        components::cursor::cursor_t_ptr cursor_store_;
-        size_t size_store_;
         bool bool_store_;
     };
 } // namespace otterbrix

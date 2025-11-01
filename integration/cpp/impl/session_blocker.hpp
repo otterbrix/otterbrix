@@ -36,7 +36,7 @@ namespace otterbrix::impl {
         // this should be called when we already registered a session
         assert(it != end() && "session_block_t: session is not registered when value is being set");
         assert(!it->second.first && "session_block_t: value was already set");
-        it->second.first = true;
         *reinterpret_cast<T*>(it->second.second) = std::forward<T>(value);
+        it->second.first = true;
     }
 } // namespace otterbrix::impl

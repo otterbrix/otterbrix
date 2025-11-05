@@ -14,7 +14,7 @@ class OtterbrixConan(ConanFile):
         self.requires("pybind11/2.13.6@")
         self.requires("msgpack-cxx/4.1.1@")
         self.requires("catch2/2.13.7@")
-        self.requires("abseil/20250814.0@")
+        self.requires("abseil/20230802.1@")
         self.requires("benchmark/1.6.1@")
         self.requires("zlib/1.3.1@")
         self.requires("bzip2/1.0.8@")

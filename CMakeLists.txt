@@ -114,11 +114,11 @@ if (ENABLE_ASAN)
     include(FetchContent)
     FetchContent_Declare(
             absl
-            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20250814.0.zip
+            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.1.zip
     )
     FetchContent_MakeAvailable(absl)
 else()
-    find_package(absl 20250814.0 REQUIRED)
+    find_package(absl 20230802.1 REQUIRED)
 endif()
 
 

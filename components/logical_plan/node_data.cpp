@@ -52,9 +52,17 @@ namespace components::logical_plan {
         }
     }
 
-    node_ptr node_data_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        // TODO: deserializer data chunk
-        return make_node_raw_data(deserializer->resource(), deserializer->deserialize_documents(1));
+    node_ptr node_data_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        bool uses_data_chunk = deserializer->deserialize_bool(1);
+        node_ptr result;
+        if (uses_data_chunk) {
+            deserializer->advance_array(2);
+            result = make_node_raw_data(deserializer->resource(), vector::data_chunk_t::deserialize(deserializer));
+            deserializer->pop_array();
+        } else {
+            result = make_node_raw_data(deserializer->resource(), deserializer->deserialize_documents(2));
+        }
+        return result;
     }
 
     hash_t node_data_t::hash_impl() const { return 0; }
@@ -68,11 +76,17 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_data_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_data_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         // TODO: serializer data chunk
-        serializer->start_array(2);
-        serializer->append("type", serializer::serialization_type::logical_node_data);
-        serializer->append("documents", documents());
+        serializer->start_array(3);
+        serializer->append_enum(serializer::serialization_type::logical_node_data);
+        if (uses_data_chunk()) {
+            serializer->append(true);
+            data_chunk().serialize(serializer);
+        } else {
+            serializer->append(false);
+            serializer->append(documents());
+        }
         serializer->end_array();
     }
 

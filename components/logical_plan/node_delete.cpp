@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     const collection_full_name_t& node_delete_t::collection_from() const { return collection_from_; }
 
-    node_ptr node_delete_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_delete_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         collection_full_name_t collection = deserializer->deserialize_collection(1);
 
         deserializer->advance_array(2);
@@ -58,11 +58,15 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_delete_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_delete_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::logical_node_delete);
-        serializer->append("collection", collection_);
-        serializer->append("child nodes", children_);
+        serializer->append_enum(serializer::serialization_type::logical_node_delete);
+        serializer->append(collection_);
+        serializer->start_array(children_.size());
+        for (const auto& n : children_) {
+            n->serialize(serializer);
+        }
+        serializer->end_array();
         serializer->end_array();
     }
 

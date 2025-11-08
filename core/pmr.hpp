@@ -5,6 +5,10 @@
 #include <type_traits>
 
 namespace core::pmr {
+
+    using pmr_string_stream =
+        std::basic_stringstream<char, std::char_traits<char>, std::pmr::polymorphic_allocator<char>>;
+
     template<class Target>
     void deallocate_ptr(std::pmr::memory_resource* ptr, Target* target);
 

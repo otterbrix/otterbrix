@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     const std::pmr::vector<core::parameter_id_t>& node_function_t::args() const noexcept { return args_; }
 
-    node_ptr node_function_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_function_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
         auto args = deserializer->deserialize_param_ids(2);
         return make_node_function(deserializer->resource(), std::move(name), std::move(args));
@@ -50,11 +50,11 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_function_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_function_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::logical_node_function);
-        serializer->append("name", name_);
-        serializer->append("args", args_);
+        serializer->append_enum(serializer::serialization_type::logical_node_function);
+        serializer->append(name_);
+        serializer->append(args_);
         serializer->end_array();
     }
 

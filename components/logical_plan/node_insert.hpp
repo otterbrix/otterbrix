@@ -14,12 +14,12 @@ namespace components::logical_plan {
         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation();
         const std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation() const;
 
-        static node_ptr deserialize(serializer::base_deserializer_t* deserializer);
+        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
-        void serialize_impl(serializer::base_serializer_t* serializer) const final;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
 
         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>> key_translation_;
     };

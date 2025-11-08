@@ -29,14 +29,14 @@ namespace components::logical_plan {
 
         const limit_t& limit() const;
 
-        static node_ptr deserialize(serializer::base_deserializer_t* deserializer);
+        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         limit_t limit_;
 
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
-        void serialize_impl(serializer::base_serializer_t* serializer) const final;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
     };
 
     using node_limit_ptr = boost::intrusive_ptr<node_limit_t>;

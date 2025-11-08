@@ -16,8 +16,8 @@ namespace components::logical_plan {
 
     join_type node_join_t::type() const { return type_; }
 
-    node_ptr node_join_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_join_type(1);
+    node_ptr node_join_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto type = deserializer->deserialize_enum<join_type>(1);
         auto collection = deserializer->deserialize_collection(2);
         auto res = make_node_join(deserializer->resource(), collection, type);
         deserializer->advance_array(3);
@@ -47,12 +47,16 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_join_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_join_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::logical_node_join);
-        serializer->append("node type", type_);
-        serializer->append("collection", collection_);
-        serializer->append("child nodes", children_);
+        serializer->append_enum(serializer::serialization_type::logical_node_join);
+        serializer->append_enum(type_);
+        serializer->append(collection_);
+        serializer->start_array(children_.size());
+        for (const auto& n : children_) {
+            n->serialize(serializer);
+        }
+        serializer->end_array();
         serializer->end_array();
     }
 

@@ -9,8 +9,8 @@
 #include <components/expressions/forward.hpp>
 
 namespace components::serializer {
-    class base_deserializer_t;
-    class base_serializer_t;
+    class msgpack_deserializer_t;
+    class msgpack_serializer_t;
 } // namespace components::serializer
 
 namespace components::logical_plan {
@@ -78,8 +78,8 @@ namespace components::logical_plan {
 
         auto parameter(core::parameter_id_t id) const -> const expr_value_t&;
 
-        void serialize(serializer::base_serializer_t* serializer) const;
-        static boost::intrusive_ptr<parameter_node_t> deserialize(serializer::base_deserializer_t* deserilizer);
+        void serialize(serializer::msgpack_serializer_t* serializer) const;
+        static boost::intrusive_ptr<parameter_node_t> deserialize(serializer::msgpack_deserializer_t* deserilizer);
 
     private:
         uint16_t counter_{0};

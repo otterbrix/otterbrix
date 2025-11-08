@@ -65,9 +65,9 @@ namespace services::wal {
                  const components::logical_plan::parameter_node_ptr& params) {
         components::serializer::msgpack_serializer_t serializer(data->resource());
         serializer.start_array(4);
-        serializer.append("crc", static_cast<uint64_t>(last_crc32));
-        serializer.append("id", static_cast<uint64_t>(id));
-        serializer.append("node", data);
+        serializer.append(static_cast<uint64_t>(last_crc32));
+        serializer.append(static_cast<uint64_t>(id));
+        data->serialize(&serializer);
         params->serialize(&serializer);
         serializer.end_array();
         auto buffer = serializer.result();

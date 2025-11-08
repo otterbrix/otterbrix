@@ -75,6 +75,9 @@ namespace components::types {
         static logical_value_t bit_shift_l(const logical_value_t& value1, const logical_value_t& value2);
         static logical_value_t bit_shift_r(const logical_value_t& value1, const logical_value_t& value2);
 
+        void serialize(serializer::msgpack_serializer_t* serializer) const;
+        static logical_value_t deserialize(serializer::msgpack_deserializer_t* deserializer);
+
     private:
         complex_logical_type type_;
 

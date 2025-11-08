@@ -21,7 +21,7 @@ namespace components::logical_plan {
         return key_translation_;
     }
 
-    node_ptr node_insert_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_insert_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
 
         auto res = make_node_insert(deserializer->resource(), collection);
@@ -55,16 +55,20 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_insert_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_insert_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::logical_node_insert);
-        serializer->append("collection", collection_);
-        serializer->append("child nodes", children_);
+        serializer->append_enum(serializer::serialization_type::logical_node_insert);
+        serializer->append(collection_);
+        serializer->start_array(children_.size());
+        for (const auto& n : children_) {
+            n->serialize(serializer);
+        }
+        serializer->end_array();
         serializer->start_array(key_translation_.size());
         for (const auto& k_pair : key_translation_) {
             serializer->start_array(2);
-            serializer->append("key_1", k_pair.first);
-            serializer->append("key_2", k_pair.second);
+            serializer->append(k_pair.first);
+            serializer->append(k_pair.second);
             serializer->end_array();
         }
         serializer->end_array();

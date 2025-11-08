@@ -22,8 +22,8 @@ namespace components::logical_plan {
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }
 
-    node_ptr node_create_index_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_index_type(1);
+    node_ptr node_create_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto type = deserializer->deserialize_enum<index_type>(1);
         auto collection = deserializer->deserialize_collection(2);
         auto name = deserializer->deserialize_string(3);
         auto keys = deserializer->deserialize_keys(4);
@@ -62,13 +62,13 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_create_index_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_create_index_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(5);
-        serializer->append("type", serializer::serialization_type::logical_node_create_index);
-        serializer->append("index type", index_type_);
-        serializer->append("collection", collection_);
-        serializer->append("name", name_);
-        serializer->append("keys", keys_);
+        serializer->append_enum(serializer::serialization_type::logical_node_create_index);
+        serializer->append_enum(index_type_);
+        serializer->append(collection_);
+        serializer->append(name_);
+        serializer->append(keys_);
         serializer->end_array();
     }
 

@@ -10,9 +10,11 @@ namespace components::logical_plan {
     node_match_t::node_match_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
         : node_t(resource, node_type::match_t, collection) {}
 
-    node_ptr node_match_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_match_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
-        auto expr = deserializer->deserialize_expression(2);
+        deserializer->advance_array(2);
+        auto expr = expressions::expression_i::deserialize(deserializer);
+        deserializer->pop_array();
         return make_node_match(deserializer->resource(), collection, expr);
     }
 
@@ -34,11 +36,11 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_match_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_match_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::logical_node_match);
-        serializer->append("collection", collection_);
-        serializer->append("expression", expressions_.front());
+        serializer->append_enum(serializer::serialization_type::logical_node_match);
+        serializer->append(collection_);
+        expressions_.front()->serialize(serializer);
         serializer->end_array();
     }
 

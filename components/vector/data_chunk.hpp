@@ -77,6 +77,9 @@ namespace components::vector {
 
         std::pmr::memory_resource* resource() const;
 
+        void serialize(serializer::msgpack_serializer_t* serializer) const;
+        static data_chunk_t deserialize(serializer::msgpack_deserializer_t* deserializer);
+
     private:
         std::pmr::memory_resource* resource_;
         uint64_t count_ = 0;

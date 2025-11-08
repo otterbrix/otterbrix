@@ -11,9 +11,17 @@ namespace components::logical_plan {
     node_group_t::node_group_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
         : node_t(resource, node_type::group_t, collection) {}
 
-    node_ptr node_group_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_group_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
-        auto exprs = deserializer->deserialize_expressions(2);
+        deserializer->advance_array(2);
+        std::pmr::vector<logical_plan::expression_ptr> exprs(deserializer->resource());
+        exprs.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < deserializer->current_array_size(); i++) {
+            deserializer->advance_array(i);
+            exprs.emplace_back(expressions::expression_i::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
         return make_node_group(deserializer->resource(), collection, exprs);
     }
 
@@ -35,11 +43,15 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_group_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_group_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::logical_node_group);
-        serializer->append("collection", collection_);
-        serializer->append("expressions", expressions_);
+        serializer->append_enum(serializer::serialization_type::logical_node_group);
+        serializer->append(collection_);
+        serializer->start_array(expressions_.size());
+        for (const auto& expr : expressions_) {
+            expr->serialize(serializer);
+        }
+        serializer->end_array();
         serializer->end_array();
     }
 

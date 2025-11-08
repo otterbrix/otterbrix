@@ -21,8 +21,8 @@ namespace components::expressions {
 
     const key_t& sort_expression_t::key() const { return key_; }
 
-    expression_ptr sort_expression_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        auto order = deserializer->deserialize_sort_order(1);
+    expression_ptr sort_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto order = deserializer->deserialize_enum<sort_order>(1);
         auto key = deserializer->deserialize_key(2);
         return make_sort_expression(key, order);
     }
@@ -44,11 +44,11 @@ namespace components::expressions {
         auto* other = static_cast<const sort_expression_t*>(rhs);
         return order_ == other->order_ && key_ == other->key_;
     }
-    void sort_expression_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void sort_expression_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::expression_sort);
-        serializer->append("sort order", order_);
-        serializer->append("key", key_);
+        serializer->append_enum(serializer::serialization_type::expression_sort);
+        serializer->append_enum(order_);
+        serializer->append(key_);
         serializer->end_array();
     }
 

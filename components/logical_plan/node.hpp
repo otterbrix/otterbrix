@@ -10,8 +10,8 @@
 #include <unordered_set>
 
 namespace components::serializer {
-    class base_serializer_t;
-    class base_deserializer_t;
+    class msgpack_serializer_t;
+    class msgpack_deserializer_t;
 } // namespace components::serializer
 
 namespace components::logical_plan {
@@ -46,9 +46,9 @@ namespace components::logical_plan {
         bool operator!=(const node_t& rhs) const;
 
         hash_t hash() const;
-        virtual void serialize(serializer::base_serializer_t*) const;
+        virtual void serialize(serializer::msgpack_serializer_t*) const;
 
-        static node_ptr deserialize(serializer::base_deserializer_t* deserializer);
+        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
         std::string to_string() const;
         std::pmr::memory_resource* resource() const noexcept;
@@ -65,7 +65,7 @@ namespace components::logical_plan {
     private:
         virtual hash_t hash_impl() const = 0;
         virtual std::string to_string_impl() const = 0;
-        virtual void serialize_impl(serializer::base_serializer_t*) const = 0;
+        virtual void serialize_impl(serializer::msgpack_serializer_t*) const = 0;
     };
 
     struct node_hash final {

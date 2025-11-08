@@ -68,6 +68,10 @@ document_ptr gen_doc(int num, std::pmr::memory_resource* resource) {
 }
 
 components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_resource* resource) {
+    return gen_data_chunk(size, 0, resource);
+}
+
+components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::memory_resource* resource) {
     using namespace components::types;
     constexpr size_t array_size = 5;
 
@@ -85,11 +89,11 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_re
     chunk.set_cardinality(size);
 
     for (size_t i = 1; i <= size; i++) {
-        chunk.set_value(0, i - 1, logical_value_t{static_cast<int64_t>(i)});
-        chunk.set_value(1, i - 1, logical_value_t{gen_id(i)});
-        chunk.set_value(2, i - 1, logical_value_t{std::to_string(i)});
-        chunk.set_value(3, i - 1, logical_value_t{double(i) + 0.1});
-        chunk.set_value(4, i - 1, logical_value_t{i % 2 != 0});
+        chunk.set_value(0, i - 1, logical_value_t{static_cast<int64_t>(i + num)});
+        chunk.set_value(1, i - 1, logical_value_t{gen_id(i + num)});
+        chunk.set_value(2, i - 1, logical_value_t{std::to_string(i + num)});
+        chunk.set_value(3, i - 1, logical_value_t{double(i + num) + 0.1});
+        chunk.set_value(4, i - 1, logical_value_t{(i + num) % 2 != 0});
         /*
         {
             std::vector<logical_value_t> arr;

@@ -1,5 +1,7 @@
 #include "data_chunk.hpp"
 #include "vector_operations.hpp"
+#include <components/serialization/deserializer.hpp>
+
 #include <stdexcept>
 
 namespace components::vector {
@@ -183,6 +185,57 @@ namespace components::vector {
     }
 
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }
+
+    // TODO: serialize vector_t buffers instead of logical_values
+    void data_chunk_t::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(column_count());
+        for (const auto& column : data) {
+            serializer->start_array(2);
+            column.type().serialize(serializer);
+            serializer->start_array(size());
+            for (size_t i = 0; i < size(); i++) {
+                column.value(i).serialize(serializer);
+            }
+            serializer->end_array();
+            serializer->end_array();
+        }
+        serializer->end_array();
+    }
+
+    data_chunk_t data_chunk_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        std::pmr::vector<types::complex_logical_type> types;
+        size_t size = 0;
+        types.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < types.capacity(); i++) {
+            deserializer->advance_array(i);
+            deserializer->advance_array(0);
+            types.emplace_back(types::complex_logical_type::deserialize(deserializer));
+            deserializer->pop_array();
+            deserializer->advance_array(1);
+            size = std::max(size, deserializer->current_array_size());
+            deserializer->pop_array();
+            deserializer->pop_array();
+        }
+        if (types.empty()) {
+            deserializer->pop_array();
+            return {deserializer->resource(), types, 0};
+        }
+
+        auto res = vector::data_chunk_t(deserializer->resource(), types, size);
+        res.set_cardinality(size);
+        for (size_t i = 0; i < res.column_count(); i++) {
+            deserializer->advance_array(i);
+            deserializer->advance_array(1);
+            for (size_t j = 0; j < size; j++) {
+                deserializer->advance_array(j);
+                res.set_value(i, j, types::logical_value_t::deserialize(deserializer));
+                deserializer->pop_array();
+            }
+            deserializer->pop_array();
+            deserializer->pop_array();
+        }
+        return res;
+    }
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
         count_ = count;

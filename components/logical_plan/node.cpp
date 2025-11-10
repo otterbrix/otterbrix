@@ -83,9 +83,9 @@ namespace components::logical_plan {
         return hash_;
     }
 
-    void node_t::serialize(serializer::base_serializer_t* serializer) const { return serialize_impl(serializer); }
+    void node_t::serialize(serializer::msgpack_serializer_t* serializer) const { return serialize_impl(serializer); }
 
-    node_ptr node_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto type = deserializer->current_type();
         switch (type) {
             case serializer::serialization_type::logical_node_aggregate:

@@ -70,8 +70,8 @@ namespace components::expressions {
 
     const update_expr_t::expr_output_t& update_expr_t::output() const { return output_; }
 
-    update_expr_ptr update_expr_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_update_expr_type(1);
+    update_expr_ptr update_expr_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto type = deserializer->deserialize_enum<update_expr_type>(1);
         switch (type) {
             case update_expr_type::set:
                 return update_expr_set_t::deserialize(deserializer);
@@ -158,16 +158,16 @@ namespace components::expressions {
         return left_ == rhs.left_ && key_ == rhs.key_;
     }
 
-    void update_expr_set_t::serialize(serializer::base_serializer_t* serializer) {
+    void update_expr_set_t::serialize(serializer::msgpack_serializer_t* serializer) {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::expression_update);
-        serializer->append("expr_type", type_);
-        serializer->append("key", key_);
-        serializer->append("left", left_);
+        serializer->append_enum(serializer::serialization_type::expression_update);
+        serializer->append_enum(type_);
+        serializer->append(key_);
+        left_->serialize(serializer);
         serializer->end_array();
     }
 
-    update_expr_ptr update_expr_set_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    update_expr_ptr update_expr_set_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         update_expr_ptr res = new update_expr_set_t(deserializer->deserialize_key(2));
         deserializer->advance_array(3);
         res->left() = update_expr_t::deserialize(deserializer);
@@ -226,18 +226,18 @@ namespace components::expressions {
         return left_ == rhs.left_ && key_ == rhs.key_ && side_ == rhs.side_;
     }
 
-    void update_expr_get_value_t::serialize(serializer::base_serializer_t* serializer) {
+    void update_expr_get_value_t::serialize(serializer::msgpack_serializer_t* serializer) {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::expression_update);
-        serializer->append("expr_type", type_);
-        serializer->append("key", key_);
-        serializer->append("side", side_);
+        serializer->append_enum(serializer::serialization_type::expression_update);
+        serializer->append_enum(type_);
+        serializer->append(key_);
+        serializer->append_enum(side_);
         serializer->end_array();
     }
 
-    update_expr_ptr update_expr_get_value_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    update_expr_ptr update_expr_get_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return {
-            new update_expr_get_value_t(deserializer->deserialize_key(2), (deserializer->deserialize_expr_side(3)))};
+            new update_expr_get_value_t(deserializer->deserialize_key(2), (deserializer->deserialize_enum<side_t>(3)))};
     }
 
     bool update_expr_get_value_t::execute_impl(document::document_ptr& to,
@@ -315,15 +315,15 @@ namespace components::expressions {
         return id_ == rhs.id_;
     }
 
-    void update_expr_get_const_value_t::serialize(serializer::base_serializer_t* serializer) {
+    void update_expr_get_const_value_t::serialize(serializer::msgpack_serializer_t* serializer) {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::expression_update);
-        serializer->append("expr_type", type_);
-        serializer->append("id", id_);
+        serializer->append_enum(serializer::serialization_type::expression_update);
+        serializer->append_enum(type_);
+        serializer->append(id_);
         serializer->end_array();
     }
 
-    update_expr_ptr update_expr_get_const_value_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    update_expr_ptr update_expr_get_const_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return {new update_expr_get_const_value_t(deserializer->deserialize_param_id(2))};
     }
 
@@ -351,17 +351,17 @@ namespace components::expressions {
         return left_ == rhs.left_ && right_ == rhs.right_;
     }
 
-    void update_expr_calculate_t::serialize(serializer::base_serializer_t* serializer) {
+    void update_expr_calculate_t::serialize(serializer::msgpack_serializer_t* serializer) {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::expression_update);
-        serializer->append("expr_type", type_);
-        serializer->append("left", left_);
-        serializer->append("right", right_);
+        serializer->append_enum(serializer::serialization_type::expression_update);
+        serializer->append_enum(type_);
+        left_->serialize(serializer);
+        right_->serialize(serializer);
         serializer->end_array();
     }
 
-    update_expr_ptr update_expr_calculate_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        update_expr_ptr res = new update_expr_calculate_t(deserializer->deserialize_update_expr_type(1));
+    update_expr_ptr update_expr_calculate_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        update_expr_ptr res = new update_expr_calculate_t(deserializer->deserialize_enum<update_expr_type>(1));
         deserializer->advance_array(2);
         res->left() = update_expr_t::deserialize(deserializer);
         deserializer->pop_array();

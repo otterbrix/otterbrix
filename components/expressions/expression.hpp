@@ -5,8 +5,8 @@
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
 namespace components::serializer {
-    class base_serializer_t;
-    class base_deserializer_t;
+    class msgpack_serializer_t;
+    class msgpack_deserializer_t;
 } // namespace components::serializer
 
 namespace components::expressions {
@@ -25,8 +25,8 @@ namespace components::expressions {
         bool operator==(const expression_i& rhs) const;
         bool operator!=(const expression_i& rhs) const;
 
-        void serialize(serializer::base_serializer_t*) const;
-        static boost::intrusive_ptr<expression_i> deserialize(serializer::base_deserializer_t* deserializer);
+        void serialize(serializer::msgpack_serializer_t*) const;
+        static boost::intrusive_ptr<expression_i> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
         explicit expression_i(expression_group group);
@@ -40,11 +40,14 @@ namespace components::expressions {
 
         virtual bool equal_impl(const expression_i* rhs) const = 0;
 
-        virtual void serialize_impl(serializer::base_serializer_t*) const = 0;
+        virtual void serialize_impl(serializer::msgpack_serializer_t*) const = 0;
     };
 
     using expression_ptr = boost::intrusive_ptr<expression_i>;
     using param_storage = std::variant<core::parameter_id_t, key_t, expression_ptr>;
+
+    void serialize_param_storage(serializer::msgpack_serializer_t* serializer, const param_storage& param);
+    param_storage deserialize_param_storage(serializer::msgpack_deserializer_t* deserializer, size_t index);
 
     struct expression_hash final {
         size_t operator()(const expression_ptr& node) const { return node->hash(); }

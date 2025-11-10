@@ -16,7 +16,7 @@ namespace components::logical_plan {
 
     const std::string& node_drop_index_t::name() const noexcept { return name_; }
 
-    node_ptr node_drop_index_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_drop_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
         auto name = deserializer->deserialize_string(2);
         return make_node_drop_index(deserializer->resource(), collection, name);
@@ -30,11 +30,11 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_drop_index_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_drop_index_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(3);
-        serializer->append("type", serializer::serialization_type::logical_node_drop_index);
-        serializer->append("collection", collection_);
-        serializer->append("name", name_);
+        serializer->append_enum(serializer::serialization_type::logical_node_drop_index);
+        serializer->append(collection_);
+        serializer->append(name_);
         serializer->end_array();
     }
 

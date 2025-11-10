@@ -1,5 +1,6 @@
 #include "types.hpp"
 #include "logical_value.hpp"
+#include <components/serialization/deserializer.hpp>
 
 #include <cassert>
 
@@ -373,16 +374,126 @@ namespace components::types {
                                     std::move(alias));
     }
 
+    void complex_logical_type::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(serializer::serialization_type::complex_logical_type);
+        serializer->append_enum(type_);
+        if (extension_) {
+            serializer->append(true);
+            extension_->serialize(serializer);
+        } else {
+            serializer->append(false);
+            serializer->append_null();
+        }
+        serializer->end_array();
+    }
+
+    complex_logical_type complex_logical_type::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto type = deserializer->deserialize_enum<logical_type>(1);
+        auto extension = logical_type_extension::deserialize(deserializer);
+        return {type, std::move(extension)};
+    }
+
+    void field_description::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(3);
+        serializer->append(field_id);
+        serializer->append(required);
+        serializer->append(doc);
+        serializer->end_array();
+    }
+
+    field_description field_description::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto field_id = deserializer->deserialize_uint64(0);
+        auto required = deserializer->deserialize_bool(1);
+        auto doc = deserializer->deserialize_string(2);
+
+        return {field_id, required, std::move(doc)};
+    }
+
     logical_type_extension::logical_type_extension(extension_type t, std::string alias)
         : type_(t)
         , alias_(std::move(alias)) {}
 
     void logical_type_extension::set_alias(const std::string& alias) { alias_ = alias; }
 
+    void logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(2);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        std::unique_ptr<logical_type_extension> result = nullptr;
+        auto has_extension = deserializer->deserialize_bool(2);
+
+        if (!has_extension) {
+            return result;
+        }
+
+        deserializer->advance_array(3);
+        auto extension_type = deserializer->deserialize_enum<logical_type_extension::extension_type>(0);
+        switch (extension_type) {
+            case extension_type::GENERIC: {
+                auto alias = deserializer->deserialize_string(1);
+                result = std::make_unique<logical_type_extension>(extension_type, alias);
+                break;
+            }
+            case extension_type::ARRAY:
+                result = array_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::MAP:
+                result = map_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::LIST:
+                result = list_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::STRUCT:
+                result = struct_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::DECIMAL:
+                result = decimal_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::ENUM:
+                result = enum_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::USER:
+                result = user_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::FUNCTION:
+                result = function_logical_type_extension::deserialize(deserializer);
+                break;
+        }
+        deserializer->pop_array();
+        return result;
+    }
+
     array_logical_type_extension::array_logical_type_extension(const complex_logical_type& type, uint64_t size)
         : logical_type_extension(extension_type::ARRAY)
         , items_type_(type)
         , size_(size) {}
+
+    void array_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        items_type_.serialize(serializer);
+        serializer->append(size_);
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    array_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        deserializer->advance_array(2);
+        auto items_type = complex_logical_type::deserialize(deserializer);
+        deserializer->pop_array();
+        auto size = deserializer->deserialize_uint64(3);
+        auto res = std::make_unique<array_logical_type_extension>(std::move(items_type), size);
+        res->set_alias(alias);
+        return res;
+    }
 
     map_logical_type_extension::map_logical_type_extension(const complex_logical_type& key,
                                                            const complex_logical_type& value)
@@ -406,9 +517,42 @@ namespace components::types {
         , value_id_(value_id)
         , value_required_(value_required) {}
 
+    void map_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(7);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->append(key_id_);
+        key_.serialize(serializer);
+        serializer->append(value_id_);
+        value_.serialize(serializer);
+        serializer->append(value_required_);
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    map_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        auto key_id = deserializer->deserialize_uint64(2);
+        deserializer->advance_array(3);
+        auto key = complex_logical_type::deserialize(deserializer);
+        deserializer->pop_array();
+        auto value_id = deserializer->deserialize_uint64(4);
+        deserializer->advance_array(5);
+        auto value = complex_logical_type::deserialize(deserializer);
+        deserializer->pop_array();
+        auto value_required = deserializer->deserialize_bool(6);
+        auto res = std::make_unique<map_logical_type_extension>(key_id,
+                                                                std::move(key),
+                                                                value_id,
+                                                                std::move(value),
+                                                                value_required);
+        res->set_alias(alias);
+        return res;
+    }
+
     list_logical_type_extension::list_logical_type_extension(complex_logical_type type)
         : logical_type_extension(extension_type::LIST)
-        , type_(std::move(type))
+        , items_type_(std::move(type))
         , field_id_(0)
         , required_(true) {}
 
@@ -416,9 +560,32 @@ namespace components::types {
                                                              complex_logical_type type,
                                                              bool required)
         : logical_type_extension(extension_type::LIST)
-        , type_(std::move(type))
+        , items_type_(std::move(type))
         , field_id_(field_id)
         , required_(required) {}
+
+    void list_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(5);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        items_type_.serialize(serializer);
+        serializer->append(field_id_);
+        serializer->append(required_);
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    list_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        deserializer->advance_array(2);
+        auto type = complex_logical_type::deserialize(deserializer);
+        deserializer->pop_array();
+        auto field_id = deserializer->deserialize_uint64(3);
+        auto required = deserializer->deserialize_bool(4);
+        auto res = std::make_unique<list_logical_type_extension>(field_id, std::move(type), required);
+        res->set_alias(alias);
+        return res;
+    }
 
     struct_logical_type_extension::struct_logical_type_extension(const std::vector<complex_logical_type>& fields)
         : logical_type_extension(extension_type::STRUCT)
@@ -434,14 +601,105 @@ namespace components::types {
         assert(fields_.size() == descriptions_.size());
     }
 
+    void struct_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->start_array(fields_.size());
+        for (const auto& field : fields_) {
+            field.serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->start_array(descriptions_.size());
+        for (const auto& description : descriptions_) {
+            description.serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    struct_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        std::vector<types::complex_logical_type> types;
+        std::vector<field_description> descriptions;
+        deserializer->advance_array(2);
+        types.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < types.capacity(); i++) {
+            deserializer->advance_array(i);
+            types.emplace_back(complex_logical_type::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
+        deserializer->advance_array(3);
+        descriptions.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < descriptions.capacity(); i++) {
+            deserializer->advance_array(i);
+            descriptions.emplace_back(field_description::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
+        auto res = std::make_unique<struct_logical_type_extension>(std::move(types), std::move(descriptions));
+        res->set_alias(alias);
+        return res;
+    }
+
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
         : logical_type_extension(extension_type::DECIMAL)
         , width_(width)
         , scale_(scale) {}
 
+    void decimal_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->append(static_cast<uint64_t>(width_));
+        serializer->append(static_cast<uint64_t>(scale_));
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    decimal_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        auto width = static_cast<uint8_t>(deserializer->deserialize_uint64(2));
+        auto scale = static_cast<uint8_t>(deserializer->deserialize_uint64(3));
+        auto res = std::make_unique<decimal_logical_type_extension>(width, scale);
+        res->set_alias(alias);
+        return res;
+    }
+
     enum_logical_type_extension::enum_logical_type_extension(std::vector<logical_value_t> entries)
         : logical_type_extension(extension_type::ENUM)
         , entries_(std::move(entries)) {}
+
+    void enum_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(3);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->start_array(entries_.size());
+        for (const auto& entry : entries_) {
+            entry.serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    enum_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        std::vector<logical_value_t> entries;
+        deserializer->advance_array(2);
+        entries.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < entries.capacity(); i++) {
+            deserializer->advance_array(i);
+            entries.emplace_back(complex_logical_type::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
+        auto res = std::make_unique<enum_logical_type_extension>(std::move(entries));
+        res->set_alias(alias);
+        return res;
+    }
 
     user_logical_type_extension::user_logical_type_extension(std::string catalog,
                                                              std::vector<logical_value_t> user_type_modifiers)
@@ -449,11 +707,75 @@ namespace components::types {
         , catalog_(std::move(catalog))
         , user_type_modifiers_(std::move(user_type_modifiers)) {}
 
+    void user_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->append(catalog_);
+        serializer->start_array(user_type_modifiers_.size());
+        for (const auto& modifier : user_type_modifiers_) {
+            modifier.serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    user_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        auto catalog = deserializer->deserialize_string(2);
+        std::vector<logical_value_t> modifiers;
+        deserializer->advance_array(3);
+        modifiers.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < modifiers.capacity(); i++) {
+            deserializer->advance_array(i);
+            modifiers.emplace_back(logical_value_t::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
+        auto res = std::make_unique<user_logical_type_extension>(std::move(catalog), std::move(modifiers));
+        res->set_alias(alias);
+        return res;
+    }
+
     function_logical_type_extension::function_logical_type_extension(complex_logical_type return_type,
                                                                      std::vector<complex_logical_type> arguments)
         : logical_type_extension(extension_type::FUNCTION)
         , return_type_(std::move(return_type))
         , argument_types_(std::move(arguments)) {}
+
+    void function_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(4);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        return_type_.serialize(serializer);
+        serializer->start_array(argument_types_.size());
+        for (const auto& argument_type : argument_types_) {
+            argument_type.serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    function_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        deserializer->advance_array(2);
+        auto return_type = complex_logical_type::deserialize(deserializer);
+        deserializer->pop_array();
+        std::vector<complex_logical_type> argument_types;
+        deserializer->advance_array(3);
+        argument_types.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < argument_types.capacity(); i++) {
+            deserializer->advance_array(i);
+            argument_types.emplace_back(complex_logical_type::deserialize(deserializer));
+            deserializer->pop_array();
+        }
+        deserializer->pop_array();
+        auto res = std::make_unique<function_logical_type_extension>(std::move(return_type), std::move(argument_types));
+        res->set_alias(alias);
+        return res;
+    }
 
     bool operator==(const logical_type_extension& lhs, const logical_type_extension& rhs) {
         // TODO: check with inheritance

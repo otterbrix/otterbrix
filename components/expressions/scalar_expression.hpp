@@ -22,7 +22,7 @@ namespace components::expressions {
 
         void append_param(const param_storage& param);
 
-        static expression_ptr deserialize(serializer::base_deserializer_t* deserializer);
+        static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         scalar_type type_;
@@ -32,7 +32,7 @@ namespace components::expressions {
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
         bool equal_impl(const expression_i* rhs) const final;
-        void serialize_impl(serializer::base_serializer_t* serializer) const final;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
     };
 
     scalar_expression_ptr

@@ -144,7 +144,9 @@ namespace components::sql::transform {
                         auto schema = strVal(it++->data);
                         auto collection = strVal(it++->data);
                         auto name = strVal(it->data);
-                        return logical_plan::make_node_drop_index(resource_, {uuid, database, schema, collection}, name);
+                        return logical_plan::make_node_drop_index(resource_,
+                                                                  {uuid, database, schema, collection},
+                                                                  name);
                     }
                     default:
                         throw parser_exception_t{"incorrect drop: arguments size", ""};

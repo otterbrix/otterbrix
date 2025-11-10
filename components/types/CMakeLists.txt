@@ -21,9 +21,11 @@ target_include_directories(
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME}
+        otterbrix::serialization
         absl::int128
         Boost::boost
         msgpackc-cxx
+        magic_enum::magic_enum
 )
 
 if (DEV_MODE)

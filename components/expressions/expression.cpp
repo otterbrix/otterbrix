@@ -26,9 +26,11 @@ namespace components::expressions {
 
     bool expression_i::operator!=(const expression_i& rhs) const { return !operator==(rhs); }
 
-    void expression_i::serialize(serializer::base_serializer_t* serializer) const { return serialize_impl(serializer); }
+    void expression_i::serialize(serializer::msgpack_serializer_t* serializer) const {
+        return serialize_impl(serializer);
+    }
 
-    boost::intrusive_ptr<expression_i> expression_i::deserialize(serializer::base_deserializer_t* deserializer) {
+    boost::intrusive_ptr<expression_i> expression_i::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto type = deserializer->current_type();
         switch (type) {
             case serializer::serialization_type::expression_compare:
@@ -46,5 +48,51 @@ namespace components::expressions {
 
     expression_i::expression_i(expression_group group)
         : group_(group) {}
+
+    enum class param_storage_tag : uint8_t
+    {
+        parameter_id,
+        key,
+        expression
+    };
+
+    param_storage deserialize_param_storage(serializer::msgpack_deserializer_t* deserializer, size_t index) {
+        param_storage res;
+        deserializer->advance_array(index);
+        auto tag = deserializer->deserialize_enum<param_storage_tag>(0);
+        if (tag == param_storage_tag::parameter_id) {
+            res = deserializer->deserialize_param_id(1);
+        } else if (tag == param_storage_tag::expression) {
+            deserializer->advance_array(1);
+            res = expressions::expression_i::deserialize(deserializer);
+            deserializer->pop_array();
+        } else {
+            res = deserializer->deserialize_key(1);
+        }
+        deserializer->pop_array();
+        return res;
+    }
+
+    void serialize_param_storage(serializer::msgpack_serializer_t* serializer, const param_storage& param) {
+        std::visit(
+            [&](const auto& value) {
+                serializer->start_array(2);
+                using param_type = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<param_type, core::parameter_id_t>) {
+                    serializer->append_enum(param_storage_tag::parameter_id);
+                    serializer->append(value);
+                } else if constexpr (std::is_same_v<param_type, expressions::key_t>) {
+                    serializer->append_enum(param_storage_tag::key);
+                    serializer->append(value);
+                } else if constexpr (std::is_same_v<param_type, expressions::expression_ptr>) {
+                    serializer->append_enum(param_storage_tag::expression);
+                    value->serialize(serializer);
+                } else {
+                    assert(false);
+                }
+                serializer->end_array();
+            },
+            param);
+    }
 
 } // namespace components::expressions

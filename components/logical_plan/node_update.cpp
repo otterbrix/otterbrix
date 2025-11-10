@@ -29,7 +29,7 @@ namespace components::logical_plan {
 
     const collection_full_name_t& node_update_t::collection_from() const { return collection_from_; }
 
-    node_ptr node_update_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_update_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection_to = deserializer->deserialize_collection(1);
         auto collection_from = deserializer->deserialize_collection(2);
 
@@ -83,14 +83,22 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_update_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_update_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(6);
-        serializer->append("type", serializer::serialization_type::logical_node_update);
-        serializer->append("collection_to", collection_);
-        serializer->append("collection_from", collection_from_);
-        serializer->append("child nodes", children_);
-        serializer->append("updates", update_expressions_);
-        serializer->append("upsert", upsert_);
+        serializer->append_enum(serializer::serialization_type::logical_node_update);
+        serializer->append(collection_);
+        serializer->append(collection_from_);
+        serializer->start_array(children_.size());
+        for (const auto& n : children_) {
+            n->serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->start_array(update_expressions_.size());
+        for (const auto& expr : update_expressions_) {
+            expr->serialize(serializer);
+        }
+        serializer->end_array();
+        serializer->append(upsert_);
         serializer->end_array();
     }
 

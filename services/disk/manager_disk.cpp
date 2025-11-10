@@ -376,7 +376,7 @@ namespace services::disk {
         if (metafile_indexes_) {
             components::serializer::msgpack_serializer_t serializer(resource());
             serializer.start_array(1);
-            serializer.append("index", index);
+            index->serialize(&serializer);
             serializer.end_array();
             auto buf = serializer.result();
             auto size = buf.size();

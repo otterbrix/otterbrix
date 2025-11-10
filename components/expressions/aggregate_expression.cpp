@@ -52,10 +52,16 @@ namespace components::expressions {
 
     void aggregate_expression_t::append_param(const param_storage& param) { params_.push_back(param); }
 
-    expression_ptr aggregate_expression_t::deserialize(serializer::base_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_aggregate_type(1);
+    expression_ptr aggregate_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto type = deserializer->deserialize_enum<aggregate_type>(1);
         auto key = deserializer->deserialize_key(2);
-        auto params = deserializer->deserialize_param_storages(3);
+        std::pmr::vector<expressions::param_storage> params(deserializer->resource());
+        deserializer->advance_array(3);
+        params.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < deserializer->current_array_size(); i++) {
+            params.emplace_back(expressions::deserialize_param_storage(deserializer, i));
+        }
+        deserializer->pop_array();
         auto res = make_aggregate_expression(deserializer->resource(), type, key);
         for (const auto& param : params) {
             res->append_param(param);
@@ -97,12 +103,16 @@ namespace components::expressions {
                std::equal(params_.begin(), params_.end(), other->params_.begin());
     }
 
-    void aggregate_expression_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void aggregate_expression_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(4);
-        serializer->append("type", serializer::serialization_type::expression_aggregate);
-        serializer->append("aggregate type", type_);
-        serializer->append("key", key_);
-        serializer->append("parameters", params_);
+        serializer->append_enum(serializer::serialization_type::expression_aggregate);
+        serializer->append_enum(type_);
+        serializer->append(key_);
+        serializer->start_array(params_.size());
+        for (const auto& p : params_) {
+            serialize_param_storage(serializer, p);
+        }
+        serializer->end_array();
         serializer->end_array();
     }
 

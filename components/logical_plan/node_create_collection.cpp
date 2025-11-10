@@ -14,7 +14,7 @@ namespace components::logical_plan {
         : node_t(resource, node_type::create_collection_t, collection)
         , schema_(std::move(schema)) {}
 
-    node_ptr node_create_collection_t::deserialize(serializer::base_deserializer_t* deserializer) {
+    node_ptr node_create_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return make_node_create_collection(deserializer->resource(), deserializer->deserialize_collection(1));
     }
 
@@ -28,10 +28,10 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_create_collection_t::serialize_impl(serializer::base_serializer_t* serializer) const {
+    void node_create_collection_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(2);
-        serializer->append("type", serializer::serialization_type::logical_node_create_collection);
-        serializer->append("collection", collection_);
+        serializer->append_enum(serializer::serialization_type::logical_node_create_collection);
+        serializer->append(collection_);
         serializer->end_array();
     }
 

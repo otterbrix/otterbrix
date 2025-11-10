@@ -16,12 +16,12 @@ namespace components::logical_plan {
         const std::string& name() const noexcept;
         const std::pmr::vector<core::parameter_id_t>& args() const noexcept;
 
-        static node_ptr deserialize(serializer::base_deserializer_t* deserializer);
+        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
-        void serialize_impl(serializer::base_serializer_t* serializer) const final;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
 
         std::string name_;
         std::pmr::vector<core::parameter_id_t> args_;

@@ -24,26 +24,9 @@ TEST_CASE("serialization::document") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(10, &resource);
     {
-        json_serializer_t serializer(&resource);
-        serializer.start_array(1);
-        serializer.append("doc", doc1);
-        serializer.end_array();
-        json_deserializer_t deserializer(serializer.result());
-        auto doc2 = deserializer.deserialize_document(0);
-        REQUIRE(doc1->count() == doc2->count());
-        REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
-        REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));
-        REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
-        REQUIRE(doc1->get_double("/countDouble") == Approx(doc2->get_double("/countDouble")));
-        REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
-        REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
-        REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
-        REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
-    }
-    {
         msgpack_serializer_t serializer(&resource);
         serializer.start_array(1);
-        serializer.append("doc", doc1);
+        serializer.append(doc1);
         serializer.end_array();
         msgpack_deserializer_t deserializer(serializer.result());
         auto doc2 = deserializer.deserialize_document(0);
@@ -56,6 +39,25 @@ TEST_CASE("serialization::document") {
         REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
         REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
         REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
+    }
+}
+TEST_CASE("serialization::data_chunk") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto chunk1 = gen_data_chunk(10, &resource);
+    {
+        msgpack_serializer_t serializer(&resource);
+        serializer.start_array(1);
+        chunk1.serialize(&serializer);
+        serializer.end_array();
+        msgpack_deserializer_t deserializer(serializer.result());
+        deserializer.advance_array(0);
+        auto chunk2 = components::vector::data_chunk_t::deserialize(&deserializer);
+        deserializer.pop_array();
+        for (size_t i = 0; i < chunk1.column_count(); i++) {
+            for (size_t j = 0; j < chunk1.size(); j++) {
+                REQUIRE(chunk1.value(i, j) == chunk2.value(i, j));
+            }
+        }
     }
 }
 TEST_CASE("serialization::expressions") {
@@ -73,23 +75,6 @@ TEST_CASE("serialization::expressions") {
                                                        key{"some other key"},
                                                        core::parameter_id_t{2}));
 
-        {
-            json_serializer_t serializer(&resource);
-            serializer.start_array(1);
-            expr_and->serialize(&serializer);
-            serializer.end_array();
-            auto res = serializer.result();
-            REQUIRE(res == R"_([[17,10,0,null,null,0,[)_"
-                           R"_([17,3,1,"some key",null,1,[]],)_"
-                           R"_([17,4,2,null,"some other key",2,[]]]]])_");
-            json_deserializer_t deserializer(res);
-            deserializer.advance_array(0);
-            auto type = deserializer.current_type();
-            assert(type == serialization_type::expression_compare);
-            auto deserialized_res = compare_expression_t::deserialize(&deserializer);
-            deserializer.pop_array();
-            REQUIRE(expr_and->to_string() == deserialized_res->to_string());
-        }
         {
             msgpack_serializer_t serializer(&resource);
             serializer.start_array(1);
@@ -121,25 +106,6 @@ TEST_CASE("serialization::expressions") {
         expressions.emplace_back(std::move(agg_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);
         {
-            json_serializer_t serializer(&resource);
-            serializer.start_array(1);
-            node_group->serialize(&serializer);
-            serializer.end_array();
-            auto res = serializer.result();
-            REQUIRE(res == R"_([[13,["database","collection"],[)_"
-                           R"_([19,1,"_id",["date"]],)_"
-                           R"_([18,2,"total",)_"
-                           R"_([[19,4,null,["price","quantity"]]]],)_"
-                           R"_([18,5,"avg_quantity",["quantity"]]]]])_");
-            json_deserializer_t deserializer(res);
-            deserializer.advance_array(0);
-            auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_group);
-            auto deserialized_res = node_t::deserialize(&deserializer);
-            REQUIRE(node_group->to_string() == deserialized_res->to_string());
-            deserializer.pop_array();
-        }
-        {
             msgpack_serializer_t serializer(&resource);
             serializer.start_array(1);
             node_group->serialize(&serializer);
@@ -168,36 +134,6 @@ TEST_CASE("serialization::logical_plan") {
             make_compare_expression(&resource, compare_type::gt, side_t::left, key{"count"}, core::parameter_id_t{1})));
     auto params = make_parameter_node(&resource);
     params->add_parameter(core::parameter_id_t{1}, new_value(90));
-    {
-        json_serializer_t serializer(&resource);
-        serializer.start_array(2);
-        node_delete->serialize(&serializer);
-        params->serialize(&serializer);
-        serializer.end_array();
-        auto res = serializer.result();
-        REQUIRE(res == R"_([[5,["database","collection"],)_"
-                       R"_([[12,["database","collection"],)_"
-                       R"_([17,3,1,"count",null,1,[]]],)_"
-                       R"_([11,["database","collection"],-1]]],)_"
-                       R"_([22,[[1,90]]]])_");
-        json_deserializer_t deserializer(res);
-        deserializer.advance_array(0);
-        {
-            auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_delete);
-            auto deserialized_res = node_t::deserialize(&deserializer);
-            REQUIRE(node_delete->to_string() == deserialized_res->to_string());
-        }
-        deserializer.pop_array();
-        deserializer.advance_array(1);
-        {
-            auto type = deserializer.current_type();
-            assert(type == serialization_type::parameters);
-            auto deserialized_res = parameter_node_t::deserialize(&deserializer);
-            REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
-        }
-        deserializer.pop_array();
-    }
     {
         msgpack_serializer_t serializer(&resource);
         serializer.start_array(2);

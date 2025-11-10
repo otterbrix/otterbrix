@@ -33,21 +33,22 @@ namespace components::logical_plan {
         return get_parameter(&values_, id);
     }
 
-    void parameter_node_t::serialize(serializer::base_serializer_t* serializer) const {
+    void parameter_node_t::serialize(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(2);
-        serializer->append("type", serializer::serialization_type::parameters);
+        serializer->append_enum(serializer::serialization_type::parameters);
         serializer->start_array(values_.parameters.size());
         for (const auto& [key, value] : values_.parameters) {
             serializer->start_array(2);
-            serializer->append("key", key);
-            serializer->append("value", value);
+            serializer->append(key);
+            serializer->append(value);
             serializer->end_array();
         }
         serializer->end_array();
         serializer->end_array();
     }
 
-    boost::intrusive_ptr<parameter_node_t> parameter_node_t::deserialize(serializer::base_deserializer_t* deserilizer) {
+    boost::intrusive_ptr<parameter_node_t>
+    parameter_node_t::deserialize(serializer::msgpack_deserializer_t* deserilizer) {
         auto res = make_parameter_node(deserilizer->resource());
         deserilizer->advance_array(1);
         for (size_t i = 0; i < deserilizer->current_array_size(); i++) {

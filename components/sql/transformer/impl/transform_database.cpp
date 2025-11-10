@@ -11,5 +11,4 @@ namespace components::sql::transform {
         return logical_plan::make_node_drop_database(resource_, {node.dbname, collection_name_t()});
     }
 
-
 } // namespace components::sql::transform

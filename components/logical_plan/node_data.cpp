@@ -1,12 +1,30 @@
 #include "node_data.hpp"
 
-#include <components/serialization/deserializer.hpp>
+#include <components/types/operations_helper.hpp>
 
+#include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 
 #include <sstream>
 
 namespace components::logical_plan {
+
+    namespace impl {
+        template<typename T = void>
+        struct set_doc_value;
+
+        template<>
+        struct set_doc_value<void> {
+            template<typename T>
+            constexpr auto operator()(std::string_view key,
+                                      document::document_ptr& doc,
+                                      const vector::data_chunk_t& chunk,
+                                      size_t row,
+                                      size_t column) const {
+                doc->set(key, chunk.data[column].data<T>()[row]);
+            }
+        };
+    } // namespace impl
 
     node_data_t::node_data_t(std::pmr::memory_resource* resource,
                              std::pmr::vector<components::document::document_ptr>&& documents)
@@ -42,6 +60,30 @@ namespace components::logical_plan {
 
     bool node_data_t::uses_documents() const {
         return std::holds_alternative<std::pmr::vector<document::document_ptr>>(data_);
+    }
+
+    void node_data_t::convert_to_documents() {
+        if (uses_documents()) {
+            return;
+        }
+
+        const auto& chunk = std::get<components::vector::data_chunk_t>(data_);
+        std::pmr::vector<document::document_ptr> documents(chunk.resource());
+        documents.reserve(chunk.size());
+
+        for (size_t i = 0; i < chunk.size(); i++) {
+            documents.emplace_back(document::make_document(chunk.resource()));
+            for (size_t j = 0; j < chunk.column_count(); j++) {
+                types::simple_physical_type_switch<impl::set_doc_value>(chunk.data[j].type().to_physical_type(),
+                                                                        chunk.data[j].type().alias(),
+                                                                        documents.back(),
+                                                                        chunk,
+                                                                        i,
+                                                                        j);
+            }
+        }
+
+        data_ = std::move(documents);
     }
 
     size_t node_data_t::size() const {

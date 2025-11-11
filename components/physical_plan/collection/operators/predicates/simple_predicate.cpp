@@ -71,20 +71,17 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::equals;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() == it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        return document_right->compare(expr->key_right().as_string(), it->second) ==
-                               types::compare_t::equals;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() ==
+                               it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::equals;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() == it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        return document_right->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::equals;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() == it->second;
                     }
                     return false;
                 })};
@@ -106,20 +103,17 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) !=
-                               types::compare_t::equals;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() != it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        return document_right->compare(expr->key_right().as_string(), it->second) !=
-                               types::compare_t::equals;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() !=
+                               it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) !=
-                               types::compare_t::equals;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() != it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        return document_right->compare(expr->key_left().as_string(), it->second) !=
-                               types::compare_t::equals;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() != it->second;
                     }
                     return false;
                 })};
@@ -141,20 +135,16 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::more;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() > it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        return document_right->compare(expr->key_right().as_string(), it->second) ==
-                               types::compare_t::more;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() > it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::more;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() > it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        return document_right->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::more;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() > it->second;
                     }
                     return false;
                 })};
@@ -176,20 +166,17 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() >= it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        auto comp = document_right->compare(expr->key_right().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() >=
+                               it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() >= it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        auto comp = document_right->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::more;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() >= it->second;
                     }
                     return false;
                 })};
@@ -211,20 +198,16 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::less;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() < it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        return document_right->compare(expr->key_right().as_string(), it->second) ==
-                               types::compare_t::less;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() < it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        return document_left->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::less;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() < it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        return document_right->compare(expr->key_left().as_string(), it->second) ==
-                               types::compare_t::less;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() < it->second;
                     }
                     return false;
                 })};
@@ -246,20 +229,17 @@ namespace components::collection::operators::predicates {
                         return false;
                     }
                     if (expr->side() == expressions::side_t::left) {
-                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() <= it->second;
                     }
                     if (expr->side() == expressions::side_t::right) {
-                        auto comp = document_right->compare(expr->key_right().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                        return document_right->get_value(expr->key_right().as_string()).as_logical_value() <=
+                               it->second;
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
-                        auto comp = document_left->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                        return document_left->get_value(expr->key_left().as_string()).as_logical_value() <= it->second;
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
-                        auto comp = document_right->compare(expr->key_left().as_string(), it->second);
-                        return comp == types::compare_t::equals || comp == types::compare_t::less;
+                        return document_right->get_value(expr->key_left().as_string()).as_logical_value() <= it->second;
                     }
                     return false;
                 })};
@@ -292,26 +272,30 @@ namespace components::collection::operators::predicates {
                     if (expr->side() == expressions::side_t::left) {
                         return document_left->type_by_key(expr->key_left().as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
-                               std::regex_match(document_left->get_string(expr->key_left().as_string()).data(),
-                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                               std::regex_match(
+                                   document_left->get_string(expr->key_left().as_string()).data(),
+                                   std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
                     if (expr->side() == expressions::side_t::right) {
                         return document_right->type_by_key(expr->key_right().as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
-                               std::regex_match(document_right->get_string(expr->key_right().as_string()).data(),
-                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                               std::regex_match(
+                                   document_right->get_string(expr->key_right().as_string()).data(),
+                                   std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
                     if (document_left->is_exists(expr->key_left().as_string())) {
                         return document_left->type_by_key(expr->key_left().as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
-                               std::regex_match(document_left->get_string(expr->key_left().as_string()).data(),
-                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                               std::regex_match(
+                                   document_left->get_string(expr->key_left().as_string()).data(),
+                                   std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
                     if (document_right->is_exists(expr->key_left().as_string())) {
                         return document_right->type_by_key(expr->key_left().as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
-                               std::regex_match(document_right->get_string(expr->key_left().as_string()).data(),
-                                                std::regex(fmt::format(".*{}.*", it->second.as_string())));
+                               std::regex_match(
+                                   document_right->get_string(expr->key_left().as_string()).data(),
+                                   std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
                     return false;
                 })};

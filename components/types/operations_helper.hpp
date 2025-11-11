@@ -117,10 +117,10 @@ namespace components::types {
                 return callback.template operator()<uint64_t>(std::forward<Args>(args)...);
             case physical_type::INT64:
                 return callback.template operator()<int64_t>(std::forward<Args>(args)...);
-            // case physical_type::UINT128:
-            //     return callback.template operator()<uint128_t>(std::forward<Args>(args)...);
-            // case physical_type::INT128:
-            //     return callback.template operator()<int128_t>(std::forward<Args>(args)...);
+            case physical_type::UINT128:
+                return callback.template operator()<uint128_t>(std::forward<Args>(args)...);
+            case physical_type::INT128:
+                return callback.template operator()<int128_t>(std::forward<Args>(args)...);
             case physical_type::FLOAT:
                 return callback.template operator()<float>(std::forward<Args>(args)...);
             case physical_type::DOUBLE:
@@ -156,10 +156,10 @@ namespace components::types {
                 return double_callback.template operator()<TypeLeft, uint64_t>(std::forward<Args>(args)...);
             case physical_type::INT64:
                 return double_callback.template operator()<TypeLeft, int64_t>(std::forward<Args>(args)...);
-            // case physical_type::UINT128:
-            //     return double_callback.template operator()<TypeLeft, uint128_t>(std::forward<Args>(args)...);
-            // case physical_type::INT128:
-            //     return double_callback.template operator()<TypeLeft, int128_t>(std::forward<Args>(args)...);
+            case physical_type::UINT128:
+                return double_callback.template operator()<TypeLeft, uint128_t>(std::forward<Args>(args)...);
+            case physical_type::INT128:
+                return double_callback.template operator()<TypeLeft, int128_t>(std::forward<Args>(args)...);
             case physical_type::FLOAT:
                 return double_callback.template operator()<TypeLeft, float>(std::forward<Args>(args)...);
             case physical_type::DOUBLE:

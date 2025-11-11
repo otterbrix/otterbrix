@@ -32,15 +32,12 @@ namespace components::serializer {
         core::parameter_id_t deserialize_param_id(size_t index);
         expressions::key_t deserialize_key(size_t index);
         std::string deserialize_string(size_t index);
-        document::value_t deserialize_value(document::impl::base_document* tape, size_t index);
-        document_ptr deserialize_document(size_t index);
+        document::document_ptr deserialize_document(size_t index);
         collection_full_name_t deserialize_collection(size_t index);
 
         std::pmr::vector<core::parameter_id_t> deserialize_param_ids(size_t index);
         std::pmr::vector<expressions::key_t> deserialize_keys(size_t index);
-        std::pmr::vector<document_ptr> deserialize_documents(size_t index);
-        std::pair<core::parameter_id_t, document::value_t> deserialize_param_pair(document::impl::base_document* tape,
-                                                                                  size_t size);
+        std::pmr::vector<document::document_ptr> deserialize_documents(size_t index);
 
     private:
         std::pmr::string input_;

@@ -154,10 +154,7 @@ TEST_CASE("dispatcher::schemeful_operations") {
     test.execute_sql("INSERT INTO test.test (fld1, fld2) VALUES (1, '1'), (2, '2');");
     test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
         REQUIRE(catalog.table_exists(id));
-        // Since we have a schema, it will be treated as table, but parser only makes a document raw_data nodes
-        REQUIRE_FALSE(cur->is_success()); // should succeed, however, without type tree result as follows:
-                                          // schema failure: INTEGER in catalog, BIGINT from json
-                                          // no catalog type assertions for now
+        REQUIRE(cur->is_success());
     });
 
     // todo: add typed insert assertions with type tree introduction

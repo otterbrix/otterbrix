@@ -23,23 +23,26 @@
 // declaration should be in each translation unit.
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
-using components::document::document_ptr;
-using components::document::value_t;
+using components::document::impl::element;
+using components::document::json::json_trie_node;
+using components::document::json::json_type;
+using namespace components::types;
+using components::types::logical_value_t;
 
-value_t to_value(const py::handle& obj, components::document::impl::base_document* tape) {
+logical_value_t to_value(const py::handle& obj) {
     if (py::isinstance<py::bool_>(obj)) {
-        return value_t{tape, obj.cast<bool>()};
+        return logical_value_t{obj.cast<bool>()};
     } else if (py::isinstance<py::int_>(obj)) {
-        return value_t{tape, obj.cast<int64_t>()}; //TODO x64 long -> int64_t x32 long -> int32_t
+        return logical_value_t{obj.cast<int64_t>()}; //TODO x64 long -> int64_t x32 long -> int32_t
     } else if (py::isinstance<py::float_>(obj)) {
-        return value_t{tape, obj.cast<double>()};
+        return logical_value_t{obj.cast<double>()};
     } else if (py::isinstance<py::bytes>(obj)) {
         py::module base64 = py::module::import("base64");
-        return value_t{tape, base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>()};
+        return logical_value_t{base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>()};
     } else if (py::isinstance<py::str>(obj)) {
-        return value_t{tape, obj.cast<std::string>()};
+        return logical_value_t{obj.cast<std::string>()};
     }
-    return value_t{};
+    return logical_value_t{};
 }
 
 void build_primitive(components::document::tape_builder& builder, const py::handle& obj) noexcept {
@@ -60,7 +63,7 @@ void build_primitive(components::document::tape_builder& builder, const py::hand
 json_trie_node* build_index(const py::handle& py_obj,
                             components::document::tape_builder& builder,
                             components::document::impl::base_document* mut_src,
-                            document_t::allocator_type* allocator) {
+                            components::document::document_t::allocator_type* allocator) {
     json_trie_node* res;
 
     if (py::isinstance<py::dict>(py_obj)) {
@@ -276,7 +279,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
     } else if (py::isinstance<py::list>(condition) || py::isinstance<py::tuple>(condition)) {
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
-        auto value = params->add_parameter(to_value(condition, params->parameters().tape()));
+        auto value = params->add_parameter(to_value(condition));
         auto sub_condition = make_compare_expression(resource, type, side_t::left, ex_key_t(real_key), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
@@ -347,10 +350,10 @@ expression_ptr parse_find_condition_(std::pmr::memory_resource* resource,
 }
 
 components::expressions::param_storage parse_param(const py::handle& condition, parameter_node_t* params) {
-    auto value = to_value(condition, params->parameters().tape());
-    if (value.physical_type() == components::types::physical_type::STRING && !value.as_string().empty() &&
-        value.as_string().at(0) == '$') {
-        return ex_key_t(value.as_string().substr(1));
+    auto value = to_value(condition);
+    if (value.type().to_physical_type() == components::types::physical_type::STRING &&
+        !value.value<std::string_view>().empty() && value.value<std::string_view>().at(0) == '$') {
+        return ex_key_t(value.value<std::string_view>().substr(1));
     } else {
         return params->add_parameter(value);
     }

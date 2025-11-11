@@ -324,11 +324,11 @@ namespace components::table {
             case types::physical_type::UINT64:
                 initialize_update_data<uint64_t>(std::forward<Args>(args)...);
                 break;
-                //case types::physical_type::INT128:
-                //	initialize_update_data<int128_t>(std::forward<Args>(args)...);
+            case types::physical_type::INT128:
+                initialize_update_data<types::int128_t>(std::forward<Args>(args)...);
                 break;
-                //case types::physical_type::UINT128:
-                //	initialize_update_data<uint128_t>(std::forward<Args>(args)...);
+            case types::physical_type::UINT128:
+                initialize_update_data<types::uint128_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::FLOAT:
                 initialize_update_data<float>(std::forward<Args>(args)...);
@@ -378,12 +378,12 @@ namespace components::table {
             case types::physical_type::UINT64:
                 update_merge_fetch<uint64_t>(std::forward<Args>(args)...);
                 break;
-            // case types::physical_type::INT128:
-            // update_merge_fetch<int128_t>(std::forward<Args>(args)...);
-            // break;
-            // case types::physical_type::UINT128:
-            // update_merge_fetch<uint128_t>(std::forward<Args>(args)...);
-            // break;
+            case types::physical_type::INT128:
+                update_merge_fetch<types::int128_t>(std::forward<Args>(args)...);
+                break;
+            case types::physical_type::UINT128:
+                update_merge_fetch<types::uint128_t>(std::forward<Args>(args)...);
+                break;
             case types::physical_type::FLOAT:
                 update_merge_fetch<float>(std::forward<Args>(args)...);
                 break;
@@ -432,12 +432,12 @@ namespace components::table {
             case types::physical_type::UINT64:
                 templated_fetch_committed<uint64_t>(std::forward<Args>(args)...);
                 break;
-            // case types::physical_type::INT128:
-            // templated_fetch_committed<int128_t>(std::forward<Args>(args)...);
-            // break;
-            // case types::physical_type::UINT128:
-            // templated_fetch_committed<uint128_t>(std::forward<Args>(args)...);
-            // break;
+            case types::physical_type::INT128:
+                templated_fetch_committed<types::int128_t>(std::forward<Args>(args)...);
+                break;
+            case types::physical_type::UINT128:
+                templated_fetch_committed<types::uint128_t>(std::forward<Args>(args)...);
+                break;
             case types::physical_type::FLOAT:
                 templated_fetch_committed<float>(std::forward<Args>(args)...);
                 break;
@@ -486,11 +486,11 @@ namespace components::table {
             case types::physical_type::UINT64:
                 merge_update_loop<uint64_t>(std::forward<Args>(args)...);
                 break;
-                //case types::physical_type::INT128:
-                //	merge_update_loop<int128_t>(std::forward<Args>(args)...);
+            case types::physical_type::INT128:
+                merge_update_loop<types::int128_t>(std::forward<Args>(args)...);
                 break;
-                //case types::physical_type::UINT128:
-                //	merge_update_loop<uint128_t>(std::forward<Args>(args)...);
+            case types::physical_type::UINT128:
+                merge_update_loop<types::uint128_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::FLOAT:
                 merge_update_loop<float>(std::forward<Args>(args)...);

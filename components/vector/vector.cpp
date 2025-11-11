@@ -446,9 +446,9 @@ namespace components::vector {
             case types::logical_type::BIGINT:
                 reinterpret_cast<int64_t*>(data_)[index] = val.value<int64_t>();
                 break;
-            //case types::logical_type::HUGEINT:
-            //	reinterpret_cast<int128_t*>(data_)[index] = val.value<int128_t>();
-            //	break;
+            case types::logical_type::HUGEINT:
+                reinterpret_cast<types::int128_t*>(data_)[index] = val.value<types::int128_t>();
+                break;
             case types::logical_type::UTINYINT:
                 reinterpret_cast<uint8_t*>(data_)[index] = val.value<uint8_t>();
                 break;

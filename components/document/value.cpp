@@ -93,6 +93,10 @@ namespace components::document {
     }
 
     types::logical_value_t value_t::as_logical_value() const {
+        if (!element_.usable()) {
+            return types::logical_value_t{};
+        }
+
         switch (physical_type()) {
             case types::physical_type::BOOL:
                 return types::logical_value_t{element_.get_bool().value()};
@@ -112,11 +116,10 @@ namespace components::document {
                 return types::logical_value_t{element_.get_uint64().value()};
             case types::physical_type::INT64:
                 return types::logical_value_t{element_.get_int64().value()};
-            //case types::physical_type::UINT128:
-            // there is no get_uint128 yet
-            // return types::logical_value_t{element_.get_uint128().value()};
-            // case types::physical_type::INT128:
-            // return types::logical_value_t{element_.get_int128().value()};
+            case types::physical_type::UINT128:
+                return types::logical_value_t{element_.get_uint128().value()};
+            case types::physical_type::INT128:
+                return types::logical_value_t{element_.get_int128().value()};
             case types::physical_type::FLOAT:
                 return types::logical_value_t{element_.get_float().value()};
             case types::physical_type::DOUBLE:

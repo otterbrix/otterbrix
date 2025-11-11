@@ -21,24 +21,22 @@ using namespace components::sql::transform;
         }                                                                                                              \
     }
 
-using v = components::document::value_t;
+using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
 TEST_CASE("sql::delete_from_where") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection WHERE number == 10;",
                        R"_($delete: {$match: {"number": {$eq: #0}}, $limit: -1})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_DELETE(
         "DELETE FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR count = 2);",
         R"_($delete: {$match: {$and: [$not: ["number": {$eq: #0}], $not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}, $limit: -1})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection USING TestDatabase.OtherTestCollection WHERE "
                        "TestCollection.number = OtherTestCollection.number;",

@@ -32,7 +32,7 @@ using namespace components::sql;
         REQUIRE(exception_thrown);                                                                                     \
     }
 
-using v = components::document::value_t;
+using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 using fields = std::vector<std::pair<std::string, v>>;
 

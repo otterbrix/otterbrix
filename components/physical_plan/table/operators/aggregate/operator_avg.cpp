@@ -20,8 +20,8 @@ namespace components::table::operators::aggregate {
                 types::logical_value_t sum_ = impl::sum(*it, chunk.size());
                 sum_.set_alias(key_result_);
                 // possible bug here since not every type could be cast to double
-                auto result =
-                    types::logical_value_t(sum_.cast_as(logical_type::DOUBLE).value<double>() / double(chunk.size()));
+                auto result = types::logical_value_t(sum_.cast_as(types::logical_type::DOUBLE).value<double>() /
+                                                     double(chunk.size()));
                 result.set_alias(key_result_);
                 return result;
             }

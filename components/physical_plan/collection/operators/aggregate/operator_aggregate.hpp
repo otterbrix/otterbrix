@@ -7,7 +7,7 @@ namespace components::collection::operators::aggregate {
 
     class operator_aggregate_t : public read_only_operator_t {
     public:
-        void set_value(document_ptr& doc, std::string_view key) const;
+        void set_value(document::document_ptr& doc, std::string_view key) const;
         document::value_t value() const;
 
     protected:

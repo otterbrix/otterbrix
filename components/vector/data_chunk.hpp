@@ -18,6 +18,7 @@ namespace components::vector {
         std::vector<vector_t> data;
         vector_t row_ids;
 
+        bool empty() const { return count_ == 0; }
         uint64_t size() const { return count_; }
         uint64_t capacity() const { return capacity_; }
         uint64_t column_count() const { return data.size(); }

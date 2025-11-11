@@ -347,7 +347,7 @@ TEST_CASE("delete one test") {
         REQUIRE(match->key_left() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).as_int() == num);
+        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         index = test_wal.wal->test_next_record(index);
     }
 }
@@ -387,7 +387,7 @@ TEST_CASE("delete many test") {
         REQUIRE(match->key_left() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).as_int() == num);
+        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         index = test_wal.wal->test_next_record(index);
     }
 }
@@ -432,13 +432,13 @@ TEST_CASE("update one test") {
         REQUIRE(match->key_left() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).as_int() == num);
+        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
-            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).as_int() == num + 10);
+            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
         REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
                 (num % 2 == 0));
@@ -486,13 +486,13 @@ TEST_CASE("update many test") {
         REQUIRE(match->key_left() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).as_int() == num);
+        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
-            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).as_int() == num + 10);
+            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
         REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
                 (num % 2 == 0));

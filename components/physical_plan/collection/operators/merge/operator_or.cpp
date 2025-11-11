@@ -22,10 +22,11 @@ namespace components::collection::operators::merge {
                 }
             }
             for (const auto& document : right_->output()->documents()) {
-                auto it = std::find_if(
-                    output_->documents().cbegin(),
-                    output_->documents().cend(),
-                    [&document](const document_ptr& doc) { return get_document_id(doc) == get_document_id(document); });
+                auto it = std::find_if(output_->documents().cbegin(),
+                                       output_->documents().cend(),
+                                       [&document](const document::document_ptr& doc) {
+                                           return get_document_id(doc) == get_document_id(document);
+                                       });
                 if (it == output_->documents().cend()) {
                     output_->append(document);
                     ++count;

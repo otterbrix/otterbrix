@@ -229,8 +229,6 @@ namespace components::types {
         }
     }
 
-    // for now only supports std::string for string types
-    // TODO: convert multiple string formats to logical_type::STRING_LITERAL
     template<typename T>
     constexpr logical_type to_logical_type() {
         if constexpr (std::is_same<T, std::nullptr_t>::value) {
@@ -277,7 +275,8 @@ namespace components::types {
             return logical_type::FLOAT;
         } else if constexpr (std::is_same<T, double>::value) {
             return logical_type::DOUBLE;
-        } else if constexpr (std::is_same<T, std::string>::value) {
+        } else if constexpr (std::is_same<T, std::string>::value || std::is_same<T, std::pmr::string>::value ||
+                             std::is_same<T, std::string_view>::value) {
             return logical_type::STRING_LITERAL;
         } else {
             return logical_type::INVALID;

@@ -14,7 +14,8 @@ namespace components::sql::transform {
     public:
         transformer(std::pmr::memory_resource* resource)
             : resource_(resource)
-            , parameter_map_(resource_) {}
+            , parameter_map_(resource_)
+            , parameter_insert_rows_(resource_, {}) {}
 
         transform_result transform(Node& node);
 
@@ -53,13 +54,13 @@ namespace components::sql::transform {
                                                            logical_plan::parameter_node_t* params);
 
         std::string get_str_value(Node* node);
-        document::value_t get_value(Node* node, document::impl::base_document* tape);
+        types::logical_value_t get_value(Node* node);
 
         core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
 
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
-        std::pmr::vector<components::document::document_ptr> parameter_insert_docs_;
+        vector::data_chunk_t parameter_insert_rows_;
     };
 } // namespace components::sql::transform

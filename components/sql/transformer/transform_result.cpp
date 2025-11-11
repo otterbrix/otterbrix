@@ -16,12 +16,12 @@ namespace components::sql::transform {
                                        logical_plan::parameter_node_ptr&& params,
                                        parameter_map_t&& param_map,
                                        insert_map_t&& param_insert_map,
-                                       insert_docs_t&& param_insert_docs)
+                                       insert_rows_t&& param_insert_docs)
         : node_(std::move(node))
         , params_(std::move(params))
         , param_map_(std::move(param_map))
         , param_insert_map_(std::move(param_insert_map))
-        , param_insert_docs_(std::move(param_insert_docs))
+        , param_insert_rows_(std::move(param_insert_docs))
         , bound_flags_(node_->resource())
         , taken_params_(node_->resource())
         , last_error_() {
@@ -75,7 +75,7 @@ namespace components::sql::transform {
 
                 node_ = logical_plan::make_node_insert(node_->resource(),
                                                        node_->collection_full_name(),
-                                                       std::move(param_insert_docs_),
+                                                       std::move(param_insert_rows_),
                                                        std::move(key_translation));
             }
         }

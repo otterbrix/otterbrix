@@ -1,6 +1,7 @@
 #include "deserializer.hpp"
 
-#include "logical_plan/node_limit.hpp"
+#include <components/document/msgpack/msgpack_encoder.hpp>
+#include <components/logical_plan/node_limit.hpp>
 
 namespace components::serializer {
 
@@ -22,9 +23,9 @@ namespace components::serializer {
         return res;
     }
 
-    std::pmr::vector<document_ptr> msgpack_deserializer_t::deserialize_documents(size_t index) {
+    std::pmr::vector<document::document_ptr> msgpack_deserializer_t::deserialize_documents(size_t index) {
         advance_array(index);
-        std::pmr::vector<document_ptr> res(resource());
+        std::pmr::vector<document::document_ptr> res(resource());
         res.reserve(current_array_size());
         for (size_t i = 0; i < current_array_size(); i++) {
             res.emplace_back(deserialize_document(i));
@@ -40,14 +41,6 @@ namespace components::serializer {
         for (size_t i = 0; i < current_array_size(); i++) {
             res.emplace_back(deserialize_param_id(i));
         }
-        pop_array();
-        return res;
-    }
-
-    std::pair<core::parameter_id_t, document::value_t>
-    msgpack_deserializer_t::deserialize_param_pair(document::impl::base_document* tape, size_t index) {
-        advance_array(index);
-        std::pair res = {deserialize_param_id(0), deserialize_value(tape, 1)};
         pop_array();
         return res;
     }
@@ -112,28 +105,7 @@ namespace components::serializer {
         return {working_tree_.top()->ptr[index].via.str.ptr, working_tree_.top()->ptr[index].via.str.size};
     }
 
-    document::value_t msgpack_deserializer_t::deserialize_value(document::impl::base_document* tape, size_t index) {
-        auto obj = working_tree_.top()->ptr[index];
-        switch (obj.type) {
-            case msgpack::type::NIL:
-                return document::value_t(tape, nullptr);
-            case msgpack::type::BOOLEAN:
-                return document::value_t(tape, obj.via.boolean);
-            case msgpack::type::POSITIVE_INTEGER:
-                return document::value_t(tape, obj.via.u64);
-            case msgpack::type::NEGATIVE_INTEGER:
-                return document::value_t(tape, obj.via.i64);
-            case msgpack::type::FLOAT32:
-            case msgpack::type::FLOAT64:
-                return document::value_t(tape, obj.via.f64);
-            case msgpack::type::STR:
-                return document::value_t(tape, std::string_view(obj.via.str.ptr, obj.via.str.size));
-            default:
-                return document::value_t();
-        }
-    }
-
-    document_ptr msgpack_deserializer_t::deserialize_document(size_t index) {
+    document::document_ptr msgpack_deserializer_t::deserialize_document(size_t index) {
         return document::msgpack_decoder_t::to_document(working_tree_.top()->ptr[index], resource());
     }
 

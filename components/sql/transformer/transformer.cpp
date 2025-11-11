@@ -44,6 +44,6 @@ namespace components::sql::transform {
                 std::move(params),
                 std::move(parameter_map_),
                 std::move(parameter_insert_map_),
-                std::move(parameter_insert_docs_)};
+                std::move(parameter_insert_rows_)};
     }
 } // namespace components::sql::transform

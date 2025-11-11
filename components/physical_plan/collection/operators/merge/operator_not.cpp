@@ -16,10 +16,10 @@ namespace components::collection::operators::merge {
             output_ = base::operators::make_operator_data(context_->resource());
             const auto& left_documents = left_->output()->documents();
             for (const auto& document : context_->document_storage()) {
-                auto it =
-                    std::find_if(left_documents.cbegin(), left_documents.cend(), [&document](const document_ptr& doc) {
-                        return get_document_id(doc) == document.first;
-                    });
+                auto it = std::find_if(
+                    left_documents.cbegin(),
+                    left_documents.cend(),
+                    [&document](const document::document_ptr& doc) { return get_document_id(doc) == document.first; });
                 if (it == left_documents.cend()) {
                     output_->append(document.second);
                     ++count;

@@ -27,7 +27,7 @@ namespace components::table::operators {
             }
 
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
-            vector::vector_t ids(left_->output()->resource(), logical_type::BIGINT, ids_capacity);
+            vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, ids_capacity);
             auto predicate = compare_expression_ ? predicates::create_predicate(compare_expression_,
                                                                                 types_left,
                                                                                 types_right,
@@ -62,7 +62,7 @@ namespace components::table::operators {
                 name_index_map.emplace(types[i].alias(), i);
             }
 
-            vector::vector_t ids(left_->output()->resource(), logical_type::BIGINT, chunk.size());
+            vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
             auto predicate =
                 compare_expression_
                     ? predicates::create_predicate(compare_expression_, types, types, &pipeline_context->parameters)

@@ -7,7 +7,7 @@
 using namespace components::sql;
 using namespace components::sql::transform;
 
-using v = components::document::value_t;
+using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS)                                                                      \
@@ -29,8 +29,6 @@ TEST_CASE("sql::select_from_where") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection;)_", R"_($aggregate: {})_", vec());
 
@@ -38,36 +36,36 @@ TEST_CASE("sql::select_from_where") {
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' AND "count" = 2;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((((number = 10 AND name = 'doc 10'))));)_",
                        R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({new_value(10l), new_value(std::pmr::string("doc 10"))}));
+                       vec({v(10l), v(std::pmr::string("doc 10"))}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 OR name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE (number = 10 AND name = 'doc 10') OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND (name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, $or: ["name": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((number = 10 AND name = 'doc 10') OR "count" = 2) AND )_"
@@ -78,69 +76,67 @@ TEST_CASE("sql::select_from_where") {
         R"_($or: [$and: ["number": {$eq: #3}, "name": {$eq: #4}], "count": {$eq: #5}], )_"
         R"_($or: [$and: ["number": {$eq: #6}, "name": {$eq: #7}], "count": {$eq: #8}])_"
         R"_(]}})_",
-        vec({new_value(10l),
-             new_value(std::pmr::string("doc 10")),
-             new_value(2l),
-             new_value(10l),
-             new_value(std::pmr::string("doc 10")),
-             new_value(2l),
-             new_value(10l),
-             new_value(std::pmr::string("doc 10")),
-             new_value(2l)}));
+        vec({v(10l),
+             v(std::pmr::string("doc 10")),
+             v(2l),
+             v(10l),
+             v(std::pmr::string("doc 10")),
+             v(2l),
+             v(10l),
+             v(std::pmr::string("doc 10")),
+             v(2l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number == 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number != 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <> 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number < 10;)_",
                        R"_($aggregate: {$match: {"number": {$lt: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <= 10;)_",
                        R"_($aggregate: {$match: {"number": {$lte: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10;)_",
                        R"_($aggregate: {$match: {"number": {$gt: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number >= 10;)_",
                        R"_($aggregate: {$match: {"number": {$gte: #0}}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT(number >= 10);)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT number >= 10;)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({new_value(10l)}));
+                       vec({v(10l)}));
 
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: [$not: ["number": {$eq: #0}], )_"
         R"_($not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
-        vec({new_value(10l), new_value(std::pmr::string("doc 10")), new_value(2l)}));
+        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
                        R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
-                       vec({new_value(std::pmr::string("pattern"))}));
+                       vec({v(std::pmr::string("pattern"))}));
 }
 
 TEST_CASE("sql::select_from_order_by") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     TEST_SIMPLE_UPDATE(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number;)_",
                        R"_($aggregate: {$sort: {number: 1}})_",
@@ -169,15 +165,13 @@ TEST_CASE("sql::select_from_order_by") {
     TEST_SIMPLE_UPDATE(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10 ORDER BY number ASC, name DESC;)_",
         R"_($aggregate: {$match: {"number": {$gt: #0}}, $sort: {number: 1, name: -1}})_",
-        vec({new_value(10l)}));
+        vec({v(10l)}));
 }
 
 TEST_CASE("sql::select_from_fields") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     TEST_SIMPLE_UPDATE(R"_(SELECT number, name, "count" FROM TestDatabase.TestCollection;)_",
                        R"_($aggregate: {$group: {number, name, count}})_",
@@ -194,5 +188,5 @@ TEST_CASE("sql::select_from_fields") {
     TEST_SIMPLE_UPDATE(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
         R"_($aggregate: {$group: {number, size: #0, title: #1, on: #2, off: #3}})_",
-        vec({new_value(10l), new_value(std::pmr::string("title")), new_value(true), new_value(false)}));
+        vec({v(10l), v(std::pmr::string("title")), v(true), v(false)}));
 }

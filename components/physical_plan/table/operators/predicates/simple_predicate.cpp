@@ -60,11 +60,11 @@ namespace components::table::operators::predicates {
                     if (side == expressions::side_t::left) {
                         assert(column_index < chunk_left.column_count());
                         return comp(chunk_left.data.at(column_index).data<LeftType>()[index_left],
-                                    value.as<RightType>());
+                                    value.value<RightType>());
                     } else {
                         assert(column_index < chunk_right.column_count());
                         return comp(chunk_right.data.at(column_index).data<LeftType>()[index_right],
-                                    value.as<RightType>());
+                                    value.value<RightType>());
                     }
                 };
             }
@@ -127,7 +127,7 @@ namespace components::table::operators::predicates {
             const auto& expr_val = parameters->parameters.at(expr->value());
 
             auto type_left = types.at(column_index).to_physical_type();
-            auto type_right = expr_val.physical_type();
+            auto type_right = expr_val.type().to_physical_type();
 
             return types::double_simple_physical_type_switch<create_unary_comparator_t>(type_left,
                                                                                         type_right,
@@ -147,22 +147,23 @@ namespace components::table::operators::predicates {
                 get_column_index(side == expressions::side_t::left ? expr->key_left() : expr->key_right(), types);
             auto expr_val = parameters->parameters.at(expr->value());
 
-            return [column_index, val = expr_val.as_string(), side](const vector::data_chunk_t& chunk_left,
-                                                                    const vector::data_chunk_t& chunk_right,
-                                                                    size_t index_left,
-                                                                    size_t index_right) {
-                if (side == expressions::side_t::left) {
-                    assert(column_index < chunk_left.column_count());
-                    return std::regex_match(
-                        chunk_left.data.at(column_index).data<std::string_view>()[index_left].data(),
-                        std::regex(fmt::format(".*{}.*", val)));
-                } else {
-                    assert(column_index < chunk_right.column_count());
-                    return std::regex_match(
-                        chunk_right.data.at(column_index).data<std::string_view>()[index_right].data(),
-                        std::regex(fmt::format(".*{}.*", val)));
-                }
-            };
+            return
+                [column_index, val = expr_val.value<std::string_view>(), side](const vector::data_chunk_t& chunk_left,
+                                                                               const vector::data_chunk_t& chunk_right,
+                                                                               size_t index_left,
+                                                                               size_t index_right) {
+                    if (side == expressions::side_t::left) {
+                        assert(column_index < chunk_left.column_count());
+                        return std::regex_match(
+                            chunk_left.data.at(column_index).data<std::string_view>()[index_left].data(),
+                            std::regex(fmt::format(".*{}.*", val)));
+                    } else {
+                        assert(column_index < chunk_right.column_count());
+                        return std::regex_match(
+                            chunk_right.data.at(column_index).data<std::string_view>()[index_right].data(),
+                            std::regex(fmt::format(".*{}.*", val)));
+                    }
+                };
         }
 
         template<typename COMP>

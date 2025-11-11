@@ -89,6 +89,8 @@ namespace components::document {
 
         bool is_ulong(std::string_view json_pointer) const;
 
+        bool is_uhugeint(std::string_view json_pointer) const;
+
         bool is_tinyint(std::string_view json_pointer) const;
 
         bool is_smallint(std::string_view json_pointer) const;
@@ -118,6 +120,8 @@ namespace components::document {
         uint32_t get_uint(std::string_view json_pointer) const;
 
         uint64_t get_ulong(std::string_view json_pointer) const;
+
+        absl::uint128 get_uhugeint(std::string_view json_pointer) const;
 
         int8_t get_tinyint(std::string_view json_pointer) const;
 
@@ -179,6 +183,7 @@ namespace components::document {
 
         bool update(const ptr& update);
         bool update(std::string_view json_pointer, const value_t& update);
+        bool update(std::string_view json_pointer, const types::logical_value_t& update);
 
         static ptr document_from_json(const std::string& json, document_t::allocator_type* allocator);
 

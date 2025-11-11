@@ -20,7 +20,7 @@ using namespace components::sql::transform;
         }                                                                                                              \
     }
 
-using v = components::document::value_t;
+using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
 TEST_CASE("sql::join") {

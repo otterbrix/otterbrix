@@ -158,7 +158,7 @@ namespace services {
                                  session,
                                  make_cursor(resource(), std::move(chunk)));
             } else {
-                std::pmr::vector<document_ptr> documents(resource());
+                std::pmr::vector<components::document::document_ptr> documents(resource());
                 for (const auto& doc : collection->document_storage()) {
                     documents.emplace_back(doc.second);
                 }

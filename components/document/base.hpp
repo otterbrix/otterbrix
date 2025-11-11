@@ -7,6 +7,7 @@
 namespace components::document {
 
     using int128_t = types::int128_t;
+    using uint128_t = types::uint128_t;
 
     namespace impl {
         class element;

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <chrono>
 #include <memory>
+#include <memory_resource>
 #include <msgpack.hpp>
 #include <variant>
 
@@ -156,9 +157,19 @@ namespace components::types {
         , value_(std::make_unique<std::string>(std::move(value))) {}
 
     template<>
+    inline logical_value_t::logical_value_t(std::pmr::string value)
+        : type_(logical_type::STRING_LITERAL)
+        , value_(std::make_unique<std::string>(value.data(), value.size())) {}
+
+    template<>
     inline logical_value_t::logical_value_t(std::string_view value)
         : type_(logical_type::STRING_LITERAL)
         , value_(std::make_unique<std::string>(std::move(value))) {}
+
+    template<>
+    inline logical_value_t::logical_value_t(const char* value)
+        : type_(logical_type::STRING_LITERAL)
+        , value_(std::make_unique<std::string>(value)) {}
 
     template<typename T>
     T logical_value_t::value() const {

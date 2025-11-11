@@ -31,6 +31,7 @@ namespace components::document {
             document_result<uint16_t> get_uint16() const noexcept;
             document_result<uint32_t> get_uint32() const noexcept;
             document_result<uint64_t> get_uint64() const noexcept;
+            document_result<absl::uint128> get_uint128() const noexcept;
             document_result<int8_t> get_int8() const noexcept;
             document_result<int16_t> get_int16() const noexcept;
             document_result<int32_t> get_int32() const noexcept;
@@ -46,6 +47,7 @@ namespace components::document {
             bool is_int128() const noexcept;
             bool is_uint32() const noexcept;
             bool is_uint64() const noexcept;
+            bool is_uint128() const noexcept;
             bool is_float() const noexcept;
             bool is_double() const noexcept;
             bool is_bool() const noexcept;
@@ -127,6 +129,12 @@ namespace components::document {
             template<typename T>
             typename std::enable_if<std::is_same<T, uint64_t>::value, document_result<T>>::type get() const noexcept {
                 return get_uint64();
+            }
+
+            template<typename T>
+            typename std::enable_if<std::is_same<T, absl::uint128>::value, document_result<T>>::type
+            get() const noexcept {
+                return get_uint128();
             }
 
             template<typename T>

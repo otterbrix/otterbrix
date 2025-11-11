@@ -11,7 +11,7 @@ namespace components::table::operators {
                                              const logical_plan::storage_parameters* parameters) {
         using expressions::compare_type;
         using logical_plan::get_parameter;
-        auto value = get_parameter(parameters, expr->value()).as_logical_value();
+        auto value = get_parameter(parameters, expr->value());
         switch (expr->type()) {
             case compare_type::eq:
                 return {index->find(value)};
@@ -43,7 +43,7 @@ namespace components::table::operators {
         }
         size_t count = 0;
         rows = limit.limit() == logical_plan::limit_t::unlimit().limit() ? rows : std::min<size_t>(rows, limit.limit());
-        vector::vector_t row_ids(index->resource(), logical_type::BIGINT, rows);
+        vector::vector_t row_ids(index->resource(), types::logical_type::BIGINT, rows);
         for (const auto& range : ranges) {
             for (auto it = range.first; it != range.second; ++it) {
                 if (!limit.check(count)) {

@@ -22,11 +22,9 @@ using id_par = core::parameter_id_t;
 uint64_t gen_doc_number(uint n_db, uint n_col, uint n_doc) { return 10000 * n_db + 100 * n_col + n_doc; }
 
 cursor_t_ptr find_doc(otterbrix::wrapper_dispatcher_t* dispatcher,
-                      impl::base_document* tape,
                       const database_name_t& db_name,
                       const collection_name_t& col_name,
                       int n_doc) {
-    auto new_value = [&](auto value) { return value_t{tape, value}; };
     auto session_doc = otterbrix::session_id_t();
     auto aggregate = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
     auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
@@ -37,7 +35,7 @@ cursor_t_ptr find_doc(otterbrix::wrapper_dispatcher_t* dispatcher,
     aggregate->append_child(
         components::logical_plan::make_node_match(dispatcher->resource(), {db_name, col_name}, std::move(expr)));
     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-    params->add_parameter(id_par{1}, new_value(gen_id(n_doc, dispatcher->resource())));
+    params->add_parameter(id_par{1}, components::types::logical_value_t(gen_id(n_doc, dispatcher->resource())));
     auto cur = dispatcher->find_one(session_doc, aggregate, params);
     if (cur->is_success()) {
         cur->next_document();
@@ -70,7 +68,6 @@ TEST_CASE("integration::cpp::test_save_load::disk") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        auto tape = std::make_unique<impl::base_document>(dispatcher->resource());
         dispatcher->load();
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
@@ -80,9 +77,8 @@ TEST_CASE("integration::cpp::test_save_load::disk") {
                 auto size = dispatcher->size(session, db_name, col_name);
                 REQUIRE(size == count_documents);
                 for (uint n_doc = 1; n_doc <= count_documents; ++n_doc) {
-                    REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, int(n_doc))
-                                ->get_document()
-                                ->get_ulong("number") == gen_doc_number(n_db, n_col, n_doc));
+                    REQUIRE(find_doc(dispatcher, db_name, col_name, int(n_doc))->get_document()->get_ulong("number") ==
+                            gen_doc_number(n_db, n_col, n_doc));
                 }
             }
         }
@@ -118,8 +114,6 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     SECTION("extending wal") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        auto tape = std::make_unique<impl::base_document>(dispatcher->resource());
-        auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
         auto log = initialization_logger("python", config.log.path.c_str());
         log.set_level(config.log.level);
         auto manager = actor_zeta::spawn_supervisor<services::wal::manager_wal_replicate_t>(dispatcher->resource(),
@@ -150,7 +144,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                          key{"count"},
                                                                          core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                    params->add_parameter(core::parameter_id_t{1}, new_value(1));
+                    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(1));
                     auto delete_one = components::logical_plan::make_node_delete_one(dispatcher->resource(),
                                                                                      {db_name, col_name},
                                                                                      match);
@@ -174,8 +168,8 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                            {db_name, col_name},
                                                                            std::move(expr));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                    params->add_parameter(core::parameter_id_t{1}, new_value(2));
-                    params->add_parameter(core::parameter_id_t{2}, new_value(4));
+                    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(2));
+                    params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(4));
                     auto delete_many = components::logical_plan::make_node_delete_many(dispatcher->resource(),
                                                                                        {db_name, col_name},
                                                                                        match);
@@ -192,8 +186,8 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                          key{"count"},
                                                                          core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                    params->add_parameter(core::parameter_id_t{1}, new_value(5));
-                    params->add_parameter(core::parameter_id_t{2}, new_value(0));
+                    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
+                    params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(0));
                     components::expressions::update_expr_ptr update_expr =
                         new components::expressions::update_expr_set_t(components::expressions::key_t{"count"});
                     update_expr->left() =
@@ -216,8 +210,8 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                          key{"count"},
                                                                          core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                    params->add_parameter(core::parameter_id_t{1}, new_value(5));
-                    params->add_parameter(core::parameter_id_t{2}, new_value(1000));
+                    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
+                    params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(1000));
                     components::expressions::update_expr_ptr update_expr =
                         new components::expressions::update_expr_set_t(components::expressions::key_t{"count"});
                     update_expr->left() =
@@ -236,7 +230,6 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        auto tape = std::make_unique<impl::base_document>(dispatcher->resource());
         dispatcher->load();
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
@@ -246,16 +239,15 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                 auto size = dispatcher->size(session, db_name, col_name);
                 REQUIRE(size == count_documents - 3);
 
-                REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, 1)->size() == 0);
-                REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, 2)->size() == 0);
-                REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, 3)->size() == 0);
-                REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, 4)->size() == 0);
+                REQUIRE(find_doc(dispatcher, db_name, col_name, 1)->size() == 0);
+                REQUIRE(find_doc(dispatcher, db_name, col_name, 2)->size() == 0);
+                REQUIRE(find_doc(dispatcher, db_name, col_name, 3)->size() == 0);
+                REQUIRE(find_doc(dispatcher, db_name, col_name, 4)->size() == 0);
 
-                REQUIRE(find_doc(dispatcher, tape.get(), db_name, col_name, 5)->get_document()->get_ulong("count") ==
-                        0);
+                REQUIRE(find_doc(dispatcher, db_name, col_name, 5)->get_document()->get_ulong("count") == 0);
 
                 for (uint n_doc = 6; n_doc <= count_documents + 1; ++n_doc) {
-                    auto doc_find = find_doc(dispatcher, tape.get(), db_name, col_name, int(n_doc));
+                    auto doc_find = find_doc(dispatcher, db_name, col_name, int(n_doc));
                     REQUIRE(doc_find->get_document()->get_ulong("number") == gen_doc_number(n_db, n_col, n_doc));
                     REQUIRE(doc_find->get_document()->get_ulong("count") == 1000);
                 }

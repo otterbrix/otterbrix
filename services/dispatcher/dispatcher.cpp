@@ -561,7 +561,8 @@ namespace services::dispatcher {
 
     const components::catalog::catalog& dispatcher_t::current_catalog() { return catalog_; }
 
-    components::cursor::cursor_t_ptr dispatcher_t::check_namespace_exists(const components::catalog::table_id id) {
+    components::cursor::cursor_t_ptr
+    dispatcher_t::check_namespace_exists(const components::catalog::table_id id) const {
         cursor_t_ptr error;
         if (!catalog_.namespace_exists(id.get_namespace())) {
             error = make_cursor(resource(), error_code_t::database_not_exists, "database does not exist");
@@ -569,7 +570,8 @@ namespace services::dispatcher {
         return error;
     }
 
-    components::cursor::cursor_t_ptr dispatcher_t::check_collectction_exists(const components::catalog::table_id id) {
+    components::cursor::cursor_t_ptr
+    dispatcher_t::check_collectction_exists(const components::catalog::table_id id) const {
         cursor_t_ptr error;
         if (!(error = check_namespace_exists(id)).get()) {
             bool exists = catalog_.table_exists(id);
@@ -585,11 +587,12 @@ namespace services::dispatcher {
 
         return error;
     }
+
     components::cursor::cursor_t_ptr
-    dispatcher_t::check_collections_format_(const components::logical_plan::node_ptr& logical_plan) {
+    dispatcher_t::check_collections_format_(components::logical_plan::node_ptr& logical_plan) const {
         used_format_t used_format = used_format_t::undefined;
         cursor_t_ptr result = make_cursor(resource(), operation_status_t::success);
-        auto check_format = [&](const components::logical_plan::node_t* node) {
+        auto check_format = [&](components::logical_plan::node_t* node) {
             used_format_t check = used_format_t::undefined;
             // pull check format from collection referenced by logical_plan
             if (!node->collection_full_name().empty()) {
@@ -603,7 +606,7 @@ namespace services::dispatcher {
             }
             // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == components::logical_plan::node_type::data_t) {
-                const auto* data_node = reinterpret_cast<const components::logical_plan::node_data_t*>(node);
+                auto* data_node = reinterpret_cast<components::logical_plan::node_data_t*>(node);
                 if (check == used_format_t::undefined) {
                     check = static_cast<used_format_t>(data_node->uses_data_chunk());
                 } else if (check != static_cast<used_format_t>(data_node->uses_data_chunk())) {
@@ -612,6 +615,12 @@ namespace services::dispatcher {
                                     error_code_t::incompatible_storage_types,
                                     "logical plan data format is not the same as referenced collection data format");
                     return false;
+                }
+
+                // convert data_chunk to documents
+                if (used_format == used_format_t::documents && check == used_format_t::columns) {
+                    data_node->convert_to_documents();
+                    check = used_format_t::documents;
                 }
             }
 
@@ -647,10 +656,10 @@ namespace services::dispatcher {
 
         switch (used_format) {
             case used_format_t::documents:
-                return make_cursor(resource(), std::pmr::vector<document_ptr>{resource()});
+                return make_cursor(resource(), std::pmr::vector<components::document::document_ptr>{resource()});
             case used_format_t::columns:
                 return make_cursor(resource(), components::vector::data_chunk_t{resource(), {}, 0});
-            case used_format_t::undefined:
+            default:
                 return make_cursor(resource(), error_code_t::incompatible_storage_types, "undefined storage format");
         }
     }

@@ -49,7 +49,7 @@ namespace components::collection::operators {
             if (is_valid) {
                 bool is_new = true;
                 for (std::size_t i = 0; i < output_->size(); ++i) {
-                    if (document_t::is_equals_documents(new_doc, output_->documents().at(i))) {
+                    if (document::document_t::is_equals_documents(new_doc, output_->documents().at(i))) {
                         input_documents_.at(i)->append(doc);
                         is_new = false;
                         break;

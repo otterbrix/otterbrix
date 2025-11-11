@@ -26,7 +26,7 @@ using namespace components::expressions;
         REQUIRE(updates == FIELDS);                                                                                    \
     }
 
-using v = components::document::value_t;
+using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 using fields = std::pmr::vector<update_expr_ptr>;
 
@@ -34,8 +34,6 @@ TEST_CASE("sql::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     {
         fields f;
@@ -43,7 +41,7 @@ TEST_CASE("sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({new_value(10ul)}),
+                           vec({v(10ul)}),
                            f);
     }
 
@@ -53,7 +51,7 @@ TEST_CASE("sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name';",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({new_value("new name")}),
+                           vec({v("new name")}),
                            f);
     }
 
@@ -63,7 +61,7 @@ TEST_CASE("sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({new_value(true)}),
+                           vec({v(true)}),
                            f);
     }
 
@@ -77,7 +75,7 @@ TEST_CASE("sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({new_value(10ul), new_value("new name"), new_value(true)}),
+                           vec({v(10ul), v("new name"), v(true)}),
                            f);
     }
 }
@@ -86,8 +84,6 @@ TEST_CASE("sql::update_where") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     {
         fields f;
@@ -95,7 +91,7 @@ TEST_CASE("sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
                            R"_($update: {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
-                           vec({new_value(10ul), new_value(1ul)}),
+                           vec({v(10ul), v(1ul)}),
                            f);
     }
 
@@ -105,7 +101,7 @@ TEST_CASE("sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
                            R"_($update: {$upsert: 0, $match: {"name": {$eq: #1}}, $limit: -1})_",
-                           vec({new_value("new name"), new_value("old_name")}),
+                           vec({v("new name"), v("old_name")}),
                            f);
     }
 
@@ -115,7 +111,7 @@ TEST_CASE("sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true WHERE is_doc = false;",
                            R"_($update: {$upsert: 0, $match: {"is_doc": {$eq: #1}}, $limit: -1})_",
-                           vec({new_value(true), new_value(false)}),
+                           vec({v(true), v(false)}),
                            f);
     }
 
@@ -131,12 +127,7 @@ TEST_CASE("sql::update_where") {
             "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true "
             "WHERE id > 10 AND name = 'old_name' AND is_doc = false;",
             R"_($update: {$upsert: 0, $match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}, $limit: -1})_",
-            vec({new_value(10ul),
-                 new_value("new name"),
-                 new_value(true),
-                 new_value(10ul),
-                 new_value("old_name"),
-                 new_value(false)}),
+            vec({v(10ul), v("new name"), v(true), v(10ul), v("old_name"), v(false)}),
             f);
     }
 }
@@ -145,8 +136,6 @@ TEST_CASE("sql::update_from") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
-    auto tape = std::make_unique<components::document::impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return v{tape.get(), value}; };
 
     {
         fields f;
@@ -157,7 +146,7 @@ TEST_CASE("sql::update_from") {
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({new_value(1.5f)}),
+                           vec({v(1.5f)}),
                            f);
     }
 

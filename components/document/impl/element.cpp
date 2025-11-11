@@ -285,6 +285,41 @@ namespace components::document::impl {
         }
     }
 
+    document_result<absl::uint128> element::get_uint128() const noexcept {
+        assert(tape_.usable());
+        switch (tape_.tape_ref_type()) {
+            case types::physical_type::INT8: {
+                return absl::uint128(tape_.template next_tape_value<int8_t>());
+            }
+            case types::physical_type::UINT8: {
+                return absl::uint128(tape_.template next_tape_value<uint8_t>());
+            }
+            case types::physical_type::INT16: {
+                return absl::uint128(tape_.template next_tape_value<int16_t>());
+            }
+            case types::physical_type::UINT16: {
+                return absl::uint128(tape_.template next_tape_value<uint16_t>());
+            }
+            case types::physical_type::INT32: {
+                return absl::uint128(tape_.template next_tape_value<int32_t>());
+            }
+            case types::physical_type::UINT32: {
+                return absl::uint128(tape_.template next_tape_value<uint32_t>());
+            }
+            case types::physical_type::INT64: {
+                return absl::uint128(tape_.template next_tape_value<int64_t>());
+            }
+            case types::physical_type::UINT64: {
+                return absl::uint128(tape_.template next_tape_value<uint64_t>());
+            }
+            case types::physical_type::INT128: {
+                return tape_.template next_tape_value<absl::uint128>();
+            }
+            default:
+                return INCORRECT_TYPE;
+        }
+    }
+
     document_result<int8_t> element::get_int8() const noexcept {
         assert(tape_.usable());
         switch (tape_.tape_ref_type()) {
@@ -578,6 +613,7 @@ namespace components::document::impl {
     bool element::is_int32() const noexcept { return is<int32_t>(); }
     bool element::is_int64() const noexcept { return is<int64_t>(); }
     bool element::is_int128() const noexcept { return is<absl::int128>(); }
+    bool element::is_uint128() const noexcept { return is<absl::uint128>(); }
     bool element::is_uint32() const noexcept { return is<uint32_t>(); }
     bool element::is_uint64() const noexcept { return is<uint64_t>(); }
     bool element::is_float() const noexcept { return is<float>(); }

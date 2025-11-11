@@ -6,7 +6,7 @@ namespace components::table::operators {
 
     primary_key_scan::primary_key_scan(services::collection::context_collection_t* context)
         : read_only_operator_t(context, operator_type::match)
-        , rows_(context->resource(), logical_type::BIGINT) {}
+        , rows_(context->resource(), types::logical_type::BIGINT) {}
 
     void primary_key_scan::append(size_t id) {
         rows_.set_value(size_++, types::logical_value_t(static_cast<int64_t>(id)));

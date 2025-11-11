@@ -75,6 +75,8 @@ namespace components::document {
             }
         } else if constexpr (std::is_same_v<T, int128_t>) {
             append3(value, types::physical_type::INT128);
+        } else if constexpr (std::is_same_v<T, uint128_t>) {
+            append3(value, types::physical_type::UINT128);
         } else if constexpr (std::is_same_v<T, float>) {
             uint64_t tape_data = 0;
             std::memcpy(&tape_data, &value, sizeof(value));

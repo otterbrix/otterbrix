@@ -70,14 +70,11 @@ namespace components::serializer {
         void append_enum(T enum_value);
 
         void append(core::parameter_id_t val);
-        void append(const std::pmr::vector<document::document_ptr>& documents);
         void append(const std::pmr::vector<expressions::key_t>& keys);
         void append(const std::pmr::vector<core::parameter_id_t>& params);
         void append(const collection_full_name_t& collection);
 
         void append(const std::string& str);
-        void append(const document::document_ptr& doc);
-        void append(const document::value_t& val);
         void append(const expressions::key_t& key_val);
 
     private:

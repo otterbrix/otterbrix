@@ -193,6 +193,9 @@ namespace components::document {
 
         allocator_type* get_allocator() override;
 
+        void serialize(serializer::msgpack_serializer_t* serializer) const;
+        static ptr deserialize(serializer::msgpack_deserializer_t* deserializer, size_t index);
+
     private:
         using json_trie_node_element = json::json_trie_node;
         using inserter_ptr = json_trie_node_element* (*) (allocator_type*);

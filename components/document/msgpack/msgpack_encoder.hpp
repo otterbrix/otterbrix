@@ -113,6 +113,22 @@ namespace msgpack {
         namespace adaptor {
 
             template<>
+            struct pack<document_t> final {
+                template<typename Stream>
+                packer<Stream>& operator()(msgpack::packer<Stream>& o, const document_t& v) const {
+                    to_msgpack_(o, v.json_trie().get());
+                    return o;
+                }
+            };
+
+            template<>
+            struct object_with_zone<document_t> final {
+                void operator()(msgpack::object::with_zone& o, const document_t& v) const {
+                    to_msgpack_(v.json_trie().get(), o);
+                }
+            };
+
+            template<>
             struct pack<document_ptr> final {
                 template<typename Stream>
                 packer<Stream>& operator()(msgpack::packer<Stream>& o, const document_ptr& v) const {

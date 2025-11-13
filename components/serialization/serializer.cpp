@@ -1,6 +1,5 @@
 #include "serializer.hpp"
 
-#include <components/document/msgpack/msgpack_encoder.hpp>
 #include <components/expressions/key.hpp>
 
 namespace components::serializer {
@@ -10,14 +9,6 @@ namespace components::serializer {
         , packer_(result_) {}
 
     std::pmr::string msgpack_serializer_t::result() const { return result_.str(); }
-
-    void msgpack_serializer_t::append(const std::pmr::vector<document::document_ptr>& documents) {
-        start_array(documents.size());
-        for (const auto& doc : documents) {
-            append(doc);
-        }
-        end_array();
-    }
 
     void msgpack_serializer_t::append(const std::pmr::vector<expressions::key_t>& keys) {
         start_array(keys.size());
@@ -74,10 +65,6 @@ namespace components::serializer {
     void msgpack_serializer_t::append(core::parameter_id_t val) { packer_.pack(val.t); }
 
     void msgpack_serializer_t::append(const std::string& str) { packer_.pack(str); }
-
-    void msgpack_serializer_t::append(const document_ptr& doc) { packer_.pack(doc); }
-
-    void msgpack_serializer_t::append(const document::value_t& val) { to_msgpack_(packer_, val.get_element()); }
 
     void msgpack_serializer_t::append(const expressions::key_t& key_val) {
         if (key_val.is_string()) {

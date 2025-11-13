@@ -1,6 +1,5 @@
 #include "deserializer.hpp"
 
-#include <components/document/msgpack/msgpack_encoder.hpp>
 #include <components/logical_plan/node_limit.hpp>
 
 namespace components::serializer {
@@ -18,17 +17,6 @@ namespace components::serializer {
         res.reserve(current_array_size());
         for (size_t i = 0; i < current_array_size(); i++) {
             res.emplace_back(deserialize_key(i));
-        }
-        pop_array();
-        return res;
-    }
-
-    std::pmr::vector<document::document_ptr> msgpack_deserializer_t::deserialize_documents(size_t index) {
-        advance_array(index);
-        std::pmr::vector<document::document_ptr> res(resource());
-        res.reserve(current_array_size());
-        for (size_t i = 0; i < current_array_size(); i++) {
-            res.emplace_back(deserialize_document(i));
         }
         pop_array();
         return res;
@@ -103,10 +91,6 @@ namespace components::serializer {
 
     std::string msgpack_deserializer_t::deserialize_string(size_t index) {
         return {working_tree_.top()->ptr[index].via.str.ptr, working_tree_.top()->ptr[index].via.str.size};
-    }
-
-    document::document_ptr msgpack_deserializer_t::deserialize_document(size_t index) {
-        return document::msgpack_decoder_t::to_document(working_tree_.top()->ptr[index], resource());
     }
 
     collection_full_name_t msgpack_deserializer_t::deserialize_collection(size_t index) {

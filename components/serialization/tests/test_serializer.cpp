@@ -26,10 +26,10 @@ TEST_CASE("serialization::document") {
     {
         msgpack_serializer_t serializer(&resource);
         serializer.start_array(1);
-        serializer.append(doc1);
+        doc1->serialize(&serializer);
         serializer.end_array();
         msgpack_deserializer_t deserializer(serializer.result());
-        auto doc2 = deserializer.deserialize_document(0);
+        auto doc2 = document_t::deserialize(&deserializer, 0);
         REQUIRE(doc1->count() == doc2->count());
         REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
         REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));

@@ -1,8 +1,12 @@
 #include "document.hpp"
+#include "msgpack/msgpack_encoder.hpp"
+
 #include <boost/json/src.hpp>
 #include <boost/multiprecision/cpp_int.hpp>
 #include <charconv>
 #include <components/document/string_splitter.hpp>
+#include <components/serialization/deserializer.hpp>
+#include <components/serialization/serializer.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/operations_helper.hpp>
 #include <utility>
@@ -582,6 +586,22 @@ namespace components::document {
     }
 
     document_t::allocator_type* document_t::get_allocator() { return element_ind_->get_allocator(); }
+
+    void document_t::serialize(serializer::msgpack_serializer_t* serializer) const {
+        std::stringstream result;
+        msgpack::packer packer(result);
+        packer.pack(*this);
+
+        serializer->append(result.str());
+    }
+
+    document_t::ptr document_t::deserialize(serializer::msgpack_deserializer_t* deserializer, size_t index) {
+        auto sbuf = deserializer->deserialize_string(index);
+        msgpack::unpacked msg;
+        msgpack::unpack(msg, sbuf.data(), sbuf.size());
+
+        return to_document(msg.get(), deserializer->resource());
+    }
 
     std::pmr::string value_to_string(const impl::element* value, std::pmr::memory_resource* allocator) {
         using types::logical_type;

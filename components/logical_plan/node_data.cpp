@@ -102,7 +102,14 @@ namespace components::logical_plan {
             result = make_node_raw_data(deserializer->resource(), vector::data_chunk_t::deserialize(deserializer));
             deserializer->pop_array();
         } else {
-            result = make_node_raw_data(deserializer->resource(), deserializer->deserialize_documents(2));
+            deserializer->advance_array(2);
+            std::pmr::vector<document::document_ptr> docs(deserializer->resource());
+            docs.reserve(deserializer->current_array_size());
+            for (size_t i = 0; i < docs.capacity(); i++) {
+                docs.emplace_back(document::document_t::deserialize(deserializer, i));
+            }
+            result = make_node_raw_data(deserializer->resource(), std::move(docs));
+            deserializer->pop_array();
         }
         return result;
     }
@@ -127,7 +134,12 @@ namespace components::logical_plan {
             data_chunk().serialize(serializer);
         } else {
             serializer->append(false);
-            serializer->append(documents());
+            const auto& docs = documents();
+            serializer->start_array(docs.size());
+            for (const auto& doc : docs) {
+                doc->serialize(serializer);
+            }
+            serializer->end_array();
         }
         serializer->end_array();
     }

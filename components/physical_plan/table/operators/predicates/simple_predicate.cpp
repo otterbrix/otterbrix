@@ -253,7 +253,7 @@ namespace components::table::operators::predicates {
                                           return type.alias() == expr->key_left().as_string();
                                       });
                     if (it != types_right.end()) {
-                        // undefined sided expressions store value on the right side by default
+                        // undefined sided expressions store value on the left side by default
                         return create_unary_comparator<COMP>(expr, types_right, parameters, expressions::side_t::left);
                     }
                 }
@@ -290,7 +290,7 @@ namespace components::table::operators::predicates {
                                           return type.alias() == expr->key_left().as_string();
                                       });
                     if (it != types_right.end()) {
-                        // undefined sided expressions store value on the right side by default
+                        // undefined sided expressions store value on the left side by default
                         return create_unary_regex_comparator(expr, types_right, parameters, expressions::side_t::left);
                     }
                 }

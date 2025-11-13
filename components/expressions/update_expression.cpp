@@ -6,25 +6,12 @@
 
 namespace components::expressions {
 
-    update_expr_t::expr_output_t::expr_output_t(document::value_t value)
-        : output_(value) {}
-
     update_expr_t::expr_output_t::expr_output_t(types::logical_value_t value)
         : output_(std::move(value)) {}
 
-    document::value_t& update_expr_t::expr_output_t::document_value() { return std::get<document::value_t>(output_); }
+    types::logical_value_t& update_expr_t::expr_output_t::value() { return output_; }
 
-    const document::value_t& update_expr_t::expr_output_t::document_value() const {
-        return std::get<document::value_t>(output_);
-    }
-
-    types::logical_value_t& update_expr_t::expr_output_t::table_value() {
-        return std::get<types::logical_value_t>(output_);
-    }
-
-    const types::logical_value_t& update_expr_t::expr_output_t::table_value() const {
-        return std::get<types::logical_value_t>(output_);
-    }
+    const types::logical_value_t& update_expr_t::expr_output_t::value() const { return output_; }
 
     update_expr_t::update_expr_t(update_expr_type type)
         : type_(type) {}
@@ -180,7 +167,7 @@ namespace components::expressions {
                                          document::impl::base_document*,
                                          const logical_plan::storage_parameters*) {
         if (left_) {
-            return to->update(key_.as_string(), left_->output().document_value());
+            return to->update(key_.as_string(), left_->output().value());
         }
         return false;
     }
@@ -206,8 +193,8 @@ namespace components::expressions {
             }
             assert(index < to.column_count());
             auto prev_value = to.data[index].value(row_to);
-            auto res = prev_value != left_->output().table_value();
-            to.data[index].set_value(row_to, left_->output().table_value());
+            auto res = prev_value != left_->output().value();
+            to.data[index].set_value(row_to, left_->output().value());
             return res;
         }
         return false;
@@ -250,13 +237,13 @@ namespace components::expressions {
             } else if (from->is_exists(key_.as_string())) {
                 side_ = side_t::right;
             } else {
-                output_ = document::value_t{tape, nullptr};
+                output_ = types::logical_value_t();
             }
         }
         if (side_ == side_t::right) {
-            output_ = from->get_value(key_.as_string());
+            output_ = from->get_value(key_.as_string()).as_logical_value();
         } else if (side_ == side_t::left) {
-            output_ = to->get_value(key_.as_string());
+            output_ = to->get_value(key_.as_string()).as_logical_value();
         }
         return false;
     }
@@ -340,7 +327,7 @@ namespace components::expressions {
                                                      size_t row_to,
                                                      size_t row_from,
                                                      const logical_plan::storage_parameters* parameters) {
-        output_ = parameters->parameters.at(id_).as_logical_value();
+        output_ = parameters->parameters.at(id_);
         return false;
     }
 
@@ -377,52 +364,52 @@ namespace components::expressions {
                                                const logical_plan::storage_parameters*) {
         switch (type_) {
             case update_expr_type::add:
-                output_ = sum(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::sum(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::sub:
-                output_ = subtract(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::subtract(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::mult:
-                output_ = mult(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::mult(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::div:
-                output_ = divide(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::divide(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::mod:
-                output_ = modulus(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::modulus(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::exp:
-                output_ = exponent(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::exponent(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::sqr_root:
-                output_ = sqr_root(left_->output().document_value(), tape);
+                output_ = types::logical_value_t::sqr_root(left_->output().value());
                 break;
             case update_expr_type::cube_root:
-                output_ = cube_root(left_->output().document_value(), tape);
+                output_ = types::logical_value_t::cube_root(left_->output().value());
                 break;
             case update_expr_type::factorial:
-                output_ = factorial(left_->output().document_value(), tape);
+                output_ = types::logical_value_t::factorial(left_->output().value());
                 break;
             case update_expr_type::abs:
-                output_ = absolute(left_->output().document_value(), tape);
+                output_ = types::logical_value_t::absolute(left_->output().value());
                 break;
             case update_expr_type::AND:
-                output_ = bit_and(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_and(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::OR:
-                output_ = bit_or(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_or(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::XOR:
-                output_ = bit_xor(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_xor(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::NOT:
-                output_ = bit_not(left_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_not(left_->output().value());
                 break;
             case update_expr_type::shift_left:
-                output_ = bit_shift_l(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_shift_l(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::shift_right:
-                output_ = bit_shift_r(left_->output().document_value(), right_->output().document_value(), tape);
+                output_ = types::logical_value_t::bit_shift_r(left_->output().value(), right_->output().value());
                 break;
             default:
                 break;
@@ -437,59 +424,52 @@ namespace components::expressions {
                                                const logical_plan::storage_parameters* parameters) {
         switch (type_) {
             case update_expr_type::add:
-                output_ = types::logical_value_t::sum(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::sum(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::sub:
-                output_ =
-                    types::logical_value_t::subtract(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::subtract(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::mult:
-                output_ = types::logical_value_t::mult(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::mult(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::div:
-                output_ = types::logical_value_t::divide(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::divide(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::mod:
-                output_ =
-                    types::logical_value_t::modulus(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::modulus(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::exp:
-                output_ =
-                    types::logical_value_t::exponent(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::exponent(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::sqr_root:
-                output_ = types::logical_value_t::sqr_root(left_->output().table_value());
+                output_ = types::logical_value_t::sqr_root(left_->output().value());
                 break;
             case update_expr_type::cube_root:
-                output_ = types::logical_value_t::cube_root(left_->output().table_value());
+                output_ = types::logical_value_t::cube_root(left_->output().value());
                 break;
             case update_expr_type::factorial:
-                output_ = types::logical_value_t::factorial(left_->output().table_value());
+                output_ = types::logical_value_t::factorial(left_->output().value());
                 break;
             case update_expr_type::abs:
-                output_ = types::logical_value_t::absolute(left_->output().table_value());
+                output_ = types::logical_value_t::absolute(left_->output().value());
                 break;
             case update_expr_type::AND:
-                output_ =
-                    types::logical_value_t::bit_and(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::bit_and(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::OR:
-                output_ = types::logical_value_t::bit_or(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::bit_or(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::XOR:
-                output_ =
-                    types::logical_value_t::bit_xor(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::bit_xor(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::NOT:
-                output_ = types::logical_value_t::bit_not(left_->output().table_value());
+                output_ = types::logical_value_t::bit_not(left_->output().value());
                 break;
             case update_expr_type::shift_left:
-                output_ =
-                    types::logical_value_t::bit_shift_l(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::bit_shift_l(left_->output().value(), right_->output().value());
                 break;
             case update_expr_type::shift_right:
-                output_ =
-                    types::logical_value_t::bit_shift_r(left_->output().table_value(), right_->output().table_value());
+                output_ = types::logical_value_t::bit_shift_r(left_->output().value(), right_->output().value());
                 break;
             default:
                 break;

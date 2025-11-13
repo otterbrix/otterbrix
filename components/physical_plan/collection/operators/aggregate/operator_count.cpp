@@ -8,7 +8,7 @@ namespace components::collection::operators::aggregate {
     operator_count_t::operator_count_t(services::collection::context_collection_t* context)
         : operator_aggregate_t(context) {}
 
-    document_ptr operator_count_t::aggregate_impl() {
+    document::document_ptr operator_count_t::aggregate_impl() {
         auto resource = left_ && left_->output() ? left_->output()->resource() : context_->resource();
         auto doc = document::make_document(resource);
         if (left_ && left_->output()) {

@@ -1481,7 +1481,9 @@ namespace components::types {
             }
         }
         // for simple types we skipped alias
-        result.set_alias(type.alias());
+        if (type.has_alias()) {
+            result.set_alias(type.alias());
+        }
 
         return result;
     }

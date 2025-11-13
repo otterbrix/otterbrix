@@ -18,7 +18,9 @@ namespace components::sql::transform {
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             auto vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
 
-            std::pmr::vector<components::document::document_ptr> documents(resource_);
+            vector::data_chunk_t chunk(resource_, {}, vals.size());
+            chunk.set_cardinality(vals.size());
+            size_t row_index = 0;
             bool has_params = false;
 
             for (auto row : vals) {
@@ -27,14 +29,12 @@ namespace components::sql::transform {
                     throw parser_exception_t{"INSERT has more expressions than target columns", {}};
                 }
 
-                auto doc = document::make_document(resource_);
                 auto it_field = key_translation.begin();
                 for (auto it_value = values.begin(); it_value != values.end(); ++it_field, ++it_value) {
-                    auto tape = std::make_unique<document::impl::base_document>(resource_);
                     if (nodeTag(it_value->data) == T_ParamRef) {
                         has_params = true;
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
-                        auto loc = std::make_pair(documents.size(), it_field->first.as_string());
+                        auto loc = std::make_pair(row_index, it_field->first.as_string());
 
                         if (auto it = parameter_insert_map_.find(ref->number); it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
@@ -44,19 +44,34 @@ namespace components::sql::transform {
                             parameter_insert_map_.emplace(ref->number, std::move(par));
                         }
                     } else {
-                        doc->set(it_field->first.as_string(), get_value(pg_ptr_cast<Node>(it_value->data), tape.get()));
+                        auto value = get_value(pg_ptr_cast<Node>(it_value->data));
+                        auto it =
+                            std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
+                                return column.type().alias() == it_field->first.as_string();
+                            });
+                        size_t column_index = it - chunk.data.begin();
+                        if (it == chunk.data.end()) {
+                            value.set_alias(it_field->first.as_string());
+                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                        }
+                        chunk.set_value(column_index, row_index, std::move(value));
                     }
                 }
-                documents.push_back(doc);
+                row_index++;
             }
 
             if (has_params) {
-                parameter_insert_docs_ = std::move(documents);
+                parameter_insert_rows_ = std::move(chunk);
+                return logical_plan::make_node_insert(resource_,
+                                                      rangevar_to_collection(node.relation),
+                                                      vector::data_chunk_t(resource_, {}, 0),
+                                                      std::move(key_translation));
+            } else {
+                return logical_plan::make_node_insert(resource_,
+                                                      rangevar_to_collection(node.relation),
+                                                      std::move(chunk),
+                                                      std::move(key_translation));
             }
-            return logical_plan::make_node_insert(resource_,
-                                                  rangevar_to_collection(node.relation),
-                                                  std::move(documents),
-                                                  std::move(key_translation));
         } else {
             auto res = logical_plan::make_node_insert(resource_, rangevar_to_collection(node.relation));
             res->append_child(transform_select(*pg_ptr_cast<SelectStmt>(node.selectStmt), params));

@@ -15,8 +15,6 @@ using components::logical_plan::add_parameter;
 
 TEST_CASE("operator_merge::and") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto tape = std::make_unique<impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
 
     auto collection = init_collection(&resource);
     auto cond1 =
@@ -30,8 +28,8 @@ TEST_CASE("operator_merge::and") {
         boost::intrusive_ptr(
             new full_scan(d(collection), predicates::create_predicate(cond2), logical_plan::limit_t::unlimit())));
     logical_plan::storage_parameters parameters(&resource);
-    add_parameter(parameters, core::parameter_id_t(1), new_value(50));
-    add_parameter(parameters, core::parameter_id_t(2), new_value(60));
+    add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(50));
+    add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(60));
     pipeline::context_t pipeline_context(std::move(parameters));
     op_and.on_execute(&pipeline_context);
     REQUIRE(op_and.output()->size() == 10);
@@ -39,8 +37,6 @@ TEST_CASE("operator_merge::and") {
 
 TEST_CASE("operator_merge::or") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto tape = std::make_unique<impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
 
     auto collection = init_collection(&resource);
     auto cond1 =
@@ -54,8 +50,8 @@ TEST_CASE("operator_merge::or") {
         boost::intrusive_ptr(
             new full_scan(d(collection), predicates::create_predicate(cond2), logical_plan::limit_t::unlimit())));
     logical_plan::storage_parameters parameters(&resource);
-    add_parameter(parameters, core::parameter_id_t(1), new_value(10));
-    add_parameter(parameters, core::parameter_id_t(2), new_value(90));
+    add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(10));
+    add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(90));
     pipeline::context_t pipeline_context(std::move(parameters));
     op_or.on_execute(&pipeline_context);
     REQUIRE(op_or.output()->size() == 20);
@@ -63,8 +59,6 @@ TEST_CASE("operator_merge::or") {
 
 TEST_CASE("operator_merge::not") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto tape = std::make_unique<impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
 
     auto collection = init_collection(&resource);
     auto cond =
@@ -73,7 +67,7 @@ TEST_CASE("operator_merge::not") {
     op_not.set_children(boost::intrusive_ptr(
         new full_scan(d(collection), predicates::create_predicate(cond), logical_plan::limit_t::unlimit())));
     logical_plan::storage_parameters parameters(&resource);
-    add_parameter(parameters, core::parameter_id_t(1), new_value(10));
+    add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(10));
     pipeline::context_t pipeline_context(std::move(parameters));
     op_not.on_execute(&pipeline_context);
     REQUIRE(op_not.output()->size() == 10);
@@ -81,8 +75,6 @@ TEST_CASE("operator_merge::not") {
 
 TEST_CASE("operator_merge::complex") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto tape = std::make_unique<impl::base_document>(&resource);
-    auto new_value = [&](auto value) { return value_t{tape.get(), value}; };
 
     auto collection = init_collection(&resource);
     //  "$and": [
@@ -114,10 +106,10 @@ TEST_CASE("operator_merge::complex") {
             new full_scan(d(collection), predicates::create_predicate(cond_and2), logical_plan::limit_t::unlimit())));
     op->set_children(std::move(op_or), std::move(op_and));
     logical_plan::storage_parameters parameters(&resource);
-    add_parameter(parameters, core::parameter_id_t(1), new_value(10));
-    add_parameter(parameters, core::parameter_id_t(2), new_value(90));
-    add_parameter(parameters, core::parameter_id_t(3), new_value(5));
-    add_parameter(parameters, core::parameter_id_t(4), new_value(95));
+    add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(10));
+    add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(90));
+    add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(5));
+    add_parameter(parameters, core::parameter_id_t(4), types::logical_value_t(95));
     pipeline::context_t pipeline_context(std::move(parameters));
     op->on_execute(&pipeline_context);
     REQUIRE(op->output()->size() == 10);

@@ -42,10 +42,9 @@ namespace components::table::operators {
                     return type.alias() == expression->key_left().as_string();
                 });
                 assert(it != types.end());
-                return std::make_unique<table::constant_filter_t>(
-                    expression->type(),
-                    parameters->parameters.at(expression->value()).as_logical_value(),
-                    it - types.begin());
+                return std::make_unique<table::constant_filter_t>(expression->type(),
+                                                                  parameters->parameters.at(expression->value()),
+                                                                  it - types.begin());
             }
         }
     }

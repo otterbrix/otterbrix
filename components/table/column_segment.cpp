@@ -728,10 +728,12 @@ namespace components::table {
                 return impl::fixed_size_check_row<uint32_t>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::UINT64:
                 return impl::fixed_size_check_row<uint64_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            // case types::physical_type::INT128:
-            // return impl::fixed_size_check_row<int128_t>(*this, static_cast<int64_t>(row_id - start), filter);
-            // case types::physical_type::UINT128:
-            // return impl::fixed_size_check_row<uint128_t>(*this, static_cast<int64_t>(row_id - start), filter);
+            case types::physical_type::INT128:
+                return impl::fixed_size_check_row<types::int128_t>(*this, static_cast<int64_t>(row_id - start), filter);
+            case types::physical_type::UINT128:
+                return impl::fixed_size_check_row<types::uint128_t>(*this,
+                                                                    static_cast<int64_t>(row_id - start),
+                                                                    filter);
             case types::physical_type::FLOAT:
                 return impl::fixed_size_check_row<float>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::DOUBLE:
@@ -805,12 +807,18 @@ namespace components::table {
                                                             static_cast<int64_t>(row_id - start),
                                                             result,
                                                             result_idx);
-            // case types::physical_type::INT128:
-            // return impl::fixed_size_fetch_row<int128_t>(*this, state, static_cast<int64_t>(row_id - start),
-            // result, result_idx);
-            // case types::physical_type::UINT128:
-            // return impl::fixed_size_fetch_row<uint128_t>(*this, state, static_cast<int64_t>(row_id - start),
-            // result, result_idx);
+            case types::physical_type::INT128:
+                return impl::fixed_size_fetch_row<types::int128_t>(*this,
+                                                                   state,
+                                                                   static_cast<int64_t>(row_id - start),
+                                                                   result,
+                                                                   result_idx);
+            case types::physical_type::UINT128:
+                return impl::fixed_size_fetch_row<types::uint128_t>(*this,
+                                                                    state,
+                                                                    static_cast<int64_t>(row_id - start),
+                                                                    result,
+                                                                    result_idx);
             case types::physical_type::FLOAT:
                 return impl::fixed_size_fetch_row<float>(*this,
                                                          state,
@@ -1002,12 +1010,15 @@ namespace components::table {
                 filter_selection_switch<uint64_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
                 break;
             }
-            // case types::physical_type::UINT128: {
-            //     auto predicate = constant_filter.constant.value<uint128_t>();
-            //     filter_selection_switch<uhugeint_t>(uvf, predicate, indexing, approved_tuple_count,
-            //                                       filter.filter_type);
-            //     break;
-            // }
+            case types::physical_type::UINT128: {
+                auto predicate = constant_filter.constant.value<types::uint128_t>();
+                filter_selection_switch<types::uint128_t>(uvf,
+                                                          predicate,
+                                                          indexing,
+                                                          approved_tuple_count,
+                                                          filter.filter_type);
+                break;
+            }
             case types::physical_type::INT8: {
                 auto predicate = constant_filter.constant.value<int8_t>();
                 filter_selection_switch<int8_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
@@ -1028,12 +1039,15 @@ namespace components::table {
                 filter_selection_switch<int64_t>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
                 break;
             }
-            // case types::physical_type::INT128: {
-            //     auto predicate = constant_filter.constant.value<int128_t>();
-            //     filter_selection_switch<hugeint_t>(uvf, predicate, indexing, approved_tuple_count,
-            //                                      filter.filter_type);
-            //     break;
-            // }
+            case types::physical_type::INT128: {
+                auto predicate = constant_filter.constant.value<types::int128_t>();
+                filter_selection_switch<types::int128_t>(uvf,
+                                                         predicate,
+                                                         indexing,
+                                                         approved_tuple_count,
+                                                         filter.filter_type);
+                break;
+            }
             case types::physical_type::FLOAT: {
                 auto predicate = constant_filter.constant.value<float>();
                 filter_selection_switch<float>(uvf, predicate, indexing, approved_tuple_count, filter.filter_type);
@@ -1110,10 +1124,18 @@ namespace components::table {
                 return impl::append<uint32_t, impl::standard_fixed_size_t>(*state.handle, *this, data, offset, count);
             case types::physical_type::UINT64:
                 return impl::append<uint64_t, impl::standard_fixed_size_t>(*state.handle, *this, data, offset, count);
-            // case types::physical_type::INT128:
-            // return impl::append<int128_t, impl::standard_fixed_size_t>(*state.handle, *this, data, offset, count);
-            // case types::physical_type::UINT128:
-            // return impl::append<uint128_t, impl::standard_fixed_size_t>(*state.handle, *this, data, offset, count);
+            case types::physical_type::INT128:
+                return impl::append<types::int128_t, impl::standard_fixed_size_t>(*state.handle,
+                                                                                  *this,
+                                                                                  data,
+                                                                                  offset,
+                                                                                  count);
+            case types::physical_type::UINT128:
+                return impl::append<types::uint128_t, impl::standard_fixed_size_t>(*state.handle,
+                                                                                   *this,
+                                                                                   data,
+                                                                                   offset,
+                                                                                   count);
             case types::physical_type::FLOAT:
                 return impl::append<float, impl::standard_fixed_size_t>(*state.handle, *this, data, offset, count);
             case types::physical_type::DOUBLE:

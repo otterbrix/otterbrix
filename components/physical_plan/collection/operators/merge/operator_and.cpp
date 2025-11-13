@@ -18,7 +18,7 @@ namespace components::collection::operators::merge {
             for (const auto& left_document : left_->output()->documents()) {
                 auto it = std::find_if(right_documents.cbegin(),
                                        right_documents.cend(),
-                                       [&left_document](const document_ptr& doc) {
+                                       [&left_document](const document::document_ptr& doc) {
                                            return get_document_id(doc) == get_document_id(left_document);
                                        });
                 if (it != right_documents.cend()) {

@@ -395,10 +395,10 @@ namespace components::vector::vector_ops {
                 return index<uint32_t, COMP>(left, right, count, true_indexing, false_indexing);
             case types::physical_type::UINT64:
                 return index<uint64_t, COMP>(left, right, count, true_indexing, false_indexing);
-            // case types::physical_type::INT128:
-            // 	   return index<int128_t, COMP>(left, right, count, true_indexing, false_indexing);
-            // case types::physical_type::UINT128:
-            // 	   return index<uint128_t, COMP>(left, right, count, true_indexing, false_indexing);
+            case types::physical_type::INT128:
+                return index<types::int128_t, COMP>(left, right, count, true_indexing, false_indexing);
+            case types::physical_type::UINT128:
+                return index<types::uint128_t, COMP>(left, right, count, true_indexing, false_indexing);
             case types::physical_type::FLOAT:
                 return index<float, COMP>(left, right, count, true_indexing, false_indexing);
             case types::physical_type::DOUBLE:

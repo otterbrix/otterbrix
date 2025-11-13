@@ -26,6 +26,8 @@ namespace components::logical_plan {
         bool uses_data_chunk() const;
         bool uses_documents() const;
 
+        void convert_to_documents();
+
         size_t size() const;
 
         static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);

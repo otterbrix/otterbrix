@@ -30,20 +30,20 @@ namespace components::sql::transform {
         using parameter_map_t = std::pmr::unordered_map<size_t, core::parameter_id_t>;
         using insert_location_t = std::pair<size_t, std::string>;
         using insert_map_t = std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>>;
-        using insert_docs_t = std::pmr::vector<components::document::document_ptr>;
+        using insert_rows_t = vector::data_chunk_t;
 
         transform_result(logical_plan::node_ptr&& node,
                          logical_plan::parameter_node_ptr&& params,
                          parameter_map_t&& param_map,
                          insert_map_t&& param_insert_map,
-                         insert_docs_t&& param_insert_docs);
+                         insert_rows_t&& param_insert_docs);
 
         template<typename T>
         transform_result& bind(size_t id, T&& value) {
-            return bind(id, document::value_t(taken_params_.tape(), std::forward<T>(value)));
+            return bind(id, types::logical_value_t(std::forward<T>(value)));
         }
 
-        transform_result& bind(size_t id, document::value_t value) {
+        transform_result& bind(size_t id, types::logical_value_t value) {
             if (last_error_) {
                 return *this;
             }
@@ -56,7 +56,18 @@ namespace components::sql::transform {
                 }
 
                 for (auto& [i, key] : it->second) {
-                    param_insert_docs_.at(i)->set(key, value);
+                    auto column =
+                        std::find_if(param_insert_rows_.data.begin(),
+                                     param_insert_rows_.data.end(),
+                                     [&](const vector::vector_t& column) { return column.type().alias() == key; });
+                    size_t column_index = column - param_insert_rows_.data.begin();
+                    if (column == param_insert_rows_.data.end()) {
+                        value.set_alias(key);
+                        param_insert_rows_.data.emplace_back(param_insert_rows_.resource(),
+                                                             value.type(),
+                                                             param_insert_rows_.capacity());
+                    }
+                    param_insert_rows_.set_value(column_index, i, std::move(value));
                 }
             } else {
                 auto it = param_map_.find(id);
@@ -83,7 +94,7 @@ namespace components::sql::transform {
         logical_plan::parameter_node_ptr params_;
         parameter_map_t param_map_;
         insert_map_t param_insert_map_;
-        insert_docs_t param_insert_docs_;
+        insert_rows_t param_insert_rows_;
 
         logical_plan::storage_parameters taken_params_;
         std::pmr::unordered_map<size_t, bool> bound_flags_;

@@ -52,16 +52,13 @@ namespace components::expressions {
         public:
             expr_output_t() = default;
             // not explicit for easier use, since it is not visible outside anyway
-            expr_output_t(document::value_t value);
             expr_output_t(types::logical_value_t value);
 
-            document::value_t& document_value();
-            const document::value_t& document_value() const;
-            types::logical_value_t& table_value();
-            const types::logical_value_t& table_value() const;
+            types::logical_value_t& value();
+            const types::logical_value_t& value() const;
 
         private:
-            std::variant<document::value_t, types::logical_value_t, std::monostate> output_;
+            types::logical_value_t output_;
         };
 
     public:

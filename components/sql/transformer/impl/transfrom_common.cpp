@@ -30,30 +30,30 @@ namespace components::sql::transform {
         return {};
     }
 
-    document::value_t transformer::get_value(Node* node, document::impl::base_document* tape) {
+    types::logical_value_t transformer::get_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
                 bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return document::value_t(tape, is_true);
+                return types::logical_value_t(is_true);
             }
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
                     case T_String: {
                         std::string str = strVal(value);
-                        return document::value_t(tape, str);
+                        return types::logical_value_t(str);
                     }
                     case T_Integer:
-                        return document::value_t(tape, intVal(value));
+                        return types::logical_value_t(intVal(value));
                     case T_Float:
-                        return document::value_t(tape, static_cast<float>(floatVal(value)));
+                        return types::logical_value_t(static_cast<float>(floatVal(value)));
                 }
             }
             case T_ColumnRef:
-                return document::value_t(tape, strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
+                return types::logical_value_t(strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
         }
-        return document::value_t(tape, nullptr);
+        return types::logical_value_t(nullptr);
     }
 
     core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {
@@ -62,13 +62,13 @@ namespace components::sql::transform {
             if (auto it = parameter_map_.find(ref->number); it != parameter_map_.end()) {
                 return it->second;
             } else {
-                auto id = params->add_parameter(document::value_t(params->parameters().tape(), nullptr));
+                auto id = params->add_parameter(types::logical_value_t());
                 parameter_map_.emplace(ref->number, id);
                 return id;
             }
         }
 
-        return params->add_parameter(get_value(node, params->parameters().tape()));
+        return params->add_parameter(get_value(node));
     }
 
     compare_expression_ptr transformer::transform_a_expr(logical_plan::parameter_node_t* params,

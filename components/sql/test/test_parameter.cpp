@@ -16,22 +16,27 @@ using namespace components::expressions;
 using v = types::logical_value_t;
 using vec = std::vector<v>;
 
-#define TEST_PARAMS(QUERY, RESULT, BIND)                                                                               \
+#define TEST_PARAMS_SELECT(QUERY, RESULT, BIND)                                                                        \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
             auto binder = transformer.transform(pg_cell_to_node_cast(select));                                         \
-            for (auto i = 0ul; i < BIND.size(); ++i) {                                                                 \
-                binder.bind(i + 1, BIND.at(i));                                                                        \
-            }                                                                                                          \
-            auto result = std::get<result_view>(binder.finalize());                                                    \
-            auto node = result.node;                                                                                   \
-            auto agg = result.params;                                                                                  \
-            REQUIRE(node->to_string() == RESULT);                                                                      \
-            REQUIRE(agg->parameters().parameters.size() == BIND.size());                                               \
-            for (auto i = 0ul; i < BIND.size(); ++i) {                                                                 \
-                REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                              \
-            }                                                                                                          \
+            TEST_PARAMS(RESULT, BIND)                                                                                  \
+        }                                                                                                              \
+    }
+
+#define TEST_PARAMS(RESULT, BIND)                                                                                      \
+    {                                                                                                                  \
+        for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
+            binder.bind(i + 1, BIND.at(i));                                                                            \
+        }                                                                                                              \
+        auto result = std::get<result_view>(binder.finalize());                                                        \
+        auto node = result.node;                                                                                       \
+        auto agg = result.params;                                                                                      \
+        REQUIRE(node->to_string() == RESULT);                                                                          \
+        REQUIRE(agg->parameters().parameters.size() == BIND.size());                                                   \
+        for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
+            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == BIND.at(i));                                  \
         }                                                                                                              \
     }
 
@@ -59,17 +64,18 @@ TEST_CASE("sql::select_bind") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_PARAMS(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_",
-                R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                vec({v(10l), v(std::string("doc 10"))}));
+    TEST_PARAMS_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_",
+        R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
+        vec({v(10l), v(std::string("doc 10"))}));
 
-    TEST_PARAMS(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 OR name = $2;)_",
-                R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                vec({v(42l), v(std::string("abc"))}));
+    TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 OR name = $2;)_",
+                       R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
+                       vec({v(42l), v(std::string("abc"))}));
 
-    TEST_PARAMS(R"_(SELECT * FROM TestDatabase.TestCollection WHERE id > $1 AND flag = $2;)_",
-                R"_($aggregate: {$match: {$and: ["id": {$gt: #0}, "flag": {$eq: #1}]}})_",
-                vec({v(5l), v(true)}));
+    TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE id > $1 AND flag = $2;)_",
+                       R"_($aggregate: {$match: {$and: ["id": {$gt: #0}, "flag": {$eq: #1}]}})_",
+                       vec({v(5l), v(true)}));
 }
 
 TEST_CASE("sql::update_bind") {
@@ -144,7 +150,11 @@ TEST_CASE("sql::insert_bind") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, parent_id) VALUES ($1, $1);)_";
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
+
+        REQUIRE(binder.all_bound() == false);
         binder.bind(1, v(123l));
+        REQUIRE(binder.all_bound() == true);
+
         auto result = std::get<result_view>(binder.finalize());
         auto node = result.node;
 
@@ -196,11 +206,52 @@ TEST_CASE("sql::transform_result") {
         REQUIRE(std::holds_alternative<transform::bind_error>(result));
     }
 
-    SECTION("finalize") {
-        auto stmt = linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection;"));
+    SECTION("reuse binder") {
+        auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_";
+        auto select = linitial(raw_parser(&arena_resource, query));
+        auto binder = transformer.transform(pg_cell_to_node_cast(select));
+        TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
+                    vec({v(10l), v(std::string("doc 10"))}));
+
+        TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
+                    vec({v(3.14), v(std::string("another doc 10"))}));
+
+        TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
+                    vec({v(false), v(std::string("another another doc 10"))}));
+    }
+
+    SECTION("intrusive ptr update") {
+        auto resource = std::pmr::synchronized_pool_resource();
+        std::pmr::monotonic_buffer_resource arena_resource(&resource);
+        transform::transformer transformer(&resource);
+
+        auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1;)_";
+        auto select = linitial(raw_parser(&arena_resource, query));
+        auto binder = transformer.transform(pg_cell_to_node_cast(select));
+
+        binder.bind(1, v("doc"));
+        auto agg = std::get<result_view>(binder.finalize()).params;
+        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v("doc"));
+
+        binder.bind(1, v(100l)).finalize();
+        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(100l));
+    }
+
+    SECTION("reuse insert binding") {
+        auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, parent_id) VALUES ($1, $2);)_";
+        auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
-        auto result = binder.finalize();
-        REQUIRE(std::holds_alternative<transform::result_view>(result));
-        REQUIRE(std::holds_alternative<transform::bind_error>(binder.finalize()));
+        binder.bind(1, v(123l)).bind(2, v(false));
+        auto node = std::get<result_view>(binder.finalize()).node;
+
+        const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
+        binder.bind(1, v(true)).bind(2, v(std::string("doc 10"))).finalize();
+
+        const auto& chunk =
+            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+        REQUIRE(chunk.size() == 1);
+        REQUIRE(chunk.value(0, 0) == v(true));
+        REQUIRE(chunk.value(1, 0) == v(std::string("doc 10")));
+        REQUIRE(reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation() == keys);
     }
 }

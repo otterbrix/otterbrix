@@ -62,9 +62,7 @@ namespace components::sql::transform {
                         reinterpret_cast<logical_plan::node_data_ptr&>(node_->children().front())->data_chunk();
                     vector::data_chunk_t new_rows(rows.resource(), rows.types(), rows.size());
                     rows.copy(new_rows);
-                    new_rows.data.erase(new_rows.data.cend() - new_types_cnt_, new_rows.data.cend());
                     param_insert_rows_ = std::move(new_rows);
-                    new_types_cnt_ = 0;
                 }
 
                 auto it = param_insert_map_.find(id);
@@ -84,7 +82,12 @@ namespace components::sql::transform {
                         param_insert_rows_.data.emplace_back(param_insert_rows_.resource(),
                                                              value.type(),
                                                              param_insert_rows_.capacity());
-                        new_types_cnt_++;
+                    } else if (column->type() != value.type()) {
+                        // column was inserted before, however type has changed
+                        value.set_alias(key);
+                        *column = vector::vector_t(param_insert_rows_.resource(),
+                                                   value.type(),
+                                                   param_insert_rows_.capacity());
                     }
                     param_insert_rows_.set_value(column_index, i, std::move(value));
                 }
@@ -123,7 +126,6 @@ namespace components::sql::transform {
 
         logical_plan::storage_parameters taken_params_;
         std::pmr::unordered_map<size_t, bool> bound_flags_;
-        size_t new_types_cnt_;
         bind_error last_error_;
         bool finalized_;
     };

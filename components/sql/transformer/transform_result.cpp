@@ -24,7 +24,6 @@ namespace components::sql::transform {
         , param_insert_rows_(std::move(param_insert_rows))
         , bound_flags_(node_->resource())
         , taken_params_(node_->resource())
-        , new_types_cnt_(0)
         , last_error_()
         , finalized_(false) {
         if (!parameter_count()) {

@@ -16,25 +16,38 @@ namespace components::sql::transform {
                                        logical_plan::parameter_node_ptr&& params,
                                        parameter_map_t&& param_map,
                                        insert_map_t&& param_insert_map,
-                                       insert_rows_t&& param_insert_docs)
+                                       insert_rows_t&& param_insert_rows)
         : node_(std::move(node))
         , params_(std::move(params))
         , param_map_(std::move(param_map))
         , param_insert_map_(std::move(param_insert_map))
-        , param_insert_rows_(std::move(param_insert_docs))
+        , param_insert_rows_(std::move(param_insert_rows))
         , bound_flags_(node_->resource())
         , taken_params_(node_->resource())
-        , last_error_() {
+        , new_types_cnt_(0)
+        , last_error_()
+        , finalized_(false) {
         if (!parameter_count()) {
             return;
         }
 
         taken_params_ = params_->take_parameters();
-        bound_flags_.reserve(param_map_.size());
-        for (auto& [id, _] : param_map_) {
-            bound_flags_[id] = false;
+        if (node_->type() == logical_plan::node_type::insert_t) {
+            bound_flags_.reserve(param_insert_map_.size());
+            for (auto& [id, _] : param_insert_map_) {
+                bound_flags_[id] = false;
+            }
+        } else {
+            bound_flags_.reserve(param_map_.size());
+            for (auto& [id, _] : param_map_) {
+                bound_flags_[id] = false;
+            }
         }
     }
+
+    logical_plan::node_ptr transform_result::node_ptr() const { return node_; }
+
+    logical_plan::parameter_node_ptr transform_result::params_ptr() const { params_; }
 
     size_t transform_result::parameter_count() const {
         if (node_->type() == logical_plan::node_type::insert_t) {
@@ -52,6 +65,10 @@ namespace components::sql::transform {
     }
 
     std::variant<result_view, bind_error> transform_result::finalize() {
+        if (finalized_) {
+            return result_view{node_, params_};
+        }
+
         if (last_error_) {
             return last_error_;
         }
@@ -70,17 +87,12 @@ namespace components::sql::transform {
             params_->set_parameters(taken_params_);
 
             if (node_->type() == logical_plan::node_type::insert_t) {
-                auto old_node = reinterpret_cast<logical_plan::node_insert_ptr&>(node_);
-                auto key_translation = std::move(old_node->key_translation());
-
-                node_ = logical_plan::make_node_insert(node_->resource(),
-                                                       node_->collection_full_name(),
-                                                       std::move(param_insert_rows_),
-                                                       std::move(key_translation));
+                node_->children().front() =
+                    logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
             }
         }
 
-        last_error_ = bind_error("Result is already finalized");
-        return result_view{std::move(node_), std::move(params_)};
+        finalized_ = true;
+        return result_view{node_, params_};
     }
 } // namespace components::sql::transform

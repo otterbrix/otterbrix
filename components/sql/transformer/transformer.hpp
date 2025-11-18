@@ -1,7 +1,9 @@
 #pragma once
 
+#include "expressions/function_expression.hpp"
 #include "transform_result.hpp"
 #include "utils.hpp"
+
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node.hpp>
@@ -33,12 +35,12 @@ namespace components::sql::transform {
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key
 
-        expressions::compare_expression_ptr transform_a_expr(logical_plan::parameter_node_t* params,
-                                                             A_Expr* node,
-                                                             logical_plan::node_ptr* func_node = nullptr);
+        expressions::expression_ptr transform_a_expr(A_Expr* node, logical_plan::parameter_node_t* params);
 
-        components::expressions::compare_expression_ptr transform_a_indirection(logical_plan::parameter_node_t* params,
-                                                                                A_Indirection* node);
+        expressions::expression_ptr transform_a_expr_func(FuncCall* node, logical_plan::parameter_node_t* params);
+
+        expressions::expression_ptr transform_a_indirection(A_Indirection* node,
+                                                            logical_plan::parameter_node_t* params);
 
         logical_plan::node_ptr transform_function(RangeFunction& node, logical_plan::parameter_node_t* params);
         logical_plan::node_ptr transform_function(FuncCall& node, logical_plan::parameter_node_t* params);

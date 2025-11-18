@@ -7,6 +7,7 @@ set(SOURCE_${PROJECT_NAME}
         scalar_expression.cpp
         sort_expression.cpp
         update_expression.cpp
+        function_expression.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

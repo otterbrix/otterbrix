@@ -15,7 +15,8 @@ namespace components::expressions {
         compare,
         aggregate,
         scalar,
-        sort
+        sort,
+        function
     };
 
     enum class compare_type : uint8_t
@@ -44,7 +45,8 @@ namespace components::expressions {
         sum,
         min,
         max,
-        avg
+        avg,
+        udf
     };
 
     enum class scalar_type : uint8_t

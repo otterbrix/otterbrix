@@ -71,55 +71,43 @@ namespace components::sql::transform {
         return params->add_parameter(get_value(node));
     }
 
-    compare_expression_ptr transformer::transform_a_expr(logical_plan::parameter_node_t* params,
-                                                         A_Expr* node,
-                                                         logical_plan::node_ptr* func_node) {
+    expression_ptr transformer::transform_a_expr(A_Expr* node, logical_plan::parameter_node_t* params) {
         switch (node->kind) {
             case AEXPR_AND: // fall-through
             case AEXPR_OR: {
-                compare_expression_ptr left;
-                compare_expression_ptr right;
-                if (nodeTag(node->lexpr) == T_A_Expr) {
-                    left = transform_a_expr(params, pg_ptr_cast<A_Expr>(node->lexpr));
-                } else if (nodeTag(node->lexpr) == T_A_Indirection) {
-                    left = transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node->lexpr));
-                } else {
-                    auto func = pg_ptr_cast<FuncCall>(node->lexpr);
-                    *func_node = transform_function(*func, params);
-                    if (nodeTag(node->rexpr) == T_A_Expr) {
-                        return transform_a_expr(params, pg_ptr_cast<A_Expr>(node->rexpr));
-                    } else {
-                        return transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node->rexpr));
-                    }
-                }
-                if (nodeTag(node->rexpr) == T_A_Expr) {
-                    right = transform_a_expr(params, pg_ptr_cast<A_Expr>(node->rexpr));
-                } else if (nodeTag(node->rexpr) == T_A_Indirection) {
-                    right = transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node->rexpr));
-                } else {
-                    auto func = pg_ptr_cast<FuncCall>(node->rexpr);
-                    *func_node = transform_function(*func, params);
-                    return left;
-                }
                 auto expr = make_compare_union_expression(params->parameters().resource(),
                                                           node->kind == AEXPR_AND ? compare_type::union_and
                                                                                   : compare_type::union_or);
-                auto append = [&expr](compare_expression_ptr& e) {
-                    if (expr->type() == e->type()) {
-                        for (auto& child : e->children()) {
-                            expr->append_child(child);
-                        }
+                auto append = [this, &params, &expr](Node* node) {
+                    expression_ptr child_expr;
+                    if (nodeTag(node) == T_A_Expr) {
+                        child_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node), params);
+                    } else if (nodeTag(node) == T_A_Indirection) {
+                        child_expr = transform_a_indirection(pg_ptr_cast<A_Indirection>(node), params);
+                    } else if (nodeTag(node) == T_FuncCall) {
+                        child_expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node), params);
                     } else {
-                        expr->append_child(e);
+                        throw parser_exception_t({"Unsupported expression: unknown expr type in transform_a_expr"}, {});
                     }
+                    if (expr->group() == child_expr->group()) {
+                        auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(child_expr);
+                        if (expr->type() == comp_expr->type()) {
+                            for (auto& child : comp_expr->children()) {
+                                expr->append_child(child);
+                            }
+                            return;
+                        }
+                    }
+                    expr->append_child(child_expr);
                 };
-                append(left);
-                append(right);
+
+                append(node->lexpr);
+                append(node->rexpr);
                 return expr;
             }
             case AEXPR_OP: {
                 if (nodeTag(node) == T_A_Indirection) {
-                    return transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node));
+                    return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), params);
                 }
                 if (nodeTag(node->lexpr) == T_ColumnRef) {
                     auto key_left = strVal(pg_ptr_cast<ColumnRef>(node->lexpr)->fields->lst.back().data);
@@ -154,36 +142,51 @@ namespace components::sql::transform {
             }
             case AEXPR_NOT: {
                 assert(nodeTag(node->rexpr) == T_A_Expr || nodeTag(node->rexpr) == T_A_Indirection);
-                compare_expression_ptr right;
+                expression_ptr right;
                 if (nodeTag(node->rexpr) == T_A_Expr) {
-                    right = transform_a_expr(params, pg_ptr_cast<A_Expr>(node->rexpr));
+                    right = transform_a_expr(pg_ptr_cast<A_Expr>(node->rexpr), params);
                 } else if (nodeTag(node->rexpr) == T_A_Indirection) {
-                    right = transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node->rexpr));
+                    right = transform_a_indirection(pg_ptr_cast<A_Indirection>(node->rexpr), params);
+                } else if (nodeTag(node->rexpr) == T_FuncCall) {
+                    right = transform_a_expr_func(pg_ptr_cast<FuncCall>(node->rexpr), params);
                 } else {
-                    auto func = pg_ptr_cast<FuncCall>(node->rexpr);
-                    *func_node = transform_function(*func, params);
-                    return right;
+                    throw parser_exception_t({"Unsupported expression: unknown expr type in transform_a_expr"}, {});
                 }
                 auto expr = make_compare_union_expression(params->parameters().resource(), compare_type::union_not);
-                if (expr->type() == right->type()) {
-                    for (auto& child : right->children()) {
-                        expr->append_child(child);
+                if (expr->group() == right->group()) {
+                    auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(right);
+                    if (expr->type() == comp_expr->type()) {
+                        for (auto& child : comp_expr->children()) {
+                            expr->append_child(child);
+                        }
+                        return expr;
                     }
-                } else {
-                    expr->append_child(right);
                 }
+                expr->append_child(right);
                 return expr;
             }
             default:
-                throw std::runtime_error("Unsupported node type: " + expr_kind_to_string(node->kind));
+                throw parser_exception_t({"Unsupported node type: " + expr_kind_to_string(node->kind)}, {});
         }
     }
-    components::expressions::compare_expression_ptr
-    transformer::transform_a_indirection(logical_plan::parameter_node_t* params, A_Indirection* node) {
+
+    expression_ptr transformer::transform_a_expr_func(FuncCall* node, logical_plan::parameter_node_t* params) {
+        std::string funcname = strVal(node->funcname->lst.front().data);
+        std::pmr::vector<core::parameter_id_t> args;
+        args.reserve(node->args->lst.size());
+        for (const auto& arg : node->args->lst) {
+            args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
+        }
+        return make_function_expression(params->parameters().resource(), std::move(funcname), std::move(args));
+    }
+
+    expression_ptr transformer::transform_a_indirection(A_Indirection* node, logical_plan::parameter_node_t* params) {
         if (node->arg->type == T_A_Expr) {
-            return transform_a_expr(params, pg_ptr_cast<A_Expr>(node->arg));
+            return transform_a_expr(pg_ptr_cast<A_Expr>(node->arg), params);
         } else if (node->arg->type == T_A_Indirection) {
-            return transform_a_indirection(params, pg_ptr_cast<A_Indirection>(node->arg));
+            return transform_a_indirection(pg_ptr_cast<A_Indirection>(node->arg), params);
+        } else if (node->arg->type == T_FuncCall) {
+            return transform_a_expr_func(pg_ptr_cast<FuncCall>(node->arg), params);
         } else {
             throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node->type));
         }

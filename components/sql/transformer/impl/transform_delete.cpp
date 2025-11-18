@@ -25,6 +25,6 @@ namespace components::sql::transform {
             collection_from,
             logical_plan::make_node_match(resource_,
                                           collection,
-                                          transform_a_expr(params, pg_ptr_cast<A_Expr>(node.whereClause))));
+                                          transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), params)));
     }
 } // namespace components::sql::transform

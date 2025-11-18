@@ -28,8 +28,6 @@ namespace components::logical_plan {
         return make_node_function(deserializer->resource(), std::move(name), std::move(args));
     }
 
-    void add_argument(core::parameter_id_t arg);
-
     hash_t node_function_t::hash_impl() const { return 0; }
 
     std::string node_function_t::to_string_impl() const {

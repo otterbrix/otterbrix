@@ -64,7 +64,7 @@ namespace components::sql::transform {
             // should always be A_Expr
             assert(nodeTag(join->quals) == T_A_Expr);
             auto a_expr = pg_ptr_cast<A_Expr>(join->quals);
-            node_join->append_expression(transform_a_expr(params, a_expr));
+            node_join->append_expression(transform_a_expr(a_expr, params));
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
         }
@@ -73,10 +73,8 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
-        // temp solution for custom function
-        logical_plan::node_ptr overlying_func = nullptr;
 
-        if (node.fromClause) {
+        if (node.fromClause && node.fromClause->lst.front().data) {
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {
@@ -88,9 +86,13 @@ namespace components::sql::transform {
                 agg = logical_plan::make_node_aggregate(resource_, {});
                 join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, params);
                 agg->append_child(join);
+            } else if (nodeTag(from_first) == T_RangeFunction) {
+                agg = logical_plan::make_node_aggregate(resource_, {});
+                agg->append_child(transform_function(*pg_ptr_cast<RangeFunction>(from_first), params));
             }
         } else {
-            throw parser_exception_t{"otterbrix currently does not support SELECT without FROM", ""};
+            agg = logical_plan::make_node_aggregate(resource_, {});
+            //throw parser_exception_t{"otterbrix currently does not support SELECT without FROM", ""};
         }
 
         auto group = logical_plan::make_node_group(resource_, agg->collection_full_name());
@@ -102,23 +104,35 @@ namespace components::sql::transform {
                     case T_FuncCall: {
                         // group
                         auto func = pg_ptr_cast<FuncCall>(res->val);
-                        auto arg = std::string{
-                            strVal(pg_ptr_cast<ColumnRef>(func->args->lst.front().data)->fields->lst.front().data)};
+
                         auto funcname = std::string{strVal(func->funcname->lst.front().data)};
+                        std::pmr::vector<param_storage> args;
+                        args.reserve(func->args->lst.size());
+                        for (const auto& arg : func->args->lst) {
+                            auto arg_value = pg_ptr_cast<Node>(arg.data);
+                            if (nodeTag(arg_value) == T_ColumnRef) {
+                                args.emplace_back(expressions::key_t{
+                                    std::string{strVal(pg_ptr_cast<ColumnRef>(arg_value)->fields->lst.front().data)}});
+                            } else {
+                                args.emplace_back(add_param_value(arg_value, params));
+                            }
+                        }
 
                         std::string expr_name;
                         if (res->name) {
                             expr_name = res->name;
                         } else {
-                            expr_name.reserve(funcname.size() + arg.size() + 2);
-                            expr_name.append(funcname).append("(").append(arg).append(")");
+                            expr_name = funcname;
                         }
 
-                        group->append_expression(
-                            make_aggregate_expression(resource_,
-                                                      get_aggregate_type(funcname),
-                                                      components::expressions::key_t{std::move(expr_name)},
-                                                      components::expressions::key_t{std::move(arg)}));
+                        auto expr = make_aggregate_expression(resource_,
+                                                              get_aggregate_type(funcname),
+                                                              components::expressions::key_t{std::move(expr_name)});
+                        for (const auto& arg : args) {
+                            expr->append_param(arg);
+                        }
+                        group->append_expression(expr);
+
                         break;
                     }
                     case T_ColumnRef: {
@@ -163,15 +177,14 @@ namespace components::sql::transform {
 
         // where
         if (node.whereClause) {
+            expression_ptr expr;
             if (nodeTag(node.whereClause) == T_FuncCall) {
-                auto func = pg_ptr_cast<FuncCall>(node.whereClause);
-                overlying_func = transform_function(*func, params);
+                expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node.whereClause), params);
             } else {
-                auto where = pg_ptr_cast<A_Expr>(node.whereClause);
-                auto expr = transform_a_expr(params, where, &overlying_func);
-                if (expr) {
-                    agg->append_child(logical_plan::make_node_match(resource_, agg->collection_full_name(), expr));
-                }
+                expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), params);
+            }
+            if (expr) {
+                agg->append_child(logical_plan::make_node_match(resource_, agg->collection_full_name(), expr));
             }
         }
 
@@ -200,10 +213,6 @@ namespace components::sql::transform {
             agg->append_child(logical_plan::make_node_sort(resource_, agg->collection_full_name(), expressions));
         }
 
-        if (overlying_func) {
-            overlying_func->append_child(agg);
-            return overlying_func;
-        }
         return agg;
     }
 } // namespace components::sql::transform

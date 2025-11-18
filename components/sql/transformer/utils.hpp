@@ -86,7 +86,7 @@ namespace components::sql::transform {
             return it->second;
         }
 
-        return expressions::aggregate_type::invalid;
+        return expressions::aggregate_type::udf;
     }
 
     static types::logical_type get_logical_type(std::string_view str) {

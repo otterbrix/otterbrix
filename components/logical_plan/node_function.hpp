@@ -11,8 +11,6 @@ namespace components::logical_plan {
                                  std::string&& name,
                                  std::pmr::vector<core::parameter_id_t>&& args);
 
-        void add_argument(core::parameter_id_t arg);
-
         const std::string& name() const noexcept;
         const std::pmr::vector<core::parameter_id_t>& args() const noexcept;
 

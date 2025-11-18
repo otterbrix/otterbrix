@@ -2,6 +2,7 @@
 
 #include "aggregate_expression.hpp"
 #include "compare_expression.hpp"
+#include "function_expression.hpp"
 #include "scalar_expression.hpp"
 #include "sort_expression.hpp"
 
@@ -41,6 +42,8 @@ namespace components::expressions {
                 return scalar_expression_t::deserialize(deserializer);
             case serializer::serialization_type::expression_sort:
                 return sort_expression_t::deserialize(deserializer);
+            case serializer::serialization_type::expression_function:
+                return function_expression_t::deserialize(deserializer);
             default:
                 return {nullptr};
         }

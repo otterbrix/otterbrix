@@ -11,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         test_join.cpp
         test_update.cpp
         test_errors.cpp
+        test_function.cpp
         test_parameter.cpp
 )
 

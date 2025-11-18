@@ -191,7 +191,7 @@ namespace components::sql::transform {
         if (node.whereClause) {
             match = logical_plan::make_node_match(resource_,
                                                   to,
-                                                  transform_a_expr(params, pg_ptr_cast<A_Expr>(node.whereClause)));
+                                                  transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), params));
         } else {
             match = logical_plan::make_node_match(resource_,
                                                   to,

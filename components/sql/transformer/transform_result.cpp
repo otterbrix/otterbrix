@@ -46,7 +46,7 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transform_result::node_ptr() const { return node_; }
 
-    logical_plan::parameter_node_ptr transform_result::params_ptr() const { params_; }
+    logical_plan::parameter_node_ptr transform_result::params_ptr() const { return params_; }
 
     size_t transform_result::parameter_count() const {
         if (node_->type() == logical_plan::node_type::insert_t) {

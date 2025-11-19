@@ -58,4 +58,9 @@ TEST_CASE("sql::functions") {
     TEST_SIMPLE_FUNCTION(R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
                          R"_($aggregate: {$group: {name, some_alias: {$udf: ["$name", "$number"]}}})_",
                          vec());
+
+    TEST_SIMPLE_FUNCTION(
+        R"_(SELECT * FROM col1 join col2 on udf(col1.id, col2.id);)_",
+        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {#0, #1}}}})_",
+        vec({v("id"), v("id")}));
 }

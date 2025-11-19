@@ -62,9 +62,16 @@ namespace components::sql::transform {
         // on
         if (join->quals) {
             // should always be A_Expr
-            assert(nodeTag(join->quals) == T_A_Expr);
-            auto a_expr = pg_ptr_cast<A_Expr>(join->quals);
-            node_join->append_expression(transform_a_expr(a_expr, params));
+            if (nodeTag(join->quals) == T_A_Expr) {
+                node_join->append_expression(transform_a_expr(pg_ptr_cast<A_Expr>(join->quals), params));
+            } else if (nodeTag(join->quals) == T_A_Indirection) {
+                node_join->append_expression(transform_a_indirection(pg_ptr_cast<A_Indirection>(join->quals), params));
+            } else if (nodeTag(join->quals) == T_FuncCall) {
+                node_join->append_expression(transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), params));
+            } else {
+                throw parser_exception_t{"incorrect type for join join->quals node",
+                                         node_tag_to_string(nodeTag(join->larg))};
+            }
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
         }

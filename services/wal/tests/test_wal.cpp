@@ -317,14 +317,13 @@ TEST_CASE("delete one test") {
     auto test_wal = create_test_wal("/tmp/wal/delete_one", &resource);
 
     for (int num = 1; num <= 5; ++num) {
-        auto match =
-            components::logical_plan::make_node_match(&resource,
-                                                      {database_name, collection_name},
-                                                      make_compare_expression(&resource,
-                                                                              compare_type::eq,
-                                                                              side_t::left,
-                                                                              components::expressions::key_t{"count"},
-                                                                              core::parameter_id_t{1}));
+        auto match = components::logical_plan::make_node_match(
+            &resource,
+            {database_name, collection_name},
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    components::expressions::key_t{"count", side_t::left},
+                                    core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_one(&resource, {database_name, collection_name}, match);
@@ -344,7 +343,7 @@ TEST_CASE("delete one test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->key_left() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -357,14 +356,13 @@ TEST_CASE("delete many test") {
     auto test_wal = create_test_wal("/tmp/wal/delete_many", &resource);
 
     for (int num = 1; num <= 5; ++num) {
-        auto match =
-            components::logical_plan::make_node_match(&resource,
-                                                      {database_name, collection_name},
-                                                      make_compare_expression(&resource,
-                                                                              compare_type::eq,
-                                                                              side_t::left,
-                                                                              components::expressions::key_t{"count"},
-                                                                              core::parameter_id_t{1}));
+        auto match = components::logical_plan::make_node_match(
+            &resource,
+            {database_name, collection_name},
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    components::expressions::key_t{"count", side_t::left},
+                                    core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_many(&resource, {database_name, collection_name}, match);
@@ -384,7 +382,7 @@ TEST_CASE("delete many test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->key_left() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -397,14 +395,13 @@ TEST_CASE("update one test") {
     auto test_wal = create_test_wal("/tmp/wal/update_one", &resource);
 
     for (int num = 1; num <= 5; ++num) {
-        auto match =
-            components::logical_plan::make_node_match(&resource,
-                                                      {database_name, collection_name},
-                                                      make_compare_expression(&resource,
-                                                                              compare_type::eq,
-                                                                              side_t::left,
-                                                                              components::expressions::key_t{"count"},
-                                                                              core::parameter_id_t{1}));
+        auto match = components::logical_plan::make_node_match(
+            &resource,
+            {database_name, collection_name},
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    components::expressions::key_t{"count", side_t::left},
+                                    core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         params->add_parameter(core::parameter_id_t{2}, num + 10);
@@ -429,7 +426,7 @@ TEST_CASE("update one test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->key_left() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -451,14 +448,13 @@ TEST_CASE("update many test") {
     auto test_wal = create_test_wal("/tmp/wal/update_many", &resource);
 
     for (int num = 1; num <= 5; ++num) {
-        auto match =
-            components::logical_plan::make_node_match(&resource,
-                                                      {database_name, collection_name},
-                                                      make_compare_expression(&resource,
-                                                                              compare_type::eq,
-                                                                              side_t::left,
-                                                                              components::expressions::key_t{"count"},
-                                                                              core::parameter_id_t{1}));
+        auto match = components::logical_plan::make_node_match(
+            &resource,
+            {database_name, collection_name},
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    components::expressions::key_t{"count", side_t::left},
+                                    core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         params->add_parameter(core::parameter_id_t{2}, num + 10);
@@ -483,7 +479,7 @@ TEST_CASE("update many test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->key_left() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);

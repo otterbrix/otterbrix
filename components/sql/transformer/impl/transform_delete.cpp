@@ -14,17 +14,20 @@ namespace components::sql::transform {
                                               rangevar_to_collection(node.relation),
                                               make_compare_expression(resource_, compare_type::all_true)));
         }
-        collection_full_name_t collection = rangevar_to_collection(node.relation);
-        collection_full_name_t collection_from = {};
+        name_collection_t names;
+        names.left_name = rangevar_to_collection(node.relation);
+        names.left_alias = construct_alias(node.relation->alias);
         if (!node.usingClause->lst.empty()) {
-            collection_from = rangevar_to_collection(pg_ptr_cast<RangeVar>(node.usingClause->lst.front().data));
+            auto clause = pg_ptr_cast<RangeVar>(node.usingClause->lst.front().data);
+            names.right_name = rangevar_to_collection(clause);
+            names.right_alias = construct_alias(clause->alias);
         }
         return logical_plan::make_node_delete_many(
             resource_,
-            collection,
-            collection_from,
+            names.left_name,
+            names.right_name,
             logical_plan::make_node_match(resource_,
-                                          collection,
-                                          transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), params)));
+                                          names.left_name,
+                                          transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params)));
     }
 } // namespace components::sql::transform

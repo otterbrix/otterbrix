@@ -66,13 +66,11 @@ TEST_CASE("serialization::expressions") {
         auto expr_and = make_compare_union_expression(&resource, compare_type::union_and);
         expr_and->append_child(make_compare_expression(&resource,
                                                        compare_type::gt,
-                                                       side_t::left,
-                                                       key{"some key"},
+                                                       key{"some key", side_t::left},
                                                        core::parameter_id_t{1}));
         expr_and->append_child(make_compare_expression(&resource,
                                                        compare_type::lt,
-                                                       side_t::right,
-                                                       key{"some other key"},
+                                                       key{"some other key", side_t::right},
                                                        core::parameter_id_t{2}));
 
         {
@@ -129,7 +127,7 @@ TEST_CASE("serialization::logical_plan") {
         make_node_match(
             &resource,
             {database_name, collection_name},
-            make_compare_expression(&resource, compare_type::gt, side_t::left, key{"count"}, core::parameter_id_t{1})));
+            make_compare_expression(&resource, compare_type::gt, key{"count", side_t::left}, core::parameter_id_t{1})));
     auto params = make_parameter_node(&resource);
     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(90));
     {

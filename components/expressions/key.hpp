@@ -10,42 +10,51 @@ namespace components::expressions {
     public:
         key_t()
             : type_(type::non)
+            , side_(side_t::undefined)
             , storage_({}) {}
 
         key_t(key_t&& key) noexcept
             : type_{key.type_}
+            , side_{key.side_}
             , storage_{std::move(key.storage_)} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
 
-        explicit key_t(std::string_view str)
+        explicit key_t(std::string_view str, side_t side = side_t::undefined)
             : type_(type::string)
+            , side_(side)
             , storage_(std::string(str.data(), str.size())) {}
 
-        explicit key_t(const std::string& str)
+        explicit key_t(const std::string& str, side_t side = side_t::undefined)
             : type_(type::string)
+            , side_(side)
             , storage_(std::string(str.data(), str.size())) {}
 
-        explicit key_t(std::string&& str)
+        explicit key_t(std::string&& str, side_t side = side_t::undefined)
             : type_(type::string)
+            , side_(side)
             , storage_(std::move(str)) {}
 
-        explicit key_t(const char* str)
+        explicit key_t(const char* str, side_t side = side_t::undefined)
             : type_(type::string)
+            , side_(side)
             , storage_(std::string(str)) {}
 
         template<typename CharT>
-        key_t(const CharT* data, size_t size)
+        key_t(const CharT* data, size_t size, side_t side = side_t::undefined)
             : type_(type::string)
+            , side_(side)
             , storage_(std::string(data, size)) {}
 
-        explicit key_t(int32_t index)
+        explicit key_t(int32_t index, side_t side = side_t::undefined)
             : type_(type::int32)
+            , side_(side)
             , storage_(index) {}
 
-        explicit key_t(uint32_t index)
+        explicit key_t(uint32_t index, side_t side = side_t::undefined)
             : type_(type::uint32)
+            , side_(side)
             , storage_(index) {}
 
         enum class type
@@ -74,6 +83,10 @@ namespace components::expressions {
 
         auto is_null() const -> bool { return type_ == type::non; }
 
+        auto side() const -> side_t { return side_; }
+
+        void set_side(side_t side) { side_ = side; }
+
         bool operator<(const key_t& other) const { return storage_ < other.storage_; }
 
         bool operator<=(const key_t& other) const { return storage_ <= other.storage_; }
@@ -99,6 +112,7 @@ namespace components::expressions {
 
     private:
         type type_;
+        side_t side_;
         std::variant<std::monostate, bool, int32_t, uint32_t, std::string> storage_;
     };
 

@@ -17,16 +17,16 @@ namespace components::expressions {
         function_expression_t(std::pmr::memory_resource* resource, std::string&& name);
         function_expression_t(std::pmr::memory_resource* resource,
                               std::string&& name,
-                              std::pmr::vector<core::parameter_id_t>&& args);
+                              std::pmr::vector<param_storage>&& args);
 
         const std::string& name() const noexcept;
-        const std::pmr::vector<core::parameter_id_t>& args() const noexcept;
+        const std::pmr::vector<param_storage>& args() const noexcept;
 
         static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         std::string name_;
-        std::pmr::vector<core::parameter_id_t> args_;
+        std::pmr::vector<param_storage> args_;
 
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
@@ -37,6 +37,6 @@ namespace components::expressions {
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, std::string&& name);
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
                                                      std::string&& name,
-                                                     std::pmr::vector<core::parameter_id_t>&& args);
+                                                     std::pmr::vector<param_storage>&& args);
 
 } // namespace components::expressions

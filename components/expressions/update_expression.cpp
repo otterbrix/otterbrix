@@ -200,49 +200,45 @@ namespace components::expressions {
         return false;
     }
 
-    update_expr_get_value_t::update_expr_get_value_t(key_t key, side_t side)
+    update_expr_get_value_t::update_expr_get_value_t(key_t key)
         : update_expr_t(update_expr_type::get_value_doc)
-        , key_(std::move(key))
-        , side_(side) {}
+        , key_(std::move(key)) {}
 
     const key_t& update_expr_get_value_t::key() const noexcept { return key_; }
 
-    side_t update_expr_get_value_t::side() const noexcept { return side_; }
-
     bool update_expr_get_value_t::operator==(const update_expr_get_value_t& rhs) const {
-        return left_ == rhs.left_ && key_ == rhs.key_ && side_ == rhs.side_;
+        return left_ == rhs.left_ && key_ == rhs.key_ && key_.side() == rhs.key_.side();
     }
 
     void update_expr_get_value_t::serialize(serializer::msgpack_serializer_t* serializer) {
-        serializer->start_array(4);
+        serializer->start_array(3);
         serializer->append_enum(serializer::serialization_type::expression_update);
         serializer->append_enum(type_);
         serializer->append(key_);
-        serializer->append_enum(side_);
         serializer->end_array();
     }
 
     update_expr_ptr update_expr_get_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        return {
-            new update_expr_get_value_t(deserializer->deserialize_key(2), (deserializer->deserialize_enum<side_t>(3)))};
+        return {new update_expr_get_value_t(deserializer->deserialize_key(2))};
     }
 
     bool update_expr_get_value_t::execute_impl(document::document_ptr& to,
                                                const document::document_ptr& from,
                                                document::impl::base_document* tape,
                                                const logical_plan::storage_parameters*) {
-        if (side_ == side_t::undefined) {
+        auto side = key_.side();
+        if (side == side_t::undefined) {
             if (to->is_exists(key_.as_string())) {
-                side_ = side_t::left;
+                side = side_t::left;
             } else if (from->is_exists(key_.as_string())) {
-                side_ = side_t::right;
+                side = side_t::right;
             } else {
                 output_ = types::logical_value_t();
             }
         }
-        if (side_ == side_t::right) {
+        if (side == side_t::right) {
             output_ = from->get_value(key_.as_string()).as_logical_value();
-        } else if (side_ == side_t::left) {
+        } else if (side == side_t::left) {
             output_ = to->get_value(key_.as_string()).as_logical_value();
         }
         return false;
@@ -253,12 +249,13 @@ namespace components::expressions {
                                                size_t row_to,
                                                size_t row_from,
                                                const logical_plan::storage_parameters* parameters) {
+        auto side = key_.side();
         // TODO: find fix for complex keys e.g. "countArray/0"
-        if (side_ == side_t::undefined) {
+        if (side == side_t::undefined) {
             // TODO: deduce which side to use
             assert(false);
         }
-        if (side_ == side_t::right) {
+        if (side == side_t::right) {
             size_t index = -1;
             switch (key_.which()) {
                 case key_t::type::string:
@@ -273,7 +270,7 @@ namespace components::expressions {
             }
             assert(index < from.column_count());
             output_ = from.data[index].value(row_from);
-        } else if (side_ == side_t::left) {
+        } else if (side == side_t::left) {
             size_t index = -1;
             switch (key_.which()) {
                 case key_t::type::string:

@@ -127,9 +127,8 @@ namespace otterbrix {
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
-                    calculate_expr->left() =
-                        new components::expressions::update_expr_get_value_t(components::expressions::key_t{key_str},
-                                                                             components::expressions::side_t::left);
+                    calculate_expr->left() = new components::expressions::update_expr_get_value_t(
+                        components::expressions::key_t{key_str, components::expressions::side_t::left});
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
@@ -181,9 +180,8 @@ namespace otterbrix {
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
-                    calculate_expr->left() =
-                        new components::expressions::update_expr_get_value_t(components::expressions::key_t{key_str},
-                                                                             components::expressions::side_t::left);
+                    calculate_expr->left() = new components::expressions::update_expr_get_value_t(
+                        components::expressions::key_t{key_str, components::expressions::side_t::left});
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);

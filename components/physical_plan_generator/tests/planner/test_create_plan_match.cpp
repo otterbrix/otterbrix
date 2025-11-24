@@ -30,7 +30,7 @@ TEST_CASE("create_plan::match") {
         auto node_match = make_node_match(
             &resource,
             get_name(),
-            make_compare_expression(&resource, compare_type::eq, side_t::left, key("key"), core::parameter_id_t(1)));
+            make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
         services::context_storage_t context;
         context.emplace(get_name(), d(collection));
         auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());

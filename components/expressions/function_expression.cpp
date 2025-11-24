@@ -13,18 +13,24 @@ namespace components::expressions {
 
     function_expression_t::function_expression_t(std::pmr::memory_resource*,
                                                  std::string&& name,
-                                                 std::pmr::vector<core::parameter_id_t>&& args)
+                                                 std::pmr::vector<param_storage>&& args)
         : expression_i(expression_group::function)
         , name_(std::move(name))
         , args_(std::move(args)) {}
 
     const std::string& function_expression_t::name() const noexcept { return name_; }
 
-    const std::pmr::vector<core::parameter_id_t>& function_expression_t::args() const noexcept { return args_; }
+    const std::pmr::vector<param_storage>& function_expression_t::args() const noexcept { return args_; }
 
     expression_ptr function_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
-        auto args = deserializer->deserialize_param_ids(2);
+        std::pmr::vector<param_storage> args(deserializer->resource());
+        deserializer->advance_array(2);
+        args.reserve(deserializer->current_array_size());
+        for (size_t i = 0; i < args.capacity(); i++) {
+            args.emplace_back(deserialize_param_storage(deserializer, i));
+        }
+        deserializer->pop_array();
         return make_function_expression(deserializer->resource(), std::move(name), std::move(args));
     }
 
@@ -42,7 +48,7 @@ namespace components::expressions {
             } else {
                 stream << ", ";
             }
-            stream << "#" << std::to_string(id);
+            stream << id;
         }
         stream << "}}";
         return stream.str();
@@ -57,7 +63,11 @@ namespace components::expressions {
         serializer->start_array(3);
         serializer->append_enum(serializer::serialization_type::expression_function);
         serializer->append(name_);
-        serializer->append(args_);
+        serializer->start_array(args_.size());
+        for (const auto& arg : args_) {
+            serialize_param_storage(serializer, arg);
+        }
+        serializer->end_array();
         serializer->end_array();
     }
 
@@ -67,7 +77,7 @@ namespace components::expressions {
 
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
                                                      std::string&& name,
-                                                     std::pmr::vector<core::parameter_id_t>&& args) {
+                                                     std::pmr::vector<param_storage>&& args) {
         return {new function_expression_t(resource, std::move(name), std::move(args))};
     }
 

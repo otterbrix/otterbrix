@@ -39,8 +39,8 @@ TEST_CASE("sql::functions") {
                          vec({v(5), v(10)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM users WHERE is_active_user(id);)_",
-                         R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {#0}}}})_",
-                         vec({v("id")}));
+                         R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {"$id"}}}})_",
+                         vec());
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT id, text, some_udf(text) AS some_alias FROM some_table;)_",
                          R"_($aggregate: {$group: {id, text, some_alias: {$udf: "$text"}}})_",
@@ -61,6 +61,6 @@ TEST_CASE("sql::functions") {
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT * FROM col1 join col2 on udf(col1.id, col2.id);)_",
-        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {#0, #1}}}})_",
-        vec({v("id"), v("id")}));
+        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"$id", "$id"}}}})_",
+        vec());
 }

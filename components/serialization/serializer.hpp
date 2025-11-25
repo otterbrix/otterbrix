@@ -40,6 +40,7 @@ namespace components::serializer {
         expression_scalar,
         expression_sort,
         expression_update,
+        expression_function,
 
         parameters,
 

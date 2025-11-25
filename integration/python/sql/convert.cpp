@@ -235,7 +235,7 @@ using components::expressions::scalar_expression_t;
 using components::expressions::scalar_type;
 
 void normalize(compare_expression_ptr& expr) {
-    if (expr->type() == compare_type::invalid && !expr->key_left().is_null()) {
+    if (expr->type() == compare_type::invalid && !expr->primary_key().is_null()) {
         expr->set_type(compare_type::eq);
     }
 }
@@ -280,7 +280,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
         auto value = params->add_parameter(to_value(condition));
-        auto sub_condition = make_compare_expression(resource, type, side_t::left, ex_key_t(real_key), value);
+        auto sub_condition = make_compare_expression(resource, type, ex_key_t(real_key, side_t::left), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
         }

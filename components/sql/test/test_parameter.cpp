@@ -112,7 +112,7 @@ TEST_CASE("sql::update_bind") {
         fields f;
         f.emplace_back(new update_expr_set_t(components::expressions::key_t{"rating"}));
         update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::add);
-        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"rating"}, side_t::undefined);
+        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"rating", side_t::undefined});
         calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         f.back()->left() = std::move(calculate);
 

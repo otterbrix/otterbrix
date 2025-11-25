@@ -1,5 +1,7 @@
 #pragma once
 
+#include "expressions/key.hpp"
+
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -31,12 +33,32 @@ namespace components::sql::transform {
 
     inline std::string construct(const char* ptr) { return ptr ? ptr : std::string(); }
 
+    inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
+
     static collection_full_name_t rangevar_to_collection(RangeVar* table) {
         return {construct(table->uid),
                 construct(table->catalogname),
                 construct(table->schemaname),
                 construct(table->relname)};
     }
+
+    struct name_collection_t {
+        collection_full_name_t left_name;
+        std::string left_alias;
+        collection_full_name_t right_name;
+        std::string right_alias;
+    };
+
+    expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
+
+    struct column_ref_t {
+        std::string table;
+        expressions::key_t field;
+
+        void deduce_side(const name_collection_t& names);
+    };
+
+    column_ref_t columnref_to_fied(ColumnRef* ref);
 
     static logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
@@ -86,7 +108,7 @@ namespace components::sql::transform {
             return it->second;
         }
 
-        return expressions::aggregate_type::invalid;
+        return expressions::aggregate_type::udf;
     }
 
     static types::logical_type get_logical_type(std::string_view str) {
@@ -129,4 +151,5 @@ namespace components::sql::transform {
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
+
 } // namespace components::sql::transform

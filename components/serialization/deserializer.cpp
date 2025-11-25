@@ -78,15 +78,22 @@ namespace components::serializer {
     }
 
     expressions::key_t msgpack_deserializer_t::deserialize_key(size_t index) {
-        if (working_tree_.top()->ptr[index].type == msgpack::type::POSITIVE_INTEGER) {
-            return expressions::key_t{static_cast<int32_t>(working_tree_.top()->ptr[index].via.i64)};
-        } else if (working_tree_.top()->ptr[index].type == msgpack::type::NEGATIVE_INTEGER) {
-            return expressions::key_t{static_cast<uint32_t>(working_tree_.top()->ptr[index].via.u64)};
-        } else if (working_tree_.top()->ptr[index].type == msgpack::type::STR) {
-            return expressions::key_t{working_tree_.top()->ptr[index].via.str.ptr,
-                                      working_tree_.top()->ptr[index].via.str.size};
+        expressions::key_t res;
+        advance_array(index);
+        auto side = deserialize_enum<expressions::side_t>(1);
+        if (working_tree_.top()->ptr[0].type == msgpack::type::POSITIVE_INTEGER) {
+            res = expressions::key_t{static_cast<int32_t>(working_tree_.top()->ptr[0].via.u64), side};
+        } else if (working_tree_.top()->ptr[0].type == msgpack::type::NEGATIVE_INTEGER) {
+            res = expressions::key_t{static_cast<uint32_t>(working_tree_.top()->ptr[0].via.i64), side};
+        } else if (working_tree_.top()->ptr[0].type == msgpack::type::STR) {
+            res = expressions::key_t{working_tree_.top()->ptr[0].via.str.ptr,
+                                     working_tree_.top()->ptr[0].via.str.size,
+                                     side};
+        } else {
+            res.set_side(side);
         }
-        return {};
+        pop_array();
+        return res;
     }
 
     std::string msgpack_deserializer_t::deserialize_string(size_t index) {

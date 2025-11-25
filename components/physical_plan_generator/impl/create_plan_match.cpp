@@ -35,7 +35,7 @@ namespace services::collection::planner::impl {
         //}
         if (context_) {
             if (is_can_index_find_by_predicate(expr->type()) &&
-                components::index::search_index(context_->index_engine(), {expr->key_left()})) {
+                components::index::search_index(context_->index_engine(), {expr->primary_key()})) {
                 return boost::intrusive_ptr(new components::collection::operators::index_scan(context_, expr, limit));
             }
             auto predicate = components::collection::operators::predicates::create_predicate(expr);
@@ -85,7 +85,7 @@ namespace services::table::planner::impl {
         //}
         if (context_) {
             if (is_can_index_find_by_predicate(expr->type()) &&
-                components::index::search_index(context_->index_engine(), {expr->key_left()})) {
+                components::index::search_index(context_->index_engine(), {expr->primary_key()})) {
                 return boost::intrusive_ptr(new components::table::operators::index_scan(context_, expr, limit));
             }
             return boost::intrusive_ptr(new components::table::operators::full_scan(context_, expr, limit));

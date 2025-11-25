@@ -9,8 +9,7 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
     update_expr_ptr transformer::transform_update_expr(Node* node,
-                                                       const collection_full_name_t& to,
-                                                       const collection_full_name_t& from,
+                                                       const name_collection_t& names,
                                                        logical_plan::parameter_node_t* params) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
@@ -111,8 +110,8 @@ namespace components::sql::transform {
                             }
                         }
                         assert(res);
-                        res->left() = transform_update_expr(expr->lexpr, to, from, params);
-                        res->right() = transform_update_expr(expr->rexpr, to, from, params);
+                        res->left() = transform_update_expr(expr->lexpr, names, params);
+                        res->right() = transform_update_expr(expr->rexpr, names, params);
                         return res;
                     }
                     default:
@@ -121,43 +120,13 @@ namespace components::sql::transform {
             }
             case T_A_Indirection: {
                 auto n = pg_ptr_cast<A_Indirection>(node);
-                return transform_update_expr(n->arg, to, from, params);
+                return transform_update_expr(n->arg, names, params);
             }
             case T_ColumnRef: {
-                // by default it asigns column ref to "to" side of the update
-                // TODO: handle undefined case (requires schema check later)
-                // TODO: handle table selection ("to" and "from" if defined or an error)
                 auto ref = pg_ptr_cast<ColumnRef>(node);
-                std::string key = strVal(ref->fields->lst.back().data);
-                if (ref->fields->lst.size() == 1) {
-                    // can`t check table here
-                    return {new update_expr_get_value_t(expressions::key_t{key}, side_t::undefined)};
-                } else if (ref->fields->lst.size() == 2) {
-                    // just table
-                    std::string table = strVal(ref->fields->lst.front().data);
-                    if (table == to.collection) {
-                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::left)};
-                    } else if (table == from.collection) {
-                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::right)};
-                    } else {
-                        throw parser_exception_t("incorrect column path in UPDATE call", "");
-                    }
-                } else if (ref->fields->lst.size() == 3) {
-                    // database + table
-                    // TODO: technically this is a valid syntax and will fail here:
-                    // UPDATE Table.Column SET DB.Table.Column
-                    collection_full_name_t check_table{strVal(ref->fields->lst.front().data),
-                                                       strVal((++ref->fields->lst.begin())->data)};
-                    if (check_table == to) {
-                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::left)};
-                    } else if (check_table == from) {
-                        return {new update_expr_get_value_t(expressions::key_t{key}, side_t::right)};
-                    } else {
-                        throw parser_exception_t("incorrect column path in UPDATE call", "");
-                    }
-                } else {
-                    throw parser_exception_t("incorrect column path in UPDATE call", "");
-                }
+                auto key = columnref_to_fied(ref);
+                key.deduce_side(names);
+                return {new update_expr_get_value_t(std::move(key.field))};
             }
         }
     }
@@ -165,14 +134,16 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_update(UpdateStmt& node, logical_plan::parameter_node_t* params) {
         logical_plan::node_match_ptr match;
         std::pmr::vector<update_expr_ptr> updates(resource_);
-        collection_full_name_t to = rangevar_to_collection(node.relation);
-        collection_full_name_t from;
+        name_collection_t names;
+        names.left_name = rangevar_to_collection(node.relation);
+        names.left_alias = construct_alias(node.relation->alias);
 
         if (!node.fromClause->lst.empty()) {
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {
-                from = rangevar_to_collection(pg_ptr_cast<RangeVar>(from_first));
+                names.right_name = rangevar_to_collection(pg_ptr_cast<RangeVar>(from_first));
+                names.right_alias = construct_alias(pg_ptr_cast<RangeVar>(from_first)->alias);
             } else {
                 throw parser_exception_t{"undefined token in UPDATE FROM", ""};
             }
@@ -180,28 +151,33 @@ namespace components::sql::transform {
         // set
         {
             for (auto target : node.targetList->lst) {
-                // TODO: SET is hardcoded to be from a const value here:
                 auto res = pg_ptr_cast<ResTarget>(target.data);
-                updates.emplace_back(new update_expr_set_t(expressions::key_t{res->name}));
-                updates.back()->left() = transform_update_expr(res->val, to, from, params);
+                updates.emplace_back(new update_expr_set_t(expressions::key_t{res->name, side_t::left}));
+                updates.back()->left() = transform_update_expr(res->val, names, params);
             }
         }
 
         // where
         if (node.whereClause) {
-            match = logical_plan::make_node_match(resource_,
-                                                  to,
-                                                  transform_a_expr(params, pg_ptr_cast<A_Expr>(node.whereClause)));
+            match =
+                logical_plan::make_node_match(resource_,
+                                              names.left_name,
+                                              transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params));
         } else {
             match = logical_plan::make_node_match(resource_,
-                                                  to,
+                                                  names.left_name,
                                                   make_compare_expression(resource_, compare_type::all_true));
         }
 
-        if (from.empty()) {
-            return logical_plan::make_node_update_many(resource_, to, match, updates, false);
+        if (names.right_name.empty()) {
+            return logical_plan::make_node_update_many(resource_, names.left_name, match, updates, false);
         } else {
-            return logical_plan::make_node_update_many(resource_, to, from, match, updates, false);
+            return logical_plan::make_node_update_many(resource_,
+                                                       names.left_name,
+                                                       names.right_name,
+                                                       match,
+                                                       updates,
+                                                       false);
         }
     }
 } // namespace components::sql::transform

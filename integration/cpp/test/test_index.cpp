@@ -104,8 +104,7 @@ constexpr int kDocuments = 100;
             components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});   \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
-                                                                     SIDE,                                             \
-                                                                     key{KEY},                                         \
+                                                                     key{KEY, SIDE},                                   \
                                                                      id_par{1});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
                                                                      {database_name, collection_name},                 \
@@ -146,8 +145,7 @@ TEST_CASE("integration::test_index::base") {
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
             auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                          compare_type::eq,
-                                                                         side_t::left,
-                                                                         key{"count"},
+                                                                         key{"count", side_t::left},
                                                                          id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},

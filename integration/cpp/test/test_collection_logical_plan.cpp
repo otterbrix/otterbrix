@@ -157,8 +157,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -176,8 +175,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -204,8 +202,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -223,8 +220,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -281,8 +277,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -302,8 +297,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                   {doc_database_name, doc_collection_name},
                                                   make_compare_expression(dispatcher->resource(),
                                                                           compare_type::gt,
-                                                                          side_t::left,
-                                                                          key{"count"},
+                                                                          key{"count", side_t::left},
                                                                           id_par{1})));
                 auto params = logical_plan::make_parameter_node(dispatcher->resource());
                 params->add_parameter(id_par{1}, types::logical_value_t(90));
@@ -317,8 +311,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -337,8 +330,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -358,8 +350,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                   {table_database_name, table_collection_name},
                                                   make_compare_expression(dispatcher->resource(),
                                                                           compare_type::gt,
-                                                                          side_t::left,
-                                                                          key{"count"},
+                                                                          key{"count", side_t::left},
                                                                           id_par{1})));
                 auto params = logical_plan::make_parameter_node(dispatcher->resource());
                 params->add_parameter(id_par{1}, types::logical_value_t(90));
@@ -373,8 +364,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::gt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -392,8 +382,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("documents") {
             auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                          compare_type::eq,
-                                                                         key{"count"},
-                                                                         key{"count"});
+                                                                         key{"count", side_t::left},
+                                                                         key{"count", side_t::right});
             auto del = logical_plan::make_node_delete_many(
                 dispatcher->resource(),
                 {doc_database_name, doc_other_collection_name},
@@ -415,8 +405,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("table") {
             auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                          compare_type::eq,
-                                                                         key{"count"},
-                                                                         key{"count"});
+                                                                         key{"count", side_t::left},
+                                                                         key{"count", side_t::right});
             auto del = logical_plan::make_node_delete_many(
                 dispatcher->resource(),
                 {table_database_name, table_other_collection_name},
@@ -445,8 +435,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::lt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -462,8 +451,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                            {doc_database_name, doc_collection_name},
                                                            make_compare_expression(dispatcher->resource(),
                                                                                    compare_type::lt,
-                                                                                   side_t::left,
-                                                                                   key{"count"},
+                                                                                   key{"count", side_t::left},
                                                                                    id_par{1}));
                 expressions::update_expr_ptr update_expr =
                     new expressions::update_expr_set_t(expressions::key_t{"count"});
@@ -485,8 +473,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::lt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -503,8 +490,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     logical_plan::make_node_aggregate(dispatcher->resource(), {doc_database_name, doc_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::eq,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {doc_database_name, doc_collection_name},
@@ -523,8 +509,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::lt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -540,8 +525,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                            {table_database_name, table_collection_name},
                                                            make_compare_expression(dispatcher->resource(),
                                                                                    compare_type::lt,
-                                                                                   side_t::left,
-                                                                                   key{"count"},
+                                                                                   key{"count", side_t::left},
                                                                                    id_par{1}));
                 expressions::update_expr_ptr update_expr =
                     new expressions::update_expr_set_t(expressions::key_t{"count"});
@@ -563,8 +547,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::lt,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -581,8 +564,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_collection_name});
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::eq,
-                                                                             side_t::left,
-                                                                             key{"count"},
+                                                                             key{"count", side_t::left},
                                                                              id_par{1});
                 agg->append_child(logical_plan::make_node_match(dispatcher->resource(),
                                                                 {table_database_name, table_collection_name},
@@ -623,14 +605,14 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 expressions::update_expr_ptr calculate_expr =
                     new expressions::update_expr_calculate_t(expressions::update_expr_type::mult);
                 calculate_expr->left() =
-                    new expressions::update_expr_get_value_t(expressions::key_t{"count"}, expressions::side_t::right);
+                    new expressions::update_expr_get_value_t(expressions::key_t{"count", side_t::right});
                 calculate_expr->right() = new expressions::update_expr_get_const_value_t(id_par{1});
                 update_expr->left() = std::move(calculate_expr);
 
                 auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                              compare_type::eq,
-                                                                             key{"count"},
-                                                                             key{"count"});
+                                                                             key{"count", side_t::left},
+                                                                             key{"count", side_t::right});
 
                 auto update = logical_plan::make_node_update_many(
                     dispatcher->resource(),
@@ -676,7 +658,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 expressions::update_expr_ptr calculate_expr =
                     new expressions::update_expr_calculate_t(expressions::update_expr_type::mult);
                 calculate_expr->left() =
-                    new expressions::update_expr_get_value_t(expressions::key_t{"count"}, expressions::side_t::right);
+                    new expressions::update_expr_get_value_t(expressions::key_t{"count", expressions::side_t::right});
                 calculate_expr->right() = new expressions::update_expr_get_const_value_t(id_par{1});
                 update_expr->left() = std::move(calculate_expr);
 
@@ -835,11 +817,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                                 compare_type::eq,
                                                                                 expressions::key_t{"key_1"},
                                                                                 expressions::key_t{"key"}));
-                    and_expr->append_child(expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::gt,
-                                                                                side_t::right,
-                                                                                expressions::key_t{"key"},
-                                                                                core::parameter_id_t(1)));
+                    and_expr->append_child(
+                        expressions::make_compare_expression(dispatcher->resource(),
+                                                             compare_type::gt,
+                                                             expressions::key_t{"key", side_t::right},
+                                                             core::parameter_id_t(1)));
 
                     join->append_expression(std::move(and_expr));
                 }
@@ -916,8 +898,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                           {},
                                                           make_compare_expression(dispatcher->resource(),
                                                                                   compare_type::lt,
-                                                                                  side_t::left,
-                                                                                  key("key_1"),
+                                                                                  key("key_1", side_t::left),
                                                                                   core::parameter_id_t(1))));
                     }
                     params->add_parameter(core::parameter_id_t(1), types::logical_value_t(int64_t{75}));
@@ -1048,10 +1029,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
                 {
-                    join->append_expression(expressions::make_compare_expression(dispatcher->resource(),
-                                                                                 compare_type::eq,
-                                                                                 expressions::key_t{"key_1"},
-                                                                                 expressions::key_t{"key"}));
+                    join->append_expression(
+                        expressions::make_compare_expression(dispatcher->resource(),
+                                                             compare_type::eq,
+                                                             expressions::key_t{"key_1", side_t::left},
+                                                             expressions::key_t{"key", side_t::right}));
                 }
                 auto cur = dispatcher->execute_plan(session, join);
                 REQUIRE(cur->is_success());
@@ -1075,15 +1057,16 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 {
                     auto and_expr =
                         expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_and);
-                    and_expr->append_child(expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::eq,
-                                                                                expressions::key_t{"key_1"},
-                                                                                expressions::key_t{"key"}));
-                    and_expr->append_child(expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::gt,
-                                                                                side_t::right,
-                                                                                expressions::key_t{"key"},
-                                                                                core::parameter_id_t(1)));
+                    and_expr->append_child(
+                        expressions::make_compare_expression(dispatcher->resource(),
+                                                             compare_type::eq,
+                                                             expressions::key_t{"key_1", side_t::left},
+                                                             expressions::key_t{"key", side_t::right}));
+                    and_expr->append_child(
+                        expressions::make_compare_expression(dispatcher->resource(),
+                                                             compare_type::gt,
+                                                             expressions::key_t{"key", side_t::right},
+                                                             core::parameter_id_t(1)));
 
                     join->append_expression(std::move(and_expr));
                 }
@@ -1158,8 +1141,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                           {},
                                                           make_compare_expression(dispatcher->resource(),
                                                                                   compare_type::lt,
-                                                                                  side_t::left,
-                                                                                  key("key_1"),
+                                                                                  key("key_1", side_t::left),
                                                                                   core::parameter_id_t(1))));
                     }
                     params->add_parameter(core::parameter_id_t(1), types::logical_value_t(int64_t{75}));
@@ -1170,10 +1152,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
                     join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
                     {
-                        join->append_expression(expressions::make_compare_expression(dispatcher->resource(),
-                                                                                     compare_type::eq,
-                                                                                     expressions::key_t{"key_1"},
-                                                                                     expressions::key_t{"key"}));
+                        join->append_expression(
+                            expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 expressions::key_t{"key_1", side_t::left},
+                                                                 expressions::key_t{"key", side_t::right}));
                     }
                     aggregate->append_child(join);
                 }

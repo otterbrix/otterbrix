@@ -167,6 +167,11 @@ namespace components::types {
         , value_(std::make_unique<std::string>(std::move(value))) {}
 
     template<>
+    inline logical_value_t::logical_value_t(char* value)
+        : type_(logical_type::STRING_LITERAL)
+        , value_(std::make_unique<std::string>(value)) {}
+
+    template<>
     inline logical_value_t::logical_value_t(const char* value)
         : type_(logical_type::STRING_LITERAL)
         , value_(std::make_unique<std::string>(value)) {}

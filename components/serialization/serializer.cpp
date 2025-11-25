@@ -67,6 +67,7 @@ namespace components::serializer {
     void msgpack_serializer_t::append(const std::string& str) { packer_.pack(str); }
 
     void msgpack_serializer_t::append(const expressions::key_t& key_val) {
+        start_array(2);
         if (key_val.is_string()) {
             packer_.pack(key_val.as_string());
         } else if (key_val.is_int()) {
@@ -76,6 +77,8 @@ namespace components::serializer {
         } else {
             packer_.pack_nil();
         }
+        append_enum(key_val.side());
+        end_array();
     }
 
 } // namespace components::serializer

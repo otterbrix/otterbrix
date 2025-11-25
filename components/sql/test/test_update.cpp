@@ -141,7 +141,7 @@ TEST_CASE("sql::update_from") {
         fields f;
         f.emplace_back(new update_expr_set_t(components::expressions::key_t{"price"}));
         update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::mult);
-        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"price"}, side_t::undefined);
+        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::undefined});
         calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
@@ -154,10 +154,10 @@ TEST_CASE("sql::update_from") {
         fields f;
         f.emplace_back(new update_expr_set_t(components::expressions::key_t{"price"}));
         update_expr_ptr calculate_1 = new update_expr_calculate_t(update_expr_type::mult);
-        calculate_1->left() = new update_expr_get_value_t(components::expressions::key_t{"price"}, side_t::right);
-        calculate_1->right() = new update_expr_get_value_t(components::expressions::key_t{"discount"}, side_t::left);
+        calculate_1->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::right});
+        calculate_1->right() = new update_expr_get_value_t(components::expressions::key_t{"discount", side_t::left});
         update_expr_ptr calculate_2 = new update_expr_calculate_t(update_expr_type::sub);
-        calculate_2->left() = new update_expr_get_value_t(components::expressions::key_t{"price"}, side_t::right);
+        calculate_2->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::right});
         calculate_2->right() = std::move(calculate_1);
         f.back()->left() = std::move(calculate_2);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection

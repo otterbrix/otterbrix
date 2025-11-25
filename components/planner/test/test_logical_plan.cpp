@@ -66,7 +66,7 @@ TEST_CASE("logical_plan::match") {
     auto node_match = make_node_match(
         &resource,
         get_name(),
-        make_compare_expression(&resource, compare_type::eq, side_t::left, key("key"), core::parameter_id_t(1)));
+        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
     REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
 }
 
@@ -129,7 +129,7 @@ TEST_CASE("logical_plan::aggregate") {
     aggregate->append_child(make_node_match(
         &resource,
         {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, side_t::left, key("key"), core::parameter_id_t(1))));
+        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1))));
 
     {
         std::vector<expression_ptr> expressions;
@@ -218,7 +218,7 @@ TEST_CASE("logical_plan::delete") {
     auto match = make_node_match(
         &resource,
         {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, side_t::left, key("key"), core::parameter_id_t(1)));
+        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
         auto node = make_node_delete_many(&resource, {database_name, collection_name}, match);
@@ -239,7 +239,7 @@ TEST_CASE("logical_plan::update") {
     auto match = make_node_match(
         &resource,
         {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, side_t::left, key("key"), core::parameter_id_t(1)));
+        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
 
     update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{"count"});
     update->left() = new update_expr_get_const_value_t(core::parameter_id_t(0));

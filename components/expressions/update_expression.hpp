@@ -19,7 +19,6 @@ namespace components::logical_plan {
 
 namespace components::expressions {
 
-    // TODO: add math operations: exponentiation, square root, cube root, factorial, absolute value, bitwise operations
     enum class update_expr_type : uint8_t
     {
         set,
@@ -135,10 +134,9 @@ namespace components::expressions {
 
     class update_expr_get_value_t final : public update_expr_t {
     public:
-        explicit update_expr_get_value_t(key_t key, side_t side);
+        explicit update_expr_get_value_t(key_t key);
 
         const key_t& key() const noexcept;
-        side_t side() const noexcept;
 
         bool operator==(const update_expr_get_value_t& rhs) const;
 
@@ -158,7 +156,6 @@ namespace components::expressions {
 
     private:
         key_t key_;
-        side_t side_;
     };
 
     using update_expr_get_value_ptr = boost::intrusive_ptr<update_expr_get_value_t>;

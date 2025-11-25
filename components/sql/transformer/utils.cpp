@@ -33,6 +33,34 @@ namespace components::sql::transform {
         return *endptr == '\0';
     }
 
+    expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
+        if (target_name.empty()) {
+            return expressions::side_t::undefined;
+        }
+        if (names.left_name.collection == target_name || names.left_alias == target_name) {
+            return expressions::side_t::left;
+        } else if (names.right_name.collection == target_name || names.right_alias == target_name) {
+            return expressions::side_t::right;
+        } else {
+            return expressions::side_t::undefined;
+        }
+    }
+
+    void column_ref_t::deduce_side(const name_collection_t& names) {
+        field.set_side(transform::deduce_side(names, table));
+    }
+
+    column_ref_t columnref_to_fied(ColumnRef* ref) {
+        auto lst = ref->fields->lst;
+        if (lst.empty()) {
+            return column_ref_t();
+        } else if (lst.size() == 1) {
+            return column_ref_t{{}, expressions::key_t(strVal(lst.back().data))};
+        } else {
+            return column_ref_t{strVal(std::next(lst.rbegin())->data), expressions::key_t(strVal(lst.rbegin()->data))};
+        }
+    }
+
     std::string node_tag_to_string(NodeTag type) {
         switch (type) {
             case T_A_Expr:
@@ -146,4 +174,5 @@ namespace components::sql::transform {
                 return "unknown";
         }
     }
+
 } // namespace components::sql::transform

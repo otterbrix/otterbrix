@@ -134,6 +134,7 @@ namespace components::types {
                 return sizeof(int8_t);
             case logical_type::SMALLINT:
                 return sizeof(int16_t);
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return sizeof(int32_t);
             case logical_type::BIGINT:
@@ -179,6 +180,7 @@ namespace components::types {
                 return alignof(int8_t);
             case logical_type::SMALLINT:
                 return alignof(int16_t);
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return alignof(int32_t);
             case logical_type::BIGINT:
@@ -228,6 +230,7 @@ namespace components::types {
                 return physical_type::INT16;
             case logical_type::USMALLINT:
                 return physical_type::UINT16;
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return physical_type::INT32;
             case logical_type::UINTEGER:
@@ -325,13 +328,20 @@ namespace components::types {
     }
 
     bool complex_logical_type::type_is_constant_size(logical_type type) {
-        return type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE;
+        return (type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE) ||
+               (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
     complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
         assert(width >= scale);
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
+                                    std::move(alias));
+    }
+
+    complex_logical_type complex_logical_type::create_enum(std::vector<logical_value_t> entries, std::string alias) {
+        return complex_logical_type(logical_type::ENUM,
+                                    std::make_unique<enum_logical_type_extension>(std::move(entries)),
                                     std::move(alias));
     }
 

@@ -99,7 +99,8 @@ namespace services::dispatcher {
         std::size_t load_count_answers_{0};
 
         components::cursor::cursor_t_ptr check_namespace_exists(const components::catalog::table_id id) const;
-        components::cursor::cursor_t_ptr check_collectction_exists(const components::catalog::table_id id) const;
+        components::cursor::cursor_t_ptr check_collection_exists(const components::catalog::table_id id) const;
+        components::cursor::cursor_t_ptr check_type_exists(const std::string& alias) const;
         components::cursor::cursor_t_ptr
         check_collections_format_(components::logical_plan::node_ptr& logical_plan) const;
 

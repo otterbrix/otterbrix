@@ -440,6 +440,7 @@ namespace components::vector {
             case types::logical_type::SMALLINT:
                 reinterpret_cast<int16_t*>(data_)[index] = val.value<int16_t>();
                 break;
+            case types::logical_type::ENUM:
             case types::logical_type::INTEGER:
                 reinterpret_cast<int32_t*>(data_)[index] = val.value<int32_t>();
                 break;
@@ -633,7 +634,9 @@ namespace components::vector {
                 children.reserve(child_entries.size());
                 for (uint64_t child_idx = 0; child_idx < child_entries.size(); child_idx++) {
                     children.push_back(child_entries[child_idx]->value(index_p));
-                    children.back().set_alias(type_.child_name(child_idx));
+                    if (type_.child_types()[child_idx].has_alias()) {
+                        children.back().set_alias(type_.child_name(child_idx));
+                    }
                 }
                 return types::logical_value_t::create_struct(std::move(children));
             }
@@ -659,6 +662,9 @@ namespace components::vector {
                     types::complex_logical_type(
                         static_cast<types::array_logical_type_extension*>(type_.extension())->internal_type()),
                     children);
+            }
+            case types::logical_type::ENUM: {
+                return types::logical_value_t::create_enum(type_, reinterpret_cast<int32_t*>(data_)[index]);
             }
             default:
                 throw std::runtime_error("Unimplemented type for value access");
@@ -822,6 +828,7 @@ namespace components::vector {
                     case types::logical_type::SMALLINT:
                         templated_flatten_constant_vector<int16_t>(data_, old_data, count);
                         break;
+                    case types::logical_type::ENUM:
                     case types::logical_type::INTEGER:
                         templated_flatten_constant_vector<int32_t>(data_, old_data, count);
                         break;

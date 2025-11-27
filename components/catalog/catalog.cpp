@@ -118,6 +118,16 @@ namespace components::catalog {
         return table_exists_impl<schema_type::COMPUTING>(id);
     }
 
+    void catalog::create_type(const types::complex_logical_type& type) { namespaces_.create_type(type); }
+
+    void catalog::drop_type(const std::string& alias) { namespaces_.drop_type(alias); }
+
+    bool catalog::type_exists(const std::string& alias) const { return namespaces_.type_exists(alias); }
+
+    const types::complex_logical_type& catalog::get_type(const std::string& alias) const {
+        return namespaces_.get_type(alias);
+    }
+
     template<catalog::schema_type type>
     void catalog::drop_table_impl(const table_id& id) {
         if (!table_exists_impl<type>(id)) {

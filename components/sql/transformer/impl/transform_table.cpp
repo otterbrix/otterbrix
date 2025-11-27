@@ -1,3 +1,5 @@
+#include "logical_plan/node_drop_type.hpp"
+
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
@@ -6,41 +8,6 @@
 #include <components/sql/transformer/utils.hpp>
 
 using namespace components::types;
-
-namespace {
-    using namespace components::sql::transform;
-
-    complex_logical_type get_type(TypeName* type) {
-        complex_logical_type column;
-        if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
-            if (auto col = get_logical_type(strVal(lsecond(type->names))); col != logical_type::DECIMAL) {
-                column = col;
-            } else {
-                if (list_length(type->typmods) != 2) {
-                    throw parser_exception_t{"Incorrect modifiers for DECIMAL, width and scale required", ""};
-                }
-
-                auto width = pg_ptr_assert_cast<A_Const>(linitial(type->typmods), T_A_Const);
-                auto scale = pg_ptr_assert_cast<A_Const>(lsecond(type->typmods), T_A_Const);
-
-                if (width->val.type != scale->val.type || width->val.type != T_Integer) {
-                    throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
-                }
-                column = complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
-                                                              static_cast<uint8_t>(intVal(&scale->val)));
-            }
-        } else {
-            column = get_logical_type(linint_name);
-        }
-
-        if (list_length(type->arrayBounds)) {
-            auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Value);
-            assert(size->type == T_Integer);
-            column = complex_logical_type::create_array(column, intVal(size));
-        }
-        return column;
-    }
-} // namespace
 
 namespace components::sql::transform {
     // It is guaranteed to be a table ref, but in form of a list of strings
@@ -54,20 +21,7 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
-
-        std::pmr::vector<complex_logical_type> columns(resource_);
-        columns.reserve(list_length(coldefs));
-        for (auto data : coldefs->lst) {
-            auto coldef = pg_ptr_assert_cast<ColumnDef>(data.data, T_ColumnDef);
-            complex_logical_type col = get_type(coldef->typeName);
-
-            if (col.type() == logical_type::NA) {
-                throw parser_exception_t{"Unknown type for column: " + std::string(coldef->colname), ""};
-            }
-
-            col.set_alias(coldef->colname);
-            columns.push_back(std::move(col));
-        }
+        auto columns = get_types(resource_, *coldefs);
 
         if (columns.empty()) {
             return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
@@ -152,6 +106,13 @@ namespace components::sql::transform {
                         throw parser_exception_t{"incorrect drop: arguments size", ""};
                         return logical_plan::make_node_drop_index(resource_, {}, "");
                 }
+            }
+            case OBJECT_TYPE: {
+                auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
+                if (drop_name.empty()) {
+                    throw parser_exception_t{"incorrect drop: arguments size", ""};
+                }
+                return logical_plan::make_node_drop_type(resource_, strVal(drop_name.back().data));
             }
             default:
                 throw std::runtime_error("Unsupported removeType");

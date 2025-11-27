@@ -12,11 +12,13 @@ namespace components::logical_plan {
         create_collection_t,
         create_database_t,
         create_index_t,
+        create_type_t,
         data_t,
         delete_t,
         drop_collection_t,
         drop_database_t,
         drop_index_t,
+        drop_type_t,
         function_t,
         insert_t,
         join_t,
@@ -42,6 +44,8 @@ namespace components::logical_plan {
                 return "create_database_t";
             case node_type::create_index_t:
                 return "create_index_t";
+            case node_type::create_type_t:
+                return "create_type_t";
             case node_type::data_t:
                 return "data_t";
             case node_type::delete_t:
@@ -52,6 +56,8 @@ namespace components::logical_plan {
                 return "drop_database_t";
             case node_type::drop_index_t:
                 return "drop_index_t";
+            case node_type::drop_type_t:
+                return "drop_type_t";
             case node_type::function_t:
                 return "function_t";
             case node_type::insert_t:

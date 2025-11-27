@@ -185,10 +185,6 @@ TEST_CASE("sql::table") {
                                    });
 
     SECTION("incorrect types") {
-        TEST_TRANSFORMER_ERROR("CREATE TABLE table_name (just_name struct)", R"_(Unknown type for column: just_name)_");
-
-        TEST_TRANSFORMER_ERROR("CREATE TABLE table_name (just_name list)", R"_(Unknown type for column: just_name)_");
-
         TEST_TRANSFORMER_ERROR("CREATE TABLE table_name (just_name decimal)",
                                R"_(Incorrect modifiers for DECIMAL, width and scale required)_");
 
@@ -248,4 +244,23 @@ TEST_CASE("sql::index") {
     }
 
     TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($drop_index: db.table name:some_idx)_");
+}
+
+TEST_CASE("sql::types") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);",
+                        R"_($create_type: name: custom_type_name, fields:[ f1 f2 ])_");
+
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
+                        R"_($create_type: name: custom_enum, fields:[ f1=0 f2=1 f3=2 ])_");
+
+    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($drop_type: name: custom_type_name)_");
+
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($create_collection: .table_)_");
+
+    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))",
+                        R"_($insert: {$raw_data: {$rows: 1}})_");
 }

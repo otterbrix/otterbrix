@@ -3,6 +3,7 @@
 namespace components::catalog {
     namespace_storage::namespace_storage(std::pmr::memory_resource* resource)
         : namespaces_(resource)
+        , registered_types_(resource)
         , resource_(resource) {}
 
     void namespace_storage::create_namespace(const table_namespace_t& namespace_name) {
@@ -38,6 +39,31 @@ namespace components::catalog {
         table_namespace_t path(namespace_name.begin(), namespace_name.end(), resource_);
         auto it = namespaces_.find(path);
         return it != namespaces_.end();
+    }
+
+    void namespace_storage::create_type(const types::complex_logical_type& type) {
+        if (type_exists(type.alias())) {
+            return;
+        }
+
+        registered_types_.emplace(type.alias(), type);
+    }
+
+    void namespace_storage::drop_type(const std::string& alias) {
+        if (!type_exists(alias)) {
+            return;
+        }
+
+        registered_types_.erase(alias);
+    }
+
+    bool namespace_storage::type_exists(const std::string& alias) const {
+        if (registered_types_.empty()) {
+            return false;
+        }
+
+        auto it = registered_types_.find(alias);
+        return it != registered_types_.end();
     }
 
     // todo: reuse list_child
@@ -126,6 +152,14 @@ namespace components::catalog {
         }
 
         return namespaces_.find(namespace_name)->value;
+    }
+
+    const types::complex_logical_type& namespace_storage::get_type(const std::string& alias) const {
+        if (!type_exists(alias)) {
+            throw std::logic_error("type does not registered: " + alias);
+        }
+
+        return registered_types_.find(alias)->second;
     }
 
     void namespace_storage::clear() { namespaces_.clear(); }

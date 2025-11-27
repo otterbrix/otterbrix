@@ -396,6 +396,7 @@ namespace components::types {
         static bool type_is_constant_size(logical_type type);
 
         static complex_logical_type create_decimal(uint8_t width, uint8_t scale, std::string alias = "");
+        static complex_logical_type create_enum(std::vector<logical_value_t> entries, std::string alias = "");
         static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");
         static complex_logical_type
         create_array(const complex_logical_type& internal_type, size_t array_size, std::string alias = "");

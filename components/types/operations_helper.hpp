@@ -194,10 +194,10 @@ namespace components::types {
                 return simple_physical_type_switch<DoubleCallback, uint64_t>(type_right, std::forward<Args>(args)...);
             case physical_type::INT64:
                 return simple_physical_type_switch<DoubleCallback, int64_t>(type_right, std::forward<Args>(args)...);
-            // case physical_type::UINT128:
-            //     return simple_physical_type_switch<DoubleCallback, uint128_t>(type_right, std::forward<Args>(args)...);
-            // case physical_type::INT128:
-            //     return simple_physical_type_switch<DoubleCallback, int128_t>(type_right, std::forward<Args>(args)...);
+            case physical_type::UINT128:
+                return simple_physical_type_switch<DoubleCallback, uint128_t>(type_right, std::forward<Args>(args)...);
+            case physical_type::INT128:
+                return simple_physical_type_switch<DoubleCallback, int128_t>(type_right, std::forward<Args>(args)...);
             case physical_type::FLOAT:
                 return simple_physical_type_switch<DoubleCallback, float>(type_right, std::forward<Args>(args)...);
             case physical_type::DOUBLE:

@@ -423,6 +423,19 @@ namespace components::types {
                 default:
                     break;
             }
+        } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
+            if (type_.child_types().size() != type.child_types().size()) {
+                assert(false && "incorrect type");
+                return logical_value_t{};
+            }
+
+            std::vector<logical_value_t> fields;
+            fields.reserve(children().size());
+            for (size_t i = 0; i < children().size(); i++) {
+                fields.emplace_back(children()[i].cast_as(type.child_types()[i]));
+            }
+
+            return create_struct(type, fields);
         }
         assert(false && "cast to value is not implemented");
         return logical_value_t{};
@@ -548,7 +561,6 @@ namespace components::types {
     }
 
     const std::vector<logical_value_t>& logical_value_t::children() const {
-        // TODO: check type
         return *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_);
     }
 

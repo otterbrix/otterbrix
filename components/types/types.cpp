@@ -325,13 +325,20 @@ namespace components::types {
     }
 
     bool complex_logical_type::type_is_constant_size(logical_type type) {
-        return type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE;
+        return (type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE) ||
+               (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
     complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
         assert(width >= scale);
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
+                                    std::move(alias));
+    }
+
+    complex_logical_type complex_logical_type::create_enum(std::vector<logical_value_t> entries, std::string alias) {
+        return complex_logical_type(logical_type::ENUM,
+                                    std::make_unique<enum_logical_type_extension>(std::move(entries)),
                                     std::move(alias));
     }
 

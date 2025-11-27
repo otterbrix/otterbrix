@@ -46,8 +46,16 @@ namespace components::logical_plan {
         chunk.copy(std::get<components::vector::data_chunk_t>(data_), 0);
     }
 
+    std::pmr::vector<document::document_ptr>& node_data_t::documents() {
+        return std::get<std::pmr::vector<document::document_ptr>>(data_);
+    }
+
     const std::pmr::vector<document::document_ptr>& node_data_t::documents() const {
         return std::get<std::pmr::vector<document::document_ptr>>(data_);
+    }
+
+    components::vector::data_chunk_t& node_data_t::data_chunk() {
+        return std::get<components::vector::data_chunk_t>(data_);
     }
 
     const components::vector::data_chunk_t& node_data_t::data_chunk() const {

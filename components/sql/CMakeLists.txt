@@ -24,6 +24,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_table.cpp
     transformer/impl/transform_select.cpp
     transformer/impl/transform_table.cpp
+    transformer/impl/transform_types.cpp
     transformer/impl/transfrom_common.cpp
     transformer/impl/transform_update.cpp
     transformer/impl/transform_insert.cpp

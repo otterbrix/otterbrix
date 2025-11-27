@@ -51,6 +51,15 @@ namespace components::sql::transform {
                         return types::logical_value_t(static_cast<float>(floatVal(value)));
                 }
             }
+            case T_RowExpr: {
+                auto row = pg_ptr_cast<RowExpr>(node);
+                std::vector<types::logical_value_t> fields;
+                fields.reserve(row->args->lst.size());
+                for (auto& field : row->args->lst) {
+                    fields.emplace_back(get_value(pg_ptr_cast<Node>(field.data)));
+                }
+                return types::logical_value_t::create_struct(fields);
+            }
             case T_ColumnRef:
                 assert(false);
                 return types::logical_value_t(strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));

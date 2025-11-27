@@ -18,6 +18,8 @@ namespace components::logical_plan {
         return make_node_create_collection(deserializer->resource(), deserializer->deserialize_collection(1));
     }
 
+    std::pmr::vector<types::complex_logical_type>& node_create_collection_t::schema() { return schema_; }
+
     const std::pmr::vector<types::complex_logical_type>& node_create_collection_t::schema() const { return schema_; }
 
     hash_t node_create_collection_t::hash_impl() const { return 0; }

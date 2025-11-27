@@ -633,7 +633,9 @@ namespace components::vector {
                 children.reserve(child_entries.size());
                 for (uint64_t child_idx = 0; child_idx < child_entries.size(); child_idx++) {
                     children.push_back(child_entries[child_idx]->value(index_p));
-                    children.back().set_alias(type_.child_name(child_idx));
+                    if (type_.child_types()[child_idx].has_alias()) {
+                        children.back().set_alias(type_.child_name(child_idx));
+                    }
                 }
                 return types::logical_value_t::create_struct(std::move(children));
             }

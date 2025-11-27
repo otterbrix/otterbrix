@@ -40,6 +40,13 @@ namespace components::catalog {
         [[nodiscard]] bool table_exists(const table_id& id) const;
         [[nodiscard]] bool table_computes(const table_id& id) const;
 
+        // type operations
+        void create_type(const types::complex_logical_type& type);
+        void drop_type(const std::string& alias);
+        [[nodiscard]] bool type_exists(const std::string& alias) const;
+
+        [[nodiscard]] const types::complex_logical_type& get_type(const std::string& alias) const;
+
         transaction_scope begin_transaction(const table_id& id);
 
     private:

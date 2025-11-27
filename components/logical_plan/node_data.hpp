@@ -21,7 +21,9 @@ namespace components::logical_plan {
 
         explicit node_data_t(std::pmr::memory_resource* resource, const components::vector::data_chunk_t& chunk);
 
+        std::pmr::vector<components::document::document_ptr>& documents();
         const std::pmr::vector<components::document::document_ptr>& documents() const;
+        components::vector::data_chunk_t& data_chunk();
         const components::vector::data_chunk_t& data_chunk() const;
         bool uses_data_chunk() const;
         bool uses_documents() const;

@@ -634,6 +634,28 @@ namespace components::types {
         }
     }
 
+    logical_value_t logical_value_t::create_enum(const complex_logical_type& enum_type, std::string_view key) {
+        const auto& enum_values =
+            reinterpret_cast<const enum_logical_type_extension*>(enum_type.extension())->entries();
+        auto it = std::find_if(enum_values.begin(), enum_values.end(), [key](const logical_value_t& v) {
+            return v.type().alias() == key;
+        });
+        if (it == enum_values.end()) {
+            return logical_value_t{};
+        } else {
+            logical_value_t result(enum_type);
+            result.value_ = it->value<int32_t>();
+            return result;
+        }
+    }
+
+    logical_value_t logical_value_t::create_enum(const complex_logical_type& enum_type, int32_t value) {
+        // TODO?: check that value is contained in enum?
+        logical_value_t result(enum_type);
+        result.value_ = value;
+        return result;
+    }
+
     logical_value_t logical_value_t::create_decimal(int64_t value, uint8_t width, uint8_t scale) {
         auto decimal_type = complex_logical_type::create_decimal(width, scale);
         logical_value_t result(decimal_type);

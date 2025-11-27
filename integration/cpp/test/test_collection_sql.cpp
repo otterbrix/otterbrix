@@ -414,17 +414,24 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     auto* dispatcher = space.dispatcher();
 
     INFO("register types") {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_type_name AS (f1 int, f2 string);)_");
-        REQUIRE(cur->is_success());
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_type_name AS (f1 int, f2 string);)_");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_enum AS ENUM ('odd', 'even');)_");
+            REQUIRE(cur->is_success());
+        }
     }
 
     INFO("create table") {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
-        auto cur =
-            dispatcher->execute_sql(session,
-                                    R"_(CREATE TABLE TestDatabase.TestCollection (custom_type_name custom_type);)_");
+        auto cur = dispatcher->execute_sql(
+            session,
+            R"_(CREATE TABLE TestDatabase.TestCollection (custom_type_name custom_type, custom_enum oddness);)_");
         REQUIRE(cur->is_success());
     }
 
@@ -432,10 +439,11 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (custom_type_name) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (custom_type_name, oddness) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query << "(ROW(" << num << ", '"
-                      << "text_" << num + 1 << "'))" << (num == 99 ? ";" : ", ");
+                      << "text_" << num + 1 << "'), " << (num % 2 == 0 ? "\'even\'" : "\'odd\'") << ")"
+                      << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());

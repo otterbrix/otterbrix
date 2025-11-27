@@ -134,6 +134,7 @@ namespace components::types {
                 return sizeof(int8_t);
             case logical_type::SMALLINT:
                 return sizeof(int16_t);
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return sizeof(int32_t);
             case logical_type::BIGINT:
@@ -179,6 +180,7 @@ namespace components::types {
                 return alignof(int8_t);
             case logical_type::SMALLINT:
                 return alignof(int16_t);
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return alignof(int32_t);
             case logical_type::BIGINT:
@@ -228,6 +230,7 @@ namespace components::types {
                 return physical_type::INT16;
             case logical_type::USMALLINT:
                 return physical_type::UINT16;
+            case logical_type::ENUM:
             case logical_type::INTEGER:
                 return physical_type::INT32;
             case logical_type::UINTEGER:

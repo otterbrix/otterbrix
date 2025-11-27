@@ -669,10 +669,10 @@ namespace services::dispatcher {
 
                 if (data_node->uses_data_chunk()) {
                     for (auto& column : data_node->data_chunk().data) {
-                        if (column.type().type() == logical_type::STRUCT) {
-                            if (auto error = check_type_exists(column.type().alias()); !error) {
-                                auto proper_type = catalog_.get_type(column.type().alias());
-                                // try to cast to it
+                        if (catalog_.type_exists(column.type().alias())) {
+                            auto proper_type = catalog_.get_type(column.type().alias());
+                            // try to cast to it
+                            if (proper_type.type() == logical_type::STRUCT) {
                                 components::vector::vector_t new_column(data_node->data_chunk().resource(),
                                                                         proper_type,
                                                                         data_node->data_chunk().capacity());
@@ -689,9 +689,27 @@ namespace services::dispatcher {
                                     }
                                 }
                                 column = std::move(new_column);
+                            } else if (proper_type.type() == logical_type::ENUM) {
+                                components::vector::vector_t new_column(data_node->data_chunk().resource(),
+                                                                        proper_type,
+                                                                        data_node->data_chunk().capacity());
+                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                    auto val = column.value(i).value<std::string_view>();
+                                    auto enum_val = logical_value_t::create_enum(proper_type, val);
+                                    if (enum_val.type().type() == logical_type::NA) {
+                                        result =
+                                            make_cursor(resource(),
+                                                        error_code_t::schema_error,
+                                                        "enum: \'" + proper_type.alias() +
+                                                            "\' does not contain value: \'" + std::string(val) + "\'");
+                                        return false;
+                                    } else {
+                                        new_column.set_value(i, enum_val);
+                                    }
+                                }
+                                column = std::move(new_column);
                             } else {
-                                result = error;
-                                return false;
+                                assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                             }
                         }
                     }

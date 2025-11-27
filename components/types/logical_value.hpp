@@ -47,6 +47,8 @@ namespace components::types {
         static logical_value_t create_array(const complex_logical_type& internal_type,
                                             const std::vector<logical_value_t>& values);
         static logical_value_t create_numeric(const complex_logical_type& type, int64_t value);
+        static logical_value_t create_enum(const complex_logical_type& enum_type, std::string_view key);
+        static logical_value_t create_enum(const complex_logical_type& enum_type, int32_t value);
         static logical_value_t create_decimal(int64_t value, uint8_t width, uint8_t scale);
         static logical_value_t create_map(const complex_logical_type& key_type,
                                           const complex_logical_type& value_type,

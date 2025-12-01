@@ -21,6 +21,12 @@ namespace components::sql::transform {
             case T_DropStmt:
                 log_node = transform_drop(pg_cast<DropStmt>(node));
                 break;
+            case T_CompositeTypeStmt:
+                log_node = transform_create_type(pg_cast<CompositeTypeStmt>(node));
+                break;
+            case T_CreateEnumStmt:
+                log_node = transform_create_enum_type(pg_cast<CreateEnumStmt>(node));
+                break;
             case T_SelectStmt:
                 log_node = transform_select(pg_cast<SelectStmt>(node), params.get());
                 break;

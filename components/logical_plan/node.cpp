@@ -4,11 +4,13 @@
 #include "node_create_collection.hpp"
 #include "node_create_database.hpp"
 #include "node_create_index.hpp"
+#include "node_create_type.hpp"
 #include "node_data.hpp"
 #include "node_delete.hpp"
 #include "node_drop_collection.hpp"
 #include "node_drop_database.hpp"
 #include "node_drop_index.hpp"
+#include "node_drop_type.hpp"
 #include "node_function.hpp"
 #include "node_group.hpp"
 #include "node_insert.hpp"
@@ -96,6 +98,8 @@ namespace components::logical_plan {
                 return node_create_database_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_create_index:
                 return node_create_index_t::deserialize(deserializer);
+            case serializer::serialization_type::logical_node_create_type:
+                return node_create_type_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_data:
                 return node_data_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_delete:
@@ -106,6 +110,8 @@ namespace components::logical_plan {
                 return node_drop_database_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_drop_index:
                 return node_drop_index_t::deserialize(deserializer);
+            case serializer::serialization_type::logical_node_drop_type:
+                return node_drop_type_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_insert:
                 return node_insert_t::deserialize(deserializer);
             case serializer::serialization_type::logical_node_join:

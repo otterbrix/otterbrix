@@ -146,10 +146,14 @@ namespace components::sql::transform {
             return it->second;
         }
 
-        return types::logical_type::NA;
+        return types::logical_type::UNKNOWN;
     }
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
+
+    types::complex_logical_type get_type(TypeName* type);
+    std::vector<types::complex_logical_type> get_types(PGList& list);
+    std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
 
 } // namespace components::sql::transform

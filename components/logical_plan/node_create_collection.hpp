@@ -14,6 +14,7 @@ namespace components::logical_plan {
 
         static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
+        std::pmr::vector<types::complex_logical_type>& schema();
         const std::pmr::vector<types::complex_logical_type>& schema() const;
 
     private:

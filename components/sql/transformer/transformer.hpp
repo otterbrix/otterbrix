@@ -31,6 +31,8 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_insert(InsertStmt& node, logical_plan::parameter_node_t* params);
         logical_plan::node_ptr transform_delete(DeleteStmt& node, logical_plan::parameter_node_t* params);
         logical_plan::node_ptr transform_create_index(IndexStmt& node);
+        logical_plan::node_ptr transform_create_type(CompositeTypeStmt& node);
+        logical_plan::node_ptr transform_create_enum_type(CreateEnumStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

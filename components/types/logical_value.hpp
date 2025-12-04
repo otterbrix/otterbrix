@@ -60,6 +60,7 @@ namespace components::types {
                                            const std::vector<logical_value_t>& values);
         static logical_value_t
         create_union(std::vector<complex_logical_type> types, uint8_t tag, logical_value_t value);
+        static logical_value_t create_variant(std::vector<logical_value_t> values);
 
         static logical_value_t sum(const logical_value_t& value1, const logical_value_t& value2);
         static logical_value_t subtract(const logical_value_t& value1, const logical_value_t& value2);

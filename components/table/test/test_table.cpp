@@ -50,13 +50,19 @@ TEST_CASE("data_table_t") {
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct(fields, "test_struct");
 
+    std::vector<complex_logical_type> union_fields;
+    union_fields.emplace_back(logical_type::BOOLEAN, "bool");
+    union_fields.emplace_back(logical_type::INTEGER, "int");
+    union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
+    complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
+
     core::filesystem::local_file_system_t fs;
     auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
     auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
 
     std::vector<column_definition_t> columns;
-    columns.reserve(7);
+    columns.reserve(8);
     columns.emplace_back("temp_column_name0", logical_type::UBIGINT);
     columns.emplace_back("temp_column_name1", logical_type::STRING_LITERAL);
     columns.emplace_back("temp_column_name2", complex_logical_type::create_array(logical_type::UBIGINT, array_size));
@@ -65,6 +71,7 @@ TEST_CASE("data_table_t") {
     columns.emplace_back("temp_column_name4", complex_logical_type::create_list(logical_type::UBIGINT));
     columns.emplace_back("temp_column_name5", complex_logical_type::create_list(logical_type::STRING_LITERAL));
     columns.emplace_back("temp_column_name6", struct_type);
+    columns.emplace_back("temp_column_name7", union_type);
 
     std::vector<test_struct> test_data;
     test_data.reserve(test_size);
@@ -142,6 +149,34 @@ TEST_CASE("data_table_t") {
                 logical_value_t value = logical_value_t::create_struct(struct_type, value_fiels);
                 chunk.set_value(6, i, value);
             }
+            // UNION
+            {
+                switch (i % 3) {
+                    case 0:
+                        chunk.set_value(7,
+                                        i,
+                                        logical_value_t::create_union(union_fields, 0, logical_value_t{i % 2 == 0}));
+                        break;
+                    case 1:
+                        chunk.set_value(
+                            7,
+                            i,
+                            logical_value_t::create_union(union_fields, 1, logical_value_t{static_cast<int32_t>(i)}));
+                        break;
+                    case 2:
+                        chunk.set_value(
+                            7,
+                            i,
+                            logical_value_t::create_union(
+                                union_fields,
+                                2,
+                                logical_value_t{std::string{"long_string_with_index_" + std::to_string(i)}}));
+                        break;
+                    default:
+                        // unreachable
+                        break;
+                }
+            }
         }
 
         table_append_state state(&resource);
@@ -153,8 +188,8 @@ TEST_CASE("data_table_t") {
     INFO("Fetch") {
         column_fetch_state state;
         std::vector<storage_index_t> column_indices;
-        column_indices.reserve(7);
-        for (int64_t i = 0; i < 7; i++) {
+        column_indices.reserve(data_table->column_count());
+        for (int64_t i = 0; i < data_table->column_count(); i++) {
             column_indices.emplace_back(i);
         }
         vector_t rows(&resource, logical_type::BIGINT, test_size);
@@ -238,6 +273,35 @@ TEST_CASE("data_table_t") {
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
                     arr[j].value<uint16_t>() == test_data[i].array[j];
+                }
+            }
+            // UNION
+            {
+                logical_value_t value = result.data[7].value(i);
+                REQUIRE(value.type().type() == logical_type::UNION);
+                REQUIRE(value.type().alias() == "test_union");
+
+                auto tag = value.children()[0].value<uint8_t>();
+                switch (tag) {
+                    case 0:
+                        REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                        REQUIRE(value.type().child_types()[1].alias() == "bool");
+                        REQUIRE(value.children()[1].value<bool>() == (i % 2 == 0));
+                        break;
+                    case 1:
+                        REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                        REQUIRE(value.type().child_types()[2].alias() == "int");
+                        REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(i));
+                        break;
+                    case 2:
+                        REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                        REQUIRE(value.type().child_types()[3].alias() == "string");
+                        REQUIRE(value.children()[3].value<std::string_view>() ==
+                                std::string{"long_string_with_index_" + std::to_string(i)});
+                        break;
+                    default:
+                        // unreachable
+                        break;
                 }
             }
         }
@@ -327,6 +391,35 @@ TEST_CASE("data_table_t") {
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
                     arr[j].value<uint16_t>() == test_data[i].array[j];
+                }
+            }
+            // UNION
+            {
+                logical_value_t value = result.data[7].value(i);
+                REQUIRE(value.type().type() == logical_type::UNION);
+                REQUIRE(value.type().alias() == "test_union");
+
+                auto tag = value.children()[0].value<uint8_t>();
+                switch (tag) {
+                    case 0:
+                        REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                        REQUIRE(value.type().child_types()[1].alias() == "bool");
+                        REQUIRE(value.children()[1].value<bool>() == (i % 2 == 0));
+                        break;
+                    case 1:
+                        REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                        REQUIRE(value.type().child_types()[2].alias() == "int");
+                        REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(i));
+                        break;
+                    case 2:
+                        REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                        REQUIRE(value.type().child_types()[3].alias() == "string");
+                        REQUIRE(value.children()[3].value<std::string_view>() ==
+                                std::string{"long_string_with_index_" + std::to_string(i)});
+                        break;
+                    default:
+                        // unreachable
+                        break;
                 }
             }
         }
@@ -426,6 +519,35 @@ TEST_CASE("data_table_t") {
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
                     arr[j].value<uint16_t>() == test_data[i].array[j];
+                }
+            }
+            // UNION
+            {
+                logical_value_t value = result.data[7].value(res_index);
+                REQUIRE(value.type().type() == logical_type::UNION);
+                REQUIRE(value.type().alias() == "test_union");
+
+                auto tag = value.children()[0].value<uint8_t>();
+                switch (tag) {
+                    case 0:
+                        REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                        REQUIRE(value.type().child_types()[1].alias() == "bool");
+                        REQUIRE(value.children()[1].value<bool>() == (i % 2 == 0));
+                        break;
+                    case 1:
+                        REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                        REQUIRE(value.type().child_types()[2].alias() == "int");
+                        REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(i));
+                        break;
+                    case 2:
+                        REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                        REQUIRE(value.type().child_types()[3].alias() == "string");
+                        REQUIRE(value.children()[3].value<std::string_view>() ==
+                                std::string{"long_string_with_index_" + std::to_string(i)});
+                        break;
+                    default:
+                        // unreachable
+                        break;
                 }
             }
         }
@@ -530,6 +652,35 @@ TEST_CASE("data_table_t") {
                     arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
                 }
             }
+            // UNION
+            {
+                logical_value_t value = result.data[7].value(i);
+                REQUIRE(value.type().type() == logical_type::UNION);
+                REQUIRE(value.type().alias() == "test_union");
+
+                auto tag = value.children()[0].value<uint8_t>();
+                switch (tag) {
+                    case 0:
+                        REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                        REQUIRE(value.type().child_types()[1].alias() == "bool");
+                        REQUIRE(value.children()[1].value<bool>() == (test_data_index % 2 == 0));
+                        break;
+                    case 1:
+                        REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                        REQUIRE(value.type().child_types()[2].alias() == "int");
+                        REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(test_data_index));
+                        break;
+                    case 2:
+                        REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                        REQUIRE(value.type().child_types()[3].alias() == "string");
+                        REQUIRE(value.children()[3].value<std::string_view>() ==
+                                std::string{"long_string_with_index_" + std::to_string(test_data_index)});
+                        break;
+                    default:
+                        // unreachable
+                        break;
+                }
+            }
         }
     }
 
@@ -552,7 +703,7 @@ TEST_CASE("data_table_t") {
                 v.set_value(i, logical_value_t(int64_t(i * 2 + 1)));
                 chunk.set_value(0, i, logical_value_t{int16_t(i * 2 + 1)});
             }
-            extended_table->update_column(v, {7}, chunk);
+            extended_table->update_column(v, {8}, chunk);
         }
         // Scan after extension
         {
@@ -644,9 +795,38 @@ TEST_CASE("data_table_t") {
                         arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
                     }
                 }
-                // SMALLINT
+                // UNION
                 {
                     logical_value_t value = result.data[7].value(i);
+                    REQUIRE(value.type().type() == logical_type::UNION);
+                    REQUIRE(value.type().alias() == "test_union");
+
+                    auto tag = value.children()[0].value<uint8_t>();
+                    switch (tag) {
+                        case 0:
+                            REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                            REQUIRE(value.type().child_types()[1].alias() == "bool");
+                            REQUIRE(value.children()[1].value<bool>() == (test_data_index % 2 == 0));
+                            break;
+                        case 1:
+                            REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                            REQUIRE(value.type().child_types()[2].alias() == "int");
+                            REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(test_data_index));
+                            break;
+                        case 2:
+                            REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                            REQUIRE(value.type().child_types()[3].alias() == "string");
+                            REQUIRE(value.children()[3].value<std::string_view>() ==
+                                    std::string{"long_string_with_index_" + std::to_string(test_data_index)});
+                            break;
+                        default:
+                            // unreachable
+                            break;
+                    }
+                }
+                // SMALLINT
+                {
+                    logical_value_t value = result.data[8].value(i);
                     REQUIRE(value.type().type() == logical_type::SMALLINT);
                     REQUIRE(value.value<int16_t>() == test_data_index);
                 }
@@ -740,9 +920,38 @@ TEST_CASE("data_table_t") {
                         arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
                     }
                 }
-                // SMALLINT
+                // UNION
                 {
                     logical_value_t value = result.data[6].value(i);
+                    REQUIRE(value.type().type() == logical_type::UNION);
+                    REQUIRE(value.type().alias() == "test_union");
+
+                    auto tag = value.children()[0].value<uint8_t>();
+                    switch (tag) {
+                        case 0:
+                            REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
+                            REQUIRE(value.type().child_types()[1].alias() == "bool");
+                            REQUIRE(value.children()[1].value<bool>() == (test_data_index % 2 == 0));
+                            break;
+                        case 1:
+                            REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
+                            REQUIRE(value.type().child_types()[2].alias() == "int");
+                            REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(test_data_index));
+                            break;
+                        case 2:
+                            REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                            REQUIRE(value.type().child_types()[3].alias() == "string");
+                            REQUIRE(value.children()[3].value<std::string_view>() ==
+                                    std::string{"long_string_with_index_" + std::to_string(test_data_index)});
+                            break;
+                        default:
+                            // unreachable
+                            break;
+                    }
+                }
+                // SMALLINT
+                {
+                    logical_value_t value = result.data[7].value(i);
                     REQUIRE(value.type().type() == logical_type::SMALLINT);
                     REQUIRE(value.value<int16_t>() == test_data_index);
                 }

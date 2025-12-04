@@ -18,7 +18,7 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
-    constexpr uint64_t MAX_ROW_ID = 36028797018960000ULL; // 2^55
+    constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
     class column_data_t {
         friend class column_segment_t;

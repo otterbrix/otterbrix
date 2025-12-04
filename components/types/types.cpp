@@ -163,9 +163,11 @@ namespace components::types {
                 return sizeof(list_entry_t);
             case logical_type::ARRAY:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 return 0; // no own payload
             default:
-                assert(false && "complex_logical_type::objest_size: reached unsupported type");
+                assert(false && "complex_logical_type::object_size: reached unsupported type");
                 break;
         }
     }
@@ -212,7 +214,7 @@ namespace components::types {
             case logical_type::STRUCT:
                 return 0; // no own payload
             default:
-                assert(false && "complex_logical_type::objest_size: reached unsupported type");
+                assert(false && "complex_logical_type::object_size: reached unsupported type");
                 break;
         }
     }
@@ -261,6 +263,8 @@ namespace components::types {
             case logical_type::ARRAY:
                 return physical_type::ARRAY;
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 return physical_type::STRUCT;
             case logical_type::LIST:
                 return physical_type::LIST;
@@ -382,6 +386,22 @@ namespace components::types {
         return complex_logical_type(logical_type::UNION,
                                     std::make_unique<struct_logical_type_extension>(fields),
                                     std::move(alias));
+    }
+
+    complex_logical_type complex_logical_type::create_variant(std::string alias) {
+        std::vector<complex_logical_type> children;
+        children.reserve(4);
+        children.emplace_back(create_list(logical_type::STRING_LITERAL, "keys"));
+        children.emplace_back(create_list(
+            create_struct({{logical_type::UINTEGER, "keys_index"}, {logical_type::UINTEGER, "values_index"}}),
+            "children"));
+        children.emplace_back(
+            create_list(create_struct({{logical_type::UTINYINT, "type_id"}, {logical_type::UINTEGER, "byte_offset"}}),
+                        "values"));
+        children.emplace_back(logical_type::BLOB, "data");
+
+        auto info = std::make_unique<struct_logical_type_extension>(std::move(children));
+        return {logical_type::VARIANT, std::move(info), std::move(alias)};
     }
 
     void complex_logical_type::serialize(serializer::msgpack_serializer_t* serializer) const {

@@ -74,14 +74,14 @@ namespace components::vector {
         if (create_data) {
             auxiliary_.reset();
             validity_.reset();
-            auto internal_type = type_.type();
-            if (internal_type == types::logical_type::STRUCT) {
+            auto internal_type = type_.to_physical_type();
+            if (internal_type == types::physical_type::STRUCT) {
                 auxiliary_ = std::make_shared<struct_vector_buffer_t>(resource, type_, capacity);
-            } else if (internal_type == types::logical_type::LIST) {
+            } else if (internal_type == types::physical_type::LIST) {
                 auxiliary_ = std::make_shared<list_vector_buffer_t>(resource, type_, capacity);
-            } else if (internal_type == types::logical_type::ARRAY) {
+            } else if (internal_type == types::physical_type::ARRAY) {
                 auxiliary_ = std::make_shared<array_vector_buffer_t>(resource, type_, capacity);
-            } else if (internal_type == types::logical_type::STRING_LITERAL) {
+            } else if (internal_type == types::physical_type::STRING) {
                 auxiliary_ = std::make_shared<string_vector_buffer_t>(resource);
             }
             auto type_size = type_.size();
@@ -135,8 +135,8 @@ namespace components::vector {
         assert(type_.type() == value.type().type());
         this->vector_type_ = vector_type::CONSTANT;
         buffer_ = std::make_unique<vector_buffer_t>(resource(), value.type(), 1);
-        auto internal_type = value.type().type();
-        if (internal_type == types::logical_type::STRUCT) {
+        auto internal_type = value.type().to_physical_type();
+        if (internal_type == types::physical_type::STRUCT) {
             auxiliary_ = std::make_unique<struct_vector_buffer_t>(resource());
             auto& child_types = value.type().child_types();
             auto& child_vectors = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
@@ -149,11 +149,11 @@ namespace components::vector {
             if (value.is_null()) {
                 set_value(0, value);
             }
-        } else if (internal_type == types::logical_type::LIST) {
+        } else if (internal_type == types::physical_type::LIST) {
             auxiliary_ = std::make_shared<list_vector_buffer_t>(resource(), value.type());
             data_ = buffer_->data();
             set_value(0, value);
-        } else if (internal_type == types::logical_type::ARRAY) {
+        } else if (internal_type == types::physical_type::ARRAY) {
             auxiliary_ = std::make_shared<array_vector_buffer_t>(resource(), value.type());
             set_value(0, value);
         } else {
@@ -197,8 +197,8 @@ namespace components::vector {
             return;
         }
 
-        auto internal_type = type_.type();
-        if (internal_type == types::logical_type::STRUCT) {
+        auto internal_type = type_.to_physical_type();
+        if (internal_type == types::physical_type::STRUCT) {
             vector_t new_vector(resource(), type_);
             auto& entries = new_vector.entries();
             auto& other_entries = other.entries();
@@ -208,7 +208,7 @@ namespace components::vector {
             }
             new_vector.validity_.slice(other.validity_, offset, end - offset);
             reference(new_vector);
-        } else if (internal_type == types::logical_type::ARRAY) {
+        } else if (internal_type == types::physical_type::ARRAY) {
             vector_t new_vector(resource(), type_);
             auto& child_vec = new_vector.entry();
             auto& other_child_vec = other.entry();
@@ -239,7 +239,7 @@ namespace components::vector {
             auto& current_indexing = this->indexing();
             auto sliced_dictionary = current_indexing.slice(resource(), indexing, count);
             buffer_ = std::make_unique<dictionary_vector_buffer_t>(std::move(sliced_dictionary));
-            if (type_.type() == types::logical_type::STRUCT) {
+            if (type_.to_physical_type() == types::physical_type::STRUCT) {
                 auto& child_vector = child();
 
                 vector_t new_child(child_vector);
@@ -250,8 +250,8 @@ namespace components::vector {
         }
 
         vector_t child_vector(*this);
-        auto internal_type = type_.type();
-        if (internal_type == types::logical_type::STRUCT) {
+        auto internal_type = type_.to_physical_type();
+        if (internal_type == types::physical_type::STRUCT) {
             child_vector.auxiliary_ = std::make_shared<struct_vector_buffer_t>(*this, indexing, count);
         }
         vector_type_ = vector_type::DICTIONARY;
@@ -280,12 +280,12 @@ namespace components::vector {
         assert(vector_type_ == vector_type::FLAT);
         validity_.set(position, !value);
         if (value) {
-            auto internal_type = type_.type();
-            if (internal_type == types::logical_type::STRUCT) {
+            auto internal_type = type_.to_physical_type();
+            if (internal_type == types::physical_type::STRUCT) {
                 for (auto& entry : entries()) {
                     entry->set_null(position, value);
                 }
-            } else if (internal_type == types::logical_type::ARRAY) {
+            } else if (internal_type == types::physical_type::ARRAY) {
                 auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
                 auto child_offset = position * array_size;
                 for (uint64_t i = 0; i < array_size; i++) {
@@ -334,8 +334,8 @@ namespace components::vector {
             auto physical_size = type_.size();
             return cardinality * physical_size;
         }
-        switch (type_.type()) {
-            case types::logical_type::LIST: {
+        switch (type_.to_physical_type()) {
+            case types::physical_type::LIST: {
                 auto physical_size = type_.child_type().size();
                 auto total_size = physical_size * cardinality;
 
@@ -343,13 +343,13 @@ namespace components::vector {
                 total_size += entry().allocation_size(child_cardinality);
                 return total_size;
             }
-            case types::logical_type::ARRAY: {
+            case types::physical_type::ARRAY: {
                 auto child_cardinality = static_cast<array_vector_buffer_t&>(*buffer_).size();
 
                 auto total_size = entry().allocation_size(child_cardinality);
                 return total_size;
             }
-            case types::logical_type::STRUCT: {
+            case types::physical_type::STRUCT: {
                 uint64_t total_size = 0;
                 auto& children = entries();
                 for (auto& child : children) {
@@ -406,7 +406,8 @@ namespace components::vector {
 
     static bool struct_or_array_recursive(const types::complex_logical_type& type) {
         return types::complex_logical_type::contains(type, [](const types::complex_logical_type& type) {
-            return type.type() == types::logical_type::STRUCT || type.type() == types::logical_type::ARRAY;
+            return type.to_physical_type() == types::physical_type::STRUCT ||
+                   type.to_physical_type() == types::physical_type::ARRAY;
         });
     }
 
@@ -430,51 +431,50 @@ namespace components::vector {
             return;
         }
 
-        switch (type_.type()) {
-            case types::logical_type::BOOLEAN:
+        switch (type_.to_physical_type()) {
+            case types::physical_type::BOOL:
                 reinterpret_cast<bool*>(data_)[index] = val.value<bool>();
                 break;
-            case types::logical_type::TINYINT:
+            case types::physical_type::INT8:
                 reinterpret_cast<int8_t*>(data_)[index] = val.value<int8_t>();
                 break;
-            case types::logical_type::SMALLINT:
+            case types::physical_type::INT16:
                 reinterpret_cast<int16_t*>(data_)[index] = val.value<int16_t>();
                 break;
-            case types::logical_type::ENUM:
-            case types::logical_type::INTEGER:
+            case types::physical_type::INT32:
                 reinterpret_cast<int32_t*>(data_)[index] = val.value<int32_t>();
                 break;
-            case types::logical_type::BIGINT:
+            case types::physical_type::INT64:
                 reinterpret_cast<int64_t*>(data_)[index] = val.value<int64_t>();
                 break;
-            case types::logical_type::HUGEINT:
+            case types::physical_type::INT128:
                 reinterpret_cast<types::int128_t*>(data_)[index] = val.value<types::int128_t>();
                 break;
-            case types::logical_type::UTINYINT:
+            case types::physical_type::UINT8:
                 reinterpret_cast<uint8_t*>(data_)[index] = val.value<uint8_t>();
                 break;
-            case types::logical_type::USMALLINT:
+            case types::physical_type::UINT16:
                 reinterpret_cast<uint16_t*>(data_)[index] = val.value<uint16_t>();
                 break;
-            case types::logical_type::UINTEGER:
+            case types::physical_type::UINT32:
                 reinterpret_cast<uint32_t*>(data_)[index] = val.value<uint32_t>();
                 break;
-            case types::logical_type::UBIGINT:
+            case types::physical_type::UINT64:
                 reinterpret_cast<uint64_t*>(data_)[index] = val.value<uint64_t>();
                 break;
-            //case types::logical_type::UHUGEINT:
-            //	reinterpret_cast<uint128_t*>(data_)[index] = val.value<uint128_t>();
-            //	break;
-            case types::logical_type::FLOAT:
+            case types::physical_type::UINT128:
+                reinterpret_cast<types::uint128_t*>(data_)[index] = val.value<types::uint128_t>();
+                break;
+            case types::physical_type::FLOAT:
                 reinterpret_cast<float*>(data_)[index] = val.value<float>();
                 break;
-            case types::logical_type::DOUBLE:
+            case types::physical_type::DOUBLE:
                 reinterpret_cast<double*>(data_)[index] = val.value<double>();
                 break;
-            //case types::logical_type::INTERVAL:
+            //case types::physical_type::INTERVAL:
             //	reinterpret_cast<interval_t*>(data_)[index] = val.value<interval_t>();
             //	break;
-            case types::logical_type::STRING_LITERAL: {
+            case types::physical_type::STRING: {
                 if (!val.is_null()) {
                     assert(type_.type() == types::logical_type::STRING_LITERAL);
                     if (!auxiliary_) {
@@ -488,7 +488,7 @@ namespace components::vector {
                 }
                 break;
             }
-            case types::logical_type::STRUCT: {
+            case types::physical_type::STRUCT: {
                 assert(get_vector_type() == vector_type::CONSTANT || get_vector_type() == vector_type::FLAT);
 
                 auto& children = entries();
@@ -506,7 +506,7 @@ namespace components::vector {
                 }
                 break;
             }
-            case types::logical_type::LIST: {
+            case types::physical_type::LIST: {
                 auto offset = size();
                 if (val.is_null()) {
                     auto& entry = reinterpret_cast<types::list_entry_t*>(data_)[index];
@@ -526,7 +526,7 @@ namespace components::vector {
                 }
                 break;
             }
-            case types::logical_type::ARRAY: {
+            case types::physical_type::ARRAY: {
                 auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
                 auto& child = entry();
                 if (val.is_null()) {
@@ -543,6 +543,36 @@ namespace components::vector {
             }
             default:
                 throw std::runtime_error("Unimplemented type for vector_t::set_value");
+        }
+    }
+
+    bool try_get_union_tag(const vector_t& vector, uint64_t index, uint8_t& result) {
+        // tag is always the first struct child.
+        auto& tag_vector = vector.entries()[0];
+        if (tag_vector->get_vector_type() == vector_type::DICTIONARY) {
+            auto& child = tag_vector->child();
+            auto& dict_idx = tag_vector->indexing();
+            auto mapped_idx = dict_idx.get_index(index);
+            if (child.validity().row_is_valid(mapped_idx)) {
+                return false;
+            } else {
+                result = child.data<uint8_t>()[mapped_idx];
+                return true;
+            }
+        }
+        if (tag_vector->get_vector_type() == vector_type::CONSTANT) {
+            if (tag_vector->validity().row_is_valid(0)) {
+                return false;
+            } else {
+                result = tag_vector->data<uint8_t>()[0];
+                return true;
+            }
+        }
+        if (!tag_vector->validity().row_is_valid(index)) {
+            return false;
+        } else {
+            result = tag_vector->data<uint8_t>()[index];
+            return true;
         }
     }
 
@@ -600,10 +630,10 @@ namespace components::vector {
                 return types::logical_value_t(reinterpret_cast<uint32_t*>(data_)[index]);
             case types::logical_type::UBIGINT:
                 return types::logical_value_t(reinterpret_cast<uint64_t*>(data_)[index]);
-            // case types::logical_type::HUGEINT:
-            // return types::logical_value_t(reinterpret_cast<int128_t*>(data_)[index]);
-            // case types::logical_type::UHUGEINT:
-            // return types::logical_value_t::UHUGEINT(reinterpret_cast<uint128_t*>(data_)[index]);
+            case types::logical_type::HUGEINT:
+                return types::logical_value_t(reinterpret_cast<types::int128_t*>(data_)[index]);
+            case types::logical_type::UHUGEINT:
+                return types::logical_value_t(reinterpret_cast<types::uint128_t*>(data_)[index]);
             case types::logical_type::DECIMAL: {
                 assert(type_.extension()->type() == types::logical_type_extension::extension_type::DECIMAL);
                 auto width = static_cast<types::decimal_logical_type_extension*>(type_.extension())->width();
@@ -666,6 +696,27 @@ namespace components::vector {
             case types::logical_type::ENUM: {
                 return types::logical_value_t::create_enum(type_, reinterpret_cast<int32_t*>(data_)[index]);
             }
+            case types::logical_type::UNION: {
+                uint8_t tag;
+                if (try_get_union_tag(*vector, index_p, tag)) {
+                    auto value = vector->entries()[tag + 1]->value(index_p);
+                    auto members = type().child_types();
+                    // remove tag
+                    members.erase(members.begin());
+                    return types::logical_value_t::create_union(members, tag, std::move(value));
+                } else {
+                    return types::logical_value_t(vector->type());
+                }
+            }
+            case types::logical_type::VARIANT: {
+                std::vector<types::logical_value_t> children;
+                children.reserve(4);
+                children.emplace_back(vector->entries()[0]->value(index_p));
+                children.emplace_back(vector->entries()[1]->value(index_p));
+                children.emplace_back(vector->entries()[2]->value(index_p));
+                children.emplace_back(vector->entries()[3]->value(index_p));
+                return types::logical_value_t::create_variant(children);
+            }
             default:
                 throw std::runtime_error("Unimplemented type for value access");
         }
@@ -685,7 +736,7 @@ namespace components::vector {
     }
 
     std::pmr::vector<std::unique_ptr<vector_t>>& vector_t::entries() {
-        assert(type_.type() == types::logical_type::STRUCT || type_.type() == types::logical_type::UNION);
+        assert(type_.to_physical_type() == types::physical_type::STRUCT);
 
         if (get_vector_type() == vector_type::DICTIONARY) {
             return child().entries();
@@ -697,7 +748,7 @@ namespace components::vector {
     }
 
     const std::pmr::vector<std::unique_ptr<vector_t>>& vector_t::entries() const {
-        assert(type_.type() == types::logical_type::STRUCT || type_.type() == types::logical_type::UNION);
+        assert(type_.to_physical_type() == types::physical_type::STRUCT);
 
         if (get_vector_type() == vector_type::DICTIONARY) {
             return child().entries();
@@ -812,61 +863,60 @@ namespace components::vector {
                                                             std::max<uint64_t>(DEFAULT_VECTOR_CAPACITY, count));
                 data_ = buffer_->data();
                 vector_type_ = vector_type::FLAT;
-                if (is_null() && type_.type() != types::logical_type::ARRAY) {
+                if (is_null() && type_.to_physical_type() != types::physical_type::ARRAY) {
                     validity_.set_all_invalid(count);
-                    if (type_.type() != types::logical_type::STRUCT) {
+                    if (type_.to_physical_type() != types::physical_type::STRUCT) {
                         return;
                     }
                 }
-                switch (type_.type()) {
-                    case types::logical_type::BOOLEAN:
+                switch (type_.to_physical_type()) {
+                    case types::physical_type::BOOL:
                         templated_flatten_constant_vector<bool>(data_, old_data, count);
                         break;
-                    case types::logical_type::TINYINT:
+                    case types::physical_type::INT8:
                         templated_flatten_constant_vector<int8_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::SMALLINT:
+                    case types::physical_type::INT16:
                         templated_flatten_constant_vector<int16_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::ENUM:
-                    case types::logical_type::INTEGER:
+                    case types::physical_type::INT32:
                         templated_flatten_constant_vector<int32_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::BIGINT:
+                    case types::physical_type::INT64:
                         templated_flatten_constant_vector<int64_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::UTINYINT:
+                    case types::physical_type::UINT8:
                         templated_flatten_constant_vector<uint8_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::USMALLINT:
+                    case types::physical_type::UINT16:
                         templated_flatten_constant_vector<uint16_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::UINTEGER:
+                    case types::physical_type::UINT32:
                         templated_flatten_constant_vector<uint32_t>(data_, old_data, count);
                         break;
-                    case types::logical_type::UBIGINT:
+                    case types::physical_type::UINT64:
                         templated_flatten_constant_vector<uint64_t>(data_, old_data, count);
                         break;
-                    // case types::logical_type::HUGEINT:
-                    // templated_flatten_constant_vector<int128_t>(data_, old_data, count);
-                    // break;
-                    // case types::logical_type::UHUGEINT:
-                    // templated_flatten_constant_vector<uint128_t>(data_, old_data, count);
-                    // break;
-                    case types::logical_type::FLOAT:
+                    case types::physical_type::INT128:
+                        templated_flatten_constant_vector<types::int128_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT128:
+                        templated_flatten_constant_vector<types::uint128_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::FLOAT:
                         templated_flatten_constant_vector<float>(data_, old_data, count);
                         break;
-                    case types::logical_type::DOUBLE:
+                    case types::physical_type::DOUBLE:
                         templated_flatten_constant_vector<double>(data_, old_data, count);
                         break;
-                    case types::logical_type::STRING_LITERAL:
+                    case types::physical_type::STRING:
                         templated_flatten_constant_vector<std::string_view>(data_, old_data, count);
                         break;
-                    case types::logical_type::LIST: {
+                    case types::physical_type::LIST: {
                         templated_flatten_constant_vector<types::list_entry_t>(data_, old_data, count);
                         break;
                     }
-                    case types::logical_type::ARRAY: {
+                    case types::physical_type::ARRAY: {
                         auto& original_child = entry();
                         auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
                         auto flattened_buffer = std::make_unique<array_vector_buffer_t>(resource(), type_, count);
@@ -896,7 +946,7 @@ namespace components::vector {
                         auxiliary_ = std::unique_ptr<vector_buffer_t>(flattened_buffer.release());
                         break;
                     }
-                    case types::logical_type::STRUCT: {
+                    case types::physical_type::STRUCT: {
                         auto normalized_buffer = std::make_unique<struct_vector_buffer_t>(resource());
                         auto& new_children = normalized_buffer->entries();
                         auto& child_entries = entries();
@@ -987,20 +1037,20 @@ namespace components::vector {
         input.to_unified_format(count, data.parent);
         data.type = input.type_;
 
-        if (input.type_.type() == types::logical_type::LIST) {
+        if (input.type_.to_physical_type() == types::physical_type::LIST) {
             auto& child = input.entry();
             auto child_count = input.size();
             data.children.emplace_back(recursive_unified_vector_format{input.resource(), count});
             recursive_to_unified_format(child, child_count, data.children.back());
 
-        } else if (input.type_.type() == types::logical_type::ARRAY) {
+        } else if (input.type_.to_physical_type() == types::physical_type::ARRAY) {
             auto& child = input.entry();
             auto array_size = static_cast<types::array_logical_type_extension*>(input.type_.extension())->size();
             auto child_count = count * array_size;
             data.children.emplace_back(recursive_unified_vector_format{input.resource(), count});
             recursive_to_unified_format(child, child_count, data.children.back());
 
-        } else if (input.type_.type() == types::logical_type::STRUCT) {
+        } else if (input.type_.to_physical_type() == types::physical_type::STRUCT) {
             auto& children = input.entries();
             for (uint64_t i = 0; i < children.size(); i++) {
                 data.children.emplace_back(recursive_unified_vector_format{input.resource(), count});
@@ -1028,7 +1078,7 @@ namespace components::vector {
             (vector_type_ == vector_type::CONSTANT || vector_type_ == vector_type::FLAT)) {
             auxiliary_.reset();
         }
-        if (vector_type_ == vector_type::CONSTANT && type_.type() == types::logical_type::STRUCT) {
+        if (vector_type_ == vector_type::CONSTANT && type_.to_physical_type() == types::physical_type::STRUCT) {
             for (auto& entry : entries()) {
                 entry->set_vector_type(vector_type_);
             }

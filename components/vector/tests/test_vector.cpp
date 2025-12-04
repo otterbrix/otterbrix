@@ -258,4 +258,64 @@ TEST_CASE("vector") {
             REQUIRE(dictionary.value(i) == string_array.value(indices[i]));
         }
     }
+    INFO("union") {
+        std::vector<components::types::complex_logical_type> union_fields;
+        union_fields.emplace_back(components::types::logical_type::BOOLEAN, "bool");
+        union_fields.emplace_back(components::types::logical_type::INTEGER, "int");
+        union_fields.emplace_back(components::types::logical_type::STRING_LITERAL, "string");
+        auto union_type = components::types::complex_logical_type::create_union(union_fields, "union_type");
+
+        components::vector::vector_t union_vector(std::pmr::get_default_resource(), union_type, test_size);
+
+        for (size_t i = 0; i < test_size; i++) {
+            switch (i % 3) {
+                case 0:
+                    union_vector.set_value(i,
+                                           components::types::logical_value_t::create_union(
+                                               union_fields,
+                                               0,
+                                               components::types::logical_value_t{i % 2 == 0}));
+                    break;
+                case 1:
+                    union_vector.set_value(i,
+                                           components::types::logical_value_t::create_union(
+                                               union_fields,
+                                               1,
+                                               components::types::logical_value_t{static_cast<int32_t>(i)}));
+                    break;
+                case 2:
+                    union_vector.set_value(i,
+                                           components::types::logical_value_t::create_union(
+                                               union_fields,
+                                               2,
+                                               components::types::logical_value_t{
+                                                   std::string{"long_string_with_index_" + std::to_string(i)}}));
+                    break;
+                default:
+                    continue;
+            }
+        }
+
+        for (size_t i = 0; i < test_size; i++) {
+            components::types::logical_value_t value = union_vector.value(i);
+            auto tag = value.children()[0].value<uint8_t>();
+            switch (tag) {
+                case 0:
+                    REQUIRE(value.children()[1].type().type() == components::types::logical_type::BOOLEAN);
+                    REQUIRE(value.children()[1].value<bool>() == (i % 2 == 0));
+                    break;
+                case 1:
+                    REQUIRE(value.children()[2].type().type() == components::types::logical_type::INTEGER);
+                    REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(i));
+                    break;
+                case 2:
+                    REQUIRE(value.children()[3].type().type() == components::types::logical_type::STRING_LITERAL);
+                    REQUIRE(value.children()[3].value<std::string_view>() ==
+                            std::string{"long_string_with_index_" + std::to_string(i)});
+                    break;
+                default:
+                    continue;
+            }
+        }
+    }
 }

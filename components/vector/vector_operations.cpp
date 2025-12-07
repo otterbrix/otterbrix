@@ -504,19 +504,6 @@ namespace components::vector::vector_ops {
             }
         }
 
-        template<class T>
-        static void copy_to_storage_loop(unified_vector_format& vdata, uint64_t count, std::byte* target) {
-            auto ldata = vdata.get_data<T>();
-            auto result_data = (T*) target;
-            for (uint64_t i = 0; i < count; i++) {
-                auto idx = vdata.referenced_indexing->get_index(i);
-                if (!vdata.validity.row_is_valid(idx)) {
-                    result_data[i] = T();
-                } else {
-                    result_data[i] = ldata[idx];
-                }
-            }
-        }
     } // namespace impl
 
     void generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
@@ -630,9 +617,9 @@ namespace components::vector::vector_ops {
 
         assert(indexing_ptr);
 
-        switch (source_ptr->type().type()) {
-            case types::logical_type::BOOLEAN:
-            case types::logical_type::TINYINT:
+        switch (source_ptr->type().to_physical_type()) {
+            case types::physical_type::BOOL:
+            case types::physical_type::INT8:
                 impl::templated_copy<int8_t>(*source_ptr,
                                              *indexing_ptr,
                                              target,
@@ -640,7 +627,7 @@ namespace components::vector::vector_ops {
                                              target_offset,
                                              copy_count);
                 break;
-            case types::logical_type::SMALLINT:
+            case types::physical_type::INT16:
                 impl::templated_copy<int16_t>(*source_ptr,
                                               *indexing_ptr,
                                               target,
@@ -648,7 +635,7 @@ namespace components::vector::vector_ops {
                                               target_offset,
                                               copy_count);
                 break;
-            case types::logical_type::INTEGER:
+            case types::physical_type::INT32:
                 impl::templated_copy<int32_t>(*source_ptr,
                                               *indexing_ptr,
                                               target,
@@ -656,7 +643,7 @@ namespace components::vector::vector_ops {
                                               target_offset,
                                               copy_count);
                 break;
-            case types::logical_type::BIGINT:
+            case types::physical_type::INT64:
                 impl::templated_copy<int64_t>(*source_ptr,
                                               *indexing_ptr,
                                               target,
@@ -664,7 +651,7 @@ namespace components::vector::vector_ops {
                                               target_offset,
                                               copy_count);
                 break;
-            case types::logical_type::UTINYINT:
+            case types::physical_type::UINT8:
                 impl::templated_copy<uint8_t>(*source_ptr,
                                               *indexing_ptr,
                                               target,
@@ -672,7 +659,7 @@ namespace components::vector::vector_ops {
                                               target_offset,
                                               copy_count);
                 break;
-            case types::logical_type::USMALLINT:
+            case types::physical_type::UINT16:
                 impl::templated_copy<uint16_t>(*source_ptr,
                                                *indexing_ptr,
                                                target,
@@ -680,7 +667,7 @@ namespace components::vector::vector_ops {
                                                target_offset,
                                                copy_count);
                 break;
-            case types::logical_type::UINTEGER:
+            case types::physical_type::UINT32:
                 impl::templated_copy<uint32_t>(*source_ptr,
                                                *indexing_ptr,
                                                target,
@@ -688,7 +675,7 @@ namespace components::vector::vector_ops {
                                                target_offset,
                                                copy_count);
                 break;
-            case types::logical_type::UBIGINT:
+            case types::physical_type::UINT64:
                 impl::templated_copy<uint64_t>(*source_ptr,
                                                *indexing_ptr,
                                                target,
@@ -696,13 +683,23 @@ namespace components::vector::vector_ops {
                                                target_offset,
                                                copy_count);
                 break;
-            // case types::logical_type::HUGEINT:
-            // impl::templated_copy<int128_t>(*source_ptr, *indexing_ptr, target, source_offset, target_offset, copy_count);
-            // break;
-            // case types::logical_type::UHUGEINT:
-            // impl::templated_copy<uin128_t>(*source_ptr, *indexing_ptr, target, source_offset, target_offset, copy_count);
-            // break;
-            case types::logical_type::FLOAT:
+            case types::physical_type::INT128:
+                impl::templated_copy<types::int128_t>(*source_ptr,
+                                                      *indexing_ptr,
+                                                      target,
+                                                      source_offset,
+                                                      target_offset,
+                                                      copy_count);
+                break;
+            case types::physical_type::UINT128:
+                impl::templated_copy<types::uint128_t>(*source_ptr,
+                                                       *indexing_ptr,
+                                                       target,
+                                                       source_offset,
+                                                       target_offset,
+                                                       copy_count);
+                break;
+            case types::physical_type::FLOAT:
                 impl::templated_copy<float>(*source_ptr,
                                             *indexing_ptr,
                                             target,
@@ -710,7 +707,7 @@ namespace components::vector::vector_ops {
                                             target_offset,
                                             copy_count);
                 break;
-            case types::logical_type::DOUBLE:
+            case types::physical_type::DOUBLE:
                 impl::templated_copy<double>(*source_ptr,
                                              *indexing_ptr,
                                              target,
@@ -718,7 +715,7 @@ namespace components::vector::vector_ops {
                                              target_offset,
                                              copy_count);
                 break;
-            case types::logical_type::STRING_LITERAL: {
+            case types::physical_type::STRING: {
                 auto ldata = source_ptr->data<std::string_view>();
                 auto tdata = target.data<std::string_view>();
                 for (uint64_t i = 0; i < copy_count; i++) {
@@ -737,7 +734,7 @@ namespace components::vector::vector_ops {
                 }
                 break;
             }
-            case types::logical_type::STRUCT: {
+            case types::physical_type::STRUCT: {
                 auto& source_children = source_ptr->entries();
                 auto& target_children = target.entries();
                 assert(source_children.size() == target_children.size());
@@ -752,8 +749,8 @@ namespace components::vector::vector_ops {
                 }
                 break;
             }
-            case types::logical_type::ARRAY: {
-                assert(target.type().type() == types::logical_type::ARRAY);
+            case types::physical_type::ARRAY: {
+                assert(target.type().to_physical_type() == types::physical_type::ARRAY);
                 assert(source_ptr->type().size() == target.type().size());
 
                 auto& source_child = source_ptr->entry();
@@ -781,8 +778,8 @@ namespace components::vector::vector_ops {
                      target_offset * array_size);
                 break;
             }
-            case types::logical_type::LIST: {
-                assert(target.type().type() == types::logical_type::LIST);
+            case types::physical_type::LIST: {
+                assert(target.type().to_physical_type() == types::physical_type::LIST);
 
                 auto& source_child = source_ptr->entry();
                 auto sdata = source_ptr->data<types::list_entry_t>();
@@ -899,56 +896,4 @@ namespace components::vector::vector_ops {
         impl::combine_hash_type_switch<true>(hashes, input, &rindexing, count);
     }
 
-    void write_to_storage(vector_t& source, uint64_t count, std::byte* target) {
-        if (count == 0) {
-            return;
-        }
-        unified_vector_format vdata(source.resource(), count);
-        source.to_unified_format(count, vdata);
-
-        switch (source.type().type()) {
-            case types::logical_type::BOOLEAN:
-            case types::logical_type::TINYINT:
-                impl::copy_to_storage_loop<int8_t>(vdata, count, target);
-                break;
-            case types::logical_type::SMALLINT:
-                impl::copy_to_storage_loop<int16_t>(vdata, count, target);
-                break;
-            case types::logical_type::INTEGER:
-                impl::copy_to_storage_loop<int32_t>(vdata, count, target);
-                break;
-            case types::logical_type::BIGINT:
-                impl::copy_to_storage_loop<int64_t>(vdata, count, target);
-                break;
-            case types::logical_type::UTINYINT:
-                impl::copy_to_storage_loop<uint8_t>(vdata, count, target);
-                break;
-            case types::logical_type::USMALLINT:
-                impl::copy_to_storage_loop<uint16_t>(vdata, count, target);
-                break;
-            case types::logical_type::UINTEGER:
-                impl::copy_to_storage_loop<uint32_t>(vdata, count, target);
-                break;
-            case types::logical_type::UBIGINT:
-                impl::copy_to_storage_loop<uint64_t>(vdata, count, target);
-                break;
-            // case types::logical_type::HUGEINT:
-            // impl::copy_to_storage_loop<hugeint_t>(vdata, count, target);
-            // break;
-            // case types::logical_type::UHUGEINT:
-            // impl::copy_to_storage_loop<uhugeint_t>(vdata, count, target);
-            // break;
-            case types::logical_type::FLOAT:
-                impl::copy_to_storage_loop<float>(vdata, count, target);
-                break;
-            case types::logical_type::DOUBLE:
-                impl::copy_to_storage_loop<double>(vdata, count, target);
-                break;
-            // case types::logical_type::INTERVAL:
-            // impl::copy_to_storage_loop<interval_t>(vdata, count, target);
-            // break;
-            default:
-                throw std::logic_error("Unimplemented type for write_to_storage");
-        }
-    }
 } // namespace components::vector::vector_ops

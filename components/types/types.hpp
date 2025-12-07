@@ -122,7 +122,8 @@ namespace components::types {
         FUNCTION = 105,
         LAMBDA = 106,
         UNION = 107,
-        ARRAY = 108,
+        VARIANT = 108,
+        ARRAY = 109,
 
         UNKNOWN = 127, // Unknown type, used for parameter expressions
         INVALID = 255
@@ -406,6 +407,7 @@ namespace components::types {
         static complex_logical_type create_struct(const std::vector<complex_logical_type>& fields,
                                                   std::string alias = "");
         static complex_logical_type create_union(std::vector<complex_logical_type> fields, std::string alias = "");
+        static complex_logical_type create_variant(std::string alias = "");
 
         void serialize(serializer::msgpack_serializer_t* serializer) const;
         static complex_logical_type deserialize(serializer::msgpack_deserializer_t* deserializer);

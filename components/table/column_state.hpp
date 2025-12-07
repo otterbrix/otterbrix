@@ -191,7 +191,6 @@ namespace components::table {
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
         void initialize(const types::complex_logical_type& type);
         void next(uint64_t count);
-        void next_internal(uint64_t count);
     };
 
     struct column_fetch_state {

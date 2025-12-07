@@ -367,7 +367,6 @@ namespace components::vector::vector_ops {
 
     void combine_hash(vector_t& hashes, vector_t& input, uint64_t count);
     void combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count);
-    void write_to_storage(vector_t& source, uint64_t count, std::byte* target);
 
     template<typename COMP>
     int64_t compare(vector_t& left,

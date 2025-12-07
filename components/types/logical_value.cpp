@@ -615,10 +615,10 @@ namespace components::types {
             case logical_type::UBIGINT:
                 assert(value >= 0);
                 return logical_value_t((uint64_t) value);
-            // case logical_type::HUGEINT:
-            //     return logical_value_t((int128_t)value);
-            // case logical_type::UHUGEINT:
-            //     return logical_value_t((uint128_t)value);
+            case logical_type::HUGEINT:
+                return logical_value_t((int128_t) value);
+            case logical_type::UHUGEINT:
+                return logical_value_t((uint128_t) value);
             case logical_type::DECIMAL:
                 return create_decimal(value,
                                       static_cast<decimal_logical_type_extension*>(type.extension())->width(),
@@ -724,6 +724,19 @@ namespace components::types {
         return result;
     }
 
+    logical_value_t logical_value_t::create_variant(std::vector<logical_value_t> values) {
+        assert(values.size() == 4);
+        assert(values[0].type().type() == logical_type::LIST);
+        assert(values[1].type().type() == logical_type::LIST);
+        assert(values[2].type().type() == logical_type::LIST);
+        assert(values[3].type().type() == logical_type::BLOB);
+        return create_struct(complex_logical_type::create_variant(), std::move(values));
+    }
+
+    /*
+    * TODO: absl::int128 does not have implementations for all operations
+    * Add them in operations_helper.hpp
+    */
     template<typename OP, typename GET>
     logical_value_t op(const logical_value_t& value, GET getter_function) {
         OP operation{};
@@ -768,10 +781,10 @@ namespace components::types {
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::plus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::plus<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<uint128_t>);
             case logical_type::TIMESTAMP_SEC:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
             case logical_type::TIMESTAMP_MS:
@@ -816,10 +829,10 @@ namespace components::types {
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::minus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::minus<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<uint128_t>);
             case logical_type::TIMESTAMP_SEC:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
             case logical_type::TIMESTAMP_MS:
@@ -862,10 +875,10 @@ namespace components::types {
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::multiplies<>>(value1, value2, &logical_value_t::value<uint128_t>);
             case logical_type::FLOAT:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -900,10 +913,10 @@ namespace components::types {
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::divides<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::divides<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::divides<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::divides<>>(value1, value2, &logical_value_t::value<uint128_t>);
             case logical_type::FLOAT:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -938,10 +951,10 @@ namespace components::types {
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::modulus<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::modulus<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
             case logical_type::TIMESTAMP_SEC:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
             case logical_type::TIMESTAMP_MS:
@@ -1110,8 +1123,8 @@ namespace components::types {
                 return op<abs<>>(value, &logical_value_t::value<int32_t>);
             case logical_type::BIGINT:
                 return op<abs<>>(value, &logical_value_t::value<int64_t>);
-            // case logical_type::HUGEINT:
-            // return op<abs<>>(value, &logical_value_t::value<int128_t>);
+            case logical_type::HUGEINT:
+                return op<abs<>>(value, &logical_value_t::value<int128_t>);
             case logical_type::FLOAT:
                 return op<abs<>>(value, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -1145,10 +1158,10 @@ namespace components::types {
                 return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
                 throw std::runtime_error("logical_value_t::bit_and unable to process given types");
         }
@@ -1179,10 +1192,10 @@ namespace components::types {
                 return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
                 throw std::runtime_error("logical_value_t::bit_or unable to process given types");
         }
@@ -1213,10 +1226,10 @@ namespace components::types {
                 return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
                 throw std::runtime_error("logical_value_t::bit_xor unable to process given types");
         }
@@ -1246,10 +1259,10 @@ namespace components::types {
                 return op<std::bit_not<>>(value, &logical_value_t::value<int64_t>);
             case logical_type::UBIGINT:
                 return op<std::bit_not<>>(value, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<std::bit_not<>>(value, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<std::bit_not<>>(value, &logical_value_t::value<uint128_t>);
+            case logical_type::HUGEINT:
+                return op<std::bit_not<>>(value, &logical_value_t::value<int128_t>);
+            case logical_type::UHUGEINT:
+                return op<std::bit_not<>>(value, &logical_value_t::value<uint128_t>);
             default:
                 throw std::runtime_error("logical_value_t::bit_not unable to process given types");
         }

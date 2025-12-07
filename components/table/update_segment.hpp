@@ -33,6 +33,28 @@ namespace components::table {
         class block_handle_t;
     } // namespace storage
 
+    inline bool supports_regular_update(const types::complex_logical_type& type) {
+        switch (type.type()) {
+            case types::logical_type::LIST:
+            case types::logical_type::ARRAY:
+            case types::logical_type::MAP:
+                return false;
+            case types::logical_type::UNION:
+            case types::logical_type::VARIANT:
+            case types::logical_type::STRUCT: {
+                const auto& child_types = type.child_types();
+                for (auto& entry : child_types) {
+                    if (!supports_regular_update(entry)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            default:
+                return true;
+        }
+    }
+
     struct undo_buffer_entry_t {
         explicit undo_buffer_entry_t(storage::buffer_manager_t& buffer_manager)
             : buffer_manager(buffer_manager) {}
@@ -540,11 +562,11 @@ namespace components::table {
             case types::physical_type::UINT64:
                 templated_fetch_row<uint64_t>(std::forward<Args>(args)...);
                 break;
-                // case types::physical_type::INT128:
-                // 	templated_fetch_row<int128_t>(std::forward<Args>(args)...);
+            case types::physical_type::INT128:
+                templated_fetch_row<types::int128_t>(std::forward<Args>(args)...);
                 break;
-                // case types::physical_type::UINT128:
-                // 	templated_fetch_row<uint128_t>(std::forward<Args>(args)...);
+            case types::physical_type::UINT128:
+                templated_fetch_row<types::uint128_t>(std::forward<Args>(args)...);
                 break;
             case types::physical_type::FLOAT:
                 templated_fetch_row<float>(std::forward<Args>(args)...);
@@ -584,10 +606,10 @@ namespace components::table {
                 return templated_check_row<uint32_t>(std::forward<Args>(args)...);
             case types::physical_type::UINT64:
                 return templated_check_row<uint64_t>(std::forward<Args>(args)...);
-                // case types::physical_type::INT128:
-                // return templated_check_row<int128_t>(std::forward<Args>(args)...);
-                // case types::physical_type::UINT128:
-                // return templated_check_row<uint128_t>(std::forward<Args>(args)...);
+            case types::physical_type::INT128:
+                return templated_check_row<types::int128_t>(std::forward<Args>(args)...);
+            case types::physical_type::UINT128:
+                return templated_check_row<types::uint128_t>(std::forward<Args>(args)...);
             case types::physical_type::FLOAT:
                 return templated_check_row<float>(std::forward<Args>(args)...);
             case types::physical_type::DOUBLE:
@@ -632,12 +654,12 @@ namespace components::table {
             case types::physical_type::UINT64:
                 templated_fetch_commited_range<uint64_t>(std::forward<Args>(args)...);
                 break;
-            //case types::physical_type::INT128:
-            //	templated_fetch_commited_range<int128_t>(std::forward<Args>(args)...);
-            //	break;
-            //case types::physical_type::UINT128:
-            //	templated_fetch_commited_range<uint128_t>(std::forward<Args>(args)...);
-            //	break;
+            case types::physical_type::INT128:
+                templated_fetch_commited_range<types::int128_t>(std::forward<Args>(args)...);
+                break;
+            case types::physical_type::UINT128:
+                templated_fetch_commited_range<types::uint128_t>(std::forward<Args>(args)...);
+                break;
             case types::physical_type::FLOAT:
                 templated_fetch_commited_range<float>(std::forward<Args>(args)...);
                 break;

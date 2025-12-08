@@ -179,18 +179,7 @@ namespace components::expressions {
                                          const logical_plan::storage_parameters* parameters) {
         // TODO: find fix for complex keys e.g. "countArray/0"
         if (left_) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = to.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
+            size_t index = to.column_index(key_.as_string());
             assert(index < to.column_count());
             auto prev_value = to.data[index].value(row_to);
             auto res = prev_value != left_->output().value();
@@ -256,33 +245,11 @@ namespace components::expressions {
             assert(false);
         }
         if (side == side_t::right) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = from.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
+            size_t index = from.column_index(key_.as_string());
             assert(index < from.column_count());
             output_ = from.data[index].value(row_from);
         } else if (side == side_t::left) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = to.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
+            size_t index = to.column_index(key_.as_string());
             assert(index < to.column_count());
             output_ = to.data[index].value(row_to);
         }

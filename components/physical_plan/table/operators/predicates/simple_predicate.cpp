@@ -10,19 +10,11 @@ namespace components::table::operators::predicates {
 
         size_t get_column_index(const expressions::key_t& key,
                                 const std::pmr::vector<types::complex_logical_type>& types) {
-            size_t column_index = -1;
-            if (key.is_string()) {
-                column_index = static_cast<size_t>(std::find_if(types.cbegin(),
-                                                                types.cend(),
-                                                                [&](const types::complex_logical_type& type) {
-                                                                    return type.alias() == key.as_string();
-                                                                }) -
-                                                   types.cbegin());
-            } else if (key.is_int()) {
-                column_index = static_cast<size_t>(key.as_int());
-            } else if (key.is_uint()) {
-                column_index = key.as_uint();
-            }
+            size_t column_index = static_cast<size_t>(
+                std::find_if(types.cbegin(),
+                             types.cend(),
+                             [&](const types::complex_logical_type& type) { return type.alias() == key.as_string(); }) -
+                types.cbegin());
             if (column_index >= types.size()) {
                 column_index = -1;
             }

@@ -176,7 +176,7 @@ TEST_CASE("vector") {
             for (size_t j = 0; j < i; j++) {
                 arr.emplace_back(j);
             }
-            test_data.emplace_back((bool) (i % 2), i, std::move(s), std::move(arr));
+            test_data.emplace_back(i % 2 != 0, i, std::move(s), std::move(arr));
         }
 
         components::vector::vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
@@ -218,7 +218,7 @@ TEST_CASE("vector") {
             std::vector arr(*value.children()[3].value<std::vector<components::types::logical_value_t>*>());
             REQUIRE(arr.size() == test_data[i].array.size());
             for (size_t j = 0; j < arr.size(); j++) {
-                arr[j].value<uint16_t>() == test_data[i].array[j];
+                REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
             }
         }
     }

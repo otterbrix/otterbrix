@@ -80,8 +80,8 @@ namespace components::table::operators {
         output_ = base::operators::make_operator_data(context_->resource(), types);
         std::vector<table::storage_index_t> column_indices;
         column_indices.reserve(context_->table_storage().table().column_count());
-        for (int64_t i = 0; i < context_->table_storage().table().column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < context_->table_storage().table().column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table::table_scan_state state(context_->resource());
         auto filter =
@@ -90,7 +90,8 @@ namespace components::table::operators {
         // TODO: check limit inside scan
         context_->table_storage().table().scan(output_->data_chunk(), state);
         if (limit_.limit() >= 0) {
-            output_->data_chunk().set_cardinality(std::min<size_t>(output_->data_chunk().size(), limit_.limit()));
+            output_->data_chunk().set_cardinality(
+                std::min(output_->data_chunk().size(), static_cast<size_t>(limit_.limit())));
         }
     }
 

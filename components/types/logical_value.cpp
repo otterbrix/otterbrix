@@ -4,6 +4,48 @@
 
 #include <stdexcept>
 
+namespace std {
+    template<>
+    struct make_signed<components::types::uint128_t> {
+        typedef components::types::int128_t type;
+    };
+    template<>
+    struct make_signed<components::types::int128_t> {
+        typedef components::types::int128_t type;
+    };
+    template<>
+    struct make_signed<float> {
+        typedef float type;
+    };
+    template<>
+    struct make_signed<double> {
+        typedef double type;
+    };
+    template<>
+    struct make_unsigned<components::types::uint128_t> {
+        typedef components::types::uint128_t type;
+    };
+    template<>
+    struct make_unsigned<components::types::int128_t> {
+        typedef components::types::uint128_t type;
+    };
+    template<>
+    struct make_unsigned<float> {
+        typedef float type;
+    };
+    template<>
+    struct make_unsigned<double> {
+        typedef double type;
+    };
+
+    template<>
+    struct is_signed<components::types::int128_t> : true_type {};
+
+    template<>
+    struct is_unsigned<components::types::uint128_t> : true_type {};
+
+} // namespace std
+
 namespace components::types {
 
     logical_value_t::logical_value_t(complex_logical_type type)
@@ -12,6 +54,7 @@ namespace components::types {
             case logical_type::NA:
             case logical_type::POINTER:
                 value_ = nullptr;
+                break;
             case logical_type::BOOLEAN:
                 value_ = false;
                 break;
@@ -60,7 +103,15 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 value_ = std::make_unique<std::string>();
                 break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                value_ = std::make_unique<std::vector<logical_value_t>>();
+                break;
             case logical_type::INVALID:
+                [[fallthrough]];
+            default:
                 assert(false && "cannot create value of invalid type");
         }
     }
@@ -345,6 +396,51 @@ namespace components::types {
 
     bool logical_value_t::is_null() const noexcept { return type_.type() == logical_type::NA; }
 
+    template<typename T = void>
+    struct cast_callback_t;
+
+    template<>
+    struct cast_callback_t<void> {
+        template<typename LeftValueType, typename RightValueType>
+        auto operator()(const logical_value_t& value) const -> logical_value_t {
+            if constexpr (std::is_same_v<LeftValueType, RightValueType>) {
+                return value;
+            } else if constexpr (std::is_same_v<RightValueType, bool>) {
+                if constexpr (std::is_same_v<LeftValueType, std::string_view>) {
+                    return logical_value_t{value.template value<bool>() ? "TRUE" : "FALSE"};
+                } else {
+                    return logical_value_t{LeftValueType{1}};
+                }
+            } else if constexpr (std::is_same_v<LeftValueType, std::string_view>) {
+                if constexpr (std::is_signed_v<RightValueType>) {
+                    return logical_value_t{
+                        std::to_string(static_cast<int64_t>(value.template value<RightValueType>()))};
+                } else {
+                    return logical_value_t{
+                        std::to_string(static_cast<uint64_t>(value.template value<RightValueType>()))};
+                }
+            } else if constexpr (std::is_same_v<LeftValueType, bool>) {
+                return logical_value_t{core::is_equals(RightValueType{}, value.template value<RightValueType>())};
+            } else if constexpr (std::is_same_v<RightValueType, std::string_view>) {
+                if constexpr (std::is_floating_point_v<LeftValueType>) {
+                    return logical_value_t{
+                        static_cast<LeftValueType>(std::atof(value.template value<RightValueType>().data()))};
+                } else {
+                    return logical_value_t{
+                        static_cast<LeftValueType>(std::atoll(value.template value<RightValueType>().data()))};
+                }
+            } else if constexpr (std::is_same_v<LeftValueType, int128_t>) {
+                return logical_value_t{
+                    static_cast<LeftValueType>(static_cast<int64_t>(value.template value<RightValueType>()))};
+            } else if constexpr (std::is_same_v<LeftValueType, uint128_t>) {
+                return logical_value_t{
+                    static_cast<LeftValueType>(static_cast<uint64_t>(value.template value<RightValueType>()))};
+            } else {
+                return logical_value_t{static_cast<LeftValueType>(value.template value<RightValueType>())};
+            }
+        }
+    };
+
     logical_value_t logical_value_t::cast_as(const complex_logical_type& type) const {
         using namespace std::chrono;
 
@@ -357,71 +453,9 @@ namespace components::types {
             // return logicaL_value<type.type()>{value<type_.type()>()};
             // but type is not a constexpr, so here is a huge switch:
 
-#define OTHER_SWITCH(cast)                                                                                             \
-    switch (type_.type()) {                                                                                            \
-        case logical_type::BOOLEAN:                                                                                    \
-            return logical_value_t{static_cast<cast>(value<bool>())};                                                  \
-        case logical_type::TINYINT:                                                                                    \
-            return logical_value_t{static_cast<cast>(value<int8_t>())};                                                \
-        case logical_type::UTINYINT:                                                                                   \
-            return logical_value_t{static_cast<cast>(value<uint8_t>())};                                               \
-        case logical_type::SMALLINT:                                                                                   \
-            return logical_value_t{static_cast<cast>(value<int16_t>())};                                               \
-        case logical_type::USMALLINT:                                                                                  \
-            return logical_value_t{static_cast<cast>(value<uint16_t>())};                                              \
-        case logical_type::INTEGER:                                                                                    \
-            return logical_value_t{static_cast<cast>(value<int32_t>())};                                               \
-        case logical_type::UINTEGER:                                                                                   \
-            return logical_value_t{static_cast<cast>(value<uint32_t>())};                                              \
-        case logical_type::BIGINT:                                                                                     \
-            return logical_value_t{static_cast<cast>(value<int64_t>())};                                               \
-        case logical_type::UBIGINT:                                                                                    \
-            return logical_value_t{static_cast<cast>(value<uint64_t>())};                                              \
-        case logical_type::HUGEINT:                                                                                    \
-            return logical_value_t{static_cast<cast>(value<int128_t>())};                                              \
-        case logical_type::UHUGEINT:                                                                                   \
-            return logical_value_t{static_cast<cast>(value<uint128_t>())};                                             \
-        case logical_type::FLOAT:                                                                                      \
-            return logical_value_t{static_cast<cast>(value<float>())};                                                 \
-        case logical_type::DOUBLE:                                                                                     \
-            return logical_value_t{static_cast<cast>(value<double>())};                                                \
-        default:                                                                                                       \
-            assert(false && "incorrect type");                                                                         \
-            break;                                                                                                     \
-    }
-
-            switch (type.type()) {
-                case logical_type::BOOLEAN:
-                    OTHER_SWITCH(bool)
-                case logical_type::TINYINT:
-                    OTHER_SWITCH(int8_t)
-                case logical_type::UTINYINT:
-                    OTHER_SWITCH(uint8_t)
-                case logical_type::SMALLINT:
-                    OTHER_SWITCH(int16_t)
-                case logical_type::USMALLINT:
-                    OTHER_SWITCH(uint16_t)
-                case logical_type::INTEGER:
-                    OTHER_SWITCH(int32_t)
-                case logical_type::UINTEGER:
-                    OTHER_SWITCH(uint32_t)
-                case logical_type::BIGINT:
-                    OTHER_SWITCH(int64_t)
-                case logical_type::UBIGINT:
-                    OTHER_SWITCH(uint64_t)
-                case logical_type::HUGEINT:
-                    OTHER_SWITCH(int128_t)
-                case logical_type::UHUGEINT:
-                    OTHER_SWITCH(uint128_t)
-                case logical_type::FLOAT:
-                    OTHER_SWITCH(float)
-                case logical_type::DOUBLE:
-                    OTHER_SWITCH(double)
-                    break;
-                default:
-                    assert(false && "incorrect type");
-                    break;
-            }
+            return double_simple_physical_type_switch<cast_callback_t>(type.to_physical_type(),
+                                                                       type_.to_physical_type(),
+                                                                       *this);
         } else if (is_duration(type_.type()) && is_duration(type.type())) {
             switch (type.type()) {
                 case logical_type::TIMESTAMP_SEC:
@@ -457,16 +491,16 @@ namespace components::types {
 
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
         if (type_ != rhs.type_) {
-            if (is_numeric(type_.type()) && is_numeric(rhs.type_.type()) ||
-                is_duration(type_.type()) && is_duration(rhs.type_.type())) {
+            if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
+                (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());
 
                 if (promoted_type == logical_type::FLOAT) {
-                    return is_equals(std::get<float>(cast_as(promoted_type).value_),
-                                     std::get<float>(rhs.cast_as(promoted_type).value_));
+                    return core::is_equals(std::get<float>(cast_as(promoted_type).value_),
+                                           std::get<float>(rhs.cast_as(promoted_type).value_));
                 } else if (promoted_type == logical_type::DOUBLE) {
-                    return is_equals(std::get<double>(cast_as(promoted_type).value_),
-                                     std::get<double>(rhs.cast_as(promoted_type).value_));
+                    return core::is_equals(std::get<double>(cast_as(promoted_type).value_),
+                                           std::get<double>(rhs.cast_as(promoted_type).value_));
                 } else {
                     return cast_as(promoted_type) == rhs.cast_as(promoted_type);
                 }
@@ -485,9 +519,9 @@ namespace components::types {
                 case logical_type::BIGINT:
                     return std::get<int64_t>(value_) == std::get<int64_t>(rhs.value_);
                 case logical_type::FLOAT:
-                    return is_equals(std::get<float>(value_), std::get<float>(rhs.value_));
+                    return core::is_equals(std::get<float>(value_), std::get<float>(rhs.value_));
                 case logical_type::DOUBLE:
-                    return is_equals(std::get<double>(value_), std::get<double>(rhs.value_));
+                    return core::is_equals(std::get<double>(value_), std::get<double>(rhs.value_));
                 case logical_type::UTINYINT:
                     return std::get<uint8_t>(value_) == std::get<uint8_t>(rhs.value_);
                 case logical_type::USMALLINT:
@@ -517,8 +551,8 @@ namespace components::types {
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
         if (type_ != rhs.type_) {
-            if (is_numeric(type_.type()) && is_numeric(rhs.type_.type()) ||
-                is_duration(type_.type()) && is_duration(rhs.type_.type())) {
+            if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
+                (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());
                 return cast_as(promoted_type) < rhs.cast_as(promoted_type);
             }
@@ -606,39 +640,39 @@ namespace components::types {
                 return logical_value_t(value ? true : false);
             case logical_type::TINYINT:
                 assert(value >= std::numeric_limits<int8_t>::min() && value <= std::numeric_limits<int8_t>::max());
-                return logical_value_t((int8_t) value);
+                return logical_value_t(static_cast<int8_t>(value));
             case logical_type::SMALLINT:
                 assert(value >= std::numeric_limits<int16_t>::min() && value <= std::numeric_limits<int16_t>::max());
-                return logical_value_t((int16_t) value);
+                return logical_value_t(static_cast<int16_t>(value));
             case logical_type::INTEGER:
                 assert(value >= std::numeric_limits<int32_t>::min() && value <= std::numeric_limits<int32_t>::max());
-                return logical_value_t((int32_t) value);
+                return logical_value_t(static_cast<int32_t>(value));
             case logical_type::BIGINT:
                 return logical_value_t(value);
             case logical_type::UTINYINT:
                 assert(value >= std::numeric_limits<uint8_t>::min() && value <= std::numeric_limits<uint8_t>::max());
-                return logical_value_t((uint8_t) value);
+                return logical_value_t(static_cast<uint8_t>(value));
             case logical_type::USMALLINT:
                 assert(value >= std::numeric_limits<uint16_t>::min() && value <= std::numeric_limits<uint16_t>::max());
-                return logical_value_t((uint16_t) value);
+                return logical_value_t(static_cast<uint16_t>(value));
             case logical_type::UINTEGER:
                 assert(value >= std::numeric_limits<uint32_t>::min() && value <= std::numeric_limits<uint32_t>::max());
-                return logical_value_t((uint32_t) value);
+                return logical_value_t(static_cast<uint32_t>(value));
             case logical_type::UBIGINT:
                 assert(value >= 0);
-                return logical_value_t((uint64_t) value);
+                return logical_value_t(static_cast<uint64_t>(value));
             case logical_type::HUGEINT:
-                return logical_value_t((int128_t) value);
+                return logical_value_t(static_cast<int128_t>(value));
             case logical_type::UHUGEINT:
-                return logical_value_t((uint128_t) value);
+                return logical_value_t(static_cast<uint128_t>(value));
             case logical_type::DECIMAL:
                 return create_decimal(value,
                                       static_cast<decimal_logical_type_extension*>(type.extension())->width(),
                                       static_cast<decimal_logical_type_extension*>(type.extension())->scale());
             case logical_type::FLOAT:
-                return logical_value_t((float) value);
+                return logical_value_t(static_cast<float>(value));
             case logical_type::DOUBLE:
-                return logical_value_t((double) value);
+                return logical_value_t(static_cast<double>(value));
             case logical_type::POINTER:
                 return logical_value_t(reinterpret_cast<void*>(value));
             default:
@@ -760,9 +794,9 @@ namespace components::types {
         using T = typename std::invoke_result<decltype(getter_function), logical_value_t>::type;
         OP operation{};
         if (value1.is_null()) {
-            return logical_value_t{operation(T(), (value2.*getter_function)())};
+            return logical_value_t{operation(T{}, (value2.*getter_function)())};
         } else if (value2.is_null()) {
-            return logical_value_t{operation((value1.*getter_function)(), T())};
+            return logical_value_t{operation((value1.*getter_function)(), T{})};
         } else {
             return logical_value_t{operation((value1.*getter_function)(), (value2.*getter_function)())};
         }
@@ -1538,6 +1572,9 @@ namespace components::types {
                 result = create_struct(type, std::move(nested_values));
                 break;
             }
+            default:
+                assert(false);
+                return logical_value_t{};
         }
         // for simple types we skipped alias
         if (type.has_alias()) {

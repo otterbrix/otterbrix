@@ -134,7 +134,7 @@ TEMPLATE_TEST_CASE("reserve larger", "[vector][template]", std::int8_t, std::int
     REQUIRE(vec.begin() != original_begin);
     REQUIRE(vec.size() == original_size);
     REQUIRE(vec.capacity() == larger_capacity);
-    REQUIRE(vec.element(0) == 1);
+    REQUIRE(core::is_equals<TestType>(vec.element(0), 1));
 }
 
 TEMPLATE_TEST_CASE("resize to zero", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
@@ -183,7 +183,7 @@ TEMPLATE_TEST_CASE("get set element", "[vector][template]", std::int8_t, std::in
     for (std::size_t i = 0; i < vec.size(); ++i) {
         auto init = static_cast<TestType>(i);
         vec.set_element(i, init);
-        REQUIRE(init == vec.element(i));
+        REQUIRE(core::is_equals<TestType>(init, vec.element(i)));
     }
 }
 
@@ -193,7 +193,7 @@ TEMPLATE_TEST_CASE("set element zero", "[vector][template]", std::int8_t, std::i
     core::uvector<TestType> vec(&mr, size);
     for (std::size_t i = 0; i < vec.size(); ++i) {
         vec.set_element_to_zero(i);
-        REQUIRE(TestType{0} == vec.element(i));
+        REQUIRE(core::is_equals<TestType>({0}, vec.element(i)));
     }
 }
 
@@ -213,8 +213,8 @@ TEMPLATE_TEST_CASE("front back element",
     vec.set_element(0, first);
     vec.set_element(vec.size() - 1, last);
 
-    REQUIRE(first == vec.front_element());
-    REQUIRE(last == vec.back_element());
+    REQUIRE(core::is_equals<TestType>(first, vec.front_element()));
+    REQUIRE(core::is_equals<TestType>(last, vec.back_element()));
 }
 
 TEMPLATE_TEST_CASE("iterators", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
@@ -228,8 +228,8 @@ TEMPLATE_TEST_CASE("iterators", "[vector][template]", std::int8_t, std::int32_t,
     auto const* const_begin = std::as_const(vec).begin();
     REQUIRE(const_begin == vec.cbegin());
 
-    REQUIRE(std::distance(vec.begin(), vec.end()) == vec.size());
-    REQUIRE(std::distance(vec.cbegin(), vec.cend()) == vec.size());
+    REQUIRE(std::distance(vec.begin(), vec.end()) == static_cast<int64_t>(vec.size()));
+    REQUIRE(std::distance(vec.cbegin(), vec.cend()) == static_cast<int64_t>(vec.size()));
 
     auto const* const_end = std::as_const(vec).end();
     REQUIRE(const_end == vec.cend());

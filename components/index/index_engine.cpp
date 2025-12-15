@@ -48,7 +48,7 @@ namespace components::index {
                 const std::string& key = key_tmp.as_string(); // hack
                 if (!(doc.second->is_null(key))) {
                     auto data = doc.second->get_value(key).as_logical_value();
-                    index->insert(data, {doc.first, doc.second});
+                    index->insert(data, {doc.first, doc.second, -1});
                 }
             }
         }
@@ -133,6 +133,10 @@ namespace components::index {
                 if (column.type().alias() == keys.first->as_string()) {
                     return column.value(row);
                 }
+            } else {
+                size_t column_index =
+                    keys.first->is_int() ? static_cast<size_t>(keys.first->as_int()) : keys.first->as_uint();
+                return chunk.data.at(column_index).value(row);
             }
         }
         return types::logical_value_t{};
@@ -238,7 +242,7 @@ namespace components::index {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);
-                index->insert(key, row);
+                index->insert(key, static_cast<int64_t>(row));
                 if (index->is_disk() && pipeline_context) {
                     pipeline_context->send(index->disk_agent(),
                                            services::index::handler_id(services::index::route::insert),

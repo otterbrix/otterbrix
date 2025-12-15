@@ -1,10 +1,10 @@
 #include <catch2/catch.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <random>
 #include <type_traits>
 
+#include "core/operations_helper.hpp"
 #include "core/scalar.hpp"
 
 template<typename T>
@@ -66,7 +66,7 @@ TEMPLATE_TEST_CASE("initialValue",
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
     REQUIRE(nullptr != scalar.data());
-    REQUIRE(gen.value == scalar.value());
+    REQUIRE(core::is_equals<TestType>(gen.value, scalar.value()));
 }
 
 TEMPLATE_TEST_CASE("const ptr data",
@@ -100,12 +100,12 @@ TEMPLATE_TEST_CASE("copy ctor",
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
     REQUIRE(nullptr != scalar.data());
-    REQUIRE(value == scalar.value());
+    REQUIRE(core::is_equals<TestType>(gen.value, scalar.value()));
 
     core::scalar<TestType> copy{&mr, scalar};
     REQUIRE(nullptr != copy.data());
     REQUIRE(copy.data() != scalar.data());
-    REQUIRE(copy.value() == scalar.value());
+    REQUIRE(core::is_equals<TestType>(copy.value(), scalar.value()));
 }
 
 TEMPLATE_TEST_CASE("move ctor",
@@ -122,7 +122,7 @@ TEMPLATE_TEST_CASE("move ctor",
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
     REQUIRE(nullptr != scalar.data());
-    REQUIRE(value == scalar.value());
+    REQUIRE(core::is_equals<TestType>(gen.value, scalar.value()));
 
     auto* original_pointer = scalar.data();
     auto original_value = scalar.value();
@@ -130,7 +130,7 @@ TEMPLATE_TEST_CASE("move ctor",
     core::scalar<TestType> moved_to{std::move(scalar)};
     REQUIRE(nullptr != moved_to.data());
     REQUIRE(moved_to.data() == original_pointer);
-    REQUIRE(moved_to.value() == original_value);
+    REQUIRE(core::is_equals<TestType>(moved_to.value(), original_value));
     REQUIRE(nullptr == scalar.data());
 }
 
@@ -152,7 +152,7 @@ TEMPLATE_TEST_CASE("set value",
     auto expected = gen.random_value();
 
     scalar.set_value(expected);
-    REQUIRE(expected == scalar.value());
+    REQUIRE(core::is_equals<TestType>(expected, scalar.value()));
 }
 
 TEMPLATE_TEST_CASE("set value to zero",
@@ -171,5 +171,5 @@ TEMPLATE_TEST_CASE("set value to zero",
     REQUIRE(nullptr != scalar.data());
 
     scalar.set_value_to_zero();
-    REQUIRE(TestType{0} == scalar.value());
+    REQUIRE(core::is_equals<TestType>(TestType{0}, scalar.value()));
 }

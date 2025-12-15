@@ -55,7 +55,7 @@ namespace components::table::storage {
         virtual void reserve_memory(uint64_t size);
         virtual void free_reserved_memory(uint64_t size);
         virtual std::vector<memory_info_t> get_memory_usage_info() const = 0;
-        virtual void set_memory_limit(uint64_t limit = (uint64_t) -1);
+        virtual void set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max());
 
         virtual std::unique_ptr<file_buffer_t>
         construct_manager_buffer(uint64_t size,

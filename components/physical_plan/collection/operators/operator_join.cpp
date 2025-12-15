@@ -167,7 +167,7 @@ namespace components::collection::operators {
         }
     }
 
-    void operator_join_t::cross_join_(pipeline::context_t* context) {
+    void operator_join_t::cross_join_(pipeline::context_t*) {
         for (auto doc_left : left_->output()->documents()) {
             for (auto doc_right : right_->output()->documents()) {
                 output_->append(

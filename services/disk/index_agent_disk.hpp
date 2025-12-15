@@ -45,7 +45,7 @@ namespace services::disk {
         void remove(const session_id_t& session, const value_t& key, const document_id_t& value);
         void find(const session_id_t& session, const value_t& value, components::expressions::compare_type compare);
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior();
 
     private:

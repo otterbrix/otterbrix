@@ -33,12 +33,12 @@ namespace components::table {
 
     class chunk_info {
     public:
-        chunk_info(uint64_t start, chunk_info_type type)
+        chunk_info(int64_t start, chunk_info_type type)
             : start(start)
             , type(type) {}
         virtual ~chunk_info() = default;
 
-        uint64_t start;
+        int64_t start;
         chunk_info_type type;
 
         virtual uint64_t indexing_vector(transaction_data transaction,
@@ -70,7 +70,7 @@ namespace components::table {
     public:
         static constexpr chunk_info_type TYPE = chunk_info_type::CONSTANT_INFO;
 
-        explicit chunk_constant_info(uint64_t start);
+        explicit chunk_constant_info(int64_t start);
 
         uint64_t insert_id;
         uint64_t delete_id;
@@ -101,7 +101,7 @@ namespace components::table {
     public:
         static constexpr chunk_info_type TYPE = chunk_info_type::VECTOR_INFO;
 
-        explicit chunk_vector_info(uint64_t start);
+        explicit chunk_vector_info(int64_t start);
 
         uint64_t inserted[vector::DEFAULT_VECTOR_CAPACITY];
         uint64_t insert_id;
@@ -167,10 +167,10 @@ namespace components::table {
 
     class row_version_manager_t {
     public:
-        explicit row_version_manager_t(uint64_t start) noexcept;
+        explicit row_version_manager_t(int64_t start) noexcept;
 
-        uint64_t start() const { return start_; }
-        void set_start(uint64_t start);
+        int64_t start() const { return start_; }
+        void set_start(int64_t start);
         uint64_t commited_deleted_count(uint64_t count);
 
         uint64_t indexing_vector(transaction_data transaction,
@@ -201,7 +201,7 @@ namespace components::table {
         void fill_vector_info(uint64_t vector_idx);
 
         std::mutex version_lock_;
-        uint64_t start_;
+        int64_t start_;
         std::vector<std::unique_ptr<chunk_info>> vector_info_;
         bool has_changes_;
         std::vector<storage::meta_block_pointer_t> storage_pointers_;

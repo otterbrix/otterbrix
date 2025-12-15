@@ -81,7 +81,7 @@ namespace services::dispatcher {
 
     dispatcher_t::~dispatcher_t() { trace(log_, "delete dispatcher_t"); }
 
-    auto dispatcher_t::make_type() const noexcept -> const char* const { return "dispatcher_t"; }
+    auto dispatcher_t::make_type() const noexcept -> const char* { return "dispatcher_t"; }
 
     actor_zeta::behavior_t dispatcher_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
@@ -871,8 +871,8 @@ namespace services::dispatcher {
                             // }
                         }
                     }
-                    break;
                 }
+                break;
             }
             case node_type::delete_t: {
                 if (catalog_.table_computes(id)) {
@@ -929,7 +929,7 @@ namespace services::dispatcher {
         trace(log_, "delete manager_dispatcher_t");
     }
 
-    auto manager_dispatcher_t::make_type() const noexcept -> const char* const { return "manager_dispatcher"; }
+    auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
     auto manager_dispatcher_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
 

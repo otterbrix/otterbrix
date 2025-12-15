@@ -32,7 +32,7 @@ namespace components::index {
             class iterator_impl_t;
 
             explicit iterator_t(iterator_impl_t*);
-            virtual ~iterator_t();
+            ~iterator_t();
 
             iterator_t(const iterator_t& other);
             iterator_t& operator=(const iterator_t& other);

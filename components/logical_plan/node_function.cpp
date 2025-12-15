@@ -42,7 +42,7 @@ namespace components::logical_plan {
         stream << "name: {\"" << name_ << "\"}, ";
         stream << "args: {";
         bool is_first = true;
-        for (const auto arg : args_) {
+        for (const auto& arg : args_) {
             if (is_first) {
                 is_first = false;
             } else {

@@ -27,7 +27,7 @@ namespace components::table {
         column_data_t(std::pmr::memory_resource* resource,
                       storage::block_manager_t& block_manager,
                       uint64_t column_index,
-                      uint64_t start_row,
+                      int64_t start_row,
                       types::complex_logical_type type,
                       column_data_t* parent);
         virtual ~column_data_t() = default;
@@ -39,14 +39,14 @@ namespace components::table {
 
         uint64_t allocation_size() const { return allocation_size_; }
 
-        virtual void set_start(uint64_t new_start);
+        virtual void set_start(int64_t new_start);
         const types::complex_logical_type& root_type() const;
         const types::complex_logical_type& type() const { return type_; }
         bool has_updates() const;
         virtual scan_vector_type
         get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         virtual void initialize_scan(column_scan_state& state);
-        virtual void initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx);
+        virtual void initialize_scan_with_offset(column_scan_state& state, int64_t row_idx);
         uint64_t scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result);
         uint64_t
         scan_committed(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, bool allow_updates);
@@ -100,7 +100,7 @@ namespace components::table {
         virtual void append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count);
         virtual void revert_append(int64_t start_row);
 
-        virtual bool check_predicate(uint64_t row_id, const table_filter_t* filter);
+        virtual bool check_predicate(int64_t row_id, const table_filter_t* filter);
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
@@ -120,16 +120,16 @@ namespace components::table {
         static std::unique_ptr<column_data_t> create_column(std::pmr::memory_resource* resource,
                                                             storage::block_manager_t& block_manager,
                                                             uint64_t column_index,
-                                                            uint64_t start_row,
+                                                            int64_t start_row,
                                                             const types::complex_logical_type& type,
                                                             column_data_t* parent = nullptr);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         uint64_t count() const noexcept { return count_; }
-        uint64_t start() const noexcept { return start_; }
+        int64_t start() const noexcept { return start_; }
 
     protected:
-        void apend_transient_segment(std::unique_lock<std::mutex>& l, uint64_t start_row);
+        void apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row);
 
         uint64_t
         scan_vector(column_scan_state& state, vector::vector_t& result, uint64_t remaining, scan_vector_type scan_type);
@@ -153,7 +153,7 @@ namespace components::table {
 
         uint64_t vector_count(uint64_t vector_index) const;
 
-        uint64_t start_;
+        int64_t start_;
         std::atomic<uint64_t> count_;
         storage::block_manager_t& block_manager_;
         uint64_t column_index_;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/operations_helper.hpp>
+
 #include <components/document/impl/document.hpp>
 #include <components/document/impl/mr_utils.hpp>
 #include <components/document/impl/tape_writer.hpp>
@@ -101,9 +103,14 @@ namespace components::document {
     void tape_builder::append3(T val2, types::physical_type t) noexcept {
         append(0, t);
         static_assert(sizeof(val2) == 2 * sizeof(uint64_t), "Type is not 128 bits!");
-        auto data = reinterpret_cast<uint64_t*>(&val2);
-        tape_.copy(data);
-        tape_.copy(data + 1);
+
+        if constexpr (std::is_same_v<T, int128_t>) {
+            tape_.append(core::bit_cast<uint64_t>(absl::Int128High64(val2)));
+            tape_.append(absl::Int128Low64(val2));
+        } else {
+            tape_.append(absl::Uint128High64(val2));
+            tape_.append(absl::Uint128Low64(val2));
+        }
     }
 
 } // namespace components::document

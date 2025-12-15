@@ -222,7 +222,7 @@ namespace components::vector {
             }
         }
         assert(false && "data_chunk_t::column_index: no such column");
-        return -1;
+        return std::numeric_limits<size_t>::max();
     }
 
     std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {

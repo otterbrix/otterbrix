@@ -253,6 +253,9 @@ TEST_CASE("integration::cpp::test_join") {
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
                   << "." << collection_name_1 << " ON " << collection_name_1 << ".key_1"
                   << " = " << collection_name_1 + ".key_2;";
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 101);
         }
     }
 }

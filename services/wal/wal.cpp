@@ -141,7 +141,7 @@ namespace services::wal {
         });
     }
 
-    auto wal_replicate_t::make_type() const noexcept -> const char* const { return "wal"; }
+    auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
     void wal_replicate_t::send_success(const session_id_t& session, address_t& sender) {
         if (sender) {

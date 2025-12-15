@@ -25,20 +25,19 @@ TEST_CASE("b+tree with documents") {
     }
 
     INFO("test block") {
-        auto resource = std::pmr::synchronized_pool_resource();
         constexpr size_t test_size = 100;
         static constexpr std::string_view field = "/_id";
 
         std::vector<document_ptr> documents;
         documents.reserve(test_size);
         for (size_t i = 0; i < test_size; i++) {
-            documents.emplace_back(gen_doc(i, &resource));
+            documents.emplace_back(gen_doc(static_cast<int>(i), &resource));
         }
         std::shuffle(documents.begin(), documents.end(), std::default_random_engine{0});
 
         auto key_getter = [](const block_t::item_data& item) -> block_t::index_t {
             msgpack::unpacked msg;
-            msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
+            msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
                 return true;
             });
             return get_field(msg.get(), field);
@@ -49,12 +48,12 @@ TEST_CASE("b+tree with documents") {
         auto append = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return block->append({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return block->append({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
         auto remove = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return block->remove({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return block->remove({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
 
         REQUIRE(block->available_memory() == DEFAULT_BLOCK_SIZE - block->header_size);
@@ -77,20 +76,19 @@ TEST_CASE("b+tree with documents") {
     }
 
     INFO("test segment tree") {
-        auto resource = std::pmr::synchronized_pool_resource();
         constexpr size_t test_size = 1000;
         static constexpr std::string_view field = "/_id";
 
         std::vector<document_ptr> documents;
         documents.reserve(test_size);
         for (size_t i = 0; i < test_size; i++) {
-            documents.emplace_back(gen_doc(i, &resource));
+            documents.emplace_back(gen_doc(static_cast<int>(i), &resource));
         }
         std::shuffle(documents.begin(), documents.end(), std::default_random_engine{0});
 
         auto key_getter = [](const block_t::item_data& item) -> block_t::index_t {
             msgpack::unpacked msg;
-            msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
+            msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
                 return true;
             });
             return get_field(msg.get(), field);
@@ -107,12 +105,12 @@ TEST_CASE("b+tree with documents") {
         auto append = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return tree.append({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return tree.append({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
         auto remove = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return tree.remove({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return tree.remove({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
 
         REQUIRE(tree.count() == 0);
@@ -137,20 +135,19 @@ TEST_CASE("b+tree with documents") {
     }
 
     INFO("test b+tree") {
-        auto resource = std::pmr::synchronized_pool_resource();
         constexpr size_t test_size = 10000;
         static constexpr std::string_view field = "/_id";
 
         std::vector<document_ptr> documents;
         documents.reserve(test_size);
         for (size_t i = 0; i < test_size; i++) {
-            documents.emplace_back(gen_doc(i, &resource));
+            documents.emplace_back(gen_doc(static_cast<int>(i), &resource));
         }
         std::shuffle(documents.begin(), documents.end(), std::default_random_engine{0});
 
         auto key_getter = [](const block_t::item_data& item) -> block_t::index_t {
             msgpack::unpacked msg;
-            msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
+            msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
                 return true;
             });
             return get_field(msg.get(), field);
@@ -165,12 +162,12 @@ TEST_CASE("b+tree with documents") {
         auto append = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return tree.append({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return tree.append({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
         auto remove = [&](const document_ptr& document) -> bool {
             msgpack::sbuffer sbuf;
             msgpack::pack(sbuf, document);
-            return tree.remove({(data_ptr_t) sbuf.data(), sbuf.size()});
+            return tree.remove({sbuf.data(), static_cast<uint32_t>(sbuf.size())});
         };
 
         REQUIRE(tree.size() == 0);

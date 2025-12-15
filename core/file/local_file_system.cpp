@@ -50,7 +50,7 @@ namespace core::filesystem {
     std::string local_file_system_t::enviroment_variable(const std::string& name) {
         const char* env = getenv(name.c_str());
         if (!env) {
-            return std::string();
+            return {};
         }
         return env;
     }
@@ -167,7 +167,7 @@ namespace core::filesystem {
 
 #endif
 
-    const path_t& local_file_system_t::home_directory() {
+    path_t local_file_system_t::home_directory() {
         if (!home_directory_.empty()) {
             return home_directory_;
         }

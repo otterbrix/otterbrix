@@ -38,7 +38,7 @@ namespace services::dispatcher {
                      log_t& log);
         ~dispatcher_t();
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         actor_zeta::behavior_t behavior();
 
@@ -133,7 +133,7 @@ namespace services::dispatcher {
 
         ~manager_dispatcher_t() override;
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         actor_zeta::behavior_t behavior();
 

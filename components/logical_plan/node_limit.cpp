@@ -29,7 +29,7 @@ namespace components::logical_plan {
 
     node_ptr node_limit_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
-        auto limit = limit_t(deserializer->deserialize_int64(2));
+        auto limit = limit_t(static_cast<int>(deserializer->deserialize_int64(2)));
         return make_node_limit(deserializer->resource(), collection, limit);
     }
 

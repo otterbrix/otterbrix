@@ -177,18 +177,18 @@ namespace components::table {
         bool has_updates() const;
         bool has_uncommitted_updates(uint64_t vector_index);
         bool has_updates(uint64_t vector_index);
-        bool has_updates(uint64_t start_row_idx, uint64_t end_row_idx);
+        bool has_updates(int64_t start_row_idx, int64_t end_row_idx);
 
         void fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
         void fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
-        void fetch_committed_range(uint64_t start_row, uint64_t count, vector::vector_t& result);
+        void fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result);
         void update(uint64_t column_index,
                     vector::vector_t& update,
                     int64_t* ids,
                     uint64_t count,
                     vector::vector_t& base_data);
-        void fetch_row(uint64_t row_id, vector::vector_t& result, uint64_t result_idx);
-        bool check_row(uint64_t row_id, const table_filter_t* filter);
+        void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
+        bool check_row(int64_t row_id, const table_filter_t* filter);
 
         void cleanup_update(update_info_t& info);
 
@@ -205,7 +205,7 @@ namespace components::table {
                                     uint64_t vector_index,
                                     uint64_t vector_offset);
 
-        uint64_t start() const;
+        int64_t start() const;
         template<typename... Args>
         void initialize_update(Args&&... args);
         template<typename... Args>
@@ -305,7 +305,7 @@ namespace components::table {
 
     struct update_select_element_t {
         template<typename T>
-        static T operation(update_segment_t* segment, T element) {
+        static T operation(update_segment_t*, T element) {
             return element;
         }
     };
@@ -783,7 +783,8 @@ namespace components::table {
                                                       uint64_t count,
                                                       const vector::indexing_vector_t& indexing,
                                                       T (*extractor)(const V* data, uint64_t index)) {
-        auto base_id = base_info.segment->start() + base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        auto base_id = static_cast<uint64_t>(base_info.segment->start()) +
+                       base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
 
         auto base_info_data = base_info.data<T>();
         auto base_tuples = base_info.tuples();
@@ -833,17 +834,17 @@ namespace components::table {
         memcpy(update_tuples, result_ids, result_offset * sizeof(uint32_t));
 
         result_offset = 0;
-        auto pick_new = [&](uint64_t id, uint64_t aidx, uint64_t count) {
+        auto pick_new = [&](uint64_t id, uint64_t aidx, uint64_t) {
             result_values[result_offset] = extractor(update_vector_data, aidx);
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };
-        auto pick_old = [&](uint64_t id, uint64_t bidx, uint64_t count) {
+        auto pick_old = [&](uint64_t id, uint64_t bidx, uint64_t) {
             result_values[result_offset] = base_info_data[bidx];
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };
-        auto merge = [&](uint64_t id, uint64_t aidx, uint64_t bidx, uint64_t count) { pick_new(id, aidx, count); };
+        auto merge = [&](uint64_t id, uint64_t aidx, uint64_t, uint64_t count) { pick_new(id, aidx, count); };
         uint64_t aidx = 0, bidx = 0;
         uint64_t counter = 0;
         while (aidx < count && bidx < base_info.N) {

@@ -8,20 +8,14 @@ namespace components::vector {
 
     class vector_t;
 
-    static const indexing_vector_t* incremental_indexing_vector(std::pmr::memory_resource* resource) {
+    inline const indexing_vector_t* incremental_indexing_vector(std::pmr::memory_resource* resource) {
         static const indexing_vector_t INCREMENTAL_INDEXING_VECTOR(resource, nullptr);
         return &INCREMENTAL_INDEXING_VECTOR;
     }
 
-    static const indexing_vector_t* zero_indexing_vector(std::pmr::memory_resource* resource) {
-        static const indexing_vector_t ZERO_INDEXING_VECTOR = indexing_vector_t(resource, ZERO_VECTOR);
-        return &ZERO_INDEXING_VECTOR;
-    }
-
-    static const indexing_vector_t*
-    zero_indexing_vector(std::pmr::memory_resource* resource, uint64_t count, indexing_vector_t& owned_indexing) {
+    inline const indexing_vector_t* zero_indexing_vector(uint64_t count, indexing_vector_t& owned_indexing) {
         if (count <= DEFAULT_VECTOR_CAPACITY) {
-            return zero_indexing_vector(resource);
+            return &ZERO_INDEXING_VECTOR;
         }
         owned_indexing.reset(count);
         for (uint64_t i = 0; i < count; i++) {

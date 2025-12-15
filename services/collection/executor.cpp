@@ -81,7 +81,7 @@ namespace services::collection::executor {
         });
     }
 
-    auto executor_t::make_type() const noexcept -> const char* const { return "executor"; }
+    auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
 
     void executor_t::execute_plan(const components::session::session_id_t& session,
                                   components::logical_plan::node_ptr logical_plan,

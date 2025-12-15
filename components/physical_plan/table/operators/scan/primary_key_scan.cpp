@@ -18,8 +18,8 @@ namespace components::table::operators {
         table::column_fetch_state state;
         std::vector<table::storage_index_t> column_indices;
         column_indices.reserve(context_->table_storage().table().column_count());
-        for (int64_t i = 0; i < context_->table_storage().table().column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < context_->table_storage().table().column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         context_->table_storage().table().fetch(output_->data_chunk(), column_indices, rows_, rows_.size(), state);
     }

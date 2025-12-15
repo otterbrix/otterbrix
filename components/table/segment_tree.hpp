@@ -12,12 +12,12 @@ namespace components::table {
     template<class T>
     class segment_base_t {
     public:
-        segment_base_t(uint64_t start, uint64_t count)
+        segment_base_t(int64_t start, uint64_t count)
             : start(start)
             , count(count)
             , next(nullptr) {}
 
-        uint64_t start;
+        int64_t start;
         std::atomic<uint64_t> count;
         T* next;
         uint64_t index = 0;
@@ -25,7 +25,7 @@ namespace components::table {
 
     template<class T>
     struct segment_node_t {
-        uint64_t row_start;
+        int64_t row_start;
         std::unique_ptr<T> node;
     };
 
@@ -75,7 +75,7 @@ namespace components::table {
             auto l = lock();
             return segment_count(l);
         }
-        uint64_t segment_count(std::unique_lock<std::mutex>& l) { return nodes_.size(); }
+        uint64_t segment_count(std::unique_lock<std::mutex>&) { return nodes_.size(); }
         T* segment_at(int64_t index) {
             auto l = lock();
             return segment_at(l, index);
@@ -83,7 +83,7 @@ namespace components::table {
         T* segment_at(std::unique_lock<std::mutex>& l, int64_t index) {
             if (index < 0) {
                 load_all_segments(l);
-                index += nodes_.size();
+                index += static_cast<int64_t>(nodes_.size());
                 if (index < 0) {
                     return nullptr;
                 }
@@ -122,15 +122,15 @@ namespace components::table {
             }
             return nodes_.back().node.get();
         }
-        T* get_segment(uint64_t row_number) {
+        T* get_segment(int64_t row_number) {
             auto l = lock();
             return get_segment(l, row_number);
         }
-        T* get_segment(std::unique_lock<std::mutex>& l, uint64_t row_number) {
+        T* get_segment(std::unique_lock<std::mutex>& l, int64_t row_number) {
             return nodes_[segment_index(l, row_number)].node.get();
         }
 
-        void append_segment_internal(std::unique_lock<std::mutex>& l, std::unique_ptr<T> segment) {
+        void append_segment_internal(std::unique_lock<std::mutex>&, std::unique_ptr<T> segment) {
             assert(segment);
             if (!nodes_.empty()) {
                 nodes_.back().node->next = segment.get();
@@ -175,7 +175,7 @@ namespace components::table {
             nodes_.erase(nodes_.begin() + static_cast<int64_t>(segment_start) + 1, nodes_.end());
         }
 
-        uint64_t segment_index(std::unique_lock<std::mutex>& l, uint64_t row_number) {
+        uint64_t segment_index(std::unique_lock<std::mutex>& l, int64_t row_number) {
             uint64_t segment_index;
             if (try_segment_index(l, row_number, segment_index)) {
                 return segment_index;
@@ -183,8 +183,9 @@ namespace components::table {
             throw std::runtime_error("Could not find node in column segment tree");
         }
 
-        bool try_segment_index(std::unique_lock<std::mutex>& l, uint64_t row_number, uint64_t& result) {
-            while (nodes_.empty() || (row_number >= (nodes_.back().row_start + nodes_.back().node->count))) {
+        bool try_segment_index(std::unique_lock<std::mutex>& l, int64_t row_number, uint64_t& result) {
+            while (nodes_.empty() ||
+                   row_number >= nodes_.back().row_start + static_cast<int64_t>(nodes_.back().node->count)) {
                 if (!load_next_segment(l)) {
                     break;
                 }
@@ -201,7 +202,7 @@ namespace components::table {
                 assert(entry.row_start == entry.node->start);
                 if (row_number < entry.row_start) {
                     upper = index - 1;
-                } else if (row_number >= entry.row_start + entry.node->count) {
+                } else if (row_number >= entry.row_start + static_cast<int64_t>(entry.node->count)) {
                     lower = index + 1;
                 } else {
                     result = index;
@@ -217,13 +218,13 @@ namespace components::table {
             if (nodes_.empty()) {
                 return;
             }
-            uint64_t offset = nodes_[0].node->start;
+            int64_t offset = nodes_[0].node->start;
             for (auto& entry : nodes_) {
                 if (entry.node->start != offset) {
                     throw std::runtime_error("In segment_tree_t::reinitialize - gap found between nodes!");
                 }
                 entry.row_start = offset;
-                offset += entry.node->count;
+                offset += static_cast<int64_t>(entry.node->count);
             }
         }
 

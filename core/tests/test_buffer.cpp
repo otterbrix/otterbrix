@@ -19,8 +19,8 @@ std::size_t gen_size() {
 void sequence(core::buffer& buffer) {
     auto* ptr = static_cast<char*>(buffer.data());
     auto size = buffer.size();
-    for (int i = 0; i < size; ++i) {
-        ptr[i] = i;
+    for (size_t i = 0; i < size; ++i) {
+        ptr[i] = static_cast<char>(i % std::numeric_limits<char>::max());
     }
 }
 
@@ -50,7 +50,7 @@ TEST_CASE("memory resource") {
     core::buffer buff(&mr, size);
     REQUIRE(nullptr != buff.data());
     REQUIRE(size == buff.size());
-    REQUIRE(size == buff.ssize());
+    REQUIRE(static_cast<int64_t>(size) == buff.ssize());
     REQUIRE(size == buff.capacity());
     REQUIRE(&mr == buff.memory_resource());
     REQUIRE(mr.is_equal(*buff.memory_resource()));
@@ -80,7 +80,7 @@ TEST_CASE("copy from nullptr") {
 
 TEST_CASE("copy constructor") {
     auto mr = std::pmr::synchronized_pool_resource();
-    const auto size = 200;
+    const size_t size = 200;
     core::buffer buff(&mr, size);
 
     sequence(buff);
@@ -104,7 +104,7 @@ TEST_CASE("copy constructor") {
 
 TEST_CASE("copy capacity larger than size") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
     auto new_size = size - 1;
     buff.resize(new_size);
@@ -123,7 +123,7 @@ TEST_CASE("copy capacity larger than size") {
 
 TEST_CASE("copy constructor explicit memory resource") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
 
     sequence(buff);
@@ -140,7 +140,7 @@ TEST_CASE("copy constructor explicit memory resource") {
 
 TEST_CASE("copy capacity larger than size explicit memory resource") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
 
     auto new_size = size - 1;
@@ -254,7 +254,7 @@ TEST_CASE("self move assignment") {
 
 TEST_CASE("resize smaller") {
     auto mr = std::pmr::synchronized_pool_resource();
-    const auto size = 200;
+    const size_t size = 200;
 
     core::buffer buff(&mr, size);
 

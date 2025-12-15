@@ -98,7 +98,9 @@ namespace core::filesystem {
         return write(vfs.default_file_system(), handle, buffer, nr_bytes);
     }
 
-    int64_t file_size(virtual_file_system_t&, file_handle_t& handle) { return handle.file_size(); }
+    int64_t file_size(virtual_file_system_t&, file_handle_t& handle) {
+        return static_cast<int64_t>(handle.file_size());
+    }
     time_t last_modified_time(virtual_file_system_t& vfs, file_handle_t& handle) {
         return last_modified_time(vfs.default_file_system(), handle);
     }
@@ -130,8 +132,9 @@ namespace core::filesystem {
         return remove_directory(vfs.find_file_system(directory), directory);
     }
 
-    bool
-    list_files(virtual_file_system_t& vfs, path_t directory, const std::function<void(const path_t&, bool)>& callback) {
+    bool list_files(virtual_file_system_t& vfs,
+                    const path_t& directory,
+                    const std::function<void(const path_t&, bool)>& callback) {
         return list_files(vfs.find_file_system(directory), directory, callback);
     }
 

@@ -253,14 +253,14 @@ TEST_CASE("operator::aggregate::avg") {
                                                      collection::operators::predicates::create_predicate(cond),
                                                      logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
-            REQUIRE(avg_.value().as_double() == 50.5);
+            REQUIRE(core::is_equals(avg_.value().as_double(), 50.5));
         }
         SECTION("table") {
             table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
-            REQUIRE(avg_.value().value<double>() == 50.5);
+            REQUIRE(core::is_equals(avg_.value().value<double>(), 50.5));
         }
     }
 
@@ -279,14 +279,14 @@ TEST_CASE("operator::aggregate::avg") {
                                                      collection::operators::predicates::create_predicate(cond),
                                                      logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);
-            REQUIRE(avg_.value().as_double() == 5.0);
+            REQUIRE(core::is_equals(avg_.value().as_double(), 5.0));
         }
         SECTION("table") {
             table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);
-            REQUIRE(avg_.value().value<double>() == 5.0);
+            REQUIRE(core::is_equals(avg_.value().value<double>(), 5.0));
         }
     }
 }

@@ -85,7 +85,7 @@ namespace components::vector::arrow::appender {
 
                 auto list_length = data[source_idx].length;
                 if (std::is_same<BUFTYPE, int32_t>::value == true &&
-                    (uint64_t) last_offset + list_length > std::numeric_limits<int32_t>::max()) {
+                    static_cast<uint64_t>(last_offset) + list_length > std::numeric_limits<int32_t>::max()) {
                     auto limit = std::to_string(std::numeric_limits<int32_t>::max());
                     auto last_offset_str = std::to_string(last_offset);
                     throw std::runtime_error(
@@ -95,7 +95,7 @@ namespace components::vector::arrow::appender {
                 }
                 offset_data[offset_idx] = last_offset;
                 size_data[offset_idx] = static_cast<BUFTYPE>(list_length);
-                last_offset += list_length;
+                last_offset += static_cast<BUFTYPE>(list_length);
 
                 for (uint64_t k = 0; k < list_length; k++) {
                     child_indexing.push_back(static_cast<uint32_t>(data[source_idx].offset + k));

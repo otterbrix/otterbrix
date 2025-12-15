@@ -68,6 +68,10 @@ namespace components::table::storage {
         return buffer_handle.block_handle();
     }
 
+    std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_small_memory(uint64_t size) {
+        return buffer_manager_t::register_small_memory(size);
+    }
+
     std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
         assert(size < block_size());
         auto reservation = evict_blocks_or_throw(tag, size, nullptr);
@@ -137,9 +141,9 @@ namespace components::table::storage {
     }
 
     void standard_buffer_manager_t::batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
-                                               const std::map<uint32_t, uint64_t>& load_map,
-                                               uint32_t first_block,
-                                               uint32_t last_block) {
+                                               const std::map<uint64_t, uint64_t>& load_map,
+                                               uint64_t first_block,
+                                               uint64_t last_block) {
         auto& block_manager = handles[0]->block_manager;
         uint64_t block_count = last_block - first_block + 1;
 
@@ -147,7 +151,7 @@ namespace components::table::storage {
         block_manager.read_blocks(intermediate_buffer.file_buffer(), first_block, block_count);
 
         for (uint64_t block_idx = 0; block_idx < block_count; block_idx++) {
-            uint32_t block_id = first_block + static_cast<uint32_t>(block_idx);
+            uint64_t block_id = first_block + block_idx;
             auto entry = load_map.find(block_id);
             assert(entry != load_map.end());
             auto& handle = handles[entry->second];
@@ -170,7 +174,7 @@ namespace components::table::storage {
     }
 
     void standard_buffer_manager_t::prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) {
-        std::map<uint32_t, uint64_t> to_be_loaded;
+        std::map<uint64_t, uint64_t> to_be_loaded;
         for (uint64_t block_idx = 0; block_idx < handles.size(); block_idx++) {
             auto& handle = handles[block_idx];
             if (handle->state() != block_state::LOADED) {
@@ -180,10 +184,10 @@ namespace components::table::storage {
         if (to_be_loaded.empty()) {
             return;
         }
-        uint32_t first_block = -1;
-        uint32_t previous_block_id = -1;
+        uint64_t first_block = std::numeric_limits<uint64_t>::max();
+        uint64_t previous_block_id = std::numeric_limits<uint64_t>::max();
         for (auto& entry : to_be_loaded) {
-            if (previous_block_id < 0) {
+            if (previous_block_id == std::numeric_limits<uint64_t>::max()) {
                 first_block = entry.first;
                 previous_block_id = first_block;
             } else if (previous_block_id + 1 == entry.first) {
@@ -292,7 +296,7 @@ namespace components::table::storage {
         if (size == 0) {
             return;
         }
-        buffer_pool_.memory_usage.update_used_memory(memory_tag::EXTENSION, -(int64_t) size);
+        buffer_pool_.memory_usage.update_used_memory(memory_tag::EXTENSION, -static_cast<int64_t>(size));
     }
 
 } // namespace components::table::storage

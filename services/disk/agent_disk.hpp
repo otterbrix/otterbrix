@@ -34,7 +34,7 @@ namespace services::disk {
 
         auto fix_wal_id(wal::id_t wal_id) -> void;
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         actor_zeta::behavior_t behavior();
 

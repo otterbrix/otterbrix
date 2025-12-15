@@ -67,7 +67,7 @@ namespace services {
         trace(log_, "delete memory_storage");
     }
 
-    auto memory_storage_t::make_type() const noexcept -> const char* const { return "memory_storage"; }
+    auto memory_storage_t::make_type() const noexcept -> const char* { return "memory_storage"; }
 
     actor_zeta::scheduler::scheduler_abstract_t* memory_storage_t::make_scheduler() noexcept { return e_; }
 

@@ -39,7 +39,7 @@ TEST_CASE("document_t::json") {
     REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
     REQUIRE(doc1->get_ulong("/count") == doc2->get_ulong("/count"));
     REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
-    REQUIRE(doc1->get_double("/countDouble") == doc2->get_double("/countDouble"));
+    REQUIRE(core::is_equals(doc1->get_double("/countDouble"), doc2->get_double("/countDouble")));
     REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
     REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
     REQUIRE(doc1->get_array("/countArray")->get_as<uint64_t>("1") ==

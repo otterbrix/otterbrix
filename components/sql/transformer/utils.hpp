@@ -21,12 +21,12 @@ namespace components::sql::transform {
     }
 
     template<class T>
-    static T* pg_ptr_assert_cast(void* ptr, NodeTag tag) {
+    static T* pg_ptr_assert_cast(void* ptr, NodeTag) {
         assert(nodeTag(ptr));
         return pg_ptr_cast<T>(ptr);
     }
 
-    static Node& pg_cell_to_node_cast(void* node) { return pg_cast<Node&>(*reinterpret_cast<Node*>(node)); }
+    inline Node& pg_cell_to_node_cast(void* node) { return pg_cast<Node&>(*reinterpret_cast<Node*>(node)); }
 
     bool string_to_double(const char* buf, size_t len, double& result /*, char decimal_separator*/);
 
@@ -34,7 +34,7 @@ namespace components::sql::transform {
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
 
-    static collection_full_name_t rangevar_to_collection(RangeVar* table) {
+    inline collection_full_name_t rangevar_to_collection(RangeVar* table) {
         return {construct(table->uid),
                 construct(table->catalogname),
                 construct(table->schemaname),
@@ -71,7 +71,7 @@ namespace components::sql::transform {
                                       A_Indirection* indirection,
                                       const name_collection_t& names);
 
-    static logical_plan::join_type jointype_to_ql(JoinExpr* join) {
+    inline logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
             case JOIN_FULL:
                 return logical_plan::join_type::full;
@@ -86,7 +86,7 @@ namespace components::sql::transform {
         }
     }
 
-    static expressions::compare_type get_compare_type(std::string_view str) {
+    inline expressions::compare_type get_compare_type(std::string_view str) {
         static const std::unordered_map<std::string_view, expressions::compare_type> lookup = {
             {"==", expressions::compare_type::eq},
             {"=", expressions::compare_type::eq},
@@ -106,7 +106,7 @@ namespace components::sql::transform {
         throw parser_exception_t{"Unknown comparison operator: " + std::string(str), ""};
     }
 
-    static expressions::aggregate_type get_aggregate_type(std::string_view str) {
+    inline expressions::aggregate_type get_aggregate_type(std::string_view str) {
         static const std::unordered_map<std::string_view, expressions::aggregate_type> lookup = {
             {"count", expressions::aggregate_type::count},
             {"sum", expressions::aggregate_type::sum},
@@ -122,7 +122,7 @@ namespace components::sql::transform {
         return expressions::aggregate_type::udf;
     }
 
-    static types::logical_type get_logical_type(std::string_view str) {
+    inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
             // postgres built-ins
             {"int2", types::logical_type::SMALLINT},

@@ -50,7 +50,8 @@ endif()
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
 
-            #-Werror
+            #Using sanitizers forces local builds of absl library, which contains warnings, therefore optional flag here
+            $<$<BOOL:$<STREQUAL:${ENABLE_ASAN},OFF>>:-Werror>
 
             -Wall
             -Wextra

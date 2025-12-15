@@ -66,6 +66,7 @@ namespace core::filesystem::path_utils {
                     if (allow_question_mark) {
                         break;
                     }
+                    return false;
                 case '[':
                     pidx++;
                     goto parse_bracket;

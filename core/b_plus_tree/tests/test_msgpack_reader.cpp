@@ -19,18 +19,23 @@ TEST_CASE("msgpack_reader") {
 
         msgpack::unpacked msg;
         msgpack::unpack(msg, sbuf.data(), sbuf.size());
-        auto index = get_field(msg.get(), "/_id");
+
+        // Due to msgpack packing, type signage and size is lost, without explicit packing of type
+        // That's why get_field() gives only (u)int64 and double for numeric types
+        // And all positive integers, no matter the type returns as uint64
 
         REQUIRE(doc1->get_string("/_id") == get_field(msg.get(), "/_id").value<physical_type::STRING>());
-        REQUIRE(doc1->get_long("/count") == get_field(msg.get(), "/count").value<physical_type::UINT64>());
+        REQUIRE(doc1->get_long("/count") ==
+                static_cast<int64_t>(get_field(msg.get(), "/count").value<physical_type::UINT64>()));
         REQUIRE(doc1->get_string("/countStr") == get_field(msg.get(), "/countStr").value<physical_type::STRING>());
-        REQUIRE(doc1->get_double("/countDouble") ==
-                get_field(msg.get(), "/countDouble").value<physical_type::DOUBLE>());
+        REQUIRE(core::is_equals(doc1->get_double("/countDouble"),
+                                get_field(msg.get(), "/countDouble").value<physical_type::DOUBLE>()));
         REQUIRE(doc1->get_bool("/countBool") == get_field(msg.get(), "/countBool"));
         REQUIRE(doc1->get_dict("/null") == get_field(msg.get(), "/null").value<physical_type::NA>());
-        for (int i = 0; i < doc1->get_array("/countArray")->count(); i++) {
+        for (size_t i = 0; i < doc1->get_array("/countArray")->count(); i++) {
             std::string json_ptr = "/countArray/" + std::to_string(i);
-            REQUIRE(doc1->get_long(json_ptr) == get_field(msg.get(), json_ptr).value<physical_type::UINT64>());
+            REQUIRE(doc1->get_long(json_ptr) ==
+                    static_cast<int64_t>(get_field(msg.get(), json_ptr).value<physical_type::UINT64>()));
         }
         REQUIRE(doc1->get_bool("/countDict/odd") == get_field(msg.get(), "/countDict/odd"));
         REQUIRE(doc1->get_bool("/countDict/even") == get_field(msg.get(), "/countDict/even"));

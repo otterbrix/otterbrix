@@ -10,14 +10,14 @@
 
 namespace components::table {
 
-    constexpr uint64_t COLUMN_IDENTIFIER_ROW_ID = (uint64_t) -1;
+    constexpr uint64_t COLUMN_IDENTIFIER_ROW_ID = std::numeric_limits<uint64_t>::max();
 
-    row_group_t::row_group_t(collection_t* collection, uint64_t start, uint64_t count)
+    row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
         : segment_base_t(start, count)
         , collection_(collection)
         , allocation_size_(0) {}
 
-    void row_group_t::move_to_collection(collection_t* collection, uint64_t new_start) {
+    void row_group_t::move_to_collection(collection_t* collection, int64_t new_start) {
         collection_ = collection;
         start = new_start;
         for (auto& column : columns()) {
@@ -74,8 +74,9 @@ namespace components::table {
         auto& column_ids = state.column_ids();
         state.row_group = this;
         state.vector_index = vector_offset;
-        state.max_row_group_row = start > state.max_row ? 0 : std::min<uint64_t>(count, state.max_row - start);
-        auto row_number = start + vector_offset * vector::DEFAULT_VECTOR_CAPACITY;
+        state.max_row_group_row =
+            start > state.max_row ? 0 : std::min(static_cast<int64_t>(count.load()), state.max_row - start);
+        auto row_number = start + static_cast<int64_t>(vector_offset * vector::DEFAULT_VECTOR_CAPACITY);
         if (state.max_row_group_row == 0) {
             return false;
         }
@@ -95,7 +96,8 @@ namespace components::table {
     bool row_group_t::initialize_scan(collection_scan_state& state) {
         auto& column_ids = state.column_ids();
         state.row_group = this;
-        state.max_row_group_row += start > state.max_row ? 0 : std::min<uint64_t>(count, state.max_row - start);
+        state.max_row_group_row +=
+            start > state.max_row ? 0 : std::min(static_cast<int64_t>(count.load()), state.max_row - start);
         if (state.max_row_group_row == 0) {
             return false;
         }
@@ -171,7 +173,7 @@ namespace components::table {
         }
     }
 
-    bool row_group_t::check_predicate(uint64_t row_id, const table_filter_t* filter) {
+    bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
@@ -206,7 +208,7 @@ namespace components::table {
         }
     }
 
-    bool row_group_t::check_zonemap_segments(collection_scan_state& state) { return true; }
+    bool row_group_t::check_zonemap_segments(collection_scan_state&) { return true; }
 
     void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
                                       uint64_t vector_index,
@@ -218,7 +220,8 @@ namespace components::table {
         for (uint64_t i = 0; i < approved_tuple_count; i++) {
             auto idx = indexing.get_index(i);
             new_indexing.set_index(result_count, idx);
-            result_count += check_predicate(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY, filter);
+            result_count +=
+                check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY), filter);
         }
         indexing = new_indexing;
         approved_tuple_count = result_count;
@@ -231,11 +234,12 @@ namespace components::table {
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         while (true) {
-            if (state.vector_index * vector::DEFAULT_VECTOR_CAPACITY >= state.max_row_group_row) {
+            if (static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= state.max_row_group_row) {
                 return;
             }
-            uint64_t current_row = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-            auto max_count = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, state.max_row_group_row - current_row);
+            int64_t current_row = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            auto max_count =
+                std::min(vector::DEFAULT_VECTOR_CAPACITY, static_cast<uint64_t>(state.max_row_group_row - current_row));
 
             if (!check_zonemap_segments(state)) {
                 continue;
@@ -314,7 +318,7 @@ namespace components::table {
                         auto result_data = result.data[i].data<int64_t>();
                         for (size_t indexing_idx = 0; indexing_idx < approved_tuple_count; indexing_idx++) {
                             result_data[indexing_idx] =
-                                static_cast<int64_t>(start + current_row + indexing.get_index(indexing_idx));
+                                start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
                         }
                     } else {
                         auto& col_data = get_column(column);
@@ -486,24 +490,24 @@ namespace components::table {
 
     class version_delete_state {
     public:
-        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, uint64_t base_row)
+        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row)
             : info(info)
-            , current_version(current_version)
             , table(table)
             , current_chunk(storage::INVALID_INDEX)
-            , count(0)
+            , current_version(current_version)
             , base_row(base_row)
-            , delete_count(0) {}
+            , delete_count(0)
+            , count(0) {}
 
         row_group_t& info;
         data_table_t& table;
         uint64_t current_chunk;
         uint64_t current_version;
         int64_t rows[vector::DEFAULT_VECTOR_CAPACITY];
-        uint64_t count;
-        uint64_t base_row;
+        int64_t base_row;
         uint64_t chunk_row;
         uint64_t delete_count;
+        uint64_t count;
 
         void delete_row(int64_t row_id);
         void flush();
@@ -514,7 +518,7 @@ namespace components::table {
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
-            assert(uint64_t(ids[i]) >= start && uint64_t(ids[i]) < start + this->count);
+            assert(ids[i] >= start && ids[i] < start + static_cast<int64_t>(this->count));
             del_state.delete_row(ids[i]);
         }
         del_state.flush();

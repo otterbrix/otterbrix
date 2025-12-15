@@ -81,12 +81,12 @@ namespace services::disk {
                                              handler_id(index::route::success),
                                              this,
                                              &manager_disk_t::drop_index_agent_success))
+        , e_(scheduler)
         , log_(log.clone())
         , fs_(core::filesystem::local_file_system_t())
         , config_(std::move(config))
         , metafile_indexes_(nullptr)
-        , removed_indexes_(mr)
-        , e_(scheduler) {
+        , removed_indexes_(mr) {
         trace(log_, "manager_disk start");
         if (!config_.path.empty()) {
             create_directories(config_.path);
@@ -409,7 +409,7 @@ namespace services::disk {
         if (metafile_indexes_) {
             constexpr auto count_byte_by_size = sizeof(size_t);
             size_t size;
-            std::int64_t offset = 0;
+            size_t offset = 0;
             std::unique_ptr<char[]> size_str(new char[count_byte_by_size]);
             while (true) {
                 metafile_indexes_->seek(offset);
@@ -420,7 +420,7 @@ namespace services::disk {
                     std::pmr::string buf(resource());
                     buf.resize(size);
                     metafile_indexes_->read(buf.data(), size, offset);
-                    offset += std::int64_t(size);
+                    offset += size;
                     components::serializer::msgpack_deserializer_t deserializer(buf);
 
                     deserializer.advance_array(0);
@@ -476,15 +476,15 @@ namespace services::disk {
     manager_disk_empty_t::manager_disk_empty_t(std::pmr::memory_resource* mr, actor_zeta::scheduler_raw scheduler)
         : actor_zeta::cooperative_supervisor<manager_disk_empty_t>(mr)
         , e_(scheduler)
-        , load_(actor_zeta::make_behavior(resource(), handler_id(route::load), this, &manager_disk_empty_t::load))
         , create_(actor_zeta::make_behavior(resource(),
                                             handler_id(index::route::create),
                                             this,
-                                            &manager_disk_empty_t::create_index_agent)) {}
+                                            &manager_disk_empty_t::create_index_agent))
+        , load_(actor_zeta::make_behavior(resource(), handler_id(route::load), this, &manager_disk_empty_t::load)) {}
 
     auto manager_disk_empty_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
 
-    auto manager_disk_empty_t::make_type() const noexcept -> const char* const { return "manager_disk"; }
+    auto manager_disk_empty_t::make_type() const noexcept -> const char* { return "manager_disk"; }
 
     actor_zeta::behavior_t manager_disk_empty_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {

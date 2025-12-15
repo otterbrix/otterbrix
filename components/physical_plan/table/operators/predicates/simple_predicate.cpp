@@ -40,15 +40,8 @@ namespace components::table::operators::predicates {
                 }
                 return {res, sub_column};
             }
+            return column_index;
         }
-
-        // simple check if types are comparable, otherwise we will return an exception
-        template<typename, typename, typename = void>
-        struct has_less_operator : std::false_type {};
-
-        template<typename T, typename U>
-        struct has_less_operator<T, U, std::void_t<decltype(std::declval<T>() < std::declval<U>())>>
-            : std::true_type {};
 
         template<typename T = void>
         struct create_binary_comparator_t;
@@ -60,7 +53,7 @@ namespace components::table::operators::predicates {
             template<typename LeftType,
                      typename RightType,
                      typename COMP,
-                     std::enable_if_t<has_less_operator<LeftType, RightType>::value, bool> = true>
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
             auto operator()(COMP&& comp,
                             std::pmr::vector<size_t> column_path,
                             expressions::side_t side,
@@ -84,9 +77,10 @@ namespace components::table::operators::predicates {
             // SFINAE unable to compare types
             template<typename LeftType,
                      typename RightType,
-                     typename... Args,
-                     std::enable_if_t<!has_less_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
+                     typename COMP,
+                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, size_t, expressions::side_t, const logical_plan::expr_value_t&) const
+                -> simple_predicate::check_function_t {
                 throw std::runtime_error("invalid expression in create_unary_comparator");
             }
         };
@@ -96,7 +90,7 @@ namespace components::table::operators::predicates {
             template<typename LeftType,
                      typename RightType,
                      typename COMP,
-                     std::enable_if_t<has_less_operator<LeftType, RightType>::value, bool> = true>
+                     std::enable_if_t<core::has_less_operator<LeftType, RightType>::value, bool> = true>
             auto operator()(COMP&& comp,
                             std::pmr::vector<size_t> column_path_left,
                             std::pmr::vector<size_t> column_path_right,
@@ -125,7 +119,7 @@ namespace components::table::operators::predicates {
             template<typename LeftType,
                      typename RightType,
                      typename... Args,
-                     std::enable_if_t<!has_less_operator<LeftType, RightType>::value, bool> = true>
+                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
             auto operator()(Args&&...) const -> simple_predicate::check_function_t {
                 throw std::runtime_error("invalid expression in create_binary_comparator");
             }
@@ -193,7 +187,7 @@ namespace components::table::operators::predicates {
             auto column_path_right = get_column_path(resource, expr->secondary_key(), types_right);
             types::physical_type type_left = column_path_left.second->to_physical_type();
             types::physical_type type_right;
-            if (column_path_right.first.front() == -1) {
+            if (column_path_right.first.front() == std::numeric_limits<size_t>::max()) {
                 // one-sided expr
                 column_path_right = get_column_path(resource, expr->secondary_key(), types_left);
                 one_sided = true;

@@ -6,6 +6,8 @@
 
 namespace components::types {
 
+    static const complex_logical_type INVALID_TYPE = complex_logical_type{logical_type::INVALID};
+
     complex_logical_type::complex_logical_type(logical_type type, std::string alias)
         : type_(type) {
         if (!alias.empty()) {
@@ -340,7 +342,7 @@ namespace components::types {
             return static_cast<list_logical_type_extension*>(extension_.get())->node();
         }
 
-        return logical_type::INVALID;
+        return INVALID_TYPE;
     }
 
     std::vector<complex_logical_type>& complex_logical_type::child_types() {

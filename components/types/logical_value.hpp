@@ -109,6 +109,8 @@ namespace components::types {
             value_;
     };
 
+    static const logical_value_t NULL_LOGICAL_VALUE = logical_value_t{};
+
     template<typename T>
     logical_value_t::logical_value_t(T value)
         : type_(to_logical_type<T>())

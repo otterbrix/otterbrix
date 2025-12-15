@@ -92,9 +92,10 @@ namespace core::b_plus_tree {
         using index_t = block_t::index_t;
         using item_data = block_t::item_data;
 
-        static constexpr double merge_check = 4.0 / 5.0; // 80%
-        static constexpr size_t header_size =
-            2 * DEFAULT_BLOCK_SIZE; // this will give 2^14 - 1 block capacity and 16 free bytes for something later
+        // 80%
+        static constexpr double merge_check = 4.0 / 5.0;
+        // this will give 2^14 - 1 block capacity and 16 free bytes for something later
+        static constexpr size_t header_size = 2 * DEFAULT_BLOCK_SIZE;
 
         // it is possible to just use segments_::iterator, but it won't work correctly if block is not loaded
         // and there won't be any overhead of node_t shown
@@ -102,6 +103,8 @@ namespace core::b_plus_tree {
         public:
             // const segment_tree_t* will block from trying to load a block_t, if it is needed by the iterator
             iterator(segment_tree_t* seg_tree, block_metadata* metadata);
+            iterator(const iterator& other);
+            iterator(iterator&& other) noexcept;
 
             inline const block_t& operator*() {
                 load_block();
@@ -142,7 +145,7 @@ namespace core::b_plus_tree {
             friend inline iterator operator-(int i, const iterator& rhs) {
                 return iterator(rhs.seg_tree_, rhs.metadata_ - i);
             }
-            friend int operator-(const iterator& lhs, const iterator& rhs) {
+            friend long int operator-(const iterator& lhs, const iterator& rhs) {
                 assert(lhs.seg_tree_ == rhs.seg_tree_);
                 return lhs.metadata_ - rhs.metadata_;
             }
@@ -183,6 +186,8 @@ namespace core::b_plus_tree {
         public:
             // const segment_tree_t* will block from trying to load a block_t, if it is needed by the iterator
             r_iterator(segment_tree_t* seg_tree, block_metadata* metadata);
+            r_iterator(const r_iterator& other);
+            r_iterator(r_iterator&& other) noexcept;
 
             inline const block_t& operator*() {
                 load_block();
@@ -223,7 +228,7 @@ namespace core::b_plus_tree {
             friend inline r_iterator operator-(int i, const r_iterator& rhs) {
                 return r_iterator(rhs.seg_tree_, rhs.metadata_ + i);
             }
-            friend int operator-(const r_iterator& lhs, const r_iterator& rhs) {
+            friend long int operator-(const r_iterator& lhs, const r_iterator& rhs) {
                 assert(lhs.seg_tree_ == rhs.seg_tree_);
                 return rhs.metadata_ - lhs.metadata_;
             }
@@ -269,10 +274,10 @@ namespace core::b_plus_tree {
         ~segment_tree_t();
 
         // will try to maintain default block size if possible
-        bool append(data_ptr_t data, size_t size);
+        bool append(data_ptr_t data, uint32_t size);
         bool append(item_data item);
         bool append(const index_t& index, item_data item);
-        bool remove(data_ptr_t data, size_t size);
+        bool remove(data_ptr_t data, uint32_t size);
         bool remove(item_data item);
         bool remove(const index_t& index, item_data item);
         bool remove_index(const index_t& index);

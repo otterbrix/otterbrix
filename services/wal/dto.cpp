@@ -78,7 +78,7 @@ namespace services::wal {
     void unpack(buffer_t& storage, wal_entry_t& entry) {
         components::serializer::msgpack_deserializer_t deserializer(storage);
 
-        entry.last_crc32_ = deserializer.deserialize_uint64(0);
+        entry.last_crc32_ = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
         entry.id_ = deserializer.deserialize_uint64(1);
 
         deserializer.advance_array(2);

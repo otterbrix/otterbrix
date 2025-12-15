@@ -44,7 +44,7 @@ namespace services::wal {
 
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         void create_wal_worker();
         void load(const session_id_t& session, services::wal::id_t wal_id);
@@ -71,8 +71,10 @@ namespace services::wal {
     private:
         auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
 
-        // Behaviors
         actor_zeta::scheduler_raw e_;
+        configuration::config_wal config_;
+        log_t log_;
+        // Behaviors
         actor_zeta::behavior_t create_;
         actor_zeta::behavior_t load_;
         actor_zeta::behavior_t create_database_;
@@ -90,8 +92,6 @@ namespace services::wal {
 
         actor_zeta::address_t manager_disk_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t manager_dispatcher_ = actor_zeta::address_t::empty_address();
-        configuration::config_wal config_;
-        log_t log_;
         std::unordered_map<std::string, actor_zeta::address_t> dispatcher_to_address_book_;
         std::vector<wal_replicate_ptr> dispatchers_;
         spin_lock lock_;
@@ -107,7 +107,7 @@ namespace services::wal {
         manager_wal_replicate_empty_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t&);
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
     private:
         log_t log_;

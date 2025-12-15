@@ -71,12 +71,12 @@ namespace components::sql::transform {
                     return *this;
                 }
 
-                for (auto& [i, key] : it->second) {
+                for (const auto& [i, key] : it->second) {
                     auto column =
                         std::find_if(param_insert_rows_.data.begin(),
                                      param_insert_rows_.data.end(),
                                      [&](const vector::vector_t& column) { return column.type().alias() == key; });
-                    size_t column_index = column - param_insert_rows_.data.begin();
+                    size_t column_index = static_cast<size_t>(column - param_insert_rows_.data.begin());
                     if (column == param_insert_rows_.data.end()) {
                         value.set_alias(key);
                         param_insert_rows_.data.emplace_back(param_insert_rows_.resource(),

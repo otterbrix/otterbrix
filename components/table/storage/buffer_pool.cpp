@@ -253,12 +253,9 @@ namespace components::table::storage {
         return purged_bytes;
     }
 
-    uint64_t buffer_pool_t::purge_aged_blocks_internal(eviction_queue_t& queue,
-                                                       uint32_t max_age_sec,
-                                                       int64_t now,
-                                                       int64_t limit) {
+    uint64_t buffer_pool_t::purge_aged_blocks_internal(eviction_queue_t& queue, uint32_t, int64_t now, int64_t limit) {
         uint64_t purged_bytes = 0;
-        queue.iterate_unloadable_blocks([&](buffer_eviction_node_t& node,
+        queue.iterate_unloadable_blocks([&](buffer_eviction_node_t&,
                                             const std::shared_ptr<block_handle_t>& handle,
                                             std::unique_lock<std::mutex>& lock) {
             auto lru_timestamp_msec = handle->LRU_timestamp();
@@ -328,17 +325,17 @@ namespace components::table::storage {
     }
 
     void buffer_pool_t::memory_usage_t::update_used_memory(memory_tag tag, int64_t size) {
-        auto tag_idx = (uint64_t) tag;
-        if ((uint64_t) std::abs(size) < MEMORY_USAGE_CACHE_THRESHOLD) {
+        auto tag_idx = static_cast<uint64_t>(tag);
+        if (static_cast<uint64_t>(std::abs(size)) < MEMORY_USAGE_CACHE_THRESHOLD) {
             auto cache_idx = estimated_CPU_id() % MEMORY_USAGE_CACHE_COUNT;
             auto& cache = memory_usage_caches_array[cache_idx];
             auto new_tag_size = cache[tag_idx].fetch_add(size, std::memory_order_relaxed) + size;
-            if ((uint64_t) std::abs(new_tag_size) >= MEMORY_USAGE_CACHE_THRESHOLD) {
+            if (static_cast<uint64_t>(std::abs(new_tag_size)) >= MEMORY_USAGE_CACHE_THRESHOLD) {
                 auto tag_size = cache[tag_idx].exchange(0, std::memory_order_relaxed);
                 memory_usage[tag_idx].fetch_add(tag_size, std::memory_order_relaxed);
             }
             auto new_total_size = cache[TOTAL_MEMORY_USAGE_INDEX].fetch_add(size, std::memory_order_relaxed) + size;
-            if ((uint64_t) std::abs(new_total_size) >= MEMORY_USAGE_CACHE_THRESHOLD) {
+            if (static_cast<uint64_t>(std::abs(new_total_size)) >= MEMORY_USAGE_CACHE_THRESHOLD) {
                 auto total_size = cache[TOTAL_MEMORY_USAGE_INDEX].exchange(0, std::memory_order_relaxed);
                 memory_usage[TOTAL_MEMORY_USAGE_INDEX].fetch_add(total_size, std::memory_order_relaxed);
             }

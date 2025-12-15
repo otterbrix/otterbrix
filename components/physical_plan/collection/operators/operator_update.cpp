@@ -27,7 +27,7 @@ namespace components::collection::operators {
                     output_ = base::operators::make_operator_data(context_->resource());
                     auto new_doc = document::make_document(context_->resource());
                     for (const auto& expr : updates_) {
-                        expr->execute(new_doc, nullptr, tape.get(), &pipeline_context->parameters);
+                        expr->execute(new_doc, nullptr, &pipeline_context->parameters);
                     }
                     context_->document_storage().insert_or_assign(get_document_id(new_doc), new_doc);
                     context_->index_engine()->insert_document(new_doc, pipeline_context);
@@ -42,8 +42,7 @@ namespace components::collection::operators {
                             context_->index_engine()->delete_document(doc_left, pipeline_context); //todo: can optimized
                             bool modified = false;
                             for (const auto& expr : updates_) {
-                                modified |=
-                                    expr->execute(doc_left, doc_right, tape.get(), &pipeline_context->parameters);
+                                modified |= expr->execute(doc_left, doc_right, &pipeline_context->parameters);
                             }
                             if (modified) {
                                 modified_->append(get_document_id(doc_left));
@@ -62,7 +61,7 @@ namespace components::collection::operators {
                     output_ = base::operators::make_operator_data(context_->resource());
                     auto new_doc = document::make_document(context_->resource());
                     for (const auto& expr : updates_) {
-                        expr->execute(new_doc, nullptr, tape.get(), &pipeline_context->parameters);
+                        expr->execute(new_doc, nullptr, &pipeline_context->parameters);
                     }
                     context_->document_storage().insert_or_assign(get_document_id(new_doc), new_doc);
                     context_->index_engine()->insert_document(new_doc, pipeline_context);
@@ -75,7 +74,7 @@ namespace components::collection::operators {
                     context_->index_engine()->delete_document(document, pipeline_context); //todo: can optimized
                     bool modified = false;
                     for (const auto& expr : updates_) {
-                        modified |= expr->execute(document, nullptr, tape.get(), &pipeline_context->parameters);
+                        modified |= expr->execute(document, nullptr, &pipeline_context->parameters);
                     }
                     if (modified) {
                         modified_->append(get_document_id(document));

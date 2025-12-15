@@ -7,7 +7,7 @@ namespace components::table {
     struct_column_data_t::struct_column_data_t(std::pmr::memory_resource* resource,
                                                storage::block_manager_t& block_manager,
                                                uint64_t column_index,
-                                               uint64_t start_row,
+                                               int64_t start_row,
                                                types::complex_logical_type type,
                                                column_data_t* parent)
         : column_data_t(resource, block_manager, column_index, start_row, std::move(type), parent)
@@ -26,7 +26,7 @@ namespace components::table {
         }
     }
 
-    void struct_column_data_t::set_start(uint64_t new_start) {
+    void struct_column_data_t::set_start(int64_t new_start) {
         start_ = new_start;
         for (auto& sub_column : sub_columns) {
             sub_column->set_start(new_start);
@@ -51,7 +51,7 @@ namespace components::table {
         }
     }
 
-    void struct_column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
+    void struct_column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         assert(state.child_states.size() == sub_columns.size() + 1);
         state.row_index = row_idx;
         state.current = nullptr;
@@ -169,7 +169,7 @@ namespace components::table {
         for (auto& sub_column : sub_columns) {
             sub_column->revert_append(start_row);
         }
-        count_ = static_cast<uint64_t>(start_row) - start_;
+        count_ = static_cast<uint64_t>(start_row - start_);
     }
 
     uint64_t struct_column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

@@ -169,7 +169,7 @@ namespace components::vector::arrow {
         std::vector<std::unique_ptr<char[]>> extension_format;
     };
 
-    static std::vector<std::string> split_string(const std::string& str, char delimiter) {
+    inline std::vector<std::string> split_string(const std::string& str, char delimiter) {
         std::stringstream ss(str);
         std::vector<std::string> lines;
         std::string temp;

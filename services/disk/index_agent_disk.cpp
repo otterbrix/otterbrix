@@ -55,7 +55,7 @@ namespace services::disk {
         });
     }
 
-    auto index_agent_disk_t::make_type() const noexcept -> const char* const { return "index_agent_disk"; }
+    auto index_agent_disk_t::make_type() const noexcept -> const char* { return "index_agent_disk"; }
 
     const collection_name_t& index_agent_disk_t::collection_name() const { return collection_->name().collection; }
     collection::context_collection_t* index_agent_disk_t::collection() const { return collection_; }

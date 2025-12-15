@@ -39,10 +39,12 @@ namespace components::table::operators {
         auto ranges = search_range_by_index(index, expr, parameters);
         size_t rows = 0;
         for (const auto& range : ranges) {
-            rows += std::distance(range.first, range.second);
+            rows += static_cast<size_t>(std::distance(range.first, range.second));
         }
         size_t count = 0;
-        rows = limit.limit() == logical_plan::limit_t::unlimit().limit() ? rows : std::min<size_t>(rows, limit.limit());
+        rows = limit.limit() == logical_plan::limit_t::unlimit().limit()
+                   ? rows
+                   : std::min(rows, static_cast<size_t>(limit.limit()));
         vector::vector_t row_ids(index->resource(), types::logical_type::BIGINT, rows);
         for (const auto& range : ranges) {
             for (auto it = range.first; it != range.second; ++it) {
@@ -57,8 +59,8 @@ namespace components::table::operators {
         table::column_fetch_state state;
         std::vector<table::storage_index_t> column_indices;
         column_indices.reserve(table.column_count());
-        for (int64_t i = 0; i < table.column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < table.column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
 
         auto result = base::operators::make_operator_data(index->resource(), table.copy_types(), rows);

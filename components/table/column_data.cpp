@@ -15,7 +15,7 @@ namespace components::table {
     column_data_t::column_data_t(std::pmr::memory_resource* resource,
                                  storage::block_manager_t& block_manager,
                                  uint64_t column_index,
-                                 uint64_t start_row,
+                                 int64_t start_row,
                                  types::complex_logical_type type,
                                  column_data_t* parent)
         : start_(start_row)
@@ -27,17 +27,17 @@ namespace components::table {
         , allocation_size_(0)
         , resource_(resource) {}
 
-    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state& state, table_filter_t& filter) {
+    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
     uint64_t column_data_t::max_entry() { return count_; }
 
-    void column_data_t::set_start(uint64_t new_start) {
-        this->start_ = new_start;
+    void column_data_t::set_start(int64_t new_start) {
+        start_ = new_start;
         uint64_t offset = 0;
         for (auto& segment : data_.segments()) {
-            segment.start = start_ + offset;
+            segment.start = start_ + static_cast<int64_t>(offset);
             offset += segment.count;
         }
         data_.reinitialize();
@@ -63,7 +63,8 @@ namespace components::table {
         if (has_updates()) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
-        uint64_t remaining_in_segment = state.current->start + state.current->count - state.row_index;
+        uint64_t remaining_in_segment =
+            static_cast<uint64_t>(state.current->start) + state.current->count - static_cast<uint64_t>(state.row_index);
         if (remaining_in_segment < scan_count) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
@@ -78,7 +79,7 @@ namespace components::table {
         state.scan_state.reset();
     }
 
-    void column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
+    void column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         state.current = data_.get_segment(row_idx);
         state.row_index = row_idx;
         state.internal_index = state.current->start;
@@ -124,12 +125,12 @@ namespace components::table {
                                              uint64_t count,
                                              vector::vector_t& result) {
         column_scan_state child_state;
-        initialize_scan_with_offset(child_state, row_group_start + offset_in_row_group);
+        initialize_scan_with_offset(child_state, static_cast<int64_t>(row_group_start + offset_in_row_group));
         auto scan_count = scan_vector(child_state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
         if (has_updates()) {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
             result.flatten(scan_count);
-            updates_->fetch_committed_range(offset_in_row_group, count, result);
+            updates_->fetch_committed_range(static_cast<int64_t>(offset_in_row_group), count, result);
         }
     }
 
@@ -222,7 +223,7 @@ namespace components::table {
 
             {
                 auto l = data_.lock();
-                apend_transient_segment(l, state.current->start + state.current->count);
+                apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
                 state.current = data_.last_segment(l);
                 state.current->initialize_append(state);
             }
@@ -234,24 +235,25 @@ namespace components::table {
     void column_data_t::revert_append(int64_t start_row) {
         auto l = data_.lock();
         auto last_segment = data_.last_segment(l);
-        if (static_cast<uint64_t>(start_row) >= last_segment->start + last_segment->count) {
-            assert(static_cast<uint64_t>(start_row) == last_segment->start + last_segment->count);
+        if (start_row >= last_segment->start + static_cast<int64_t>(last_segment->count)) {
+            assert(start_row == last_segment->start + static_cast<int64_t>(last_segment->count));
             return;
         }
-        uint64_t segment_index = data_.segment_index(l, static_cast<uint64_t>(start_row));
+        uint64_t segment_index = data_.segment_index(l, start_row);
         auto segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         auto& transient = *segment;
 
         data_.erase_segments(l, segment_index);
 
-        this->count_ = static_cast<uint64_t>(start_row) - this->start_;
+        count_ = static_cast<uint64_t>(start_row - start_);
         segment->next = nullptr;
         transient.revert_append(static_cast<uint64_t>(start_row));
     }
 
-    bool column_data_t::check_predicate(uint64_t row_id, const table_filter_t* filter) {
+    bool column_data_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         auto segment = data_.get_segment(row_id);
-        if (updates_ && updates_->has_updates((row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
+        if (updates_ &&
+            updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
             return updates_->check_row(row_id, filter);
         } else {
             return segment->check_predicate(row_id, filter);
@@ -260,9 +262,9 @@ namespace components::table {
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
         assert(row_id >= 0);
-        assert(static_cast<uint64_t>(row_id) >= start_);
-        state.row_index = start_ + (static_cast<uint64_t>(row_id) - start_) / vector::DEFAULT_VECTOR_CAPACITY *
-                                       vector::DEFAULT_VECTOR_CAPACITY;
+        assert(row_id >= start_);
+        state.row_index = start_ + (row_id - start_) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
+                                                                            vector::DEFAULT_VECTOR_CAPACITY);
         state.current = data_.get_segment(state.row_index);
         state.internal_index = state.current->start;
         return scan_vector(state, result, vector::DEFAULT_VECTOR_CAPACITY, scan_vector_type::SCAN_FLAT_VECTOR);
@@ -270,7 +272,7 @@ namespace components::table {
 
     void
     column_data_t::fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
-        auto segment = data_.get_segment(static_cast<uint64_t>(row_id));
+        auto segment = data_.get_segment(row_id);
 
         segment->fetch_row(state, row_id, result, result_idx);
 
@@ -338,7 +340,7 @@ namespace components::table {
     std::unique_ptr<column_data_t> column_data_t::create_column(std::pmr::memory_resource* resource,
                                                                 storage::block_manager_t& block_manager,
                                                                 uint64_t column_index,
-                                                                uint64_t start_row,
+                                                                int64_t start_row,
                                                                 const types::complex_logical_type& type,
                                                                 column_data_t* parent) {
         if (type.to_physical_type() == types::physical_type::STRUCT) {
@@ -363,7 +365,7 @@ namespace components::table {
         return std::make_unique<standard_column_data_t>(resource, block_manager, column_index, start_row, type, parent);
     }
 
-    void column_data_t::apend_transient_segment(std::unique_lock<std::mutex>& l, uint64_t start_row) {
+    void column_data_t::apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row) {
         const auto block_size = block_manager_.block_size();
         const auto type_size = type_.size();
         auto vector_segment_size = block_size;
@@ -402,20 +404,22 @@ namespace components::table {
         uint64_t initial_remaining = remaining;
         while (remaining > 0) {
             assert(state.row_index >= state.current->start &&
-                   state.row_index <= state.current->start + state.current->count);
-            uint64_t scan_count = std::min(remaining, state.current->start + state.current->count - state.row_index);
+                   state.row_index <= state.current->start + static_cast<int64_t>(state.current->count));
+            uint64_t scan_count = std::min(remaining,
+                                           static_cast<uint64_t>(state.current->start) + state.current->count -
+                                               static_cast<uint64_t>(state.row_index));
             uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
                 for (uint64_t i = 0; i < scan_count; i++) {
                     column_fetch_state fetch_state;
                     state.current->fetch_row(fetch_state,
-                                             static_cast<int64_t>(state.row_index + i),
+                                             state.row_index + static_cast<int64_t>(i),
                                              result,
                                              result_offset + i);
                 }
                 state.current->scan(state, scan_count, result, result_offset, scan_type);
 
-                state.row_index += scan_count;
+                state.row_index += static_cast<int64_t>(scan_count);
                 remaining -= scan_count;
             }
 
@@ -429,7 +433,7 @@ namespace components::table {
                 state.current->initialize_scan(state);
                 state.segment_checked = false;
                 assert(state.row_index >= state.current->start &&
-                       state.row_index <= state.current->start + state.current->count);
+                       state.row_index <= state.current->start + static_cast<int64_t>(state.current->count));
             }
         }
         state.internal_index = state.row_index;
@@ -444,7 +448,7 @@ namespace components::table {
         auto scan_type = get_vector_scan_type(state, target_scan, result);
         auto scan_count = scan_vector(state, result, target_scan, scan_type);
         if (scan_type != scan_vector_type::SCAN_ENTIRE_VECTOR) {
-            auto update_index = vector_index - start_ / vector::DEFAULT_VECTOR_CAPACITY;
+            auto update_index = vector_index - static_cast<uint64_t>(start_) / vector::DEFAULT_VECTOR_CAPACITY;
             fetch_updates(update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
         }
         return scan_count;
@@ -481,7 +485,7 @@ namespace components::table {
         if (!updates_) {
             return;
         }
-        updates_->fetch_row(static_cast<uint64_t>(row_id), result, result_idx);
+        updates_->fetch_row(row_id, result, result_idx);
     }
 
     void column_data_t::update_internal(uint64_t column_index,
@@ -498,7 +502,8 @@ namespace components::table {
 
     uint64_t column_data_t::vector_count(uint64_t vector_index) const {
         uint64_t current_row = vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-        return std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, start_ + count_ - current_row);
+        return std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY,
+                                  static_cast<uint64_t>(start_) + count_ - current_row);
     }
 
 } // namespace components::table

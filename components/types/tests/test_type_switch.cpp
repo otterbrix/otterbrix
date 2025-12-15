@@ -5,12 +5,6 @@
 
 using namespace components::types;
 
-template<typename, typename, typename = void>
-struct has_equality_operator : std::false_type {};
-
-template<typename T, typename U>
-struct has_equality_operator<T, U, std::void_t<decltype(std::declval<T>() == std::declval<U>())>> : std::true_type {};
-
 template<typename T = void>
 struct void_callback_t;
 template<typename T = void>
@@ -24,14 +18,14 @@ template<>
 struct void_callback_t<void> {
     template<typename TestValueType,
              typename CheckValueType,
-             std::enable_if_t<has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const {
-        REQUIRE(test_value.template value<TestValueType>() == check_value);
+             std::enable_if_t<core::has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
+    auto operator()(const logical_value_t& test_value, CheckValueType check_value) const {
+        REQUIRE(core::is_equals(test_value.template value<TestValueType>(), check_value));
     }
     template<typename TestValueType,
              typename CheckValueType,
-             std::enable_if_t<!has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    auto operator()(const logical_value_t&, CheckValueType&&) const {
+             std::enable_if_t<!core::has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
+    auto operator()(const logical_value_t&, CheckValueType) const {
         throw std::logic_error("given types do not have an == operator");
     }
 };
@@ -40,14 +34,14 @@ template<>
 struct bool_callback_t<void> {
     template<typename TestValueType,
              typename CheckValueType,
-             std::enable_if_t<has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    auto operator()(const logical_value_t& test_value, CheckValueType&& check_value) const -> bool {
-        return test_value.template value<TestValueType>() == check_value;
+             std::enable_if_t<core::has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
+    auto operator()(const logical_value_t& test_value, CheckValueType check_value) const -> bool {
+        return core::is_equals(test_value.template value<TestValueType>(), check_value);
     }
     template<typename TestValueType,
              typename CheckValueType,
-             std::enable_if_t<!has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
-    auto operator()(const logical_value_t&, CheckValueType&&) const -> bool {
+             std::enable_if_t<!core::has_equality_operator<TestValueType, CheckValueType>::value, bool> = true>
+    auto operator()(const logical_value_t&, CheckValueType) const -> bool {
         throw std::logic_error("given types do not have an == operator");
         return false;
     }
@@ -57,14 +51,14 @@ template<>
 struct double_void_callback_t<void> {
     template<typename LeftTestValueType,
              typename RightTestValueType,
-             std::enable_if_t<has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
+             std::enable_if_t<core::has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
     auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const {
-        REQUIRE(left_test_value.template value<LeftTestValueType>() ==
-                right_test_value.template value<RightTestValueType>());
+        REQUIRE(core::is_equals(left_test_value.template value<LeftTestValueType>(),
+                                right_test_value.template value<RightTestValueType>()));
     }
     template<typename LeftTestValueType,
              typename RightTestValueType,
-             std::enable_if_t<!has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
+             std::enable_if_t<!core::has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
     auto operator()(const logical_value_t&, const logical_value_t&) const {
         throw std::logic_error("given types do not have an == operator");
     }
@@ -74,14 +68,14 @@ template<>
 struct double_bool_callback_t<void> {
     template<typename LeftTestValueType,
              typename RightTestValueType,
-             std::enable_if_t<has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
+             std::enable_if_t<core::has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
     auto operator()(const logical_value_t& left_test_value, const logical_value_t& right_test_value) const -> bool {
-        return left_test_value.template value<LeftTestValueType>() ==
-               right_test_value.template value<RightTestValueType>();
+        return core::is_equals(left_test_value.template value<LeftTestValueType>(),
+                               right_test_value.template value<RightTestValueType>());
     }
     template<typename LeftTestValueType,
              typename RightTestValueType,
-             std::enable_if_t<!has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
+             std::enable_if_t<!core::has_equality_operator<LeftTestValueType, RightTestValueType>::value, bool> = true>
     auto operator()(const logical_value_t&, const logical_value_t&) const -> bool {
         throw std::logic_error("given types do not have an == operator");
         return false;

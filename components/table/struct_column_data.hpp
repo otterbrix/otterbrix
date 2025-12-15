@@ -9,18 +9,18 @@ namespace components::table {
         struct_column_data_t(std::pmr::memory_resource* resource,
                              storage::block_manager_t& block_manager,
                              uint64_t column_index,
-                             uint64_t start_row,
+                             int64_t start_row,
                              types::complex_logical_type type,
                              column_data_t* parent = nullptr);
 
         std::vector<std::unique_ptr<column_data_t>> sub_columns;
         validity_column_data_t validity;
 
-        void set_start(uint64_t new_start) override;
+        void set_start(int64_t new_start) override;
         uint64_t max_entry() override;
 
         void initialize_scan(column_scan_state& state) override;
-        void initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) override;
+        void initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) override;
 
         uint64_t
         scan(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t scan_count) override;

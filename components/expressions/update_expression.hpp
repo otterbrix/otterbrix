@@ -66,7 +66,6 @@ namespace components::expressions {
 
         bool execute(document::document_ptr& to,
                      const document::document_ptr& from,
-                     document::impl::base_document* tape,
                      const logical_plan::storage_parameters* parameters);
         bool execute(vector::data_chunk_t& to,
                      const vector::data_chunk_t& from,
@@ -88,7 +87,6 @@ namespace components::expressions {
     protected:
         virtual bool execute_impl(document::document_ptr& to,
                                   const document::document_ptr& from,
-                                  document::impl::base_document* tape,
                                   const logical_plan::storage_parameters* parameters) = 0;
         virtual bool execute_impl(vector::data_chunk_t& to,
                                   const vector::data_chunk_t& from,
@@ -118,7 +116,6 @@ namespace components::expressions {
     protected:
         bool execute_impl(document::document_ptr& to,
                           const document::document_ptr& from,
-                          document::impl::base_document* tape,
                           const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
@@ -146,7 +143,6 @@ namespace components::expressions {
     protected:
         bool execute_impl(document::document_ptr& to,
                           const document::document_ptr& from,
-                          document::impl::base_document* tape,
                           const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
@@ -174,7 +170,6 @@ namespace components::expressions {
     protected:
         bool execute_impl(document::document_ptr& to,
                           const document::document_ptr& from,
-                          document::impl::base_document* tape,
                           const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
@@ -200,7 +195,6 @@ namespace components::expressions {
     protected:
         bool execute_impl(document::document_ptr& to,
                           const document::document_ptr& from,
-                          document::impl::base_document* tape,
                           const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,

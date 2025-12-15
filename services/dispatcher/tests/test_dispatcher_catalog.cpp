@@ -75,7 +75,7 @@ struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
 
     ~test_dispatcher() { delete scheduler_; }
 
-    auto make_type() const noexcept -> const char* const { return "test_dispatcher"; }
+    auto make_type() const noexcept -> const char* { return "test_dispatcher"; }
 
     auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return nullptr; }
 
@@ -94,7 +94,7 @@ struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
         });
     }
 
-    void execute_plan_finish(components::session::session_id_t& session, cursor_t_ptr result) {
+    void execute_plan_finish(components::session::session_id_t&, cursor_t_ptr result) {
         if (static_cast<bool>(assertion_)) {
             assertion_(result, const_cast<catalog&>(manager_dispatcher_->current_catalog()));
         }

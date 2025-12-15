@@ -91,10 +91,10 @@ TEST_CASE("document_t::tiny int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::tiny negative int") {
@@ -112,8 +112,8 @@ TEST_CASE("document_t::tiny negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::small int") {
@@ -131,10 +131,10 @@ TEST_CASE("document_t::small int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::small negative int") {
@@ -151,8 +151,8 @@ TEST_CASE("document_t::small negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::int") {
@@ -168,10 +168,10 @@ TEST_CASE("document_t::int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::negative int") {
@@ -187,8 +187,8 @@ TEST_CASE("document_t::negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::big int") {
@@ -197,8 +197,6 @@ TEST_CASE("document_t::big int") {
 
     std::string_view key("/countInt");
     constexpr int64_t value = std::numeric_limits<int64_t>::max();
-    constexpr auto v1 = std::numeric_limits<int128_t>::max();
-    constexpr auto v2 = std::numeric_limits<int128_t>::min();
     doc->set(key, value);
 
     REQUIRE(doc->is_exists(key));
@@ -206,8 +204,8 @@ TEST_CASE("document_t::big int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::negative big int") {
@@ -222,8 +220,8 @@ TEST_CASE("document_t::negative big int") {
     REQUIRE(doc->is_long(key));
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::unsigned tiny int") {
@@ -243,10 +241,10 @@ TEST_CASE("document_t::unsigned tiny int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::unsigned small int") {
@@ -264,10 +262,10 @@ TEST_CASE("document_t::unsigned small int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::unsigned int") {
@@ -280,14 +278,13 @@ TEST_CASE("document_t::unsigned int") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_uint(key));
-    REQUIRE(doc->get_uint(key) == value);
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::hugeint") {
@@ -305,12 +302,12 @@ TEST_CASE("document_t::hugeint") {
     REQUIRE(doc->get_smallint(key) == value);
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
-    REQUIRE(doc->get_utinyint(key) == value);
-    REQUIRE(doc->get_usmallint(key) == value);
+    REQUIRE(doc->get_utinyint(key) == static_cast<uint8_t>(value));
+    REQUIRE(doc->get_usmallint(key) == static_cast<uint16_t>(value));
     REQUIRE(doc->get_uint(key) == value);
     REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::float min") {
@@ -323,8 +320,8 @@ TEST_CASE("document_t::float min") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_float(key));
-    REQUIRE(is_equals(doc->get_float(key), value));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), value));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::float max") {
@@ -337,8 +334,8 @@ TEST_CASE("document_t::float max") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_float(key));
-    REQUIRE(is_equals(doc->get_float(key), value));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), value));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
 TEST_CASE("document_t::cast signed to signed") {
@@ -360,7 +357,7 @@ TEST_CASE("document_t::cast float to int") {
     float value = 4.0f;
     doc->set(key, value);
 
-    REQUIRE(doc->get_int(key) == value);
+    REQUIRE(doc->get_int(key) == static_cast<int32_t>(value));
 }
 
 TEST_CASE("document_t::set") {

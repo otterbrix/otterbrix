@@ -37,8 +37,6 @@ namespace core::filesystem {
     std::unique_ptr<file_handle_t> open_file(virtual_file_system_t&, const path_t& path, file_flags flags);
     bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
-    bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
-    int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     int64_t file_size(virtual_file_system_t&, file_handle_t& handle);
     time_t last_modified_time(virtual_file_system_t&, file_handle_t& handle);
     file_type_t file_type(virtual_file_system_t&, file_handle_t& handle);
@@ -47,7 +45,9 @@ namespace core::filesystem {
     bool directory_exists(virtual_file_system_t&, const path_t& directory);
     bool create_directory(virtual_file_system_t&, const path_t& directory);
     bool remove_directory(virtual_file_system_t&, const path_t& directory);
-    bool list_files(virtual_file_system_t&, path_t directory, const std::function<void(const path_t&, bool)>& callback);
+    bool list_files(virtual_file_system_t&,
+                    const path_t& directory,
+                    const std::function<void(const path_t&, bool)>& callback);
     bool move_files(virtual_file_system_t&, const path_t& source, const path_t& target);
     bool file_exists(virtual_file_system_t&, const path_t& filename);
     bool is_pipe(virtual_file_system_t&, const path_t& filename);

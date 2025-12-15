@@ -59,7 +59,7 @@ namespace services {
         void load(const components::session::session_id_t& session, const disk::result_load_t& result);
 
         actor_zeta::scheduler_abstract_t* make_scheduler() noexcept;
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior();
 
     private:

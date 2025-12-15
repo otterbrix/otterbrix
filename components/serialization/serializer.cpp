@@ -68,8 +68,12 @@ namespace components::serializer {
 
     void msgpack_serializer_t::append(const expressions::key_t& key_val) {
         start_array(2);
-        packer_.pack(key_val.as_string());
         append_enum(key_val.side());
+        start_array(key_val.storage().size());
+        for (const auto& str : key_val.storage()) {
+            packer_.pack(str);
+        }
+        end_array();
         end_array();
     }
 

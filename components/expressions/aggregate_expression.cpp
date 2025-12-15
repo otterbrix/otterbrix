@@ -1,6 +1,5 @@
 #include "aggregate_expression.hpp"
 
-#include <boost/container_hash/hash.hpp>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 #include <sstream>

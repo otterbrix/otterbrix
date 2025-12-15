@@ -80,10 +80,16 @@ namespace components::serializer {
     expressions::key_t msgpack_deserializer_t::deserialize_key(size_t index) {
         expressions::key_t res;
         advance_array(index);
-        auto side = deserialize_enum<expressions::side_t>(1);
-        res =
-            expressions::key_t{working_tree_.top()->ptr[0].via.str.ptr, working_tree_.top()->ptr[0].via.str.size, side};
+        auto side = deserialize_enum<expressions::side_t>(0);
+        std::vector<std::string> str_vector;
+        advance_array(1);
+        str_vector.reserve(current_array_size());
+        for (size_t i = 0; i < str_vector.capacity(); i++) {
+            str_vector.emplace_back(working_tree_.top()->ptr[0].via.str.ptr, working_tree_.top()->ptr[0].via.str.size);
+        }
         pop_array();
+        pop_array();
+        res = expressions::key_t{std::move(str_vector), side};
         return res;
     }
 

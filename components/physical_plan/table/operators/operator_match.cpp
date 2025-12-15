@@ -1,5 +1,6 @@
 #include "operator_match.hpp"
 #include "predicates/predicate.hpp"
+#include "services/collection/collection.hpp"
 
 namespace components::table::operators {
 
@@ -27,9 +28,12 @@ namespace components::table::operators {
             }
             output_ = base::operators::make_operator_data(left_->output()->resource(), types, chunk.size());
             auto& out_chunk = output_->data_chunk();
-            auto predicate =
-                expression_ ? predicates::create_predicate(expression_, types, types, &pipeline_context->parameters)
-                            : predicates::create_all_true_predicate(left_->output()->resource());
+            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                        expression_,
+                                                                        types,
+                                                                        types,
+                                                                        &pipeline_context->parameters)
+                                         : predicates::create_all_true_predicate(left_->output()->resource());
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (predicate->check(chunk, i)) {
                     for (size_t j = 0; j < chunk.column_count(); j++) {

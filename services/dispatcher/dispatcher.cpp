@@ -274,9 +274,11 @@ namespace services::dispatcher {
                     const auto& n = reinterpret_cast<const node_create_collection_ptr&>(logic_plan);
                     for (auto& column_type : n->schema()) {
                         if (column_type.type() == logical_type::UNKNOWN) {
-                            if (error = check_type_exists(column_type.alias()); !error) {
-                                auto proper_type = catalog_.get_type(column_type.alias());
+                            if (error = check_type_exists(column_type.type_name()); !error) {
+                                auto proper_type = catalog_.get_type(column_type.type_name());
+                                std::string alias = column_type.alias();
                                 column_type = std::move(proper_type);
+                                column_type.set_alias(alias);
                             }
                         }
                     }
@@ -286,13 +288,30 @@ namespace services::dispatcher {
                 error = check_collection_exists(id);
                 break;
             case node_type::create_type_t: {
-                const auto& n = reinterpret_cast<const node_create_type_ptr&>(logic_plan);
-                if (!check_type_exists(n->type().alias())) {
+                auto& n = reinterpret_cast<node_create_type_ptr&>(logic_plan);
+                if (!check_type_exists(n->type().type_name())) {
                     error = make_cursor(resource(),
                                         error_code_t::schema_error,
                                         "type: \'" + n->type().alias() + "\' already exists");
                     break;
                 } else {
+                    if (n->type().type() == logical_type::STRUCT) {
+                        for (auto& field : n->type().child_types()) {
+                            if (field.type() == logical_type::UNKNOWN) {
+                                error = check_type_exists(field.type_name());
+                                if (error) {
+                                    break;
+                                } else {
+                                    std::string alias = field.alias();
+                                    field = catalog_.get_type(field.type_name());
+                                    field.set_alias(alias);
+                                }
+                            }
+                        }
+                        if (error) {
+                            break;
+                        }
+                    }
                     catalog_.create_type(n->type());
                     execute_plan_finish(session, make_cursor(resource(), operation_status_t::success));
                     return;
@@ -635,14 +654,23 @@ namespace services::dispatcher {
     components::cursor::cursor_t_ptr
     dispatcher_t::check_collections_format_(components::logical_plan::node_ptr& logical_plan) const {
         used_format_t used_format = used_format_t::undefined;
+        std::pmr::vector<complex_logical_type> encountered_types{resource()};
         cursor_t_ptr result = make_cursor(resource(), operation_status_t::success);
         auto check_format = [&](components::logical_plan::node_t* node) {
+            // incoming raw data might not know about type used and only have a field name
+            // which is different from the type
+            // so we have to collect all known fields that may be used
             used_format_t check = used_format_t::undefined;
             // pull check format from collection referenced by logical_plan
             if (!node->collection_full_name().empty()) {
                 table_id id(resource(), node->collection_full_name());
                 if (auto res = check_collection_exists(id); !res) {
                     check = catalog_.get_table_format(id);
+                    if (!catalog_.table_computes(id)) {
+                        for (const auto& type : catalog_.get_table_schema(id).columns()) {
+                            encountered_types.emplace_back(type);
+                        }
+                    }
                 } else {
                     result = res;
                     return false;
@@ -669,39 +697,44 @@ namespace services::dispatcher {
 
                 if (data_node->uses_data_chunk()) {
                     for (auto& column : data_node->data_chunk().data) {
-                        if (catalog_.type_exists(column.type().alias())) {
-                            auto proper_type = catalog_.get_type(column.type().alias());
+                        auto it = std::find_if(encountered_types.begin(),
+                                               encountered_types.end(),
+                                               [&column](const complex_logical_type& type) {
+                                                   return type.alias() == column.type().alias();
+                                               });
+                        // if this is a registered type, then conversion is required
+                        if (it != encountered_types.end() && catalog_.type_exists(it->type_name())) {
                             // try to cast to it
-                            if (proper_type.type() == logical_type::STRUCT) {
+                            if (it->type() == logical_type::STRUCT) {
                                 components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        proper_type,
+                                                                        *it,
                                                                         data_node->data_chunk().capacity());
                                 for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(proper_type);
+                                    auto val = column.value(i).cast_as(*it);
                                     if (val.type().type() == logical_type::NA) {
-                                        result = make_cursor(resource(),
-                                                             error_code_t::schema_error,
-                                                             "couldn't convert parsed ROW to type: \'" +
-                                                                 proper_type.alias() + "\'");
+                                        result =
+                                            make_cursor(resource(),
+                                                        error_code_t::schema_error,
+                                                        "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
                                         return false;
                                     } else {
                                         new_column.set_value(i, val);
                                     }
                                 }
                                 column = std::move(new_column);
-                            } else if (proper_type.type() == logical_type::ENUM) {
+                            } else if (it->type() == logical_type::ENUM) {
                                 components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        proper_type,
+                                                                        *it,
                                                                         data_node->data_chunk().capacity());
                                 for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
                                     auto val = column.value(i).value<std::string_view>();
-                                    auto enum_val = logical_value_t::create_enum(proper_type, val);
+                                    auto enum_val = logical_value_t::create_enum(*it, val);
                                     if (enum_val.type().type() == logical_type::NA) {
                                         result =
                                             make_cursor(resource(),
                                                         error_code_t::schema_error,
-                                                        "enum: \'" + proper_type.alias() +
-                                                            "\' does not contain value: \'" + std::string(val) + "\'");
+                                                        "enum: \'" + it->alias() + "\' does not contain value: \'" +
+                                                            std::string(val) + "\'");
                                         return false;
                                     } else {
                                         new_column.set_value(i, enum_val);
@@ -786,6 +819,7 @@ namespace services::dispatcher {
                     auto sch = schema(
                         resource(),
                         components::catalog::create_struct(
+                            "schema",
                             std::vector<complex_logical_type>(node_info->schema().begin(), node_info->schema().end()),
                             std::move(desc)));
                     auto err = catalog_.create_table(id, table_metadata(resource(), std::move(sch)));

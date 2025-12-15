@@ -62,6 +62,10 @@ namespace components::types {
                     extension_ = std::make_unique<function_logical_type_extension>(
                         *static_cast<function_logical_type_extension*>(other.extension_.get()));
                     break;
+                case logical_type_extension::extension_type::UNKNOWN:
+                    extension_ = std::make_unique<unknown_logical_type_extension>(
+                        *static_cast<unknown_logical_type_extension*>(other.extension_.get()));
+                    break;
                 default:
                     assert(false && "complex_logical_type copy: unimplemented extension type");
             }
@@ -106,6 +110,10 @@ namespace components::types {
                 case logical_type_extension::extension_type::FUNCTION:
                     extension_ = std::make_unique<function_logical_type_extension>(
                         *static_cast<function_logical_type_extension*>(other.extension_.get()));
+                    break;
+                case logical_type_extension::extension_type::UNKNOWN:
+                    extension_ = std::make_unique<unknown_logical_type_extension>(
+                        *static_cast<unknown_logical_type_extension*>(other.extension_.get()));
                     break;
                 default:
                     assert(false && "complex_logical_type copy: unimplemented extension type");
@@ -294,6 +302,17 @@ namespace components::types {
         return extension_->alias();
     }
 
+    const std::string& complex_logical_type::type_name() const {
+        if (type_ == logical_type::UNKNOWN) {
+            return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
+        } else if (type_ == logical_type::STRUCT) {
+            return static_cast<struct_logical_type_extension*>(extension_.get())->type_name();
+        } else if (type_ == logical_type::ENUM) {
+            return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
+        }
+        return "";
+    }
+
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
@@ -324,12 +343,17 @@ namespace components::types {
         return logical_type::INVALID;
     }
 
-    logical_type_extension* complex_logical_type::extension() const noexcept { return extension_.get(); }
+    std::vector<complex_logical_type>& complex_logical_type::child_types() {
+        assert(extension_);
+        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+    }
 
     const std::vector<complex_logical_type>& complex_logical_type::child_types() const {
         assert(extension_);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }
+
+    logical_type_extension* complex_logical_type::extension() const { return extension_.get(); }
 
     bool complex_logical_type::type_is_constant_size(logical_type type) {
         return (type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE) ||
@@ -343,9 +367,10 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_enum(std::vector<logical_value_t> entries, std::string alias) {
+    complex_logical_type
+    complex_logical_type::create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias) {
         return complex_logical_type(logical_type::ENUM,
-                                    std::make_unique<enum_logical_type_extension>(std::move(entries)),
+                                    std::make_unique<enum_logical_type_extension>(std::move(name), std::move(entries)),
                                     std::move(alias));
     }
 
@@ -372,10 +397,11 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_struct(const std::vector<complex_logical_type>& fields,
+    complex_logical_type complex_logical_type::create_struct(std::string name,
+                                                             const std::vector<complex_logical_type>& fields,
                                                              std::string alias) {
         return complex_logical_type(logical_type::STRUCT,
-                                    std::make_unique<struct_logical_type_extension>(fields),
+                                    std::make_unique<struct_logical_type_extension>(std::move(name), fields),
                                     std::move(alias));
     }
 
@@ -384,7 +410,7 @@ namespace components::types {
         // union types always have a hidden "tag" field in front
         fields.emplace(fields.begin(), complex_logical_type{logical_type::UTINYINT});
         return complex_logical_type(logical_type::UNION,
-                                    std::make_unique<struct_logical_type_extension>(fields),
+                                    std::make_unique<struct_logical_type_extension>("union", fields),
                                     std::move(alias));
     }
 
@@ -393,15 +419,19 @@ namespace components::types {
         children.reserve(4);
         children.emplace_back(create_list(logical_type::STRING_LITERAL, "keys"));
         children.emplace_back(create_list(
-            create_struct({{logical_type::UINTEGER, "keys_index"}, {logical_type::UINTEGER, "values_index"}}),
-            "children"));
-        children.emplace_back(
-            create_list(create_struct({{logical_type::UTINYINT, "type_id"}, {logical_type::UINTEGER, "byte_offset"}}),
-                        "values"));
+            create_struct("children",
+                          {{logical_type::UINTEGER, "keys_index"}, {logical_type::UINTEGER, "values_index"}})));
+        children.emplace_back(create_list(
+            create_struct("values", {{logical_type::UTINYINT, "type_id"}, {logical_type::UINTEGER, "byte_offset"}})));
         children.emplace_back(logical_type::BLOB, "data");
 
-        auto info = std::make_unique<struct_logical_type_extension>(std::move(children));
+        auto info = std::make_unique<struct_logical_type_extension>("data", std::move(children));
         return {logical_type::VARIANT, std::move(info), std::move(alias)};
+    }
+
+    complex_logical_type complex_logical_type::create_unknown(std::string type_name, std::string alias) {
+        auto info = std::make_unique<unknown_logical_type_extension>(std::move(type_name));
+        return {logical_type::UNKNOWN, std::move(info), std::move(alias)};
     }
 
     void complex_logical_type::serialize(serializer::msgpack_serializer_t* serializer) const {
@@ -493,6 +523,9 @@ namespace components::types {
                 break;
             case extension_type::FUNCTION:
                 result = function_logical_type_extension::deserialize(deserializer);
+                break;
+            case extension_type::UNKNOWN:
+                result = unknown_logical_type_extension::deserialize(deserializer);
                 break;
         }
         deserializer->pop_array();
@@ -617,24 +650,29 @@ namespace components::types {
         return res;
     }
 
-    struct_logical_type_extension::struct_logical_type_extension(const std::vector<complex_logical_type>& fields)
+    struct_logical_type_extension::struct_logical_type_extension(std::string name,
+                                                                 const std::vector<complex_logical_type>& fields)
         : logical_type_extension(extension_type::STRUCT)
+        , type_name_(std::move(name))
         , fields_(fields)
         , descriptions_() {}
 
     struct_logical_type_extension::struct_logical_type_extension(
+        std::string name,
         const std::vector<types::complex_logical_type>& columns,
         std::vector<field_description> descriptions)
         : logical_type_extension(extension_type::STRUCT)
+        , type_name_(std::move(name))
         , fields_(columns)
         , descriptions_(std::move(descriptions)) {
         assert(fields_.size() == descriptions_.size());
     }
 
     void struct_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(4);
+        serializer->start_array(5);
         serializer->append_enum(type_);
         serializer->append(alias_);
+        serializer->append(type_name_);
         serializer->start_array(fields_.size());
         for (const auto& field : fields_) {
             field.serialize(serializer);
@@ -651,9 +689,10 @@ namespace components::types {
     std::unique_ptr<logical_type_extension>
     struct_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
+        auto name = deserializer->deserialize_string(2);
         std::vector<types::complex_logical_type> types;
         std::vector<field_description> descriptions;
-        deserializer->advance_array(2);
+        deserializer->advance_array(3);
         types.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < types.capacity(); i++) {
             deserializer->advance_array(i);
@@ -661,7 +700,7 @@ namespace components::types {
             deserializer->pop_array();
         }
         deserializer->pop_array();
-        deserializer->advance_array(3);
+        deserializer->advance_array(4);
         descriptions.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < descriptions.capacity(); i++) {
             deserializer->advance_array(i);
@@ -669,7 +708,8 @@ namespace components::types {
             deserializer->pop_array();
         }
         deserializer->pop_array();
-        auto res = std::make_unique<struct_logical_type_extension>(std::move(types), std::move(descriptions));
+        auto res =
+            std::make_unique<struct_logical_type_extension>(std::move(name), std::move(types), std::move(descriptions));
         res->set_alias(alias);
         return res;
     }
@@ -698,14 +738,16 @@ namespace components::types {
         return res;
     }
 
-    enum_logical_type_extension::enum_logical_type_extension(std::vector<logical_value_t> entries)
+    enum_logical_type_extension::enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries)
         : logical_type_extension(extension_type::ENUM)
+        , type_name_(std::move(name))
         , entries_(std::move(entries)) {}
 
     void enum_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(3);
+        serializer->start_array(4);
         serializer->append_enum(type_);
         serializer->append(alias_);
+        serializer->append(type_name_);
         serializer->start_array(entries_.size());
         for (const auto& entry : entries_) {
             entry.serialize(serializer);
@@ -717,8 +759,9 @@ namespace components::types {
     std::unique_ptr<logical_type_extension>
     enum_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
+        auto name = deserializer->deserialize_string(2);
         std::vector<logical_value_t> entries;
-        deserializer->advance_array(2);
+        deserializer->advance_array(3);
         entries.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < entries.capacity(); i++) {
             deserializer->advance_array(i);
@@ -726,7 +769,7 @@ namespace components::types {
             deserializer->pop_array();
         }
         deserializer->pop_array();
-        auto res = std::make_unique<enum_logical_type_extension>(std::move(entries));
+        auto res = std::make_unique<enum_logical_type_extension>(std::move(name), std::move(entries));
         res->set_alias(alias);
         return res;
     }
@@ -803,6 +846,29 @@ namespace components::types {
         }
         deserializer->pop_array();
         auto res = std::make_unique<function_logical_type_extension>(std::move(return_type), std::move(argument_types));
+        res->set_alias(alias);
+        return res;
+    }
+
+    unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name)
+        : logical_type_extension(extension_type::UNKNOWN)
+        , type_name_(std::move(type_name)) {}
+
+    const std::string& unknown_logical_type_extension::type_name() const { return type_name_; }
+
+    void unknown_logical_type_extension::serialize(serializer::msgpack_serializer_t* serializer) const {
+        serializer->start_array(3);
+        serializer->append_enum(type_);
+        serializer->append(alias_);
+        serializer->append(type_name_);
+        serializer->end_array();
+    }
+
+    std::unique_ptr<logical_type_extension>
+    unknown_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+        auto alias = deserializer->deserialize_string(1);
+        auto type_name = deserializer->deserialize_string(2);
+        auto res = std::make_unique<unknown_logical_type_extension>(std::move(type_name));
         res->set_alias(alias);
         return res;
     }

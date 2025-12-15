@@ -13,12 +13,13 @@ namespace components::table::operators::predicates {
         return check_impl(chunk_left, chunk_right, index_left, index_right);
     }
 
-    predicate_ptr create_predicate(const expressions::compare_expression_ptr& expr,
+    predicate_ptr create_predicate(std::pmr::memory_resource* resource,
+                                   const expressions::compare_expression_ptr& expr,
                                    const std::pmr::vector<types::complex_logical_type>& types_left,
                                    const std::pmr::vector<types::complex_logical_type>& types_right,
                                    const logical_plan::storage_parameters* parameters) {
         // TODO: use schema to deduce expr side, if it is not set, before this
-        auto result = create_simple_predicate(expr, types_left, types_right, parameters);
+        auto result = create_simple_predicate(resource, expr, types_left, types_right, parameters);
         if (result) {
             return result;
         }
@@ -28,7 +29,8 @@ namespace components::table::operators::predicates {
     }
 
     predicate_ptr create_all_true_predicate(std::pmr::memory_resource* resource) {
-        return create_simple_predicate(make_compare_expression(resource, expressions::compare_type::all_true),
+        return create_simple_predicate(resource,
+                                       make_compare_expression(resource, expressions::compare_type::all_true),
                                        {},
                                        {},
                                        nullptr);

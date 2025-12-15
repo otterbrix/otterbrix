@@ -1,8 +1,9 @@
 #pragma once
 
 #include "forward.hpp"
+#include <boost/container_hash/hash.hpp>
 #include <string>
-#include <variant>
+#include <vector>
 
 namespace components::expressions {
 
@@ -19,30 +20,49 @@ namespace components::expressions {
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
 
+        explicit key_t(std::vector<std::string> str_vector, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_(std::move(str_vector)) {}
+
         explicit key_t(std::string_view str, side_t side = side_t::undefined)
             : side_(side)
-            , storage_(std::string(str.data(), str.size())) {}
+            , storage_({std::string(str.data(), str.size())}) {}
 
         explicit key_t(const std::string& str, side_t side = side_t::undefined)
             : side_(side)
-            , storage_(std::string(str.data(), str.size())) {}
+            , storage_({std::string(str.data(), str.size())}) {}
 
         explicit key_t(std::string&& str, side_t side = side_t::undefined)
             : side_(side)
-            , storage_(std::move(str)) {}
+            , storage_({std::move(str)}) {}
 
         explicit key_t(const char* str, side_t side = side_t::undefined)
             : side_(side)
-            , storage_(std::string(str)) {}
+            , storage_({std::string(str)}) {}
 
         template<typename CharT>
         key_t(const CharT* data, size_t size, side_t side = side_t::undefined)
             : side_(side)
-            , storage_(std::string(data, size)) {}
+            , storage_({std::string(data, size)}) {}
 
-        auto as_string() const -> const std::string& { return storage_; }
+        [[nodiscard]] auto as_string() const -> std::string {
+            std::string result;
+            bool separator = false;
+            for (const auto& str : storage_) {
+                if (separator) {
+                    result += "/";
+                }
+                result += str;
+                separator = true;
+            }
+            return result;
+        }
 
         explicit operator std::string() const { return as_string(); }
+
+        auto storage() -> std::vector<std::string>& { return storage_; }
+
+        auto storage() const -> const std::vector<std::string>& { return storage_; }
 
         auto is_null() const -> bool { return storage_.empty(); }
 
@@ -62,11 +82,17 @@ namespace components::expressions {
 
         bool operator!=(const key_t& rhs) const { return !(*this == rhs); }
 
-        hash_t hash() const { return std::hash<std::string>()(storage_); }
+        hash_t hash() const {
+            hash_t hash_{0};
+            for (const auto& str : storage_) {
+                boost::hash_combine(hash_, std::hash<std::string>()(str));
+            }
+            return hash_;
+        }
 
     private:
         side_t side_;
-        std::string storage_;
+        std::vector<std::string> storage_;
     };
 
     template<class OStream>

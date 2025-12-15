@@ -47,6 +47,9 @@ namespace components::sql::transform {
         std::string left_alias;
         collection_full_name_t right_name;
         std::string right_alias;
+
+        bool is_left_table(const std::string& name) const;
+        bool is_right_table(const std::string& name) const;
     };
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
@@ -58,7 +61,8 @@ namespace components::sql::transform {
         void deduce_side(const name_collection_t& names);
     };
 
-    column_ref_t columnref_to_fied(ColumnRef* ref);
+    column_ref_t columnref_to_field(ColumnRef* ref, const name_collection_t& names);
+    column_ref_t indirection_to_field(A_Indirection* indirection, const name_collection_t& names);
 
     static logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {

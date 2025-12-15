@@ -28,7 +28,8 @@ namespace components::table::operators::predicates {
 
     using predicate_ptr = boost::intrusive_ptr<predicate>;
 
-    predicate_ptr create_predicate(const expressions::compare_expression_ptr& expr,
+    predicate_ptr create_predicate(std::pmr::memory_resource* resource,
+                                   const expressions::compare_expression_ptr& expr,
                                    const std::pmr::vector<types::complex_logical_type>& types_left,
                                    const std::pmr::vector<types::complex_logical_type>& types_right,
                                    const logical_plan::storage_parameters* parameters);

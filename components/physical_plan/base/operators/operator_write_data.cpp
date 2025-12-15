@@ -95,7 +95,9 @@ namespace components::base::operators {
             }
             return components::types::complex_logical_type(
                 components::types::logical_type::STRUCT,
-                std::make_unique<components::types::struct_logical_type_extension>(str, std::move(descriptions)));
+                std::make_unique<components::types::struct_logical_type_extension>("struct",
+                                                                                   str,
+                                                                                   std::move(descriptions)));
         }
         if (json->is_mut()) {
             return json->get_mut()->logical_type();

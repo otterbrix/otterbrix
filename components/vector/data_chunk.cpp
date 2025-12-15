@@ -44,9 +44,50 @@ namespace components::vector {
         assert(index < size());
         return data[col_idx].value(index);
     }
+    types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_indices, uint64_t index) const {
+        const vector_t* sub_column = &data[col_indices.front()];
+        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+            if (std::next(it) == col_indices.end()) {
+                return sub_column->entries()[*it]->value(index);
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
+        }
+        return sub_column->value(index);
+    }
 
     void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
         data[col_idx].set_value(index, val);
+    }
+
+    void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_indices,
+                                 uint64_t index,
+                                 const types::logical_value_t& val) {
+        vector_t* sub_column = &data[col_indices.front()];
+        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+            if (std::next(it) == col_indices.end()) {
+                return sub_column->entries()[*it]->set_value(index, val);
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
+        }
+        return sub_column->set_value(index, val);
+    }
+
+    vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_indices) {
+        vector_t* sub_column = &data[col_indices.front()];
+        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+            sub_column = sub_column->entries()[*it].get();
+        }
+        return sub_column;
+    }
+
+    const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_indices) const {
+        const vector_t* sub_column = &data[col_indices.front()];
+        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+            sub_column = sub_column->entries()[*it].get();
+        }
+        return sub_column;
     }
 
     bool data_chunk_t::all_constant() const {
@@ -182,6 +223,39 @@ namespace components::vector {
         }
         assert(false && "data_chunk_t::column_index: no such column");
         return -1;
+    }
+
+    std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::vector<std::string>& path) const {
+        std::pmr::vector<size_t> res(resource_);
+        for (uint64_t i = 0; i < column_count(); i++) {
+            if (data[i].type().alias() == path.front()) {
+                res.emplace_back(i);
+                break;
+            }
+        }
+        if (res.empty()) {
+            assert(false && "data_chunk_t::column_index: no such column");
+            return {size_t(-1)};
+        } else {
+            const vector_t* sub_column = &data[res.front()];
+            for (auto it = std::next(path.begin()); it != path.end(); ++it) {
+                bool field_found = false;
+                for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
+                    if (sub_column->type().child_types()[i].alias() == *it) {
+                        res.emplace_back(i);
+                        if (std::next(it) != path.end()) {
+                            sub_column = sub_column->entries()[i].get();
+                        }
+                        field_found = true;
+                        break;
+                    }
+                }
+                if (!field_found) {
+                    return {size_t(-1)};
+                }
+            }
+        }
+        return res;
     }
 
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }

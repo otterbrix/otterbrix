@@ -48,7 +48,7 @@ namespace components::table {
     }
 
     std::unique_ptr<table_filter_t> constant_filter_t::copy() const {
-        return std::make_unique<constant_filter_t>(filter_type, constant, table_index);
+        return std::make_unique<constant_filter_t>(filter_type, constant, table_indices);
     }
 
     bool conjunction_filter_t::equals(const table_filter_t& other) const {

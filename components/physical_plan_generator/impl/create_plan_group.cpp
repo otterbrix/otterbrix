@@ -32,7 +32,7 @@ namespace services::collection::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_key(expr->key().as_string(),
+                    group->add_key(expr->key().storage().back(),
                                    components::collection::operators::get::simple_value_t::create(field));
                     break;
                 }
@@ -147,7 +147,7 @@ namespace services::table::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_key(expr->key().as_string(),
+                    group->add_key(expr->key().storage().back(),
                                    components::table::operators::get::simple_value_t::create(field));
                     break;
                 }

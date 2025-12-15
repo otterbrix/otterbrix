@@ -1,9 +1,11 @@
 #include "test_config.hpp"
+#include <components/types/operations_helper.hpp>
+
 #include <catch2/catch.hpp>
-#include <variant>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
+static const collection_name_t copy_collection_name = "copytestcollection";
 
 using namespace components;
 using namespace components::cursor;
@@ -416,7 +418,14 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     INFO("register types") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_type_name AS (f1 int, f2 string);)_");
+            auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_type_field AS (f1 float, f2 int);)_");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                R"_(CREATE TYPE custom_type_name AS (f1 int, f2 string, f3 custom_type_field);)_");
             REQUIRE(cur->is_success());
         }
         {
@@ -427,23 +436,35 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     }
 
     INFO("create table") {
-        auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
-        auto cur = dispatcher->execute_sql(
-            session,
-            R"_(CREATE TABLE TestDatabase.TestCollection (custom_type_name custom_type, custom_enum oddness);)_");
-        REQUIRE(cur->is_success());
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                R"_(CREATE TABLE TestDatabase.TestCollection (custom_type custom_type_name, oddness custom_enum );)_");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                R"_(CREATE TABLE TestDatabase.CopyTestCollection (custom_type custom_type_name, oddness custom_enum);)_");
+            REQUIRE(cur->is_success());
+        }
     }
 
     INFO("insert") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (custom_type_name, oddness) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (custom_type, oddness) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query << "(ROW(" << num << ", '"
-                      << "text_" << num + 1 << "'), " << (num % 2 == 0 ? "\'even\'" : "\'odd\'") << ")"
-                      << (num == 99 ? ";" : ", ");
+                      << "text_" << num + 1 << "', ROW(" << num + 0.5f << ", " << num * 2 << ")), "
+                      << (num % 2 == 0 ? "\'even\'" : "\'odd\'") << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -452,6 +473,17 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                R"_(INSERT INTO TestDatabase.CopyTestCollection SELECT * FROM TestDatabase.TestCollection ORDER BY f1 DESC;)_");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->size(session, database_name, copy_collection_name) == 100);
         }
     }
 
@@ -462,15 +494,90 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
         }
-        /*
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "SELECT * FROM TestDatabase.TestCollection "
-                                               "WHERE custom_type_name.f1 > 90;");
+                                               "WHERE (custom_type).f1 > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
+            REQUIRE(cur->chunk_data().column_count() == 2);
+            REQUIRE(cur->chunk_data().value(0, 0).children()[0] == types::logical_value_t{91});
         }
-        */
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT (custom_type).* FROM TestDatabase.TestCollection "
+                                               "WHERE (custom_type).f1 > 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
+            REQUIRE(cur->chunk_data().value(0, 0) == types::logical_value_t{91});
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT (custom_type).* FROM TestDatabase.TestCollection "
+                                               "WHERE ((custom_type).f3).f2 > 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 54);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
+            REQUIRE(cur->chunk_data().value(2, 0).children()[1] == types::logical_value_t{92});
+        }
+    }
+    INFO("update") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "UPDATE TestDatabase.TestCollection SET custom_type.f3.f1 = custom_type.f3.f1 * 3.0;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT ((custom_type).f3).f1 FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 1);
+            for (int num = 0; num < 100; ++num) {
+                REQUIRE(types::is_equals(cur->chunk_data().value(0, num).value<float>(), (num + 0.5f) * 3.0f));
+            }
+        }
+    }
+    INFO("join") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT * FROM TestDatabase.TestCollection"
+                                        " JOIN TestDatabase.CopyTestCollection ON"
+                                        " TestCollection.custom_type.f3.f1 = CopyTestCollection.custom_type.f3.f1");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 33);
+        }
+    }
+    INFO("delete") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "DELETE FROM TestDatabase.TestCollection WHERE ((custom_type).f3).f2 < 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 45);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 55);
+        }
     }
 }

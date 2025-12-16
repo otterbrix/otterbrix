@@ -16,6 +16,7 @@ namespace components::expressions {
         : expression_i(expression_group::compare)
         , type_(type)
         , primary_key_(key)
+        , secondary_key_(resource)
         , value_(value)
         , children_(resource) {}
 
@@ -154,12 +155,12 @@ namespace components::expressions {
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(!is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, key_t{resource}, core::parameter_id_t{0});
     }
 
     compare_expression_ptr make_compare_union_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, key_t{resource}, core::parameter_id_t{0});
     }
 
     compare_type get_compare_type(const std::string& key) {

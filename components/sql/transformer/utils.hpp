@@ -58,11 +58,19 @@ namespace components::sql::transform {
         std::string table;
         expressions::key_t field;
 
+        explicit column_ref_t(std::pmr::memory_resource* resource)
+            : field(resource) {}
+        column_ref_t(std::string table, expressions::key_t field)
+            : table(std::move(table))
+            , field(std::move(field)) {}
         void deduce_side(const name_collection_t& names);
     };
 
-    column_ref_t columnref_to_field(ColumnRef* ref, const name_collection_t& names);
-    column_ref_t indirection_to_field(A_Indirection* indirection, const name_collection_t& names);
+    column_ref_t
+    columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names);
+    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
+                                      A_Indirection* indirection,
+                                      const name_collection_t& names);
 
     static logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {

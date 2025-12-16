@@ -13,10 +13,12 @@ namespace components::sql::transform {
         for (const auto& field : fields) {
             auto target = pg_ptr_cast<ResTarget>(field.data);
             if (target->indirection->lst.empty()) {
-                key_translation.emplace_back(target->name, target->name);
+                key_translation.emplace_back(expressions::key_t{resource_, target->name},
+                                             expressions::key_t{resource_, target->name});
             } else {
                 auto key = expressions::key_t{
-                    std::vector<std::string>{target->name, strVal(target->indirection->lst.back().data)}};
+                    std::pmr::vector<std::pmr::string>{{target->name, resource_},
+                                                       pmrStrVal(target->indirection->lst.back().data, resource_)}};
                 key_translation.emplace_back(key, key);
             }
         }

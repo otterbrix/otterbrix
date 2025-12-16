@@ -123,14 +123,16 @@ namespace components::sql::transform {
                     return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, params);
                 }
                 if (nodeTag(node->lexpr) == T_ColumnRef || nodeTag(node->lexpr) == T_A_Indirection) {
-                    auto key_left = nodeTag(node->lexpr) == T_ColumnRef
-                                        ? columnref_to_field(pg_ptr_cast<ColumnRef>(node->lexpr), names)
-                                        : indirection_to_field(pg_ptr_cast<A_Indirection>(node->lexpr), names);
+                    auto key_left =
+                        nodeTag(node->lexpr) == T_ColumnRef
+                            ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names)
+                            : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->lexpr), names);
                     key_left.deduce_side(names);
                     if (nodeTag(node->rexpr) == T_ColumnRef || nodeTag(node->rexpr) == T_A_Indirection) {
-                        auto key_right = nodeTag(node->rexpr) == T_ColumnRef
-                                             ? columnref_to_field(pg_ptr_cast<ColumnRef>(node->rexpr), names)
-                                             : indirection_to_field(pg_ptr_cast<A_Indirection>(node->rexpr), names);
+                        auto key_right =
+                            nodeTag(node->rexpr) == T_ColumnRef
+                                ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->rexpr), names)
+                                : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->rexpr), names);
                         key_right.deduce_side(names);
                         return make_compare_expression(params->parameters().resource(),
                                                        get_compare_type(strVal(node->name->lst.front().data)),
@@ -149,8 +151,8 @@ namespace components::sql::transform {
                     }
 
                     auto key = nodeTag(node->rexpr) == T_ColumnRef
-                                   ? columnref_to_field(pg_ptr_cast<ColumnRef>(node->rexpr), names)
-                                   : indirection_to_field(pg_ptr_cast<A_Indirection>(node->rexpr), names);
+                                   ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->rexpr), names)
+                                   : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->rexpr), names);
                     key.deduce_side(names);
                     return make_compare_expression(params->parameters().resource(),
                                                    get_compare_type(strVal(node->name->lst.back().data)),
@@ -196,11 +198,11 @@ namespace components::sql::transform {
         args.reserve(node->args->lst.size());
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
-                auto key = columnref_to_field(pg_ptr_cast<ColumnRef>(arg.data), names);
+                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
                 args.emplace_back(std::move(key.field));
             } else if (nodeTag(arg.data) == T_A_Indirection) {
-                auto key = indirection_to_field(pg_ptr_cast<A_Indirection>(arg.data), names);
+                auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
                 key.deduce_side(names);
                 args.emplace_back(std::move(key.field));
             } else {
@@ -240,7 +242,7 @@ namespace components::sql::transform {
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
-                auto key = columnref_to_field(pg_ptr_cast<ColumnRef>(arg.data), names);
+                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
                 args.emplace_back(std::move(key.field));
             } else {

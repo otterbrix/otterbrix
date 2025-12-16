@@ -322,7 +322,7 @@ TEST_CASE("delete one test") {
             {database_name, collection_name},
             make_compare_expression(&resource,
                                     compare_type::eq,
-                                    components::expressions::key_t{"count", side_t::left},
+                                    components::expressions::key_t{&resource, "count", side_t::left},
                                     core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
@@ -343,7 +343,7 @@ TEST_CASE("delete one test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -361,7 +361,7 @@ TEST_CASE("delete many test") {
             {database_name, collection_name},
             make_compare_expression(&resource,
                                     compare_type::eq,
-                                    components::expressions::key_t{"count", side_t::left},
+                                    components::expressions::key_t{&resource, "count", side_t::left},
                                     core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
@@ -382,7 +382,7 @@ TEST_CASE("delete many test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -400,13 +400,13 @@ TEST_CASE("update one test") {
             {database_name, collection_name},
             make_compare_expression(&resource,
                                     compare_type::eq,
-                                    components::expressions::key_t{"count", side_t::left},
+                                    components::expressions::key_t{&resource, "count", side_t::left},
                                     core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         params->add_parameter(core::parameter_id_t{2}, num + 10);
 
-        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{"count"});
+        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
         update->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
 
         auto data = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
@@ -426,7 +426,7 @@ TEST_CASE("update one test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
@@ -453,13 +453,13 @@ TEST_CASE("update many test") {
             {database_name, collection_name},
             make_compare_expression(&resource,
                                     compare_type::eq,
-                                    components::expressions::key_t{"count", side_t::left},
+                                    components::expressions::key_t{&resource, "count", side_t::left},
                                     core::parameter_id_t{1}));
         auto params = make_parameter_node(&resource);
         params->add_parameter(core::parameter_id_t{1}, num);
         params->add_parameter(core::parameter_id_t{2}, num + 10);
 
-        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{"count"});
+        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
         update->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
 
         auto data = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
@@ -479,7 +479,7 @@ TEST_CASE("update many test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{"count"});
+        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);

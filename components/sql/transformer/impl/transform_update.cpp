@@ -123,14 +123,14 @@ namespace components::sql::transform {
                 if (indirection->indirection->lst.empty()) {
                     return transform_update_expr(indirection->arg, names, params);
                 } else {
-                    auto key = indirection_to_field(indirection, names);
+                    auto key = indirection_to_field(resource_, indirection, names);
                     key.deduce_side(names);
                     return {new update_expr_get_value_t(std::move(key.field))};
                 }
             }
             case T_ColumnRef: {
                 auto ref = pg_ptr_cast<ColumnRef>(node);
-                auto key = columnref_to_field(ref, names);
+                auto key = columnref_to_field(resource_, ref, names);
                 key.deduce_side(names);
                 return {new update_expr_get_value_t(std::move(key.field))};
             }
@@ -160,10 +160,11 @@ namespace components::sql::transform {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
                 if (res->indirection->lst.empty()) {
-                    updates.emplace_back(new update_expr_set_t(expressions::key_t{res->name, side_t::left}));
+                    updates.emplace_back(new update_expr_set_t(expressions::key_t{resource_, res->name, side_t::left}));
                     updates.back()->left() = transform_update_expr(res->val, names, params);
                 } else {
-                    std::vector<std::string> path{res->name};
+                    std::pmr::vector<std::pmr::string> path{resource_};
+                    path.emplace_back(std::pmr::string{res->name, resource_});
                     for (const auto& val : res->indirection->lst) {
                         path.emplace_back(strVal(val.data));
                     }

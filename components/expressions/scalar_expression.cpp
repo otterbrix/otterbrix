@@ -121,7 +121,7 @@ namespace components::expressions {
     }
 
     scalar_expression_ptr make_scalar_expression(std::pmr::memory_resource* resource, scalar_type type) {
-        return make_scalar_expression(resource, type, key_t{});
+        return make_scalar_expression(resource, type, key_t{resource});
     }
 
     scalar_expression_ptr make_scalar_expression(std::pmr::memory_resource* resource,

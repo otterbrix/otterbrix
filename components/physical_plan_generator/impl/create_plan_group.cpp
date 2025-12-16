@@ -49,7 +49,7 @@ namespace services::collection::planner::impl {
 
             switch (expr->type()) {
                 case aggregate_type::count: {
-                    group->add_value(expr->key().as_string(),
+                    group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::collection::operators::aggregate::operator_count_t(context)));
                     break;
@@ -60,7 +60,7 @@ namespace services::collection::planner::impl {
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(
-                        expr->key().as_string(),
+                        expr->key().as_pmr_string(),
                         boost::intrusive_ptr(
                             new components::collection::operators::aggregate::operator_sum_t(context, field)));
                     break;
@@ -71,7 +71,7 @@ namespace services::collection::planner::impl {
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(
-                        expr->key().as_string(),
+                        expr->key().as_pmr_string(),
                         boost::intrusive_ptr(
                             new components::collection::operators::aggregate::operator_avg_t(context, field)));
                     break;
@@ -82,7 +82,7 @@ namespace services::collection::planner::impl {
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(
-                        expr->key().as_string(),
+                        expr->key().as_pmr_string(),
                         boost::intrusive_ptr(
                             new components::collection::operators::aggregate::operator_min_t(context, field)));
                     break;
@@ -93,7 +93,7 @@ namespace services::collection::planner::impl {
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(
-                        expr->key().as_string(),
+                        expr->key().as_pmr_string(),
                         boost::intrusive_ptr(
                             new components::collection::operators::aggregate::operator_max_t(context, field)));
                     break;
@@ -165,7 +165,7 @@ namespace services::table::planner::impl {
             switch (expr->type()) {
                 case aggregate_type::count: {
                     group->add_value(
-                        expr->key().as_string(),
+                        expr->key().as_pmr_string(),
                         boost::intrusive_ptr(new components::table::operators::aggregate::operator_count_t(context)));
                     break;
                 }
@@ -174,7 +174,7 @@ namespace services::table::planner::impl {
                            "[add_group_aggregate] aggregate_type::sum:  variant intermediate_store_ holds the "
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_string(),
+                    group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::table::operators::aggregate::operator_sum_t(context, field)));
                     break;
@@ -184,7 +184,7 @@ namespace services::table::planner::impl {
                            "[add_group_aggregate] aggregate_type::avg:  variant intermediate_store_ holds the "
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_string(),
+                    group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::table::operators::aggregate::operator_avg_t(context, field)));
                     break;
@@ -194,7 +194,7 @@ namespace services::table::planner::impl {
                            "[add_group_aggregate] aggregate_type::min:  variant intermediate_store_ holds the "
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_string(),
+                    group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::table::operators::aggregate::operator_min_t(context, field)));
                     break;
@@ -204,7 +204,7 @@ namespace services::table::planner::impl {
                            "[add_group_aggregate] aggregate_type::max:  variant intermediate_store_ holds the "
                            "alternative components::expressions::key_t");
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_string(),
+                    group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::table::operators::aggregate::operator_max_t(context, field)));
                     break;

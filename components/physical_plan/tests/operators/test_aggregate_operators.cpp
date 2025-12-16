@@ -49,8 +49,10 @@ TEST_CASE("operator::aggregate::count") {
     }
 
     SECTION("count::match") {
-        auto cond =
-            make_compare_expression(&resource, compare_type::lte, key("count", side_t::left), core::parameter_id_t(1));
+        auto cond = make_compare_expression(&resource,
+                                            compare_type::lte,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
         pipeline::context_t pipeline_context(std::move(parameters));
@@ -83,7 +85,7 @@ TEST_CASE("operator::aggregate::min") {
         auto cond = make_compare_expression(&resource, compare_type::all_true);
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_min_t min_(d(collection), key("count"));
+            collection::operators::aggregate::operator_min_t min_(d(collection), key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -92,7 +94,7 @@ TEST_CASE("operator::aggregate::min") {
             REQUIRE(min_.value().as_unsigned() == 1);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_min_t min_(d(table), key("count"));
+            table::operators::aggregate::operator_min_t min_(d(table), key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(nullptr);
@@ -101,14 +103,16 @@ TEST_CASE("operator::aggregate::min") {
     }
 
     SECTION("min::match") {
-        auto cond =
-            make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(1));
+        auto cond = make_compare_expression(&resource,
+                                            compare_type::gt,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), logical_value_t(80));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_min_t min_(d(collection), key("count"));
+            collection::operators::aggregate::operator_min_t min_(d(collection), key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -117,7 +121,7 @@ TEST_CASE("operator::aggregate::min") {
             REQUIRE(min_.value().as_unsigned() == 81);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_min_t min_(d(table), key("count"));
+            table::operators::aggregate::operator_min_t min_(d(table), key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(&pipeline_context);
@@ -135,7 +139,7 @@ TEST_CASE("operator::aggregate::max") {
         auto cond = make_compare_expression(&resource, compare_type::all_true);
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_max_t max_(d(collection), key("count"));
+            collection::operators::aggregate::operator_max_t max_(d(collection), key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -144,7 +148,7 @@ TEST_CASE("operator::aggregate::max") {
             REQUIRE(max_.value().as_unsigned() == 100);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_max_t max_(d(table), key("count"));
+            table::operators::aggregate::operator_max_t max_(d(table), key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(nullptr);
@@ -153,14 +157,16 @@ TEST_CASE("operator::aggregate::max") {
     }
 
     SECTION("max::match") {
-        auto cond =
-            make_compare_expression(&resource, compare_type::lt, key("count", side_t::left), core::parameter_id_t(1));
+        auto cond = make_compare_expression(&resource,
+                                            compare_type::lt,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), logical_value_t(20));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_max_t max_(d(collection), key("count"));
+            collection::operators::aggregate::operator_max_t max_(d(collection), key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -169,7 +175,7 @@ TEST_CASE("operator::aggregate::max") {
             REQUIRE(max_.value().as_unsigned() == 19);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_max_t max_(d(table), key("count"));
+            table::operators::aggregate::operator_max_t max_(d(table), key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(&pipeline_context);
@@ -187,7 +193,7 @@ TEST_CASE("operator::aggregate::sum") {
         auto cond = make_compare_expression(&resource, compare_type::all_true);
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_sum_t sum_(d(collection), key("count"));
+            collection::operators::aggregate::operator_sum_t sum_(d(collection), key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -196,7 +202,7 @@ TEST_CASE("operator::aggregate::sum") {
             REQUIRE(sum_.value().as_unsigned() == 5050);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_sum_t sum_(d(table), key("count"));
+            table::operators::aggregate::operator_sum_t sum_(d(table), key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(nullptr);
@@ -205,14 +211,16 @@ TEST_CASE("operator::aggregate::sum") {
     }
 
     SECTION("sum::match") {
-        auto cond =
-            make_compare_expression(&resource, compare_type::lt, key("count", side_t::left), core::parameter_id_t(1));
+        auto cond = make_compare_expression(&resource,
+                                            compare_type::lt,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_sum_t sum_(d(collection), key("count"));
+            collection::operators::aggregate::operator_sum_t sum_(d(collection), key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -221,7 +229,7 @@ TEST_CASE("operator::aggregate::sum") {
             REQUIRE(sum_.value().as_unsigned() == 45);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_sum_t sum_(d(table), key("count"));
+            table::operators::aggregate::operator_sum_t sum_(d(table), key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(&pipeline_context);
@@ -239,7 +247,7 @@ TEST_CASE("operator::aggregate::avg") {
         auto cond = make_compare_expression(&resource, compare_type::all_true);
 
         SECTION("documents") {
-            collection::operators::aggregate::operator_avg_t avg_(d(collection), key("count"));
+            collection::operators::aggregate::operator_avg_t avg_(d(collection), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -248,7 +256,7 @@ TEST_CASE("operator::aggregate::avg") {
             REQUIRE(avg_.value().as_double() == 50.5);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_avg_t avg_(d(table), key("count"));
+            table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
@@ -257,13 +265,15 @@ TEST_CASE("operator::aggregate::avg") {
     }
 
     SECTION("avg::match") {
-        auto cond =
-            make_compare_expression(&resource, compare_type::lt, key("count", side_t::left), core::parameter_id_t(1));
+        auto cond = make_compare_expression(&resource,
+                                            compare_type::lt,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
         pipeline::context_t pipeline_context(std::move(parameters));
         SECTION("documents") {
-            collection::operators::aggregate::operator_avg_t avg_(d(collection), key("count"));
+            collection::operators::aggregate::operator_avg_t avg_(d(collection), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -272,7 +282,7 @@ TEST_CASE("operator::aggregate::avg") {
             REQUIRE(avg_.value().as_double() == 5.0);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_avg_t avg_(d(table), key("count"));
+            table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);

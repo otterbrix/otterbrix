@@ -80,7 +80,7 @@ namespace components::vector {
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> types() const;
         size_t column_index(std::string_view key) const;
-        std::pmr::vector<size_t> sub_column_indices(const std::vector<std::string>& path) const;
+        std::pmr::vector<size_t> sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const;
 
         std::pmr::memory_resource* resource() const;
 

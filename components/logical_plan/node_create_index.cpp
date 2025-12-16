@@ -91,7 +91,10 @@ namespace components::logical_plan {
         auto name = msg_object.via.array.ptr[2].as<std::string>();
         auto type = static_cast<components::logical_plan::index_type>(msg_object.via.array.ptr[3].as<uint8_t>());
         auto data = msg_object.via.array.ptr[4].as<std::vector<std::string>>();
-        auto keys = components::logical_plan::keys_base_storage_t(data.begin(), data.end());
+        components::logical_plan::keys_base_storage_t keys(resource);
+        for (const auto& str : data) {
+            keys.emplace_back(resource, str);
+        }
         auto node = make_node_create_index(resource, {database, collection}, name, type);
         node->keys() = keys;
         return node;

@@ -135,7 +135,7 @@ namespace components::sql::transform {
                         for (const auto& arg : func->args->lst) {
                             auto arg_value = pg_ptr_cast<Node>(arg.data);
                             if (nodeTag(arg_value) == T_ColumnRef) {
-                                auto key = columnref_to_field(pg_ptr_cast<ColumnRef>(arg_value), names);
+                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_value), names);
                                 key.deduce_side(names);
                                 args.emplace_back(std::move(key.field));
                             } else {
@@ -152,7 +152,7 @@ namespace components::sql::transform {
 
                         auto expr = make_aggregate_expression(resource_,
                                                               get_aggregate_type(funcname),
-                                                              expressions::key_t{std::move(expr_name)});
+                                                              expressions::key_t{resource_, std::move(expr_name)});
                         for (const auto& arg : args) {
                             expr->append_param(arg);
                         }
@@ -172,13 +172,13 @@ namespace components::sql::transform {
                             group->append_expression(make_scalar_expression(
                                 resource_,
                                 scalar_type::get_field,
-                                expressions::key_t{res->name},
-                                columnref_to_field(pg_ptr_cast<ColumnRef>(res->val), names).field));
+                                expressions::key_t{resource_, res->name},
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), names).field));
                         } else {
                             group->append_expression(make_scalar_expression(
                                 resource_,
                                 scalar_type::get_field,
-                                columnref_to_field(pg_ptr_cast<ColumnRef>(res->val), names).field));
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), names).field));
                         }
                         break;
                     }
@@ -186,16 +186,16 @@ namespace components::sql::transform {
                     case T_TypeCast: // fall-through
                     case T_A_Const: {
                         // constant
-                        auto expr =
-                            make_scalar_expression(resource_,
-                                                   scalar_type::get_field,
-                                                   expressions::key_t{res->name ? res->name : get_str_value(res->val)});
+                        auto expr = make_scalar_expression(
+                            resource_,
+                            scalar_type::get_field,
+                            expressions::key_t{resource_, res->name ? res->name : get_str_value(res->val)});
                         expr->append_param(add_param_value(res->val, params));
                         group->append_expression(expr);
                         break;
                     }
                     case T_A_Indirection: {
-                        std::vector<std::string> path;
+                        std::pmr::vector<std::pmr::string> path;
                         A_Indirection* indirection = pg_ptr_cast<A_Indirection>(res->val);
                         while (indirection) {
                             auto data = indirection->indirection->lst.back().data;
@@ -261,7 +261,7 @@ namespace components::sql::transform {
             for (auto sort_it : node.sortClause->lst) {
                 auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
                 assert(nodeTag(sortby->node) == T_ColumnRef);
-                auto field = columnref_to_field(pg_ptr_cast<ColumnRef>(sortby->node), names);
+                auto field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
                 expressions.emplace_back(
                     make_sort_expression(field.field,
                                          sortby->sortby_dir == SORTBY_DESC ? sort_order::desc : sort_order::asc));

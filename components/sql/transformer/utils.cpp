@@ -58,16 +58,17 @@ namespace components::sql::transform {
         field.set_side(transform::deduce_side(names, table));
     }
 
-    column_ref_t columnref_to_field(ColumnRef* ref, const name_collection_t& names) {
+    column_ref_t
+    columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names) {
         auto lst = ref->fields->lst;
         if (lst.empty()) {
-            return column_ref_t();
+            return column_ref_t(resource);
         } else if (lst.size() == 1) {
-            return column_ref_t{{}, expressions::key_t(strVal(lst.back().data))};
+            return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
         } else {
             auto it = lst.begin();
             std::string table_name;
-            std::vector<std::string> field_path;
+            std::pmr::vector<std::pmr::string> field_path(resource);
             expressions::side_t side = expressions::side_t::undefined;
 
             if (names.is_left_table(strVal(lst.begin()->data))) {
@@ -81,21 +82,23 @@ namespace components::sql::transform {
             }
             for (; it != lst.end(); ++it) {
                 if (nodeTag(it->data) == T_A_Star) {
-                    field_path.emplace_back("*");
+                    field_path.emplace_back(std::pmr::string{"*", resource});
                 } else {
-                    field_path.emplace_back(strVal(it->data));
+                    field_path.emplace_back(pmrStrVal(it->data, resource));
                 }
             }
             return {std::move(table_name), expressions::key_t{std::move(field_path), side}};
         }
     }
 
-    column_ref_t indirection_to_field(A_Indirection* indirection, const name_collection_t& names) {
-        column_ref_t ref;
+    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
+                                      A_Indirection* indirection,
+                                      const name_collection_t& names) {
+        column_ref_t ref(resource);
         if (nodeTag(indirection->arg) == T_ColumnRef) {
-            ref = columnref_to_field(pg_ptr_cast<ColumnRef>(indirection->arg), names);
+            ref = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
         } else {
-            ref = indirection_to_field(pg_ptr_cast<A_Indirection>(indirection->arg), names);
+            ref = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
         }
         ref.field.storage().emplace_back(strVal(indirection->indirection->lst.back().data));
         return ref;

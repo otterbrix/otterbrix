@@ -23,11 +23,11 @@ namespace components::table::operators {
         , result_types_(resource)
         , transposed_output_(resource) {}
 
-    void operator_group_t::add_key(const std::string& name, get::operator_get_ptr&& getter) {
+    void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
         keys_.push_back({name, std::move(getter)});
     }
 
-    void operator_group_t::add_value(const std::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
+    void operator_group_t::add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
         values_.push_back({name, std::move(aggregator)});
     }
 
@@ -66,7 +66,7 @@ namespace components::table::operators {
                 } else {
                     for (auto& val : values) {
                         if (key.name != "*") {
-                            val.set_alias(key.name);
+                            val.set_alias(std::string{key.name});
                         }
                         new_row.emplace_back(std::move(val));
                     }

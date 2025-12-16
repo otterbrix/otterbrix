@@ -63,10 +63,12 @@ TEST_CASE("logical_plan::drop_collection") {
 
 TEST_CASE("logical_plan::match") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto node_match = make_node_match(
-        &resource,
-        get_name(),
-        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
+    auto node_match = make_node_match(&resource,
+                                      get_name(),
+                                      make_compare_expression(&resource,
+                                                              compare_type::eq,
+                                                              key(&resource, "key", side_t::left),
+                                                              core::parameter_id_t(1)));
     REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
 }
 
@@ -74,17 +76,17 @@ TEST_CASE("logical_plan::group") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key("_id"));
-        scalar_expr->append_param(key("date"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
-        auto agg_expr = make_aggregate_expression(&resource, aggregate_type::sum, key("total"));
+        auto agg_expr = make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "total"));
         auto expr_multiply = make_scalar_expression(&resource, scalar_type::multiply);
-        expr_multiply->append_param(key("price"));
-        expr_multiply->append_param(key("quantity"));
+        expr_multiply->append_param(key(&resource, "price"));
+        expr_multiply->append_param(key(&resource, "quantity"));
         agg_expr->append_param(std::move(expr_multiply));
         expressions.emplace_back(std::move(agg_expr));
-        agg_expr = make_aggregate_expression(&resource, aggregate_type::avg, key("avg_quantity"));
-        agg_expr->append_param(key("quantity"));
+        agg_expr = make_aggregate_expression(&resource, aggregate_type::avg, key(&resource, "avg_quantity"));
+        agg_expr->append_param(key(&resource, "quantity"));
         expressions.emplace_back(std::move(agg_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);
         REQUIRE(
@@ -93,12 +95,12 @@ TEST_CASE("logical_plan::group") {
     }
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key("_id"));
-        scalar_expr->append_param(key("date"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
-        scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key("count_4"));
+        scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "count_4"));
         scalar_expr->append_param(core::parameter_id_t(1));
-        scalar_expr->append_param(key("count"));
+        scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);
         REQUIRE(node_group->to_string() == R"_($group: {_id: "$date", count_4: {$multiply: [#1, "$count"]}})_");
@@ -109,14 +111,14 @@ TEST_CASE("logical_plan::sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key("key"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{key(&resource, "key"), sort_order::asc});
         auto node_sort = make_node_sort(&resource, get_name(), expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key: 1})_");
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key("key1"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key("key2"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{key(&resource, "key1"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{key(&resource, "key2"), sort_order::desc});
         auto node_sort = make_node_sort(&resource, get_name(), expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key1: 1, key2: -1})_");
     }
@@ -126,26 +128,28 @@ TEST_CASE("logical_plan::aggregate") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto aggregate = make_node_aggregate(&resource, {database_name, collection_name});
 
-    aggregate->append_child(make_node_match(
-        &resource,
-        {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1))));
+    aggregate->append_child(make_node_match(&resource,
+                                            {database_name, collection_name},
+                                            make_compare_expression(&resource,
+                                                                    compare_type::eq,
+                                                                    key(&resource, "key", side_t::left),
+                                                                    core::parameter_id_t(1))));
 
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key("_id"));
-        scalar_expr->append_param(key("date"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
-        scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key("count_4"));
+        scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "count_4"));
         scalar_expr->append_param(core::parameter_id_t(1));
-        scalar_expr->append_param(key("count"));
+        scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
         aggregate->append_child(make_node_group(&resource, {database_name, collection_name}, expressions));
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key("name"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key("count"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{key(&resource, "name"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{key(&resource, "count"), sort_order::desc});
         aggregate->append_child(make_node_sort(&resource, {database_name, collection_name}, expressions));
     }
 
@@ -215,10 +219,12 @@ TEST_CASE("logical_plan::limit") {
 
 TEST_CASE("logical_plan::delete") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto match = make_node_match(
-        &resource,
-        {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
+    auto match = make_node_match(&resource,
+                                 {database_name, collection_name},
+                                 make_compare_expression(&resource,
+                                                         compare_type::eq,
+                                                         key(&resource, "key", side_t::left),
+                                                         core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
         auto node = make_node_delete_many(&resource, {database_name, collection_name}, match);
@@ -236,12 +242,14 @@ TEST_CASE("logical_plan::delete") {
 
 TEST_CASE("logical_plan::update") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto match = make_node_match(
-        &resource,
-        {database_name, collection_name},
-        make_compare_expression(&resource, compare_type::eq, key("key", side_t::left), core::parameter_id_t(1)));
+    auto match = make_node_match(&resource,
+                                 {database_name, collection_name},
+                                 make_compare_expression(&resource,
+                                                         compare_type::eq,
+                                                         key(&resource, "key", side_t::left),
+                                                         core::parameter_id_t(1)));
 
-    update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{"count"});
+    update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
     update->left() = new update_expr_get_const_value_t(core::parameter_id_t(0));
 
     components::logical_plan::storage_parameters parameters{&resource};

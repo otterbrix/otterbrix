@@ -71,7 +71,7 @@ namespace components::serializer {
         append_enum(key_val.side());
         start_array(key_val.storage().size());
         for (const auto& str : key_val.storage()) {
-            packer_.pack(str);
+            packer_.pack(std::string_view(str));
         }
         end_array();
         end_array();

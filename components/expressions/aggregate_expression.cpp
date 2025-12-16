@@ -121,7 +121,7 @@ namespace components::expressions {
     }
 
     aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource, aggregate_type type) {
-        return make_aggregate_expression(resource, type, key_t());
+        return make_aggregate_expression(resource, type, key_t(resource));
     }
 
     aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource,

@@ -11,28 +11,28 @@ TEST_CASE("operator::get::get_value") {
     auto tape = std::make_unique<impl::base_document>(&resource);
     auto doc = gen_doc(1, &resource);
 
-    auto getter = get::simple_value_t::create(key("count"));
+    auto getter = get::simple_value_t::create(key(&resource, "count"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_int() == 1);
 
-    getter = get::simple_value_t::create(key("countStr"));
+    getter = get::simple_value_t::create(key(&resource, "countStr"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_string() == "1");
 
-    getter = get::simple_value_t::create(key("countArray/0"));
+    getter = get::simple_value_t::create(key(&resource, "countArray/0"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_int() == 1);
 
-    getter = get::simple_value_t::create(key("countDict/even"));
+    getter = get::simple_value_t::create(key(&resource, "countDict/even"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_bool() == false);
 
-    getter = get::simple_value_t::create(key("invalid"));
+    getter = get::simple_value_t::create(key(&resource, "invalid"));
     REQUIRE_FALSE(getter->value(doc));
 
-    getter = get::simple_value_t::create(key("countArray/10"));
+    getter = get::simple_value_t::create(key(&resource, "countArray/10"));
     REQUIRE_FALSE(getter->value(doc));
 
-    getter = get::simple_value_t::create(key("countDict/invalid"));
+    getter = get::simple_value_t::create(key(&resource, "countDict/invalid"));
     REQUIRE_FALSE(getter->value(doc));
 }

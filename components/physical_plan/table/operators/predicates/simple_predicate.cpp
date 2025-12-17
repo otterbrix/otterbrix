@@ -14,7 +14,7 @@ namespace components::table::operators::predicates {
                         const std::pmr::vector<types::complex_logical_type>& types) {
             std::pmr::vector<size_t> res(resource);
             for (uint64_t i = 0; i < types.size(); i++) {
-                if (types[i].alias() == key.storage().front()) {
+                if (core::pmr::operator==(types[i].alias(), key.storage().front())) {
                     res.emplace_back(i);
                     break;
                 }
@@ -27,7 +27,7 @@ namespace components::table::operators::predicates {
                 for (auto it = std::next(key.storage().begin()); it != key.storage().end(); ++it) {
                     bool field_found = false;
                     for (uint64_t i = 0; i < sub_column->child_types().size(); i++) {
-                        if (sub_column->child_types()[i].alias() == *it) {
+                        if (core::pmr::operator==(sub_column->child_types()[i].alias(), *it)) {
                             res.emplace_back(i);
                             sub_column = &sub_column->child_types()[i];
                             field_found = true;

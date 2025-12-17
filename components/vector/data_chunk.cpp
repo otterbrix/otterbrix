@@ -228,7 +228,7 @@ namespace components::vector {
     std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
         std::pmr::vector<size_t> res(resource_);
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (data[i].type().alias() == path.front()) {
+            if (core::pmr::operator==(data[i].type().alias(), path.front())) {
                 res.emplace_back(i);
                 break;
             }
@@ -241,7 +241,7 @@ namespace components::vector {
             for (auto it = std::next(path.begin()); it != path.end(); ++it) {
                 bool field_found = false;
                 for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                    if (sub_column->type().child_types()[i].alias() == *it) {
+                    if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
                         res.emplace_back(i);
                         if (std::next(it) != path.end()) {
                             sub_column = sub_column->entries()[i].get();

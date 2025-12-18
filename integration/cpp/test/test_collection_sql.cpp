@@ -549,8 +549,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->chunk_data().column_count() == 1);
-            for (int num = 0; num < 100; ++num) {
-                REQUIRE(types::is_equals(cur->chunk_data().value(0, num).value<float>(), (num + 0.5f) * 3.0f));
+            for (size_t num = 0; num < 100; ++num) {
+                REQUIRE(core::is_equals(cur->chunk_data().value(0, num).value<float>(), (num + 0.5f) * 3.0f));
             }
         }
     }

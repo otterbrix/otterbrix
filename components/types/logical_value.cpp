@@ -112,7 +112,7 @@ namespace components::types {
             case logical_type::INVALID:
                 [[fallthrough]];
             default:
-                assert(false && "cannot create value of invalid type");
+                break;
         }
     }
 

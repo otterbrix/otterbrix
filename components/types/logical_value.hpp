@@ -99,7 +99,7 @@ namespace components::types {
                      double,
                      void*,
 
-                     // everything bigger then 8 bytes or has no fixed size is allocated on the heap
+                     // everything bigger than 8 bytes or has no fixed size is allocated on the heap
 
                      std::unique_ptr<int128_t>,
                      std::unique_ptr<uint128_t>,

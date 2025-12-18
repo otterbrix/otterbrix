@@ -312,7 +312,8 @@ namespace components::types {
         } else if (type_ == logical_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        return "";
+        static std::string null_str = "";
+        return null_str;
     }
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {

@@ -133,10 +133,6 @@ namespace components::index {
                 if (column.type().alias() == keys.first->as_string()) {
                     return column.value(row);
                 }
-            } else {
-                size_t column_index =
-                    keys.first->is_int() ? static_cast<size_t>(keys.first->as_int()) : keys.first->as_uint();
-                return chunk.data.at(column_index).value(row);
             }
         }
         return types::logical_value_t{};

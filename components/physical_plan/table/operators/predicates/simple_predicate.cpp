@@ -40,7 +40,6 @@ namespace components::table::operators::predicates {
                 }
                 return {res, sub_column};
             }
-            return column_index;
         }
 
         template<typename T = void>
@@ -77,10 +76,9 @@ namespace components::table::operators::predicates {
             // SFINAE unable to compare types
             template<typename LeftType,
                      typename RightType,
-                     typename COMP,
+                     typename... Args,
                      std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(COMP&&, size_t, expressions::side_t, const logical_plan::expr_value_t&) const
-                -> simple_predicate::check_function_t {
+            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
                 throw std::runtime_error("invalid expression in create_unary_comparator");
             }
         };
@@ -90,7 +88,7 @@ namespace components::table::operators::predicates {
             template<typename LeftType,
                      typename RightType,
                      typename COMP,
-                     std::enable_if_t<core::has_less_operator<LeftType, RightType>::value, bool> = true>
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
             auto operator()(COMP&& comp,
                             std::pmr::vector<size_t> column_path_left,
                             std::pmr::vector<size_t> column_path_right,
@@ -213,7 +211,7 @@ namespace components::table::operators::predicates {
             bool one_sided = false;
             auto column_path_left = get_column_path(resource, expr->primary_key(), types_left);
             auto column_path_right = get_column_path(resource, expr->secondary_key(), types_right);
-            if (column_path_right.first.front() == -1) {
+            if (column_path_right.first.front() == std::numeric_limits<size_t>::max()) {
                 // one-sided expr
                 column_path_right = get_column_path(resource, expr->secondary_key(), types_left);
             }
@@ -263,7 +261,7 @@ namespace components::table::operators::predicates {
                                                          expressions::side_t::right);
                 } else {
                     auto path = get_column_path(resource, expr->primary_key(), types_left);
-                    if (path.first.front() != -1) {
+                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
                         return create_unary_comparator<COMP>(resource,
                                                              expr,
                                                              types_left,
@@ -271,7 +269,7 @@ namespace components::table::operators::predicates {
                                                              expressions::side_t::left);
                     }
                     path = get_column_path(resource, expr->primary_key(), types_right);
-                    if (path.first.front() != -1) {
+                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
                         // undefined sided expressions store value on the left side by default
                         return create_unary_comparator<COMP>(resource,
                                                              expr,
@@ -309,7 +307,7 @@ namespace components::table::operators::predicates {
                                                          expressions::side_t::right);
                 } else {
                     auto path = get_column_path(resource, expr->primary_key(), types_left);
-                    if (path.first.front() != -1) {
+                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
                         return create_unary_regex_comparator(resource,
                                                              expr,
                                                              types_left,
@@ -317,7 +315,7 @@ namespace components::table::operators::predicates {
                                                              expressions::side_t::left);
                     }
                     path = get_column_path(resource, expr->primary_key(), types_right);
-                    if (path.first.front() != -1) {
+                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
                         // undefined sided expressions store value on the left side by default
                         return create_unary_regex_comparator(resource,
                                                              expr,

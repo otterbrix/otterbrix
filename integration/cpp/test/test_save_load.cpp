@@ -29,7 +29,7 @@ cursor_t_ptr find_doc(otterbrix::wrapper_dispatcher_t* dispatcher,
     auto aggregate = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
     auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
-                                                                 key{"_id", side_t::left},
+                                                                 key{dispatcher->resource(), "_id", side_t::left},
                                                                  id_par{1});
     aggregate->append_child(
         components::logical_plan::make_node_match(dispatcher->resource(), {db_name, col_name}, std::move(expr)));
@@ -137,10 +137,11 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                     auto match = components::logical_plan::make_node_match(
                         dispatcher->resource(),
                         {db_name, col_name},
-                        components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::eq,
-                                                                         key{"count", side_t::left},
-                                                                         core::parameter_id_t{1}));
+                        components::expressions::make_compare_expression(
+                            dispatcher->resource(),
+                            compare_type::eq,
+                            key{dispatcher->resource(), "count", side_t::left},
+                            core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(1));
                     auto delete_one = components::logical_plan::make_node_delete_one(dispatcher->resource(),
@@ -152,14 +153,16 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                 {
                     auto expr = components::expressions::make_compare_union_expression(dispatcher->resource(),
                                                                                        compare_type::union_and);
-                    expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                        compare_type::gte,
-                                                                                        key{"count", side_t::left},
-                                                                                        core::parameter_id_t{1}));
-                    expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                        compare_type::lte,
-                                                                                        key{"count", side_t::left},
-                                                                                        core::parameter_id_t{2}));
+                    expr->append_child(components::expressions::make_compare_expression(
+                        dispatcher->resource(),
+                        compare_type::gte,
+                        key{dispatcher->resource(), "count", side_t::left},
+                        core::parameter_id_t{1}));
+                    expr->append_child(components::expressions::make_compare_expression(
+                        dispatcher->resource(),
+                        compare_type::lte,
+                        key{dispatcher->resource(), "count", side_t::left},
+                        core::parameter_id_t{2}));
                     auto match = components::logical_plan::make_node_match(dispatcher->resource(),
                                                                            {db_name, col_name},
                                                                            std::move(expr));
@@ -176,15 +179,17 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                     auto match = components::logical_plan::make_node_match(
                         dispatcher->resource(),
                         {db_name, col_name},
-                        components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::eq,
-                                                                         key{"count", side_t::left},
-                                                                         core::parameter_id_t{1}));
+                        components::expressions::make_compare_expression(
+                            dispatcher->resource(),
+                            compare_type::eq,
+                            key{dispatcher->resource(), "count", side_t::left},
+                            core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
                     params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(0));
                     components::expressions::update_expr_ptr update_expr =
-                        new components::expressions::update_expr_set_t(components::expressions::key_t{"count"});
+                        new components::expressions::update_expr_set_t(
+                            components::expressions::key_t{dispatcher->resource(), "count"});
                     update_expr->left() =
                         new components::expressions::update_expr_get_const_value_t(core::parameter_id_t{2});
                     auto update_one = components::logical_plan::make_node_update_one(dispatcher->resource(),
@@ -199,15 +204,17 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                     auto match = components::logical_plan::make_node_match(
                         dispatcher->resource(),
                         {db_name, col_name},
-                        components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::gt,
-                                                                         key{"count", side_t::left},
-                                                                         core::parameter_id_t{1}));
+                        components::expressions::make_compare_expression(
+                            dispatcher->resource(),
+                            compare_type::gt,
+                            key{dispatcher->resource(), "count", side_t::left},
+                            core::parameter_id_t{1}));
                     auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
                     params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(1000));
                     components::expressions::update_expr_ptr update_expr =
-                        new components::expressions::update_expr_set_t(components::expressions::key_t{"count"});
+                        new components::expressions::update_expr_set_t(
+                            components::expressions::key_t{dispatcher->resource(), "count"});
                     update_expr->left() =
                         new components::expressions::update_expr_get_const_value_t(core::parameter_id_t{2});
                     auto update_many = components::logical_plan::make_node_update_many(dispatcher->resource(),

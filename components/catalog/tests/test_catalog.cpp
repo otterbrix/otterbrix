@@ -42,7 +42,7 @@ TEST_CASE("catalog::schema_test") {
         fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
 
         std::vector<field_description> desc{{1}};
-        auto sch = schema(&mr, create_struct(fields, n_field_descriptions<4>()));
+        auto sch = schema(&mr, create_struct("schema", fields, n_field_descriptions<4>()));
 
         {
             auto err = cat.create_table({&mr, full}, {&mr, sch});
@@ -224,7 +224,7 @@ TEST_CASE("catalog::compute_schema") {
 
             sch.drop(field_str, t);
             if (!types_copy.empty()) {
-                auto vs = complex_logical_type::create_struct(sch.find_field_versions(field_str));
+                auto vs = complex_logical_type::create_struct("schema", sch.find_field_versions(field_str));
                 for (const auto& t_alive : types_copy) {
                     REQUIRE(complex_logical_type::contains(vs, t_alive.type()));
                 }

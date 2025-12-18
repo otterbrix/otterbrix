@@ -48,7 +48,7 @@ TEST_CASE("data_table_t") {
     fields.emplace_back(logical_type::INTEGER, "number");
     fields.emplace_back(logical_type::STRING_LITERAL, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
-    complex_logical_type struct_type = complex_logical_type::create_struct(fields, "test_struct");
+    complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
 
     std::vector<complex_logical_type> union_fields;
     union_fields.emplace_back(logical_type::BOOLEAN, "bool");
@@ -436,11 +436,11 @@ TEST_CASE("data_table_t") {
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::gte,
                                                 logical_value_t{row_range.first},
-                                                0));
+                                                std::vector<uint64_t>{0}));
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
                                                 logical_value_t{generate_string(row_range.second)},
-                                                1));
+                                                std::vector<uint64_t>{1}));
         data_chunk_t result(&resource, data_table->copy_types(), row_range.second - row_range.first);
         data_table->initialize_scan(state, column_indices, conj_and.get());
         data_table->scan(result, state);

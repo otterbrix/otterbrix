@@ -9,12 +9,12 @@
 namespace components::table::operators {
 
     struct group_key_t {
-        std::string name;
+        std::pmr::string name;
         get::operator_get_ptr getter;
     };
 
     struct group_value_t {
-        std::string name;
+        std::pmr::string name;
         aggregate::operator_aggregate_ptr aggregator;
     };
 
@@ -23,8 +23,8 @@ namespace components::table::operators {
         explicit operator_group_t(services::collection::context_collection_t* context);
         explicit operator_group_t(std::pmr::memory_resource* resource);
 
-        void add_key(const std::string& name, get::operator_get_ptr&& getter);
-        void add_value(const std::string& name, aggregate::operator_aggregate_ptr&& aggregator);
+        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
+        void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
 
     private:
         std::pmr::vector<group_key_t> keys_;

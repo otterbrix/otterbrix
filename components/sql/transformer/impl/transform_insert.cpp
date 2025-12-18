@@ -11,8 +11,16 @@ namespace components::sql::transform {
         auto fields = pg_ptr_cast<List>(node.cols)->lst;
         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>> key_translation(resource_);
         for (const auto& field : fields) {
-            auto name = pg_ptr_cast<ResTarget>(field.data)->name;
-            key_translation.emplace_back(name, name);
+            auto target = pg_ptr_cast<ResTarget>(field.data);
+            if (target->indirection->lst.empty()) {
+                key_translation.emplace_back(expressions::key_t{resource_, target->name},
+                                             expressions::key_t{resource_, target->name});
+            } else {
+                auto key = expressions::key_t{
+                    std::pmr::vector<std::pmr::string>{{target->name, resource_},
+                                                       pmrStrVal(target->indirection->lst.back().data, resource_)}};
+                key_translation.emplace_back(key, key);
+            }
         }
 
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {

@@ -41,7 +41,7 @@ namespace components::types {
 
         const std::vector<logical_value_t>& children() const;
 
-        static logical_value_t create_struct(const std::vector<logical_value_t>& fields);
+        static logical_value_t create_struct(std::string name, const std::vector<logical_value_t>& fields);
         static logical_value_t create_struct(const complex_logical_type& type,
                                              const std::vector<logical_value_t>& struct_values);
         static logical_value_t create_array(const complex_logical_type& internal_type,

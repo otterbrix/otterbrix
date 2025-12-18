@@ -35,13 +35,15 @@ private:
 TEST_CASE("base index created") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto index_engine = make_index_engine(&resource);
-    auto one_id = make_index<dummy>(index_engine, "dummy_one", {components::expressions::key_t{"1"}});
-    auto two_id = make_index<dummy>(index_engine,
-                                    "dummy_two",
-                                    {components::expressions::key_t{"1"}, components::expressions::key_t{"2"}});
-    auto two_1_id = make_index<dummy>(index_engine,
-                                      "dummy_two_1",
-                                      {components::expressions::key_t{"2"}, components::expressions::key_t{"1"}});
+    auto one_id = make_index<dummy>(index_engine, "dummy_one", {components::expressions::key_t{&resource, "1"}});
+    auto two_id = make_index<dummy>(
+        index_engine,
+        "dummy_two",
+        {components::expressions::key_t{&resource, "1"}, components::expressions::key_t{&resource, "2"}});
+    auto two_1_id = make_index<dummy>(
+        index_engine,
+        "dummy_two_1",
+        {components::expressions::key_t{&resource, "2"}, components::expressions::key_t{&resource, "1"}});
     REQUIRE(index_engine->size() == 3);
     REQUIRE(search_index(index_engine, one_id) != nullptr);
     REQUIRE(search_index(index_engine, two_id) != nullptr);

@@ -25,7 +25,8 @@ namespace components::table::operators::predicates {
         expressions::compare_type nested_type_ = expressions::compare_type::invalid;
     };
 
-    predicate_ptr create_simple_predicate(const expressions::compare_expression_ptr& expr,
+    predicate_ptr create_simple_predicate(std::pmr::memory_resource* resource,
+                                          const expressions::compare_expression_ptr& expr,
                                           const std::pmr::vector<types::complex_logical_type>& types_left,
                                           const std::pmr::vector<types::complex_logical_type>& types_right,
                                           const logical_plan::storage_parameters* parameters);

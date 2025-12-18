@@ -12,7 +12,7 @@ namespace components::table::operators {
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
         // TODO: worth to create separate update_join operator or mutable_join with callback
         if (left_ && left_->output() && right_ && right_->output()) {
-            modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+            modified_ = base::operators::make_operator_write_data<size_t>(left_->output()->resource());
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
             auto types_left = chunk_left.types();
@@ -28,7 +28,8 @@ namespace components::table::operators {
 
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, ids_capacity);
-            auto predicate = compare_expression_ ? predicates::create_predicate(compare_expression_,
+            auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                                compare_expression_,
                                                                                 types_left,
                                                                                 types_right,
                                                                                 &pipeline_context->parameters)
@@ -54,7 +55,7 @@ namespace components::table::operators {
                 context_->index_engine()->delete_row(chunk_left, id, pipeline_context);
             }
         } else if (left_ && left_->output()) {
-            modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+            modified_ = base::operators::make_operator_write_data<size_t>(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
             auto types = chunk.types();
             std::unordered_map<std::string, size_t> name_index_map;
@@ -63,10 +64,12 @@ namespace components::table::operators {
             }
 
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
-            auto predicate =
-                compare_expression_
-                    ? predicates::create_predicate(compare_expression_, types, types, &pipeline_context->parameters)
-                    : predicates::create_all_true_predicate(left_->output()->resource());
+            auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                                compare_expression_,
+                                                                                types,
+                                                                                types,
+                                                                                &pipeline_context->parameters)
+                                                 : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk.size(); i++) {

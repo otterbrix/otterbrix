@@ -60,7 +60,7 @@ constexpr int kDocuments = 100;
                                                                      {database_name, collection_name},                 \
                                                                      INDEX_NAME,                                       \
                                                                      components::logical_plan::index_type::single);    \
-        node->keys().emplace_back(KEY);                                                                                \
+        node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
         dispatcher->create_index(session, node);                                                                       \
     } while (false)
 
@@ -71,7 +71,7 @@ constexpr int kDocuments = 100;
                                                                      {database_name, collection_name},                 \
                                                                      INDEX_NAME,                                       \
                                                                      components::logical_plan::index_type::single);    \
-        node->keys().emplace_back(KEY);                                                                                \
+        node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
         auto res = dispatcher->create_index(session, node);                                                            \
         REQUIRE(res->is_error() == true);                                                                              \
         REQUIRE(res->get_error().type == components::cursor::error_code_t::index_create_fail);                         \
@@ -104,7 +104,7 @@ constexpr int kDocuments = 100;
             components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});   \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
-                                                                     key{KEY, SIDE},                                   \
+                                                                     key{dispatcher->resource(), KEY, SIDE},           \
                                                                      id_par{1});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
                                                                      {database_name, collection_name},                 \
@@ -143,10 +143,11 @@ TEST_CASE("integration::test_index::base") {
 
             auto plan =
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::eq,
-                                                                         key{"count", side_t::left},
-                                                                         id_par{1});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));

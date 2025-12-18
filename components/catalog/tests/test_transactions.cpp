@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
 
-#include "catalog/catalog.hpp"
 #include "utils.hpp"
+#include <components/catalog/catalog.hpp>
 
 #include <memory_resource>
 
@@ -72,7 +72,7 @@ TEST_CASE("catalog::transactions::changes") {
     {
         auto column = complex_logical_type(logical_type::BIGINT);
         column.set_alias("col");
-        schema sch(&mr, create_struct({column}, {field_description(1, false, "test")}), {1});
+        schema sch(&mr, create_struct("schema", {column}, {field_description(1, false, "test")}), {1});
         auto err = cat.create_table({&mr, full}, {&mr, sch});
         REQUIRE(!err);
     }

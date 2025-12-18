@@ -33,6 +33,14 @@ namespace components::sql::transform {
         return *endptr == '\0';
     }
 
+    bool name_collection_t::is_left_table(const std::string& name) const {
+        return name == left_name.collection || name == left_alias;
+    }
+
+    bool name_collection_t::is_right_table(const std::string& name) const {
+        return name == right_name.collection || name == right_alias;
+    }
+
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
         if (target_name.empty()) {
             return expressions::side_t::undefined;
@@ -50,15 +58,50 @@ namespace components::sql::transform {
         field.set_side(transform::deduce_side(names, table));
     }
 
-    column_ref_t columnref_to_fied(ColumnRef* ref) {
+    column_ref_t
+    columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names) {
         auto lst = ref->fields->lst;
         if (lst.empty()) {
-            return column_ref_t();
+            return column_ref_t(resource);
         } else if (lst.size() == 1) {
-            return column_ref_t{{}, expressions::key_t(strVal(lst.back().data))};
+            return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
         } else {
-            return column_ref_t{strVal(std::next(lst.rbegin())->data), expressions::key_t(strVal(lst.rbegin()->data))};
+            auto it = lst.begin();
+            std::string table_name;
+            std::pmr::vector<std::pmr::string> field_path(resource);
+            expressions::side_t side = expressions::side_t::undefined;
+
+            if (names.is_left_table(strVal(lst.begin()->data))) {
+                table_name = strVal(it->data);
+                ++it;
+                side = expressions::side_t::left;
+            } else if (names.is_right_table(strVal(lst.begin()->data))) {
+                table_name = strVal(it->data);
+                ++it;
+                side = expressions::side_t::right;
+            }
+            for (; it != lst.end(); ++it) {
+                if (nodeTag(it->data) == T_A_Star) {
+                    field_path.emplace_back(std::pmr::string{"*", resource});
+                } else {
+                    field_path.emplace_back(pmrStrVal(it->data, resource));
+                }
+            }
+            return {std::move(table_name), expressions::key_t{std::move(field_path), side}};
         }
+    }
+
+    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
+                                      A_Indirection* indirection,
+                                      const name_collection_t& names) {
+        column_ref_t ref(resource);
+        if (nodeTag(indirection->arg) == T_ColumnRef) {
+            ref = columnref_to_field(resource, pg_ptr_cast<ColumnRef>(indirection->arg), names);
+        } else {
+            ref = indirection_to_field(resource, pg_ptr_cast<A_Indirection>(indirection->arg), names);
+        }
+        ref.field.storage().emplace_back(strVal(indirection->indirection->lst.back().data));
+        return ref;
     }
 
     std::string node_tag_to_string(NodeTag type) {
@@ -195,7 +238,12 @@ namespace components::sql::transform {
                                                                      static_cast<uint8_t>(intVal(&scale->val)));
             }
         } else {
-            column = get_logical_type(linint_name);
+            types::logical_type t = get_logical_type(linint_name);
+            if (t == types::logical_type::UNKNOWN) {
+                column = types::complex_logical_type::create_unknown(linint_name);
+            } else {
+                column = t;
+            }
         }
 
         if (list_length(type->arrayBounds)) {

@@ -236,7 +236,7 @@ namespace components::vector::vector_ops {
             input.to_unified_format(count, idata);
 
             auto& child = input.entry();
-            auto array_size = static_cast<types::array_logical_type_extension*>(input.type().extension())->size();
+            auto array_size = static_cast<const types::array_logical_type_extension*>(input.type().extension())->size();
 
             auto is_flat = input.get_vector_type() == vector_type::FLAT;
             auto is_constant = input.get_vector_type() == vector_type::CONSTANT;
@@ -756,7 +756,8 @@ namespace components::vector::vector_ops {
                 auto& source_child = source_ptr->entry();
                 auto& target_child = target.entry();
                 auto array_size =
-                    reinterpret_cast<types::array_logical_type_extension*>(source_ptr->type().extension())->size();
+                    reinterpret_cast<const types::array_logical_type_extension*>(source_ptr->type().extension())
+                        ->size();
 
                 indexing_vector_t child_indexing(source_ptr->resource(), source_count * array_size);
                 for (uint64_t i = 0; i < copy_count; i++) {

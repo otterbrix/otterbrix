@@ -100,10 +100,11 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             auto plan =
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::gt,
-                                                                         key{"count", side_t::left},
-                                                                         id_par{1});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::gt,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
@@ -118,10 +119,11 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             auto plan =
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::regex,
-                                                                         key{"countStr", side_t::left},
-                                                                         id_par{1});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::regex,
+                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
@@ -138,14 +140,16 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
             auto expr =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_or);
-            expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::gt,
-                                                                                key{"count", side_t::left},
-                                                                                id_par{1}));
-            expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::regex,
-                                                                                key{"countStr", side_t::left},
-                                                                                id_par{2}));
+            expr->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::gt,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1}));
+            expr->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::regex,
+                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
@@ -165,19 +169,22 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_and);
             auto expr_or =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_or);
-            expr_or->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                   compare_type::gt,
-                                                                                   key{"count", side_t::left},
-                                                                                   id_par{1}));
-            expr_or->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                   compare_type::regex,
-                                                                                   key{"countStr", side_t::left},
-                                                                                   id_par{2}));
+            expr_or->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::gt,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1}));
+            expr_or->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::regex,
+                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 id_par{2}));
             expr_and->append_child(expr_or);
-            expr_and->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                    compare_type::lte,
-                                                                                    key{"count", side_t::left},
-                                                                                    id_par{3}));
+            expr_and->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::lte,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{3}));
 
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
@@ -211,10 +218,11 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             auto plan =
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::eq,
-                                                                         key{"_id", side_t::left},
-                                                                         id_par{1});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 key{dispatcher->resource(), "_id", side_t::left},
+                                                                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
@@ -227,10 +235,11 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             auto plan =
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                         compare_type::eq,
-                                                                         key{"count", side_t::left},
-                                                                         id_par{1});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
@@ -246,14 +255,16 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
             auto expr =
                 components::expressions::make_compare_union_expression(dispatcher->resource(), compare_type::union_and);
-            expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::gt,
-                                                                                key{"count", side_t::left},
-                                                                                id_par{1}));
-            expr->append_child(components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                                compare_type::regex,
-                                                                                key{"countStr", side_t::left},
-                                                                                id_par{2}));
+            expr->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::gt,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1}));
+            expr->append_child(
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::regex,
+                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));

@@ -8,6 +8,8 @@ namespace components::logical_plan {
         : node_t(resource, node_type::create_type_t, {})
         , type_(std::move(type)) {}
 
+    types::complex_logical_type& node_create_type_t::type() noexcept { return type_; }
+
     const types::complex_logical_type& node_create_type_t::type() const noexcept { return type_; }
 
     node_ptr node_create_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
@@ -21,7 +23,7 @@ namespace components::logical_plan {
 
     std::string node_create_type_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_type: name: " << type_.alias() << ", fields:[ ";
+        stream << "$create_type: name: " << type_.type_name() << ", fields:[ ";
         if (type_.type() == types::logical_type::ENUM) {
             const auto& entries = static_cast<const types::enum_logical_type_extension*>(type_.extension())->entries();
             for (const auto& entry : entries) {

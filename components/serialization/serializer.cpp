@@ -68,16 +68,12 @@ namespace components::serializer {
 
     void msgpack_serializer_t::append(const expressions::key_t& key_val) {
         start_array(2);
-        if (key_val.is_string()) {
-            packer_.pack(key_val.as_string());
-        } else if (key_val.is_int()) {
-            packer_.pack(key_val.as_int());
-        } else if (key_val.is_uint()) {
-            packer_.pack(key_val.as_uint());
-        } else {
-            packer_.pack_nil();
-        }
         append_enum(key_val.side());
+        start_array(key_val.storage().size());
+        for (const auto& str : key_val.storage()) {
+            packer_.pack(std::string_view(str));
+        }
+        end_array();
         end_array();
     }
 

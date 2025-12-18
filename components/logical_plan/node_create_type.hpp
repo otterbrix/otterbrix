@@ -9,6 +9,7 @@ namespace components::logical_plan {
     public:
         explicit node_create_type_t(std::pmr::memory_resource* resource, types::complex_logical_type&& type);
 
+        types::complex_logical_type& type() noexcept;
         const types::complex_logical_type& type() const noexcept;
 
         static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);

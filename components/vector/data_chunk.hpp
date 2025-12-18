@@ -31,7 +31,12 @@ namespace components::vector {
         void set_capacity(const data_chunk_t& other) { set_capacity(other.capacity_); }
 
         types::logical_value_t value(uint64_t col_idx, uint64_t index) const;
+        types::logical_value_t value(const std::pmr::vector<size_t>& col_indices, uint64_t index) const;
         void set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val);
+        void set_value(const std::pmr::vector<size_t>& col_indices, uint64_t index, const types::logical_value_t& val);
+
+        vector_t* at(const std::pmr::vector<size_t>& col_indices);
+        const vector_t* at(const std::pmr::vector<size_t>& col_indices) const;
 
         uint64_t allocation_size() const;
 
@@ -75,6 +80,7 @@ namespace components::vector {
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> types() const;
         size_t column_index(std::string_view key) const;
+        std::pmr::vector<size_t> sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const;
 
         std::pmr::memory_resource* resource() const;
 

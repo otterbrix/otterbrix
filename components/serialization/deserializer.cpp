@@ -78,21 +78,20 @@ namespace components::serializer {
     }
 
     expressions::key_t msgpack_deserializer_t::deserialize_key(size_t index) {
-        expressions::key_t res;
+        expressions::key_t res(resource());
         advance_array(index);
-        auto side = deserialize_enum<expressions::side_t>(1);
-        if (working_tree_.top()->ptr[0].type == msgpack::type::POSITIVE_INTEGER) {
-            res = expressions::key_t{static_cast<int32_t>(working_tree_.top()->ptr[0].via.u64), side};
-        } else if (working_tree_.top()->ptr[0].type == msgpack::type::NEGATIVE_INTEGER) {
-            res = expressions::key_t{static_cast<uint32_t>(working_tree_.top()->ptr[0].via.i64), side};
-        } else if (working_tree_.top()->ptr[0].type == msgpack::type::STR) {
-            res = expressions::key_t{working_tree_.top()->ptr[0].via.str.ptr,
-                                     working_tree_.top()->ptr[0].via.str.size,
-                                     side};
-        } else {
-            res.set_side(side);
+        auto side = deserialize_enum<expressions::side_t>(0);
+        std::pmr::vector<std::pmr::string> str_vector(resource());
+        advance_array(1);
+        str_vector.reserve(current_array_size());
+        for (size_t i = 0; i < str_vector.capacity(); i++) {
+            str_vector.emplace_back(std::pmr::string{working_tree_.top()->ptr[0].via.str.ptr,
+                                                     working_tree_.top()->ptr[0].via.str.size,
+                                                     resource()});
         }
         pop_array();
+        pop_array();
+        res = expressions::key_t{std::move(str_vector), side};
         return res;
     }
 

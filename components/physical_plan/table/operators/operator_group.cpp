@@ -23,11 +23,11 @@ namespace components::table::operators {
         , result_types_(resource)
         , transposed_output_(resource) {}
 
-    void operator_group_t::add_key(const std::string& name, get::operator_get_ptr&& getter) {
+    void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
         keys_.push_back({name, std::move(getter)});
     }
 
-    void operator_group_t::add_value(const std::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
+    void operator_group_t::add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
         values_.push_back({name, std::move(aggregator)});
     }
 
@@ -47,9 +47,9 @@ namespace components::table::operators {
         auto matrix = impl::transpose(left_->output()->resource(), chunk);
         if (!matrix.empty()) {
             for (const auto& key : keys_) {
-                auto value = key.getter->value(matrix.front());
-                if (!value.is_null()) {
-                    result_types_.emplace_back(value.type());
+                auto values = key.getter->values(matrix.front());
+                for (const auto& val : values) {
+                    result_types_.emplace_back(val.type());
                 }
             }
         }
@@ -59,13 +59,17 @@ namespace components::table::operators {
             bool is_valid = true;
 
             for (const auto& key : keys_) {
-                auto value = key.getter->value(row);
-                if (value.is_null()) {
+                auto values = key.getter->values(row);
+                if (values.empty()) {
                     is_valid = false;
                     break;
                 } else {
-                    value.set_alias(key.name);
-                    new_row.emplace_back(std::move(value));
+                    for (auto& val : values) {
+                        if (key.name != "*") {
+                            val.set_alias(std::string{key.name});
+                        }
+                        new_row.emplace_back(std::move(val));
+                    }
                 }
             }
             if (is_valid) {

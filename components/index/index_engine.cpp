@@ -4,7 +4,7 @@
 #include <utility>
 
 #include "core/pmr.hpp"
-#include "vector/data_chunk.hpp"
+#include <components/vector/data_chunk.hpp>
 
 #include <components/index/disk/route.hpp>
 
@@ -58,13 +58,11 @@ namespace components::index {
         auto* index = search_index(ptr, id);
         auto range = index->keys();
         for (auto j = range.first; j != range.second; ++j) {
-            if (j->which() == key_t::type::string) {
-                const auto& key_tmp = *j;
-                const std::string& key = key_tmp.as_string(); // hack
-                if (!(doc->is_null(key))) {
-                    auto data = doc->get_value(key).as_logical_value();
-                    index->insert(data, doc);
-                }
+            const auto& key_tmp = *j;
+            const std::string& key = key_tmp.as_string(); // hack
+            if (!(doc->is_null(key))) {
+                auto data = doc->get_value(key).as_logical_value();
+                index->insert(data, doc);
             }
         }
     }
@@ -104,22 +102,15 @@ namespace components::index {
     bool is_match_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
         auto keys = index->keys();
         for (auto key = keys.first; key != keys.second; ++key) {
-            if (key->is_string()) {
-                bool key_found = false;
-                for (const auto& column : chunk.data) {
-                    if (column.type().alias() == key->as_string()) {
-                        key_found = true;
-                        break;
-                    }
+            bool key_found = false;
+            for (const auto& column : chunk.data) {
+                if (column.type().alias() == key->as_string()) {
+                    key_found = true;
+                    break;
                 }
-                if (!key_found) {
-                    return false;
-                }
-            } else {
-                size_t column_index = key->is_int() ? key->as_int() : key->as_uint();
-                if (column_index >= chunk.column_count()) {
-                    return false;
-                }
+            }
+            if (!key_found) {
+                return false;
             }
         }
         return true;
@@ -138,15 +129,10 @@ namespace components::index {
         auto keys = index->keys();
         if (keys.first != keys.second) {
             //todo: multi values index
-            if (keys.first->is_string()) {
-                for (const auto& column : chunk.data) {
-                    if (column.type().alias() == keys.first->as_string()) {
-                        return column.value(row);
-                    }
+            for (const auto& column : chunk.data) {
+                if (column.type().alias() == keys.first->as_string()) {
+                    return column.value(row);
                 }
-            } else {
-                size_t column_index = keys.first->is_int() ? keys.first->as_int() : keys.first->as_uint();
-                return chunk.data.at(column_index).value(row);
             }
         }
         return types::logical_value_t{};

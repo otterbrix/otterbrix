@@ -1,9 +1,8 @@
 #pragma once
 
-#include "expressions/key.hpp"
-
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
+#include <components/expressions/key.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 #include <components/sql/parser/pg_functions.h>
@@ -47,6 +46,9 @@ namespace components::sql::transform {
         std::string left_alias;
         collection_full_name_t right_name;
         std::string right_alias;
+
+        bool is_left_table(const std::string& name) const;
+        bool is_right_table(const std::string& name) const;
     };
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
@@ -55,10 +57,19 @@ namespace components::sql::transform {
         std::string table;
         expressions::key_t field;
 
+        explicit column_ref_t(std::pmr::memory_resource* resource)
+            : field(resource) {}
+        column_ref_t(std::string table, expressions::key_t field)
+            : table(std::move(table))
+            , field(std::move(field)) {}
         void deduce_side(const name_collection_t& names);
     };
 
-    column_ref_t columnref_to_fied(ColumnRef* ref);
+    column_ref_t
+    columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names);
+    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
+                                      A_Indirection* indirection,
+                                      const name_collection_t& names);
 
     static logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {

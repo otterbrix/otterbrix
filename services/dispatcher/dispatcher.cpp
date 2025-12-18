@@ -728,7 +728,7 @@ namespace services::dispatcher {
                                                                         *it,
                                                                         data_node->data_chunk().capacity());
                                 for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).value<std::string_view>();
+                                    auto val = column.data<std::string_view>()[i];
                                     auto enum_val = logical_value_t::create_enum(*it, val);
                                     if (enum_val.type().type() == logical_type::NA) {
                                         result =

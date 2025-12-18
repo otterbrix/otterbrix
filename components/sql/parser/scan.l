@@ -32,11 +32,11 @@
 #include <ctype.h>
 #include <unistd.h>
 
-#include "gramparse.h"
-#include "guc.h"				/* only needed for GUC variables */
-#include "scansup.h"
-#include "pg_functions.h"
-#include "pg_wchar.h"
+#include <components/sql/parser/gramparse.h>
+#include <components/sql/parser/guc.h>				/* only needed for GUC variables */
+#include <components/sql/parser/scansup.h>
+#include <components/sql/parser/pg_functions.h>
+#include <components/sql/parser/pg_wchar.h>
 }
 
 %{

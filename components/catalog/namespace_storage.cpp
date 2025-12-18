@@ -1,4 +1,4 @@
-#include "catalog/namespace_storage.hpp"
+#include <components/catalog/namespace_storage.hpp>
 
 namespace components::catalog {
     namespace_storage::namespace_storage(std::pmr::memory_resource* resource)
@@ -42,27 +42,27 @@ namespace components::catalog {
     }
 
     void namespace_storage::create_type(const types::complex_logical_type& type) {
-        if (type_exists(type.alias())) {
+        if (type_exists(type.type_name())) {
             return;
         }
 
-        registered_types_.emplace(type.alias(), type);
+        registered_types_.emplace(type.type_name(), type);
     }
 
-    void namespace_storage::drop_type(const std::string& alias) {
-        if (!type_exists(alias)) {
+    void namespace_storage::drop_type(const std::string& type_name) {
+        if (!type_exists(type_name)) {
             return;
         }
 
-        registered_types_.erase(alias);
+        registered_types_.erase(type_name);
     }
 
-    bool namespace_storage::type_exists(const std::string& alias) const {
+    bool namespace_storage::type_exists(const std::string& type_name) const {
         if (registered_types_.empty()) {
             return false;
         }
 
-        auto it = registered_types_.find(alias);
+        auto it = registered_types_.find(type_name);
         return it != registered_types_.end();
     }
 
@@ -154,12 +154,12 @@ namespace components::catalog {
         return namespaces_.find(namespace_name)->value;
     }
 
-    const types::complex_logical_type& namespace_storage::get_type(const std::string& alias) const {
-        if (!type_exists(alias)) {
-            throw std::logic_error("type does not registered: " + alias);
+    const types::complex_logical_type& namespace_storage::get_type(const std::string& type_name) const {
+        if (!type_exists(type_name)) {
+            throw std::logic_error("type does not registered: " + type_name);
         }
 
-        return registered_types_.find(alias)->second;
+        return registered_types_.find(type_name)->second;
     }
 
     void namespace_storage::clear() { namespaces_.clear(); }

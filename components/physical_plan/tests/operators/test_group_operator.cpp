@@ -32,7 +32,7 @@ TEST_CASE("operator::group::base") {
             collection::operators::operator_group_t group(d(collection));
             group.set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group.add_key("id_", collection::operators::get::simple_value_t::create(key("id_")));
+            group.add_key("id_", collection::operators::get::simple_value_t::create(key(&resource, "id_")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 0);
         }
@@ -40,7 +40,7 @@ TEST_CASE("operator::group::base") {
             table::operators::operator_group_t group(d(table));
             group.set_children(
                 boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group.add_key("id_", table::operators::get::simple_value_t::create(key("id_")));
+            group.add_key("id_", table::operators::get::simple_value_t::create(key(&resource, "id_")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 0);
         }
@@ -51,7 +51,7 @@ TEST_CASE("operator::group::base") {
             collection::operators::operator_group_t group(d(collection));
             group.set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group.add_key("_id", collection::operators::get::simple_value_t::create(key("_id")));
+            group.add_key("_id", collection::operators::get::simple_value_t::create(key(&resource, "_id")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 100);
         }
@@ -59,7 +59,7 @@ TEST_CASE("operator::group::base") {
             table::operators::operator_group_t group(d(table));
             group.set_children(
                 boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group.add_key("_id", table::operators::get::simple_value_t::create(key("_id")));
+            group.add_key("_id", table::operators::get::simple_value_t::create(key(&resource, "_id")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 100);
         }
@@ -70,7 +70,7 @@ TEST_CASE("operator::group::base") {
             collection::operators::operator_group_t group(d(collection));
             group.set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group.add_key("countBool", collection::operators::get::simple_value_t::create(key("countBool")));
+            group.add_key("countBool", collection::operators::get::simple_value_t::create(key(&resource, "countBool")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 2);
         }
@@ -78,7 +78,7 @@ TEST_CASE("operator::group::base") {
             table::operators::operator_group_t group(d(table));
             group.set_children(
                 boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group.add_key("countBool", table::operators::get::simple_value_t::create(key("countBool")));
+            group.add_key("countBool", table::operators::get::simple_value_t::create(key(&resource, "countBool")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 2);
         }
@@ -89,9 +89,10 @@ TEST_CASE("operator::group::base") {
             collection::operators::operator_group_t group(d(collection));
             group.set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group.add_key("even", collection::operators::get::simple_value_t::create(key("countDict/even")));
-            group.add_key("three", collection::operators::get::simple_value_t::create(key("countDict/three")));
-            group.add_key("five", collection::operators::get::simple_value_t::create(key("countDict/five")));
+            group.add_key("even", collection::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group.add_key("three",
+                          collection::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group.add_key("five", collection::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 8);
         }
@@ -100,9 +101,9 @@ TEST_CASE("operator::group::base") {
             table::operators::operator_group_t group(d(table));
             group.set_children(
             boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group.add_key("even", table::operators::get::simple_value_t::create(key("countDict/even")));
-            group.add_key("three", table::operators::get::simple_value_t::create(key("countDict/three")));
-            group.add_key("five", table::operators::get::simple_value_t::create(key("countDict/five")));
+            group.add_key("even", table::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group.add_key("three", table::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group.add_key("five", table::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
             group.on_execute(nullptr);
             REQUIRE(group.output()->size() == 8);
         }
@@ -120,9 +121,12 @@ TEST_CASE("operator::group::sort") {
             auto group = boost::intrusive_ptr(new collection::operators::operator_group_t(d(collection)));
             group->set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group->add_key("even", collection::operators::get::simple_value_t::create(key("countDict/even")));
-            group->add_key("three", collection::operators::get::simple_value_t::create(key("countDict/three")));
-            group->add_key("five", collection::operators::get::simple_value_t::create(key("countDict/five")));
+            group->add_key("even",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group->add_key("three",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group->add_key("five",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
             auto sort = boost::intrusive_ptr(new collection::operators::operator_sort_t(d(collection)));
             sort->set_children(std::move(group));
             sort->add({"even", "three", "five"});
@@ -148,9 +152,9 @@ TEST_CASE("operator::group::sort") {
             auto group = boost::intrusive_ptr(new table::operators::operator_group_t(d(table)));
             group->set_children(
                 boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group->add_key("even", table::operators::get::simple_value_t::create(key("countDict/even")));
-            group->add_key("three", table::operators::get::simple_value_t::create(key("countDict/three")));
-            group->add_key("five", table::operators::get::simple_value_t::create(key("countDict/five")));
+            group->add_key("even", table::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group->add_key("three", table::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group->add_key("five", table::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
             auto sort = boost::intrusive_ptr(new table::operators::operator_sort_t(d(table)));
             sort->set_children(std::move(group));
             sort->add({"even", "three", "five"});
@@ -185,19 +189,24 @@ TEST_CASE("operator::group::all") {
             auto group = boost::intrusive_ptr(new collection::operators::operator_group_t(d(collection)));
             group->set_children(boost::intrusive_ptr(
                 new collection::operators::transfer_scan(d(collection), logical_plan::limit_t::unlimit())));
-            group->add_key("even", collection::operators::get::simple_value_t::create(key("countDict/even")));
-            group->add_key("three", collection::operators::get::simple_value_t::create(key("countDict/three")));
-            group->add_key("five", collection::operators::get::simple_value_t::create(key("countDict/five")));
+            group->add_key("even",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group->add_key("three",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group->add_key("five",
+                           collection::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
 
             group->add_value(
                 "count",
                 boost::intrusive_ptr(new collection::operators::aggregate::operator_count_t(d(collection))));
-            group->add_value("sum",
-                             boost::intrusive_ptr(
-                                 new collection::operators::aggregate::operator_sum_t(d(collection), key("count"))));
-            group->add_value("avg",
-                             boost::intrusive_ptr(
-                                 new collection::operators::aggregate::operator_avg_t(d(collection), key("count"))));
+            group->add_value(
+                "sum",
+                boost::intrusive_ptr(
+                    new collection::operators::aggregate::operator_sum_t(d(collection), key(&resource, "count"))));
+            group->add_value(
+                "avg",
+                boost::intrusive_ptr(
+                    new collection::operators::aggregate::operator_avg_t(d(collection), key(&resource, "count"))));
 
             auto sort = boost::intrusive_ptr(new collection::operators::operator_sort_t(d(collection)));
             sort->set_children(std::move(group));
@@ -220,13 +229,13 @@ TEST_CASE("operator::group::all") {
             auto group = boost::intrusive_ptr(new table::operators::operator_group_t(d(table)));
             group->set_children(
                 boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-            group->add_key("even", table::operators::get::simple_value_t::create(key("countDict/even")));
-            group->add_key("three", table::operators::get::simple_value_t::create(key("countDict/three")));
-            group->add_key("five", table::operators::get::simple_value_t::create(key("countDict/five")));
+            group->add_key("even", table::operators::get::simple_value_t::create(key(&resource, "countDict/even")));
+            group->add_key("three", table::operators::get::simple_value_t::create(key(&resource, "countDict/three")));
+            group->add_key("five", table::operators::get::simple_value_t::create(key(&resource, "countDict/five")));
 
             group->add_value("count", boost::intrusive_ptr(new table::operators::aggregate::operator_count_t(d(table))));
-            group->add_value("sum", boost::intrusive_ptr(new table::operators::aggregate::operator_sum_t(d(table), key("count"))));
-            group->add_value("avg", boost::intrusive_ptr(new table::operators::aggregate::operator_avg_t(d(table), key("count"))));
+            group->add_value("sum", boost::intrusive_ptr(new table::operators::aggregate::operator_sum_t(d(table), key(&resource, "count"))));
+            group->add_value("avg", boost::intrusive_ptr(new table::operators::aggregate::operator_avg_t(d(table), key(&resource, "count"))));
 
             auto sort = boost::intrusive_ptr(new table::operators::operator_sort_t(d(table)));
             sort->set_children(std::move(group));

@@ -12,21 +12,21 @@ namespace components::catalog {
 
     namespace impl {
 
-        struct alias_hash {
+        struct type_name_hash {
             std::size_t operator()(const types::complex_logical_type& type) const noexcept {
-                return std::hash<std::string>{}(type.alias());
+                return std::hash<std::string>{}(type.type_name());
             }
         };
 
-        struct alias_compare {
+        struct type_name_compare {
             bool operator()(const types::complex_logical_type& lhs, const types::complex_logical_type& rhs) const {
-                return lhs.alias() == rhs.alias();
+                return lhs.type_name() == rhs.type_name();
             }
             bool operator()(const types::complex_logical_type& lhs, const std::string& rhs) const {
-                return lhs.alias() == rhs;
+                return lhs.type_name() == rhs;
             }
             bool operator()(const std::string& lhs, const types::complex_logical_type& rhs) const {
-                return lhs == rhs.alias();
+                return lhs == rhs.type_name();
             }
         };
     } // namespace impl
@@ -42,8 +42,8 @@ namespace components::catalog {
         [[nodiscard]] bool namespace_exists(const table_namespace_t& namespace_name) const;
 
         void create_type(const types::complex_logical_type& type);
-        void drop_type(const std::string& alias);
-        [[nodiscard]] bool type_exists(const std::string& alias) const;
+        void drop_type(const std::string& type_name);
+        [[nodiscard]] bool type_exists(const std::string& type_name) const;
 
         [[nodiscard]] std::pmr::vector<table_namespace_t> list_root_namespaces() const;
         [[nodiscard]] std::pmr::vector<table_namespace_t> list_child_namespaces(const table_namespace_t& parent) const;
@@ -54,7 +54,7 @@ namespace components::catalog {
         get_all_descendants(const table_namespace_t& namespace_name) const;
 
         [[nodiscard]] namespace_info& get_namespace_info(const table_namespace_t& namespace_name);
-        [[nodiscard]] const types::complex_logical_type& get_type(const std::string& alias) const;
+        [[nodiscard]] const types::complex_logical_type& get_type(const std::string& type_name) const;
 
         void clear();
         size_t size() const;

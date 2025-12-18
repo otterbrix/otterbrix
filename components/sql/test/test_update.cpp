@@ -37,7 +37,7 @@ TEST_CASE("sql::update") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"count"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
@@ -47,7 +47,7 @@ TEST_CASE("sql::update") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"name"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name';",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
@@ -57,7 +57,7 @@ TEST_CASE("sql::update") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"is_doc"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "is_doc"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
@@ -67,11 +67,11 @@ TEST_CASE("sql::update") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"count"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"name"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"is_doc"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "is_doc"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
@@ -87,7 +87,7 @@ TEST_CASE("sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"count"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
                            R"_($update: {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
@@ -97,7 +97,7 @@ TEST_CASE("sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"name"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
                            R"_($update: {$upsert: 0, $match: {"name": {$eq: #1}}, $limit: -1})_",
@@ -107,7 +107,7 @@ TEST_CASE("sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"is_doc"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "is_doc"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true WHERE is_doc = false;",
                            R"_($update: {$upsert: 0, $match: {"is_doc": {$eq: #1}}, $limit: -1})_",
@@ -117,11 +117,11 @@ TEST_CASE("sql::update_where") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"count"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"name"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"is_doc"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "is_doc"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
         TEST_SIMPLE_UPDATE(
             "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true "
@@ -139,9 +139,10 @@ TEST_CASE("sql::update_from") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"price"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "price"}));
         update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::mult);
-        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::undefined});
+        calculate->left() =
+            new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::undefined});
         calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
@@ -152,12 +153,15 @@ TEST_CASE("sql::update_from") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"price"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "price"}));
         update_expr_ptr calculate_1 = new update_expr_calculate_t(update_expr_type::mult);
-        calculate_1->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::right});
-        calculate_1->right() = new update_expr_get_value_t(components::expressions::key_t{"discount", side_t::left});
+        calculate_1->left() =
+            new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::right});
+        calculate_1->right() =
+            new update_expr_get_value_t(components::expressions::key_t{&resource, "discount", side_t::left});
         update_expr_ptr calculate_2 = new update_expr_calculate_t(update_expr_type::sub);
-        calculate_2->left() = new update_expr_get_value_t(components::expressions::key_t{"price", side_t::right});
+        calculate_2->left() =
+            new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::right});
         calculate_2->right() = std::move(calculate_1);
         f.back()->left() = std::move(calculate_2);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection
@@ -166,6 +170,25 @@ FROM OtherTestCollection
 WHERE TestCollection.id = OtherTestCollection.id;)_",
                            R"_($update: {$upsert: 0, $match: {"id": {$eq: "id"}}, $limit: -1})_",
                            vec({}),
+                           f);
+    }
+
+    {
+        fields f;
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"struct_type", &resource}, std::pmr::string{"field", &resource}},
+            &resource}}));
+        update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::add);
+        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{
+            std::pmr::vector<std::pmr::string>{
+                {std::pmr::string{"struct_type", &resource}, std::pmr::string{"field", &resource}},
+                &resource},
+            side_t::undefined});
+        calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
+        f.back()->left() = std::move(calculate);
+        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET struct_type.field = (struct_type).field + 1;",
+                           R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
+                           vec({v(1ul)}),
                            f);
     }
 }

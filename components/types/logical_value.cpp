@@ -126,6 +126,9 @@ namespace components::types {
                 value_ = std::make_unique<std::vector<logical_value_t>>(
                     *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
+            case logical_type::ENUM:
+                value_ = std::get<int32_t>(other.value_);
+                break;
             default:
                 value_ = nullptr;
         }
@@ -190,6 +193,9 @@ namespace components::types {
             case logical_type::MAP:
             case logical_type::STRUCT:
                 value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
+                break;
+            case logical_type::ENUM:
+                value_ = std::get<int32_t>(other.value_);
                 break;
             default:
                 value_ = nullptr;
@@ -257,6 +263,9 @@ namespace components::types {
                 value_ = std::make_unique<std::vector<logical_value_t>>(
                     *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
+            case logical_type::ENUM:
+                value_ = std::get<int32_t>(other.value_);
+                break;
             default:
                 value_ = nullptr;
         }
@@ -322,6 +331,9 @@ namespace components::types {
             case logical_type::MAP:
             case logical_type::STRUCT:
                 value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
+                break;
+            case logical_type::ENUM:
+                value_ = std::get<int32_t>(other.value_);
                 break;
             default:
                 value_ = nullptr;
@@ -572,12 +584,12 @@ namespace components::types {
         return result;
     }
 
-    logical_value_t logical_value_t::create_struct(const std::vector<logical_value_t>& fields) {
+    logical_value_t logical_value_t::create_struct(std::string name, const std::vector<logical_value_t>& fields) {
         std::vector<complex_logical_type> child_types;
         for (auto& child : fields) {
             child_types.push_back(child.type());
         }
-        return create_struct(complex_logical_type::create_struct(child_types), fields);
+        return create_struct(complex_logical_type::create_struct(std::move(name), child_types), fields);
     }
 
     logical_value_t logical_value_t::create_array(const complex_logical_type& internal_type,

@@ -59,7 +59,7 @@ namespace components::catalog {
             }
         }
 
-        return types::complex_logical_type::create_struct(std::move(retval));
+        return types::complex_logical_type::create_struct("latest_types", std::move(retval));
     }
 
     bool computed_schema::try_use_refcout(const std::pmr::string& json,

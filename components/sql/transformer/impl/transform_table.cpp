@@ -1,8 +1,7 @@
-#include "logical_plan/node_drop_type.hpp"
-
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
+#include <components/logical_plan/node_drop_type.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>

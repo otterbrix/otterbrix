@@ -51,7 +51,8 @@ namespace components::table::operators {
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types_left);
                 auto state = context_->table_storage().table().initialize_update({});
                 auto& out_chunk = output_->data_chunk();
-                auto predicate = comp_expr_ ? predicates::create_predicate(comp_expr_,
+                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                           comp_expr_,
                                                                            types_left,
                                                                            types_right,
                                                                            &pipeline_context->parameters)
@@ -104,9 +105,12 @@ namespace components::table::operators {
                 modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 auto state = context_->table_storage().table().initialize_update({});
-                auto predicate =
-                    comp_expr_ ? predicates::create_predicate(comp_expr_, types, types, &pipeline_context->parameters)
-                               : predicates::create_all_true_predicate(left_->output()->resource());
+                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                           comp_expr_,
+                                                                           types,
+                                                                           types,
+                                                                           &pipeline_context->parameters)
+                                            : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
                     if (predicate->check(chunk, i)) {

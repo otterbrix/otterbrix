@@ -7,7 +7,7 @@ namespace components::table::operators {
 
     std::unique_ptr<table::table_filter_t>
     transform_predicate(const expressions::compare_expression_ptr& expression,
-                        const std::pmr::vector<types::complex_logical_type> types,
+                        const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
             return nullptr;
@@ -38,13 +38,26 @@ namespace components::table::operators {
             case expressions::compare_type::invalid:
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             default: {
-                auto it = std::find_if(types.begin(), types.end(), [&](const types::complex_logical_type& type) {
-                    return type.alias() == expression->primary_key().as_string();
-                });
-                assert(it != types.end());
+                std::vector<uint64_t> indices;
+                // pointer + size to avoid std::vector and std::pmr::vector clashing
+                auto* local_types = types.data();
+                size_t size = types.size();
+                for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
+                    auto it =
+                        std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
+                            return type.alias() == expression->primary_key().storage()[i];
+                        });
+                    assert(it != local_types + size);
+                    indices.emplace_back(it - local_types);
+                    // if it isn't the last one
+                    if (i + 1 != expression->primary_key().storage().size()) {
+                        local_types = it->child_types().data();
+                        size = it->child_types().size();
+                    }
+                }
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(expression->value()),
-                                                                  it - types.begin());
+                                                                  std::move(indices));
             }
         }
     }

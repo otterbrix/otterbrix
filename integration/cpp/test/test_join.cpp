@@ -56,8 +56,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
-                  << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1 << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key"
+                  << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key"
                   << " ORDER BY key_1 ASC;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -80,9 +80,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " LEFT OUTER JOIN "
-                  << database_name << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1
-                  << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key"
+                  << database_name << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key"
                   << " ORDER BY key_1 ASC;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -126,9 +125,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " RIGHT OUTER JOIN "
-                  << database_name << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1
-                  << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key"
+                  << database_name << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key"
                   << " ORDER BY key_1 ASC, key ASC;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -159,9 +157,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " FULL OUTER JOIN "
-                  << database_name << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1
-                  << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key"
+                  << database_name << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key"
                   << " ORDER BY key_1 ASC, key ASC;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -225,10 +222,9 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
-                  << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1 << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key AND " << database_name << "."
-                  << collection_name_1 << ".key_2"
-                  << " = " << database_name << "." << collection_name_2 + ".key;";
+                  << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key AND " << collection_name_1 << ".key_2"
+                  << " = " << collection_name_2 + ".key;";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
@@ -240,9 +236,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
-                  << "." << collection_name_2 << " ON " << database_name << "." << collection_name_1 << ".key_1"
-                  << " = " << database_name << "." << collection_name_2 + ".key AND " << database_name << "."
-                  << collection_name_2 << ".key"
+                  << "." << collection_name_2 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_2 + ".key AND " << collection_name_2 << ".key"
                   << " > "
                   << "75;";
             auto cur = dispatcher->execute_sql(session, query.str());
@@ -256,8 +251,8 @@ TEST_CASE("integration::cpp::test_join") {
         {
             std::stringstream query;
             query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
-                  << "." << collection_name_1 << " ON " << database_name << "." << collection_name_1 << ".key_1"
-                  << " = " << database_name << "." << collection_name_1 + ".key_2;";
+                  << "." << collection_name_1 << " ON " << collection_name_1 << ".key_1"
+                  << " = " << collection_name_1 + ".key_2;";
         }
     }
 }

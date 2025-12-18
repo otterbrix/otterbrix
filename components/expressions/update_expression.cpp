@@ -177,24 +177,12 @@ namespace components::expressions {
                                          size_t row_to,
                                          size_t row_from,
                                          const logical_plan::storage_parameters* parameters) {
-        // TODO: find fix for complex keys e.g. "countArray/0"
         if (left_) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = to.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
-            assert(index < to.column_count());
-            auto prev_value = to.data[index].value(row_to);
+            auto indices = to.sub_column_indices(key_.storage());
+            assert(indices.front() != size_t(-1));
+            auto prev_value = to.value(indices, row_to);
             auto res = prev_value != left_->output().value();
-            to.data[index].set_value(row_to, left_->output().value());
+            to.set_value(indices, row_to, left_->output().value());
             return res;
         }
         return false;
@@ -250,41 +238,33 @@ namespace components::expressions {
                                                size_t row_from,
                                                const logical_plan::storage_parameters* parameters) {
         auto side = key_.side();
-        // TODO: find fix for complex keys e.g. "countArray/0"
+        // we have to check it twice
         if (side == side_t::undefined) {
-            // TODO: deduce which side to use
-            assert(false);
+            for (const auto& column : to.data) {
+                if (column.type().alias() == key().storage().front()) {
+                    side = side_t::left;
+                    key_.set_side(side);
+                    break;
+                }
+            }
+        }
+        if (side == side_t::undefined) {
+            for (const auto& column : from.data) {
+                if (column.type().alias() == key().storage().front()) {
+                    side = side_t::right;
+                    key_.set_side(side);
+                    break;
+                }
+            }
         }
         if (side == side_t::right) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = from.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
-            assert(index < from.column_count());
-            output_ = from.data[index].value(row_from);
+            auto indices = from.sub_column_indices(key_.storage());
+            assert(indices.front() != size_t(-1));
+            output_ = from.value(indices, row_from);
         } else if (side == side_t::left) {
-            size_t index = -1;
-            switch (key_.which()) {
-                case key_t::type::string:
-                    index = to.column_index(key_.as_string());
-                    break;
-                case key_t::type::int32:
-                    index = key_.as_int();
-                    break;
-                case key_t::type::uint32:
-                    index = key_.as_uint();
-                    break;
-            }
-            assert(index < to.column_count());
-            output_ = to.data[index].value(row_to);
+            auto indices = to.sub_column_indices(key_.storage());
+            assert(indices.front() != size_t(-1));
+            output_ = to.value(indices, row_to);
         }
         return false;
     }

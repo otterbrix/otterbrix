@@ -379,13 +379,15 @@ namespace components::types {
         void set_alias(const std::string& alias);
         bool has_alias() const;
         const std::string& alias() const;
+        const std::string& type_name() const;
         const std::string& child_name(uint64_t index) const;
         bool is_unnamed() const;
         bool is_nested() const;
 
         const complex_logical_type& child_type() const;
+        std::vector<complex_logical_type>& child_types();
         const std::vector<complex_logical_type>& child_types() const;
-        logical_type_extension* extension() const noexcept;
+        logical_type_extension* extension() const;
 
         template<typename T>
         static bool contains(const complex_logical_type& type, T&& predicate);
@@ -397,17 +399,19 @@ namespace components::types {
         static bool type_is_constant_size(logical_type type);
 
         static complex_logical_type create_decimal(uint8_t width, uint8_t scale, std::string alias = "");
-        static complex_logical_type create_enum(std::vector<logical_value_t> entries, std::string alias = "");
+        static complex_logical_type
+        create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias = "");
         static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");
         static complex_logical_type
         create_array(const complex_logical_type& internal_type, size_t array_size, std::string alias = "");
         static complex_logical_type create_map(const complex_logical_type& key_type,
                                                const complex_logical_type& value_type,
                                                std::string alias = "");
-        static complex_logical_type create_struct(const std::vector<complex_logical_type>& fields,
-                                                  std::string alias = "");
+        static complex_logical_type
+        create_struct(std::string name, const std::vector<complex_logical_type>& fields, std::string alias = "");
         static complex_logical_type create_union(std::vector<complex_logical_type> fields, std::string alias = "");
         static complex_logical_type create_variant(std::string alias = "");
+        static complex_logical_type create_unknown(std::string type_name, std::string alias = "");
 
         void serialize(serializer::msgpack_serializer_t* serializer) const;
         static complex_logical_type deserialize(serializer::msgpack_deserializer_t* deserializer);
@@ -460,7 +464,8 @@ namespace components::types {
             DECIMAL = 5,
             ENUM = 6,
             USER = 7,
-            FUNCTION = 8
+            FUNCTION = 8,
+            UNKNOWN = 9 // extension fo an unknown type
         };
 
         logical_type_extension() = default;
@@ -540,12 +545,15 @@ namespace components::types {
 
     class struct_logical_type_extension : public logical_type_extension {
     public:
-        explicit struct_logical_type_extension(const std::vector<complex_logical_type>& fields);
+        explicit struct_logical_type_extension(std::string name, const std::vector<complex_logical_type>& fields);
 
         // fields must be aliased
-        struct_logical_type_extension(const std::vector<types::complex_logical_type>& columns,
+        struct_logical_type_extension(std::string name,
+                                      const std::vector<types::complex_logical_type>& columns,
                                       std::vector<field_description> descriptions);
 
+        const std::string& type_name() { return type_name_; }
+        std::vector<complex_logical_type>& child_types() { return fields_; }
         const std::vector<complex_logical_type>& child_types() const { return fields_; }
         const std::vector<field_description>& descriptions() const { return descriptions_; }
 
@@ -553,6 +561,7 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
+        std::string type_name_;
         std::vector<complex_logical_type> fields_;
         std::vector<field_description> descriptions_;
     };
@@ -574,14 +583,16 @@ namespace components::types {
 
     class enum_logical_type_extension : public logical_type_extension {
     public:
-        explicit enum_logical_type_extension(std::vector<logical_value_t> entries);
+        explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
 
+        const std::string& type_name() { return type_name_; }
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
+        std::string type_name_;
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
     };
 
@@ -608,6 +619,19 @@ namespace components::types {
     private:
         complex_logical_type return_type_;
         std::vector<complex_logical_type> argument_types_;
+    };
+
+    class unknown_logical_type_extension : public logical_type_extension {
+    public:
+        explicit unknown_logical_type_extension(std::string type_name);
+
+        const std::string& type_name() const;
+
+        void serialize(serializer::msgpack_serializer_t* serializer) const override;
+        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+
+    private:
+        std::string type_name_;
     };
 
     template<typename T>

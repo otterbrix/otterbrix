@@ -86,7 +86,7 @@ TEST_CASE("sql::update_bind") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"count"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "count"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET count = $1 WHERE id = $2;)_",
@@ -97,9 +97,9 @@ TEST_CASE("sql::update_bind") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"name"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "name"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"flag"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "flag"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{1});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
@@ -110,9 +110,10 @@ TEST_CASE("sql::update_bind") {
 
     {
         fields f;
-        f.emplace_back(new update_expr_set_t(components::expressions::key_t{"rating"}));
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "rating"}));
         update_expr_ptr calculate = new update_expr_calculate_t(update_expr_type::add);
-        calculate->left() = new update_expr_get_value_t(components::expressions::key_t{"rating", side_t::undefined});
+        calculate->left() =
+            new update_expr_get_value_t(components::expressions::key_t{&resource, "rating", side_t::undefined});
         calculate->right() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         f.back()->left() = std::move(calculate);
 

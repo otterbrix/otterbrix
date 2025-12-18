@@ -8,11 +8,12 @@ namespace components::catalog {
             std::make_unique<types::list_logical_type_extension>(field_id, type, required));
     }
 
-    types::complex_logical_type create_struct(const std::vector<types::complex_logical_type>& columns,
+    types::complex_logical_type create_struct(std::string name,
+                                              const std::vector<types::complex_logical_type>& columns,
                                               std::vector<types::field_description> descriptions) {
         return types::complex_logical_type(
             types::logical_type::STRUCT,
-            std::make_unique<types::struct_logical_type_extension>(columns, std::move(descriptions)));
+            std::make_unique<types::struct_logical_type_extension>(std::move(name), columns, std::move(descriptions)));
     }
 
     types::complex_logical_type create_map(field_id_t key_id,

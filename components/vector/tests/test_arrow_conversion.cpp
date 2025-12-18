@@ -32,7 +32,7 @@ TEST_CASE("data_chunk to arrow") {
         fields.emplace_back(logical_type::INTEGER, "number");
         fields.emplace_back(logical_type::STRING_LITERAL, "string");
         fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
-        types.emplace_back(complex_logical_type::create_struct(fields, "struct"));
+        types.emplace_back(complex_logical_type::create_struct("struct", fields));
     }
 
     data_chunk_t chunk(&resource, types, chunk_size);

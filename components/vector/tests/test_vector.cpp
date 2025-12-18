@@ -28,7 +28,7 @@ TEST_CASE("vector") {
     fields.emplace_back(
         components::types::complex_logical_type::create_list(components::types::logical_type::USMALLINT, "array"));
     components::types::complex_logical_type struct_type =
-        components::types::complex_logical_type::create_struct(fields, "test_struct");
+        components::types::complex_logical_type::create_struct("struct", fields, "test_struct");
 
     INFO("sixed size") {
         components::vector::vector_t v(std::pmr::get_default_resource(),

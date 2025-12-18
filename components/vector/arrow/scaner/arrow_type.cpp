@@ -64,7 +64,7 @@ namespace components::vector::arrow {
                     new_children.emplace_back(child.type(true));
                     new_children.back().set_alias(child_name);
                 }
-                return types::complex_logical_type::create_struct(std::move(new_children));
+                return types::complex_logical_type::create_struct(type_.type_name(), std::move(new_children));
             }
             case types::logical_type::LIST: {
                 auto list_info = reinterpret_cast<arrow_list_info*>(type_info_.get());
@@ -295,9 +295,9 @@ namespace components::vector::arrow {
                 child_types.back().set_alias(schema.children[type_idx]->name);
             }
             auto type_info = std::make_unique<arrow_struct_info>(std::move(children));
-            auto struct_type =
-                std::make_unique<arrow_type>(types::complex_logical_type::create_struct(std::move(child_types)),
-                                             std::move(type_info));
+            auto struct_type = std::make_unique<arrow_type>(
+                types::complex_logical_type::create_struct(schema.name, std::move(child_types)),
+                std::move(type_info));
             return struct_type;
         } else if (format[0] == '+' && format[1] == 'u') {
             if (format[2] != 's') {
@@ -342,7 +342,8 @@ namespace components::vector::arrow {
 
             auto type_info = std::make_unique<arrow_struct_info>(std::move(children));
             auto struct_type =
-                std::make_unique<arrow_type>(types::complex_logical_type::create_struct(members), std::move(type_info));
+                std::make_unique<arrow_type>(types::complex_logical_type::create_struct(schema.name, members),
+                                             std::move(type_info));
             struct_type->set_run_end_encoded();
             return struct_type;
         } else if (format == "+m") {
@@ -361,9 +362,9 @@ namespace components::vector::arrow {
             children.reserve(2);
             children.push_back(std::move(key_type));
             children.push_back(std::move(value_type));
-            auto inner_struct =
-                std::make_unique<arrow_type>(types::complex_logical_type::create_struct(std::move(key_value)),
-                                             std::make_unique<arrow_struct_info>(std::move(children)));
+            auto inner_struct = std::make_unique<arrow_type>(
+                types::complex_logical_type::create_struct(schema.name, std::move(key_value)),
+                std::make_unique<arrow_struct_info>(std::move(children)));
             auto map_type_info =
                 arrow_list_info::create_list(std::move(inner_struct), arrow_variable_size_type::NORMAL);
             return std::make_unique<arrow_type>(map_type, std::move(map_type_info));

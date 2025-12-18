@@ -67,9 +67,14 @@ TEST_CASE("sql::join") {
 
         TEST_JOIN(
             R"_(select * from col1 join col2 on col1.id = col2.id_col1 )_"
-            R"_(join col3 on col1.id = col3.id_col1 and col2.id = col3.id_col2;)_",
+            R"_(join col3 on id = col3.id_col1 and id = col3.id_col2;)_",
             R"_($aggregate: {$join: {$type: inner, $join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, )_"
             R"_($aggregate: {}, $and: ["id": {$eq: "id_col1"}, "id": {$eq: "id_col2"}]}})_",
+            vec());
+
+        TEST_JOIN(
+            R"_(select * from col1 join col2 on (col1.struct_type).field = (col2.struct_type).field;)_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "struct_type/field": {$eq: "struct_type/field"}}})_",
             vec());
     }
 }

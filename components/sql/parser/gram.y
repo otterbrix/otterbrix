@@ -16592,7 +16592,7 @@ makeColumnRef(std::pmr::memory_resource* resource, char *colname, List *indirect
 		else if (IsA(lfirst(l), A_Star))
 		{
 			/* We only allow '*' at the end of a ColumnRef */
-			if (_it_ != indirection->lst.end())
+			if (std::next(_it_) != indirection->lst.end())
 				parser_yyerror("improper use of \"*\"");
 		}
 		nfields++;
@@ -16767,7 +16767,7 @@ check_indirection(List *indirection, core_yyscan_t yyscanner)
 	{
 		if (IsA(lfirst(l), A_Star))
 		{
-			if (++_it_ != indirection->lst.end())
+			if (std::next(_it_) != indirection->lst.end())
 				parser_yyerror("improper use of \"*\"");
 		}
 	}

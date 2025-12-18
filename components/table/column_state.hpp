@@ -91,10 +91,10 @@ namespace components::table {
     public:
         constant_filter_t(expressions::compare_type comparison_type,
                           types::logical_value_t constant,
-                          uint64_t table_index)
+                          std::vector<uint64_t> table_indices)
             : table_filter_t(comparison_type)
             , constant(std::move(constant))
-            , table_index(table_index) {}
+            , table_indices(std::move(table_indices)) {}
 
         bool compare(const types::logical_value_t& value) const;
         template<typename T>
@@ -103,7 +103,7 @@ namespace components::table {
         std::unique_ptr<table_filter_t> copy() const override;
 
         types::logical_value_t constant;
-        uint64_t table_index;
+        std::vector<uint64_t> table_indices;
     };
 
     template<typename T>
@@ -152,11 +152,6 @@ namespace components::table {
         }
 
         std::vector<uint32_t> blocks;
-    };
-
-    struct serialized_string_segment_state : public column_segment_state {
-        serialized_string_segment_state() {}
-        explicit serialized_string_segment_state(std::vector<uint32_t> blocks) { blocks = std::move(blocks); }
     };
 
     struct column_append_state {

@@ -53,23 +53,25 @@ void work(benchmark::State& state) {
             }
             {
                 auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
-                plan->append_child(make_node_match(std::pmr::get_default_resource(),
-                                                   {db_name, col_name},
-                                                   make_compare_expression(std::pmr::get_default_resource(),
-                                                                           compare_type::eq,
-                                                                           components::expressions::key_t{"_id"},
-                                                                           core::parameter_id_t{1})));
+                plan->append_child(
+                    make_node_match(std::pmr::get_default_resource(),
+                                    {db_name, col_name},
+                                    make_compare_expression(std::pmr::get_default_resource(),
+                                                            compare_type::eq,
+                                                            components::expressions::key_t{&resource, "_id"},
+                                                            core::parameter_id_t{1})));
                 params->add_parameter(core::parameter_id_t{1}, std::to_string(i_find));
                 dispatcher->find_one(session, plan, params);
             }
             {
                 auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
-                plan->append_child(make_node_match(std::pmr::get_default_resource(),
-                                                   {db_name, col_name},
-                                                   make_compare_expression(std::pmr::get_default_resource(),
-                                                                           compare_type::eq,
-                                                                           components::expressions::key_t{"_id"},
-                                                                           core::parameter_id_t{2})));
+                plan->append_child(
+                    make_node_match(std::pmr::get_default_resource(),
+                                    {db_name, col_name},
+                                    make_compare_expression(std::pmr::get_default_resource(),
+                                                            compare_type::eq,
+                                                            components::expressions::key_t{&resource, "_id"},
+                                                            core::parameter_id_t{2})));
                 params->add_parameter(core::parameter_id_t{2}, std::to_string(size_collection - i_find));
                 dispatcher->find_one(session, plan, params);
             }
@@ -88,23 +90,25 @@ void work(benchmark::State& state) {
             }
             {
                 auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
-                plan->append_child(make_node_match(std::pmr::get_default_resource(),
-                                                   {db_name, col_name},
-                                                   make_compare_expression(std::pmr::get_default_resource(),
-                                                                           compare_type::eq,
-                                                                           components::expressions::key_t{"_id"},
-                                                                           core::parameter_id_t{1})));
+                plan->append_child(
+                    make_node_match(std::pmr::get_default_resource(),
+                                    {db_name, col_name},
+                                    make_compare_expression(std::pmr::get_default_resource(),
+                                                            compare_type::eq,
+                                                            components::expressions::key_t{&resource, "_id"},
+                                                            core::parameter_id_t{1})));
                 params->add_parameter(core::parameter_id_t{1}, std::to_string(i_find));
                 dispatcher->find(session, plan, params);
             }
             {
                 auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {db_name, col_name});
-                plan->append_child(make_node_match(std::pmr::get_default_resource(),
-                                                   {db_name, col_name},
-                                                   make_compare_expression(std::pmr::get_default_resource(),
-                                                                           compare_type::eq,
-                                                                           components::expressions::key_t{"_id"},
-                                                                           core::parameter_id_t{2})));
+                plan->append_child(
+                    make_node_match(std::pmr::get_default_resource(),
+                                    {db_name, col_name},
+                                    make_compare_expression(std::pmr::get_default_resource(),
+                                                            compare_type::eq,
+                                                            components::expressions::key_t{&resource, "_id"},
+                                                            core::parameter_id_t{2})));
                 params->add_parameter(core::parameter_id_t{2}, std::to_string(size_collection - i_find));
                 dispatcher->find(session, plan, params);
             }
@@ -118,7 +122,7 @@ void work(benchmark::State& state) {
                                              {db_name, col_name},
                                              make_compare_expression(std::pmr::get_default_resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{"_id"},
+                                                                     components::expressions::key_t{&resource, "_id"},
                                                                      core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, std::to_string(i_update));
                 dispatcher->update_one(
@@ -133,7 +137,7 @@ void work(benchmark::State& state) {
                                              {db_name, col_name},
                                              make_compare_expression(std::pmr::get_default_resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{"_id"},
+                                                                     components::expressions::key_t{&resource, "_id"},
                                                                      core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, std::to_string(size_collection - i_update));
                 dispatcher->update_one(
@@ -154,7 +158,7 @@ void work(benchmark::State& state) {
                                              {db_name, col_name},
                                              make_compare_expression(std::pmr::get_default_resource(),
                                                                      compare_type::lt,
-                                                                     components::expressions::key_t{"count"},
+                                                                     components::expressions::key_t{&resource, "count"},
                                                                      core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, count_update_many * i_update);
                 dispatcher->update_one(
@@ -169,7 +173,7 @@ void work(benchmark::State& state) {
                                              {db_name, col_name},
                                              make_compare_expression(std::pmr::get_default_resource(),
                                                                      compare_type::gt,
-                                                                     components::expressions::key_t{"count"},
+                                                                     components::expressions::key_t{&resource, "count"},
                                                                      core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, size_collection - count_update_many * i_update);
                 dispatcher->update_one(
@@ -191,7 +195,7 @@ void work(benchmark::State& state) {
                     {db_name, col_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{"_id"},
+                                                                     components::expressions::key_t{&resource, "_id"},
                                                                      core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, std::to_string(i_delete));
                 dispatcher->delete_one(session, match, params);
@@ -202,7 +206,7 @@ void work(benchmark::State& state) {
                     {db_name, col_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{"_id"},
+                                                                     components::expressions::key_t{&resource, "_id"},
                                                                      core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, std::to_string(size_collection - i_delete));
                 dispatcher->delete_one(session, match, params);
@@ -218,7 +222,7 @@ void work(benchmark::State& state) {
                     {db_name, col_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::lt,
-                                                                     components::expressions::key_t{"count"},
+                                                                     components::expressions::key_t{&resource, "count"},
                                                                      core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, 100 * i_delete);
                 dispatcher->delete_many(session, match, params);
@@ -229,7 +233,7 @@ void work(benchmark::State& state) {
                     {db_name, col_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::gt,
-                                                                     components::expressions::key_t{"count"},
+                                                                     components::expressions::key_t{&resource, "count"},
                                                                      core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, size_collection - 100 * i_delete);
                 dispatcher->delete_many(session, match, params);

@@ -121,7 +121,7 @@ namespace components::catalog {
         }
 
         return schema(resource_,
-                      create_struct(new_columns, new_desc),
+                      create_struct("schema", new_columns, new_desc),
                       new_primary_key_.value_or(base_schema.primary_key()));
     }
 

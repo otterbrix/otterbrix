@@ -1,10 +1,10 @@
 #pragma once
 
-#include "expressions/function_expression.hpp"
 #include "transform_result.hpp"
 #include "utils.hpp"
 
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -55,7 +55,7 @@ namespace components::sql::transform {
         void join_dfs(std::pmr::memory_resource* resource,
                       JoinExpr* join,
                       logical_plan::node_join_ptr& node_join,
-                      const name_collection_t& names,
+                      name_collection_t& names,
                       logical_plan::parameter_node_t* params);
 
         expressions::update_expr_ptr

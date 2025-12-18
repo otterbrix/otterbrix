@@ -280,7 +280,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
         auto value = params->add_parameter(to_value(condition));
-        auto sub_condition = make_compare_expression(resource, type, ex_key_t(real_key, side_t::left), value);
+        auto sub_condition = make_compare_expression(resource, type, ex_key_t(resource, real_key, side_t::left), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
         }
@@ -349,11 +349,12 @@ expression_ptr parse_find_condition_(std::pmr::memory_resource* resource,
     return res_condition;
 }
 
-components::expressions::param_storage parse_param(const py::handle& condition, parameter_node_t* params) {
+components::expressions::param_storage
+parse_param(std::pmr::memory_resource* resource, const py::handle& condition, parameter_node_t* params) {
     auto value = to_value(condition);
     if (value.type().to_physical_type() == components::types::physical_type::STRING &&
         !value.value<std::string_view>().empty() && value.value<std::string_view>().at(0) == '$') {
-        return ex_key_t(value.value<std::string_view>().substr(1));
+        return ex_key_t(resource, value.value<std::string_view>().substr(1));
     } else {
         return params->add_parameter(value);
     }
@@ -369,35 +370,40 @@ expression_ptr parse_group_expr(std::pmr::memory_resource* resource,
             auto key_type = py::str(it).cast<std::string>().substr(1);
             if (is_aggregate_type(key_type)) {
                 auto type = get_aggregate_type(key_type);
-                auto expr = make_aggregate_expression(resource, type, key.empty() ? ex_key_t() : ex_key_t(key));
+                auto expr = make_aggregate_expression(resource,
+                                                      type,
+                                                      key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
                 if (py::isinstance<py::dict>(condition[it])) {
                     expr->append_param(parse_group_expr(resource, {}, condition[it], aggregate, params));
                 } else if (py::isinstance<py::list>(condition[it]) || py::isinstance<py::tuple>(condition[it])) {
                     for (const auto& value : condition[it]) {
-                        expr->append_param(parse_param(value, params));
+                        expr->append_param(parse_param(resource, value, params));
                     }
                 } else {
-                    expr->append_param(parse_param(condition[it], params));
+                    expr->append_param(parse_param(resource, condition[it], params));
                 }
                 return expr;
             } else if (is_scalar_type(key_type)) {
                 auto type = get_scalar_type(key_type);
-                auto expr = make_scalar_expression(resource, type, key.empty() ? ex_key_t() : ex_key_t(key));
+                auto expr =
+                    make_scalar_expression(resource, type, key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
                 if (py::isinstance<py::dict>(condition[it])) {
                     expr->append_param(parse_group_expr(resource, {}, condition[it], aggregate, params));
                 } else if (py::isinstance<py::list>(condition[it]) || py::isinstance<py::tuple>(condition[it])) {
                     for (const auto& value : condition[it]) {
-                        expr->append_param(parse_param(value, params));
+                        expr->append_param(parse_param(resource, value, params));
                     }
                 } else {
-                    expr->append_param(parse_param(condition[it], params));
+                    expr->append_param(parse_param(resource, condition[it], params));
                 }
                 return expr;
             }
         }
     } else {
-        auto expr = make_scalar_expression(resource, scalar_type::get_field, key.empty() ? ex_key_t() : ex_key_t(key));
-        expr->append_param(parse_param(condition, params));
+        auto expr = make_scalar_expression(resource,
+                                           scalar_type::get_field,
+                                           key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
+        expr->append_param(parse_param(resource, condition, params));
         return expr;
     }
     return nullptr;
@@ -420,8 +426,8 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
 components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* resource, const py::handle& condition) {
     std::vector<expression_ptr> expressions;
     for (const auto& it : condition) {
-        expressions.emplace_back(
-            make_sort_expression(ex_key_t(py::str(it).cast<std::string>()), sort_order(condition[it].cast<int>())));
+        expressions.emplace_back(make_sort_expression(ex_key_t(resource, py::str(it).cast<std::string>()),
+                                                      sort_order(condition[it].cast<int>())));
     }
     return components::logical_plan::make_node_sort(resource, {}, expressions);
 }

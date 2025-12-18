@@ -63,7 +63,8 @@ namespace components::table::operators {
                 indices_right_.emplace_back(name_index_map_res.at(column.type().alias()));
             }
 
-            auto predicate = expression_ ? predicates::create_predicate(expression_,
+            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                        expression_,
                                                                         chunk_left.types(),
                                                                         chunk_right.types(),
                                                                         &context->parameters)

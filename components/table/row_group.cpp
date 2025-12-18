@@ -5,7 +5,8 @@
 
 #include "collection.hpp"
 #include "row_version_manager.hpp"
-#include "vector/vector_operations.hpp"
+#include "struct_column_data.hpp"
+#include <components/vector/vector_operations.hpp>
 
 namespace components::table {
 
@@ -195,7 +196,12 @@ namespace components::table {
             }
             default: {
                 auto& constant_filter = filter->cast<constant_filter_t>();
-                return get_column(constant_filter.table_index).check_predicate(row_id, filter);
+                column_data_t* column = &get_column(constant_filter.table_indices.front());
+                for (size_t i = 1; i < constant_filter.table_indices.size(); i++) {
+                    column =
+                        static_cast<struct_column_data_t*>(column)->sub_columns[constant_filter.table_indices[i]].get();
+                }
+                return column->check_predicate(row_id, filter);
             }
         }
     }

@@ -55,8 +55,7 @@ TEST_CASE("column") {
     fields.emplace_back(logical_type::INTEGER, "number");
     fields.emplace_back(logical_type::STRING_LITERAL, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
-    complex_logical_type struct_type = complex_logical_type::create_struct(fields);
-    struct_type.set_alias("test_struct");
+    complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
     INFO("fixed size") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =

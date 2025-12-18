@@ -50,6 +50,7 @@ typedef struct Value {
 #define intVal(v) ((reinterpret_cast<Value*>(v))->val.ival)
 #define floatVal(v) atof(((Value*) (v))->val.str)
 #define strVal(v) ((reinterpret_cast<Value*>(v))->val.str)
+#define pmrStrVal(v, resource) (std::pmr::string((reinterpret_cast<Value*>(v))->val.str, resource))
 
 extern Value* makeInteger(std::pmr::memory_resource* resource, long i);
 extern Value* makeFloat(std::pmr::memory_resource* resource, char* numericStr);

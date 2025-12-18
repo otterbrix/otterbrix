@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <memory_resource>
+#include <string>
 #include <type_traits>
 
 namespace core::pmr {
@@ -81,3 +82,32 @@ namespace core::pmr {
     }
 
 } // namespace core::pmr
+
+// some std::string to std::pmr::string operator helpers:
+namespace std {
+
+    inline bool operator==(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) == 0; }
+
+    inline bool operator==(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) == 0; }
+
+    inline bool operator!=(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) != 0; }
+
+    inline bool operator!=(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) != 0; }
+
+    inline bool operator<(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) < 0; }
+
+    inline bool operator<(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) < 0; }
+
+    inline bool operator>(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) > 0; }
+
+    inline bool operator>(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) > 0; }
+
+    inline bool operator<=(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) <= 0; }
+
+    inline bool operator<=(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) <= 0; }
+
+    inline bool operator>=(const std::string& str1, const std::pmr::string& str2) { return str1.compare(str2) >= 0; }
+
+    inline bool operator>=(const std::pmr::string& str1, const std::string& str2) { return str1.compare(str2) >= 0; }
+
+} // namespace std

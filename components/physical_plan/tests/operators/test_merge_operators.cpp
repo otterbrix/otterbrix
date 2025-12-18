@@ -17,10 +17,14 @@ TEST_CASE("operator_merge::and") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
-    auto cond1 =
-        make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(1));
-    auto cond2 =
-        make_compare_expression(&resource, compare_type::lte, key("count", side_t::left), core::parameter_id_t(2));
+    auto cond1 = make_compare_expression(&resource,
+                                         compare_type::gt,
+                                         key(&resource, "count", side_t::left),
+                                         core::parameter_id_t(1));
+    auto cond2 = make_compare_expression(&resource,
+                                         compare_type::lte,
+                                         key(&resource, "count", side_t::left),
+                                         core::parameter_id_t(2));
     operator_and_t op_and(d(collection), logical_plan::limit_t::unlimit());
     op_and.set_children(
         boost::intrusive_ptr(
@@ -39,10 +43,14 @@ TEST_CASE("operator_merge::or") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
-    auto cond1 =
-        make_compare_expression(&resource, compare_type::lte, key("count", side_t::left), core::parameter_id_t(1));
-    auto cond2 =
-        make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(2));
+    auto cond1 = make_compare_expression(&resource,
+                                         compare_type::lte,
+                                         key(&resource, "count", side_t::left),
+                                         core::parameter_id_t(1));
+    auto cond2 = make_compare_expression(&resource,
+                                         compare_type::gt,
+                                         key(&resource, "count", side_t::left),
+                                         core::parameter_id_t(2));
     operator_or_t op_or(d(collection), logical_plan::limit_t::unlimit());
     op_or.set_children(
         boost::intrusive_ptr(
@@ -61,8 +69,10 @@ TEST_CASE("operator_merge::not") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
-    auto cond =
-        make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(1));
+    auto cond = make_compare_expression(&resource,
+                                        compare_type::gt,
+                                        key(&resource, "count", side_t::left),
+                                        core::parameter_id_t(1));
     operator_not_t op_not(d(collection), logical_plan::limit_t::unlimit());
     op_not.set_children(boost::intrusive_ptr(
         new full_scan(d(collection), predicates::create_predicate(cond), logical_plan::limit_t::unlimit())));
@@ -82,14 +92,22 @@ TEST_CASE("operator_merge::complex") {
     //    {"$and": [{"count": {"$gt": 5}}, {"count": {"$lte": 95}}]}
     //  ]
 
-    auto cond_or1 =
-        make_compare_expression(&resource, compare_type::lte, key("count", side_t::left), core::parameter_id_t(1));
-    auto cond_or2 =
-        make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(2));
-    auto cond_and1 =
-        make_compare_expression(&resource, compare_type::gt, key("count", side_t::left), core::parameter_id_t(3));
-    auto cond_and2 =
-        make_compare_expression(&resource, compare_type::lte, key("count", side_t::left), core::parameter_id_t(4));
+    auto cond_or1 = make_compare_expression(&resource,
+                                            compare_type::lte,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(1));
+    auto cond_or2 = make_compare_expression(&resource,
+                                            compare_type::gt,
+                                            key(&resource, "count", side_t::left),
+                                            core::parameter_id_t(2));
+    auto cond_and1 = make_compare_expression(&resource,
+                                             compare_type::gt,
+                                             key(&resource, "count", side_t::left),
+                                             core::parameter_id_t(3));
+    auto cond_and2 = make_compare_expression(&resource,
+                                             compare_type::lte,
+                                             key(&resource, "count", side_t::left),
+                                             core::parameter_id_t(4));
 
     auto op = create_operator_merge(d(collection), compare_type::union_and, logical_plan::limit_t::unlimit());
     auto op_or = create_operator_merge(d(collection), compare_type::union_or, logical_plan::limit_t::unlimit());

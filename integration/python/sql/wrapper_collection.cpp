@@ -113,7 +113,8 @@ namespace otterbrix {
             if (update_doc->is_exists("$set")) {
                 for (const auto& [key, value] : *update_doc->get_dict("$set")->json_trie()->as_object()) {
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key->get_mut()->get_string().take_value()}));
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     updates.back()->left() = new components::expressions::update_expr_get_const_value_t(id);
@@ -123,12 +124,15 @@ namespace otterbrix {
                 for (const auto& [key, value] : *update_doc->get_dict("$inc")->json_trie()->as_object()) {
                     auto key_str = key->get_mut()->get_string().take_value();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key->get_mut()->get_string().take_value()}));
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
                     calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key_str, components::expressions::side_t::left});
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key_str,
+                                                       components::expressions::side_t::left});
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
@@ -166,7 +170,8 @@ namespace otterbrix {
             if (update_doc->is_exists("$set")) {
                 for (const auto& [key, value] : *update_doc->get_dict("$set")->json_trie()->as_object()) {
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key->get_mut()->get_string().take_value()}));
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     updates.back()->left() = new components::expressions::update_expr_get_const_value_t(id);
@@ -176,12 +181,15 @@ namespace otterbrix {
                 for (const auto& [key, value] : *update_doc->get_dict("$inc")->json_trie()->as_object()) {
                     auto key_str = key->get_mut()->get_string().take_value();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key->get_mut()->get_string().take_value()}));
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
                     calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key_str, components::expressions::side_t::left});
+                        components::expressions::key_t{key->get_allocator(),
+                                                       key_str,
+                                                       components::expressions::side_t::left});
                     auto id =
                         params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
@@ -310,7 +318,7 @@ namespace otterbrix {
         auto index =
             components::logical_plan::make_node_create_index(ptr_->resource(), {database_, name_}, name_, type);
         for (const auto& key : keys) {
-            index->keys().emplace_back(key.cast<std::string>());
+            index->keys().emplace_back(ptr_->resource(), key.cast<std::string>());
         }
         auto cur = ptr_->create_index(session_tmp, index);
         debug(log_, "wrapper_collection::create_index {}", cur->is_success());

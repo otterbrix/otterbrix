@@ -1,87 +1,87 @@
 #pragma once
 
 #include "forward.hpp"
+#include <boost/container_hash/hash.hpp>
+#include <core/pmr.hpp>
 #include <string>
-#include <variant>
+#include <vector>
 
 namespace components::expressions {
 
     class key_t final {
     public:
-        key_t()
-            : type_(type::non)
-            , side_(side_t::undefined)
-            , storage_({}) {}
+        explicit key_t(std::pmr::memory_resource* resource)
+            : side_(side_t::undefined)
+            , storage_(resource) {}
 
         key_t(key_t&& key) noexcept
-            : type_{key.type_}
-            , side_{key.side_}
+            : side_{key.side_}
             , storage_{std::move(key.storage_)} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
 
-        explicit key_t(std::string_view str, side_t side = side_t::undefined)
-            : type_(type::string)
-            , side_(side)
-            , storage_(std::string(str.data(), str.size())) {}
+        explicit key_t(std::pmr::vector<std::pmr::string> str_vector, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_(std::move(str_vector)) {}
 
-        explicit key_t(const std::string& str, side_t side = side_t::undefined)
-            : type_(type::string)
-            , side_(side)
-            , storage_(std::string(str.data(), str.size())) {}
+        explicit key_t(std::pmr::memory_resource* resource, std::string_view str, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_({std::pmr::string(str.data(), str.size(), resource)}, resource) {}
 
-        explicit key_t(std::string&& str, side_t side = side_t::undefined)
-            : type_(type::string)
-            , side_(side)
-            , storage_(std::move(str)) {}
+        explicit key_t(std::pmr::memory_resource* resource,
+                       const std::pmr::string& str,
+                       side_t side = side_t::undefined)
+            : side_(side)
+            , storage_({std::pmr::string(str.data(), str.size(), resource)}, resource) {}
 
-        explicit key_t(const char* str, side_t side = side_t::undefined)
-            : type_(type::string)
-            , side_(side)
-            , storage_(std::string(str)) {}
+        explicit key_t(std::pmr::memory_resource* resource, std::pmr::string&& str, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_({std::move(str)}, resource) {}
+
+        explicit key_t(std::pmr::memory_resource* resource, const char* str, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_({std::pmr::string(str, resource)}, resource) {}
 
         template<typename CharT>
-        key_t(const CharT* data, size_t size, side_t side = side_t::undefined)
-            : type_(type::string)
-            , side_(side)
-            , storage_(std::string(data, size)) {}
+        key_t(std::pmr::memory_resource* resource, const CharT* data, size_t size, side_t side = side_t::undefined)
+            : side_(side)
+            , storage_({std::pmr::string(data, size, resource)}, resource) {}
 
-        explicit key_t(int32_t index, side_t side = side_t::undefined)
-            : type_(type::int32)
-            , side_(side)
-            , storage_(index) {}
+        [[nodiscard]] auto as_pmr_string() const -> std::pmr::string {
+            std::pmr::string result(resource());
+            bool separator = false;
+            for (const auto& str : storage_) {
+                if (separator) {
+                    result += "/";
+                }
+                result += str;
+                separator = true;
+            }
+            return result;
+        }
 
-        explicit key_t(uint32_t index, side_t side = side_t::undefined)
-            : type_(type::uint32)
-            , side_(side)
-            , storage_(index) {}
+        [[nodiscard]] auto as_string() const -> std::string {
+            std::string result;
+            bool separator = false;
+            for (const auto& str : storage_) {
+                if (separator) {
+                    result += "/";
+                }
+                result += str;
+                separator = true;
+            }
+            return result;
+        }
 
-        enum class type
-        {
-            non,
-            string,
-            int32,
-            uint32
-        };
-
-        auto as_int() const -> int32_t { return std::get<int32_t>(storage_); }
-
-        auto as_uint() const -> uint32_t { return std::get<uint32_t>(storage_); }
-
-        auto as_string() const -> const std::string& { return std::get<std::string>(storage_); }
-
+        explicit operator std::pmr::string() const { return as_pmr_string(); }
         explicit operator std::string() const { return as_string(); }
 
-        type which() const { return type_; }
+        auto storage() -> std::pmr::vector<std::pmr::string>& { return storage_; }
 
-        auto is_int() const -> bool { return type_ == type::int32; }
+        auto storage() const -> const std::pmr::vector<std::pmr::string>& { return storage_; }
 
-        auto is_uint() const -> bool { return type_ == type::uint32; }
-
-        auto is_string() const -> bool { return type_ == type::string; }
-
-        auto is_null() const -> bool { return type_ == type::non; }
+        auto is_null() const -> bool { return storage_.empty(); }
 
         auto side() const -> side_t { return side_; }
 
@@ -100,31 +100,23 @@ namespace components::expressions {
         bool operator!=(const key_t& rhs) const { return !(*this == rhs); }
 
         hash_t hash() const {
-            if (type_ == type::string) {
-                return std::hash<std::string>()(as_string());
-            } else if (type_ == type::int32) {
-                return std::hash<int32_t>()(std::get<int32_t>(storage_));
-            } else if (type_ == type::uint32) {
-                return std::hash<uint32_t>()(std::get<uint32_t>(storage_));
+            hash_t hash_{0};
+            for (const auto& str : storage_) {
+                boost::hash_combine(hash_, std::hash<std::pmr::string>()(str));
             }
-            return 0;
+            return hash_;
         }
 
+        std::pmr::memory_resource* resource() const { return storage_.get_allocator().resource(); }
+
     private:
-        type type_;
         side_t side_;
-        std::variant<std::monostate, bool, int32_t, uint32_t, std::string> storage_;
+        std::pmr::vector<std::pmr::string> storage_;
     };
 
     template<class OStream>
     OStream& operator<<(OStream& stream, const key_t& key) {
-        if (key.is_string()) {
-            stream << key.as_string();
-        } else if (key.is_int()) {
-            stream << key.as_int();
-        } else if (key.is_uint()) {
-            stream << key.as_uint();
-        }
+        stream << key.as_string();
         return stream;
     }
 

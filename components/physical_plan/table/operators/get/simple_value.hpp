@@ -15,7 +15,8 @@ namespace components::table::operators::get {
 
         explicit simple_value_t(const expressions::key_t& key);
 
-        types::logical_value_t get_value_impl(const std::pmr::vector<types::logical_value_t>& row);
+        std::vector<types::logical_value_t>
+        get_values_impl(const std::pmr::vector<types::logical_value_t>& row) override;
     };
 
 } // namespace components::table::operators::get

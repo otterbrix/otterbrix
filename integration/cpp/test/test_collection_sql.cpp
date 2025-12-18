@@ -464,7 +464,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             for (int num = 0; num < 100; ++num) {
                 query << "(ROW(" << num << ", '"
                       << "text_" << num + 1 << "', ROW(" << num + 0.5f << ", " << num * 2 << ")), "
-                      << (num % 2 == 0 ? "\'even\'" : "\'odd\'") << ")" << (num == 99 ? ";" : ", ");
+                      << (num % 2 == 0 ? R"_('even')_" : R"_('odd')_") << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());

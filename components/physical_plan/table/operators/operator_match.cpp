@@ -1,6 +1,5 @@
 #include "operator_match.hpp"
 #include "predicates/predicate.hpp"
-#include "services/collection/collection.hpp"
 
 namespace components::table::operators {
 

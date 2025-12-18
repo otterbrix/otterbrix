@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
 
-#include "catalog/catalog.hpp"
 #include "utils.hpp"
+#include <components/catalog/catalog.hpp>
 
 #include <memory_resource>
 

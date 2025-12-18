@@ -4,7 +4,7 @@
 #include <utility>
 
 #include "core/pmr.hpp"
-#include "vector/data_chunk.hpp"
+#include <components/vector/data_chunk.hpp>
 
 #include <components/index/disk/route.hpp>
 

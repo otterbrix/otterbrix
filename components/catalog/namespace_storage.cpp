@@ -1,4 +1,4 @@
-#include "catalog/namespace_storage.hpp"
+#include <components/catalog/namespace_storage.hpp>
 
 namespace components::catalog {
     namespace_storage::namespace_storage(std::pmr::memory_resource* resource)

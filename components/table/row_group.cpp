@@ -6,7 +6,7 @@
 #include "collection.hpp"
 #include "row_version_manager.hpp"
 #include "struct_column_data.hpp"
-#include "vector/vector_operations.hpp"
+#include <components/vector/vector_operations.hpp>
 
 namespace components::table {
 

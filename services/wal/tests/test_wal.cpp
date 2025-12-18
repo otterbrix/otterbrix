@@ -1,5 +1,3 @@
-#include "expressions/compare_expression.hpp"
-
 #include <catch2/catch.hpp>
 
 #include <absl/crc/crc32c.h>
@@ -9,6 +7,7 @@
 #include <thread>
 
 #include <components/document/document.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/tests/generaty.hpp>

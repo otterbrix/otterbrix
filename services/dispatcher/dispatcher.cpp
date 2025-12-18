@@ -1,6 +1,6 @@
 #include "dispatcher.hpp"
 
-#include "logical_plan/node_create_type.hpp"
+#include <components/logical_plan/node_create_type.hpp>
 
 #include <core/system_command.hpp>
 #include <core/tracy/tracy.hpp>
@@ -503,9 +503,10 @@ namespace services::dispatcher {
                     trace(log_, "dispatcher_t::execute_plan_finish: non processed type - {}", to_string(plan->type()));
                 }
             }
-
-            //end: delete
+        } else {
+            trace(log_, "dispatcher_t::execute_plan_finish: error: \"{}\"", result->get_error().what);
         }
+        //end: delete
         // TODO add verification for mutable types (they should be skipped too)
         if (!load_from_wal_in_progress(session)) {
             actor_zeta::send(s.address(),

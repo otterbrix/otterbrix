@@ -1,9 +1,8 @@
 #pragma once
 
-#include "expressions/key.hpp"
-
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
+#include <components/expressions/key.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 #include <components/sql/parser/pg_functions.h>

@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
 
-#include "core/uvector.hpp"
+#include <core/uvector.hpp>
 
 #include <components/log/log.hpp>
 #include <core/assert/trace_full_exception.hpp>

@@ -39,7 +39,7 @@ COPY ./CMakeLists.txt ./CMakeLists.txt
 WORKDIR /app/build
 
 RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
-    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DENABLE_ASAN=ON && \
+    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON && \
     cmake --build . --target all -- -j $(nproc)
 
 RUN ctest -C Release -V --output-on-failure --timeout 120

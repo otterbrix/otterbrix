@@ -48,7 +48,11 @@ namespace components::vector {
         const vector_t* sub_column = &data[col_indices.front()];
         for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
             if (std::next(it) == col_indices.end()) {
-                return sub_column->entries()[*it]->value(index);
+                if (sub_column->type().type() == types::logical_type::ARRAY) {
+                    return sub_column->entry().value(*it * index);
+                } else {
+                    return sub_column->entries()[*it]->value(index);
+                }
             } else {
                 sub_column = sub_column->entries()[*it].get();
             }
@@ -66,7 +70,11 @@ namespace components::vector {
         vector_t* sub_column = &data[col_indices.front()];
         for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
             if (std::next(it) == col_indices.end()) {
-                return sub_column->entries()[*it]->set_value(index, val);
+                if (sub_column->type().type() == types::logical_type::ARRAY) {
+                    return sub_column->entry().set_value(*it * index, val);
+                } else {
+                    return sub_column->entries()[*it]->set_value(index, val);
+                }
             } else {
                 sub_column = sub_column->entries()[*it].get();
             }
@@ -240,14 +248,24 @@ namespace components::vector {
             const vector_t* sub_column = &data[res.front()];
             for (auto it = std::next(path.begin()); it != path.end(); ++it) {
                 bool field_found = false;
-                for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                    if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
-                        res.emplace_back(i);
-                        if (std::next(it) != path.end()) {
-                            sub_column = sub_column->entries()[i].get();
-                        }
+                if (sub_column->type().type() == types::logical_type::ARRAY) {
+                    size_t index = std::stoull(it->c_str());
+                    if (index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
+                                    ->size()) {
+                        res.emplace_back(index);
+                        sub_column = &sub_column->entry();
                         field_found = true;
-                        break;
+                    }
+                } else {
+                    for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
+                        if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
+                            res.emplace_back(i);
+                            if (std::next(it) != path.end()) {
+                                sub_column = sub_column->entries()[i].get();
+                            }
+                            field_found = true;
+                            break;
+                        }
                     }
                 }
                 if (!field_found) {

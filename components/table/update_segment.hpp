@@ -744,12 +744,10 @@ namespace components::table {
         auto tuples = current.tuples();
         auto info_data = current.data<T>();
         if (current.N == vector::DEFAULT_VECTOR_CAPACITY) {
-            std::memcpy(result_data + current.vector_index * vector::DEFAULT_VECTOR_CAPACITY,
-                        info_data,
-                        sizeof(T) * current.N);
+            std::memcpy(result_data, info_data, sizeof(T) * current.N);
         } else {
             for (uint64_t i = 0; i < current.N; i++) {
-                result_data[tuples[i] + current.vector_index * vector::DEFAULT_VECTOR_CAPACITY] = info_data[i];
+                result_data[tuples[i]] = info_data[i];
             }
         }
     }

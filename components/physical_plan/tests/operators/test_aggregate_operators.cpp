@@ -22,7 +22,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
-TEST_CASE("operator::aggregate::count") {
+TEST_CASE("components::physical_plan::aggregate::count") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -76,7 +76,7 @@ TEST_CASE("operator::aggregate::count") {
     }
 }
 
-TEST_CASE("operator::aggregate::min") {
+TEST_CASE("components::physical_plan::aggregate::min") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -130,7 +130,7 @@ TEST_CASE("operator::aggregate::min") {
     }
 }
 
-TEST_CASE("operator::aggregate::max") {
+TEST_CASE("components::physical_plan::aggregate::max") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -184,7 +184,7 @@ TEST_CASE("operator::aggregate::max") {
     }
 }
 
-TEST_CASE("operator::aggregate::sum") {
+TEST_CASE("components::physical_plan::aggregate::sum") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -238,7 +238,7 @@ TEST_CASE("operator::aggregate::sum") {
     }
 }
 
-TEST_CASE("operator::aggregate::avg") {
+TEST_CASE("components::physical_plan::aggregate::avg") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);

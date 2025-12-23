@@ -7,7 +7,7 @@
 #include <core/file/local_file_system.hpp>
 #include <filesystem>
 
-TEST_CASE("column") {
+TEST_CASE("components::table::column") {
     using namespace components::types;
     using namespace components::vector;
     using namespace components::table;

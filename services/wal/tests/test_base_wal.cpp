@@ -9,7 +9,7 @@ using namespace services;
 using namespace services::wal;
 using namespace components::logical_plan;
 
-TEST_CASE("pack and unpack") {
+TEST_CASE("services::wal::pack_unpack") {
     auto resource = std::pmr::synchronized_pool_resource();
     const std::string database = "test_database";
     const std::string collection = "test_collection";

@@ -20,7 +20,7 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("serialization::document") {
+TEST_CASE("components::serialization::document") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(10, &resource);
     {
@@ -41,7 +41,7 @@ TEST_CASE("serialization::document") {
         REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
     }
 }
-TEST_CASE("serialization::data_chunk") {
+TEST_CASE("components::serialization::data_chunk") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto chunk1 = gen_data_chunk(10, &resource);
     {
@@ -60,7 +60,7 @@ TEST_CASE("serialization::data_chunk") {
         }
     }
 }
-TEST_CASE("serialization::expressions") {
+TEST_CASE("components::serialization::expressions") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         auto expr_and = make_compare_union_expression(&resource, compare_type::union_and);
@@ -119,7 +119,7 @@ TEST_CASE("serialization::expressions") {
         }
     }
 }
-TEST_CASE("serialization::logical_plan") {
+TEST_CASE("components::serialization::logical_plan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto node_delete =
         make_node_delete_many(&resource,

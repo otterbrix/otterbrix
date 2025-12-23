@@ -8,7 +8,7 @@
 using namespace components::sql;
 using namespace components::sql::transform;
 
-TEST_CASE("sql::insert_into") {
+TEST_CASE("components::sql::insert_into") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

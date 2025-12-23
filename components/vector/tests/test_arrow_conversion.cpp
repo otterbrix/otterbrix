@@ -9,7 +9,7 @@ using namespace components::vector::arrow;
 using namespace components::vector;
 using namespace components::types;
 
-TEST_CASE("data_chunk to arrow") {
+TEST_CASE("components::vector::data_chunk_to_arrow") {
     constexpr size_t chunk_size = 2048;
     constexpr size_t array_size = 5;
     constexpr size_t max_list_size = 128;

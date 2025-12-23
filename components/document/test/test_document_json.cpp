@@ -4,7 +4,7 @@
 
 using namespace components::document;
 
-TEST_CASE("document_t::value from json") {
+TEST_CASE("components::document::value_from_json") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -30,7 +30,7 @@ TEST_CASE("document_t::value from json") {
     REQUIRE(doc->get_long("/count") == 1);
 }
 
-TEST_CASE("document_t::json") {
+TEST_CASE("components::document::json") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(1, &allocator);
     auto json = doc1->to_json();
@@ -51,7 +51,7 @@ TEST_CASE("document_t::json") {
     REQUIRE(doc1->get_dict("/mixedDict")->count() == doc2->get_dict("/mixedDict")->count());
 }
 
-TEST_CASE("document_t::serialization") {
+TEST_CASE("components::document::serialization") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(1, &allocator);
     auto ser1 = serialize_document(doc1);

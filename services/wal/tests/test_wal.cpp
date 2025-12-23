@@ -86,7 +86,7 @@ test_wal create_test_wal(const std::filesystem::path& path, std::pmr::memory_res
     return {path, resource};
 }
 
-TEST_CASE("insert one test") {
+TEST_CASE("services::wal::insert_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_one_doc", &resource);
@@ -154,7 +154,7 @@ TEST_CASE("insert one test") {
     }
 }
 
-TEST_CASE("insert many empty test") {
+TEST_CASE("services::wal::insert_many_empty_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_many_docs_empty", &resource);
@@ -213,7 +213,7 @@ TEST_CASE("insert many empty test") {
     }
 }
 
-TEST_CASE("insert many test") {
+TEST_CASE("services::wal::insert_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_many_docs", &resource);
@@ -311,7 +311,7 @@ TEST_CASE("insert many test") {
     }
 }
 
-TEST_CASE("delete one test") {
+TEST_CASE("services::wal::delete_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/delete_one", &resource);
 
@@ -350,7 +350,7 @@ TEST_CASE("delete one test") {
     }
 }
 
-TEST_CASE("delete many test") {
+TEST_CASE("services::wal::delete_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/delete_many", &resource);
 
@@ -389,7 +389,7 @@ TEST_CASE("delete many test") {
     }
 }
 
-TEST_CASE("update one test") {
+TEST_CASE("services::wal::update_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/update_one", &resource);
 
@@ -441,7 +441,7 @@ TEST_CASE("update one test") {
     }
 }
 
-TEST_CASE("update many test") {
+TEST_CASE("services::wal::update_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/update_many", &resource);
 
@@ -493,7 +493,7 @@ TEST_CASE("update many test") {
     }
 }
 
-TEST_CASE("test find start record") {
+TEST_CASE("services::wal::find_start_record") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/find_start_record_docs", &resource);
@@ -517,7 +517,7 @@ TEST_CASE("test find start record") {
     }
 }
 
-TEST_CASE("test read id") {
+TEST_CASE("services::wal::read_id") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/read_id_docs", &resource);
@@ -543,7 +543,7 @@ TEST_CASE("test read id") {
     }
 }
 
-TEST_CASE("test read record") {
+TEST_CASE("services::wal::read_record") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/read_record_docs", &resource);

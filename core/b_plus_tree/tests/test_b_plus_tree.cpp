@@ -60,7 +60,7 @@ std::string gen_random(size_t len, std::size_t seed) {
     return result;
 }
 
-TEST_CASE("block_t") {
+TEST_CASE("core::b_plus_tree::block_t") {
     path_t testing_directory = "block_test";
     auto resource = std::pmr::synchronized_pool_resource();
 
@@ -371,7 +371,7 @@ TEST_CASE("block_t") {
     }
 }
 
-TEST_CASE("segment_tree") {
+TEST_CASE("core::b_plus_tree::segment_tree") {
     auto resource = std::pmr::synchronized_pool_resource();
     path_t testing_directory = "segment_tree_test";
 
@@ -842,7 +842,7 @@ TEST_CASE("segment_tree") {
     }
 }
 
-TEST_CASE("b+tree") {
+TEST_CASE("core::b_plus_tree::b+tree") {
     auto resource = std::pmr::synchronized_pool_resource();
     path_t testing_directory = "b+tree_test";
 

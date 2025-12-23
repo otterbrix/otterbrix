@@ -6,7 +6,7 @@
 #include <core/file/local_file_system.hpp>
 #include <math.h>
 
-TEST_CASE("data_table_t") {
+TEST_CASE("components::table::data_table") {
     using namespace components::types;
     using namespace components::vector;
     using namespace components::table;

@@ -82,7 +82,7 @@ struct double_bool_callback_t<void> {
     }
 };
 
-TEST_CASE("test_type_switch") {
+TEST_CASE("components::types::test_type_switch") {
     SECTION("callback - void") {
         const bool check_v1{false};
         const int8_t check_v2{-46};

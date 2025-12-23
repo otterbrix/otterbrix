@@ -59,7 +59,7 @@ using vec = std::vector<v>;
         REQUIRE(node->collection_name() == "testcollection");                                                          \
     }
 
-TEST_CASE("sql::select_bind") {
+TEST_CASE("components::sql::select_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -78,7 +78,7 @@ TEST_CASE("sql::select_bind") {
                        vec({v(5l), v(true)}));
 }
 
-TEST_CASE("sql::update_bind") {
+TEST_CASE("components::sql::update_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -124,7 +124,7 @@ TEST_CASE("sql::update_bind") {
     }
 }
 
-TEST_CASE("sql::insert_bind") {
+TEST_CASE("components::sql::insert_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -193,7 +193,7 @@ TEST_CASE("sql::insert_bind") {
     }
 }
 
-TEST_CASE("sql::transform_result") {
+TEST_CASE("components::sql::transform_result") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

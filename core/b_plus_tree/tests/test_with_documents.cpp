@@ -12,7 +12,7 @@ using namespace std;
 using namespace core::b_plus_tree;
 using namespace core::filesystem;
 
-TEST_CASE("b+tree with documents") {
+TEST_CASE("core::b_plus_tree::b+tree_with_documents") {
     path_t testing_directory = "b+tree_documents_test";
     auto resource = std::pmr::synchronized_pool_resource();
 

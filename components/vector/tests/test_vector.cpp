@@ -2,7 +2,7 @@
 
 #include <components/vector/vector.hpp>
 
-TEST_CASE("vector") {
+TEST_CASE("components::vector::vector") {
     struct test_struct {
         bool flag;
         int32_t number;

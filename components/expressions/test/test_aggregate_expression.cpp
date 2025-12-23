@@ -5,7 +5,7 @@
 using namespace components::expressions;
 using key = components::expressions::key_t;
 
-TEST_CASE("expression::aggregate::equals") {
+TEST_CASE("components::expression::aggregate::equals") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr1 = make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "name"));
     auto expr2 = make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "name"));
@@ -41,7 +41,7 @@ TEST_CASE("expression::aggregate::equals") {
     REQUIRE_FALSE(expression_equal()(expr_union1, expr_union5));
 }
 
-TEST_CASE("expression::aggregate::to_string") {
+TEST_CASE("components::expression::aggregate::to_string") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr =
         make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "sum"), key(&resource, "count"));

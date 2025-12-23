@@ -9,7 +9,7 @@
 using namespace core::b_plus_tree;
 using namespace components::types;
 
-TEST_CASE("msgpack_reader") {
+TEST_CASE("core::b_plus_tree::msgpack_reader") {
     INFO("native packed document") {
         auto resource = std::pmr::synchronized_pool_resource();
         constexpr int num = 10;

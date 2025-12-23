@@ -5,7 +5,7 @@ const core::filesystem::path_t test_folder = "/tmp/databases";
 
 using namespace services::disk;
 
-TEST_CASE("sync database from disk") {
+TEST_CASE("services::disk::sync_database_from_disk") {
     auto resource = std::pmr::synchronized_pool_resource();
     core::filesystem::local_file_system_t fs = core::filesystem::local_file_system_t();
     if (directory_exists(fs, test_folder)) {

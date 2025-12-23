@@ -3,8 +3,8 @@ project(test_index)
 add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
-        single_field_index.cpp
-        create_index.cpp
+        test_single_field_index.cpp
+        test_create_index.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

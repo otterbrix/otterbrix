@@ -133,7 +133,7 @@ private:
     std::function<void(cursor_t_ptr, catalog&)> assertion_;
 };
 
-TEST_CASE("dispatcher::schemeful_operations") {
+TEST_CASE("services::dispatcher::schemeful_operations") {
     auto mr = std::pmr::synchronized_pool_resource();
     test_dispatcher test(&mr);
 
@@ -182,7 +182,7 @@ TEST_CASE("dispatcher::schemeful_operations") {
     }
 }
 
-TEST_CASE("dispatcher::computed_operations") {
+TEST_CASE("services::dispatcher::computed_operations") {
     auto mr = std::pmr::synchronized_pool_resource();
     test_dispatcher test(&mr);
 

@@ -6,7 +6,7 @@
 
 using namespace components::types;
 
-TEST_CASE("physical_value") {
+TEST_CASE("components::types::physical_value") {
     std::vector<physical_value> values;
     std::string_view str1 = "test string";
     std::string_view str2 = "bigger test string but shouldn't be; b < t";

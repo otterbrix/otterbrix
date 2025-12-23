@@ -7,13 +7,19 @@
 #include <cstddef>
 #include <memory_resource>
 
-TEMPLATE_TEST_CASE("memory resource", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::memory_resource",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto resource = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&resource, 128);
     REQUIRE(vec.memory_resource() == &resource);
 }
 
-TEMPLATE_TEST_CASE("zero size constructor",
+TEMPLATE_TEST_CASE("core::tests::zero_size_constructor",
                    "[vector][template]",
                    std::int8_t,
                    std::int32_t,
@@ -27,7 +33,7 @@ TEMPLATE_TEST_CASE("zero size constructor",
     REQUIRE(vec.is_empty());
 }
 
-TEMPLATE_TEST_CASE("non zero size constructor",
+TEMPLATE_TEST_CASE("core::tests::non_zero_size_constructor",
                    "[vector][template]",
                    std::int8_t,
                    std::int32_t,
@@ -45,7 +51,13 @@ TEMPLATE_TEST_CASE("non zero size constructor",
     REQUIRE(vec.element_ptr(0) != nullptr);
 }
 
-TEMPLATE_TEST_CASE("copy constructor", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::copy_constructor",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto mr = std::pmr::synchronized_pool_resource();
     auto const size{12345};
     core::uvector<TestType> vec(&mr, size);
@@ -57,7 +69,13 @@ TEMPLATE_TEST_CASE("copy constructor", "[vector][template]", std::int8_t, std::i
     REQUIRE(uv_copy.element_ptr(0) != nullptr);
 }
 
-TEMPLATE_TEST_CASE("resize smaller", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::resize_smaller",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -77,7 +95,13 @@ TEMPLATE_TEST_CASE("resize smaller", "[vector][template]", std::int8_t, std::int
     REQUIRE(vec.capacity() == smaller_size);
 }
 
-TEMPLATE_TEST_CASE("resize larger", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::resize_larger",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -102,7 +126,13 @@ TEMPLATE_TEST_CASE("resize larger", "[vector][template]", std::int8_t, std::int3
     REQUIRE(vec.begin() == larger_begin);
 }
 
-TEMPLATE_TEST_CASE("reserve smaller", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::reserve_smaller",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -119,7 +149,13 @@ TEMPLATE_TEST_CASE("reserve smaller", "[vector][template]", std::int8_t, std::in
     REQUIRE(vec.capacity() == original_capacity);
 }
 
-TEMPLATE_TEST_CASE("reserve larger", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::reserve_larger",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -137,7 +173,13 @@ TEMPLATE_TEST_CASE("reserve larger", "[vector][template]", std::int8_t, std::int
     REQUIRE(core::is_equals<TestType>(vec.element(0), 1));
 }
 
-TEMPLATE_TEST_CASE("resize to zero", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::resize_to_zero",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -151,7 +193,13 @@ TEMPLATE_TEST_CASE("resize to zero", "[vector][template]", std::int8_t, std::int
     REQUIRE(vec.capacity() == 0);
 }
 
-TEMPLATE_TEST_CASE("release", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::release",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const original_size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, original_size);
@@ -167,7 +215,13 @@ TEMPLATE_TEST_CASE("release", "[vector][template]", std::int8_t, std::int32_t, s
     REQUIRE(storage.size() == original_size * sizeof(TestType));
 }
 
-TEMPLATE_TEST_CASE("element pointer", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::element_pointer",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, size);
@@ -176,7 +230,13 @@ TEMPLATE_TEST_CASE("element pointer", "[vector][template]", std::int8_t, std::in
     }
 }
 
-TEMPLATE_TEST_CASE("get set element", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::get_set_element",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, size);
@@ -187,7 +247,13 @@ TEMPLATE_TEST_CASE("get set element", "[vector][template]", std::int8_t, std::in
     }
 }
 
-TEMPLATE_TEST_CASE("set element zero", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::set_element_zero",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, size);
@@ -197,7 +263,7 @@ TEMPLATE_TEST_CASE("set element zero", "[vector][template]", std::int8_t, std::i
     }
 }
 
-TEMPLATE_TEST_CASE("front back element",
+TEMPLATE_TEST_CASE("core::tests::front_back_element",
                    "[vector][template]",
                    std::int8_t,
                    std::int32_t,
@@ -217,7 +283,13 @@ TEMPLATE_TEST_CASE("front back element",
     REQUIRE(core::is_equals<TestType>(last, vec.back_element()));
 }
 
-TEMPLATE_TEST_CASE("iterators", "[vector][template]", std::int8_t, std::int32_t, std::uint64_t, float, double) {
+TEMPLATE_TEST_CASE("core::tests::iterators",
+                   "[vector][template]",
+                   std::int8_t,
+                   std::int32_t,
+                   std::uint64_t,
+                   float,
+                   double) {
     auto const size{12345};
     auto mr = std::pmr::synchronized_pool_resource();
     core::uvector<TestType> vec(&mr, size);

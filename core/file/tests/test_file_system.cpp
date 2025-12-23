@@ -20,7 +20,7 @@ static void create_dummy_file(string fname1) {
     outfile.close();
 }
 
-TEST_CASE("filesystem") {
+TEST_CASE("core::file::filesystem") {
     INFO("initialization") {
         local_file_system_t fs = local_file_system_t();
         if (!directory_exists(fs, testing_directory)) {

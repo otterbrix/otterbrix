@@ -6,7 +6,7 @@ using namespace components;
 using namespace components::collection::operators;
 using key = components::expressions::key_t;
 
-TEST_CASE("operator::get::get_value") {
+TEST_CASE("components::physical_plan::get::get_value") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
     auto doc = gen_doc(1, &resource);

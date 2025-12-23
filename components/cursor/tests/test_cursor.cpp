@@ -7,7 +7,7 @@
 
 using namespace core::pmr;
 
-TEST_CASE("cursor::construction") {
+TEST_CASE("components::cursor::construction") {
     auto resource = std::pmr::synchronized_pool_resource();
     INFO("empty cursor") {
         auto cursor = components::cursor::make_cursor(&resource);
@@ -35,7 +35,7 @@ TEST_CASE("cursor::construction") {
     }
 }
 
-TEST_CASE("cursor::sort") {
+TEST_CASE("components::cursor::sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::vector<components::document::document_ptr> docs(&resource);
     for (int i = 0; i < 10; ++i) {

@@ -14,7 +14,7 @@ std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
     return s;
 }
 
-TEST_CASE("index_disk::string") {
+TEST_CASE("services::disk::index_disk::string") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
 
@@ -48,7 +48,7 @@ TEST_CASE("index_disk::string") {
     REQUIRE(index.upper_bound(logical_value_t(gen_id(90))).size() == 5);
 }
 
-TEST_CASE("index_disk::int32") {
+TEST_CASE("services::disk::index_disk::int32") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
 
@@ -82,7 +82,7 @@ TEST_CASE("index_disk::int32") {
     REQUIRE(index.upper_bound(logical_value_t(90l)).size() == 5);
 }
 
-TEST_CASE("index_disk::uint32") {
+TEST_CASE("services::disk::index_disk::uint32") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
 
@@ -116,7 +116,7 @@ TEST_CASE("index_disk::uint32") {
     REQUIRE(index.upper_bound(logical_value_t(90ul)).size() == 5);
 }
 
-TEST_CASE("index_disk::double") {
+TEST_CASE("services::disk::index_disk::double") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
 
@@ -150,7 +150,7 @@ TEST_CASE("index_disk::double") {
     REQUIRE(index.upper_bound(logical_value_t(90.)).size() == 5);
 }
 
-TEST_CASE("index_disk::multi_values::int32") {
+TEST_CASE("services::disk::index_disk::multi_values::int32") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto tape = std::make_unique<impl::base_document>(&resource);
 

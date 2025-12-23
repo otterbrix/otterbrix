@@ -38,7 +38,7 @@ struct gen_scalar final {
     }
 };
 
-TEMPLATE_TEST_CASE("unitialized",
+TEMPLATE_TEST_CASE("core::tests::unitialized",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -52,7 +52,7 @@ TEMPLATE_TEST_CASE("unitialized",
     REQUIRE(nullptr != scalar.data());
 }
 
-TEMPLATE_TEST_CASE("initialValue",
+TEMPLATE_TEST_CASE("core::tests::initialValue",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -69,7 +69,7 @@ TEMPLATE_TEST_CASE("initialValue",
     REQUIRE(core::is_equals<TestType>(gen.value, scalar.value()));
 }
 
-TEMPLATE_TEST_CASE("const ptr data",
+TEMPLATE_TEST_CASE("core::tests::const_ptr_data",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -86,7 +86,7 @@ TEMPLATE_TEST_CASE("const ptr data",
     REQUIRE(nullptr != data);
 }
 
-TEMPLATE_TEST_CASE("copy ctor",
+TEMPLATE_TEST_CASE("core::tests::copy_ctor",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -108,7 +108,7 @@ TEMPLATE_TEST_CASE("copy ctor",
     REQUIRE(core::is_equals<TestType>(copy.value(), scalar.value()));
 }
 
-TEMPLATE_TEST_CASE("move ctor",
+TEMPLATE_TEST_CASE("core::tests::move_ctor",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -134,7 +134,7 @@ TEMPLATE_TEST_CASE("move ctor",
     REQUIRE(nullptr == scalar.data());
 }
 
-TEMPLATE_TEST_CASE("set value",
+TEMPLATE_TEST_CASE("core::tests::set_value",
                    "[scalar][template]",
                    bool,
                    std::int8_t,
@@ -155,7 +155,7 @@ TEMPLATE_TEST_CASE("set value",
     REQUIRE(core::is_equals<TestType>(expected, scalar.value()));
 }
 
-TEMPLATE_TEST_CASE("set value to zero",
+TEMPLATE_TEST_CASE("core::tests::set_value_to_zero",
                    "[scalar][template]",
                    bool,
                    std::int8_t,

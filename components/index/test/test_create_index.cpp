@@ -50,7 +50,7 @@ private:
     storage_t dummy_storage_;
 };
 
-TEST_CASE("base index created") {
+TEST_CASE("components::index::base_index_created") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto index_engine = make_index_engine(&resource);
     auto one_id = make_index<dummy>(index_engine, "dummy_one", {components::expressions::key_t{&resource, "1"}});

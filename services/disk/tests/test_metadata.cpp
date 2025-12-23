@@ -7,7 +7,7 @@ using namespace services::disk;
 const std::string database_name1 = "test_database1";
 const std::string database_name2 = "test_database2";
 
-TEST_CASE("metadata databases") {
+TEST_CASE("services::disk::metadata_databases") {
     core::filesystem::local_file_system_t fs = core::filesystem::local_file_system_t();
     remove("/tmp/metadata");
     auto metadata = metadata_t::open(fs, "/tmp/metadata");
@@ -35,7 +35,7 @@ TEST_CASE("metadata databases") {
     }
 }
 
-TEST_CASE("metadata collections") {
+TEST_CASE("services::disk::metadata_collections") {
     core::filesystem::local_file_system_t fs = core::filesystem::local_file_system_t();
     remove("/tmp/metadata");
     auto metadata = metadata_t::open(fs, "/tmp/metadata");

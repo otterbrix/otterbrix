@@ -310,7 +310,7 @@ namespace services::disk {
                 [&](index_agent_disk_t* ptr) {
                     index_agents_.insert_or_assign(name,
                                                    index_agent_disk_ptr(ptr, actor_zeta::pmr::deleter_t(resource())));
-                }, // TODO mr_delete(resource(), agent)
+                }, // TODO core::pmr::deallocate_ptr(resource(), agent)
                 config_.path,
                 collection,
                 name,

@@ -14,7 +14,7 @@ namespace components::table::operators {
         vector::vector_t rows_;
         size_t size_{0};
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };
 
 } // namespace components::table::operators

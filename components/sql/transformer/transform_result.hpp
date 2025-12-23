@@ -4,9 +4,7 @@
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_data.hpp>
-#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/sql/parser/nodes/parsenodes.h>
 
 namespace components::sql::transform {
     struct result_view {

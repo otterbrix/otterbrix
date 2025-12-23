@@ -12,9 +12,6 @@
 #include <memory_resource>
 #include <services/collection/executor.hpp>
 #include <services/disk/result.hpp>
-#include <stack>
-
-#include "context_storage.hpp"
 
 namespace services {
 
@@ -88,7 +85,7 @@ namespace services {
                                                      actor_zeta::pmr::deleter_t(std::pmr::null_memory_resource())};
 
     private:
-        void enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit* unit) final;
+        void enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit* unit) override;
 
         void create_database_(const components::session::session_id_t& session,
                               components::logical_plan::node_ptr logical_plan);

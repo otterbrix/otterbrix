@@ -4,7 +4,6 @@
 #include <variant>
 
 #include <actor-zeta.hpp>
-#include <actor-zeta/detail/memory_resource.hpp>
 
 #include <core/excutor.hpp>
 #include <core/spinlock/spinlock.hpp>
@@ -14,7 +13,6 @@
 #include <components/document/document.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_data.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <services/disk/result.hpp>
 #include <services/wal/base.hpp>
@@ -36,7 +34,7 @@ namespace services::dispatcher {
                      actor_zeta::address_t&,
                      actor_zeta::address_t&,
                      log_t& log);
-        ~dispatcher_t();
+        ~dispatcher_t() override;
 
         auto make_type() const noexcept -> const char*;
 

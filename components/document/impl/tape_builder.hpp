@@ -3,7 +3,6 @@
 #include <core/operations_helper.hpp>
 
 #include <components/document/impl/document.hpp>
-#include <components/document/impl/mr_utils.hpp>
 #include <components/document/impl/tape_writer.hpp>
 #include <components/types/types.hpp>
 

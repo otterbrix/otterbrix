@@ -1,13 +1,11 @@
 #pragma once
 #include <components/types/types.hpp>
-#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
 #include <components/table/storage/buffer_handle.hpp>
-
-#include "segment_tree.hpp"
 
 #include <expressions/forward.hpp>
 #include <types/logical_value.hpp>

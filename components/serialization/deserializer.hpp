@@ -1,6 +1,5 @@
 #pragma once
 #include "serializer.hpp"
-#include <components/logical_plan/param_storage.hpp>
 
 #include <msgpack.hpp>
 #include <stack>

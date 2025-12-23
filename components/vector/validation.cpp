@@ -1,4 +1,6 @@
 #include "validation.hpp"
+#include <cassert>
+#include <cstring>
 
 namespace components::vector {
 

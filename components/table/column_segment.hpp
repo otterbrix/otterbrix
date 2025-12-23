@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/types/logical_value.hpp>
 #include <components/vector/vector.hpp>
 
 #include "segment_tree.hpp"

@@ -19,9 +19,9 @@ namespace components::logical_plan {
         static boost::intrusive_ptr<node_delete_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
 
         collection_full_name_t collection_from_;
     };

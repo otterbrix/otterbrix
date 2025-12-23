@@ -9,7 +9,7 @@ namespace core {
     template<typename T>
     class scalar {
     public:
-        static_assert(std::is_trivially_copyable<T>::value, "Scalar type must be trivially copyable");
+        static_assert(std::is_trivially_copyable_v<T>, "Scalar type must be trivially copyable");
 
         using value_type = typename uvector<T>::value_type;
         using reference = typename uvector<T>::reference;

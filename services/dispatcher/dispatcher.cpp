@@ -1,6 +1,7 @@
 #include "dispatcher.hpp"
 
 #include <components/logical_plan/node_create_type.hpp>
+#include <components/logical_plan/node_data.hpp>
 
 #include <core/system_command.hpp>
 #include <core/tracy/tracy.hpp>
@@ -978,7 +979,7 @@ namespace services::dispatcher {
         behavior()(current_message());
     }
 
-    // mr_delete(resource(), agent)
+    // core::pmr::deallocate_ptr(resource(), agent)
     void manager_dispatcher_t::create(const components::session::session_id_t& session) {
         trace(log_, "manager_dispatcher_t::create session: {} ", session.data());
         auto target = spawn_actor(

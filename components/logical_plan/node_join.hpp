@@ -26,9 +26,9 @@ namespace components::logical_plan {
     private:
         join_type type_;
 
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     using node_join_ptr = boost::intrusive_ptr<node_join_t>;

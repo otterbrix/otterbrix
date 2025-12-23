@@ -34,9 +34,9 @@ namespace components::logical_plan {
     private:
         limit_t limit_;
 
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     using node_limit_ptr = boost::intrusive_ptr<node_limit_t>;

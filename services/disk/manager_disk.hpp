@@ -31,11 +31,11 @@ namespace services::disk {
                        actor_zeta::scheduler_raw,
                        configuration::config_disk config,
                        log_t& log);
-        ~manager_disk_t();
+        ~manager_disk_t() override;
 
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
         actor_zeta::behavior_t behavior();
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override;
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
 
         void create_agent();
@@ -131,7 +131,7 @@ namespace services::disk {
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior();
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override;
 
     private:
         actor_zeta::scheduler_raw e_;

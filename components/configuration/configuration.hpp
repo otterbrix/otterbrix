@@ -2,7 +2,6 @@
 
 #include <components/log/log.hpp>
 #include <filesystem>
-#include <mutex>
 
 namespace configuration {
 

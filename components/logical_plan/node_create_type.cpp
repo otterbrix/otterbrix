@@ -1,6 +1,7 @@
 #include "node_create_type.hpp"
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
+#include <components/types/logical_value.hpp>
 
 namespace components::logical_plan {
 

@@ -13,7 +13,7 @@ namespace components::base::operators {
         explicit operator_raw_data_t(const vector::data_chunk_t& chunk);
 
     private:
-        void on_execute_impl(pipeline::context_t*) final;
+        void on_execute_impl(pipeline::context_t*) override;
     };
 
 } // namespace components::base::operators

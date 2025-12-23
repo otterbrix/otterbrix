@@ -1,7 +1,5 @@
 #pragma once
 
-#include "core/enum_cast.hpp"
-
 #include <components/document/document.hpp>
 #include <msgpack.hpp>
 

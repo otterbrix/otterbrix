@@ -20,7 +20,7 @@ namespace components::collection::operators {
                         bool upsert);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         predicates::predicate_ptr match_predicate_;
         std::pmr::vector<expressions::update_expr_ptr> updates_;

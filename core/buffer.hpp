@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstring>
 #include <memory_resource>
-#include <stdexcept>
 #include <utility>
 
 namespace core {

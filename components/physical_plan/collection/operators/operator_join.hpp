@@ -22,7 +22,7 @@ namespace components::collection::operators {
         bool check_expressions_(const document::document_ptr& left,
                                 const document::document_ptr& right,
                                 pipeline::context_t* context);
-        void on_execute_impl(pipeline::context_t* context) final;
+        void on_execute_impl(pipeline::context_t* context) override;
         void inner_join_(pipeline::context_t* context);
         void outer_full_join_(pipeline::context_t* context);
         void outer_left_join_(pipeline::context_t* context);

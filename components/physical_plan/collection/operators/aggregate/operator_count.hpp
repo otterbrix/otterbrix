@@ -10,8 +10,8 @@ namespace components::collection::operators::aggregate {
         explicit operator_count_t(services::collection::context_collection_t* collection);
 
     private:
-        document::document_ptr aggregate_impl() final;
-        std::string key_impl() const final;
+        document::document_ptr aggregate_impl() override;
+        std::string key_impl() const override;
     };
 
 } // namespace components::collection::operators::aggregate

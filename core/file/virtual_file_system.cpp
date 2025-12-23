@@ -1,11 +1,12 @@
 #include "virtual_file_system.hpp"
 #include "file_system.hpp"
 #include "path_utils.hpp"
+#include <cassert>
 
 namespace core::filesystem {
 
     virtual_file_system_t::virtual_file_system_t()
-        : default_fs_(new local_file_system_t()) {}
+        : default_fs_(std::make_unique<local_file_system_t>()) {}
 
     void virtual_file_system_t::register_sub_system(std::unique_ptr<local_file_system_t> fs) {
         sub_systems_.push_back(std::move(fs));

@@ -4,8 +4,6 @@
 #include "utils.hpp"
 
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/function_expression.hpp>
-#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>

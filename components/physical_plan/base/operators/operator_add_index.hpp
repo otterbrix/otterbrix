@@ -1,8 +1,6 @@
 #pragma once
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/physical_plan/base/operators/operator.hpp>
-#include <memory>
-#include <string>
 
 namespace components::base::operators {
 
@@ -12,7 +10,7 @@ namespace components::base::operators {
                            logical_plan::node_create_index_ptr node);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         logical_plan::node_create_index_ptr index_node_;
     };

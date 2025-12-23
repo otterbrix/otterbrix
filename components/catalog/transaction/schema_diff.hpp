@@ -10,7 +10,7 @@
 namespace components::catalog {
     class schema_diff {
     public:
-        schema_diff(std::pmr::memory_resource* resource);
+        explicit schema_diff(std::pmr::memory_resource* resource);
 
         void add_column(const std::string& name,
                         const types::complex_logical_type& type,

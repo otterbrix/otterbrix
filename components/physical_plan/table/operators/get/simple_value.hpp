@@ -6,7 +6,7 @@
 
 namespace components::table::operators::get {
 
-    class simple_value_t : public operator_get_t {
+    class simple_value_t final : public operator_get_t {
     public:
         static operator_get_ptr create(const expressions::key_t& key);
 

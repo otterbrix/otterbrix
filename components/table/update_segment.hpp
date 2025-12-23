@@ -359,8 +359,8 @@ namespace components::table {
                 initialize_update_data<double>(std::forward<Args>(args)...);
                 break;
                 //case types::physical_type::INTERVAL:
-                //	initialize_update_data<interval_t>(std::forward<Args>(args)...);
-                break;
+                //initialize_update_data<interval_t>(std::forward<Args>(args)...);
+                //break;
             case types::physical_type::STRING:
                 initialize_update_data<std::string_view>(std::forward<Args>(args)...);
                 break;
@@ -521,8 +521,8 @@ namespace components::table {
                 merge_update_loop<double>(std::forward<Args>(args)...);
                 break;
                 //case types::physical_type::INTERVAL:
-                //	merge_update_loop<interval_t>(std::forward<Args>(args)...);
-                break;
+                //merge_update_loop<interval_t>(std::forward<Args>(args)...);
+                //break;
             case types::physical_type::STRING:
                 merge_update_loop<std::string_view>(std::forward<Args>(args)...);
                 break;
@@ -575,8 +575,8 @@ namespace components::table {
                 templated_fetch_row<double>(std::forward<Args>(args)...);
                 break;
                 // case types::physical_type::INTERVAL:
-                // 	templated_fetch_row<interval_t>(std::forward<Args>(args)...);
-                break;
+                // templated_fetch_row<interval_t>(std::forward<Args>(args)...);
+                // break;
             case types::physical_type::STRING:
                 templated_fetch_row<std::string_view>(std::forward<Args>(args)...);
                 break;
@@ -619,7 +619,6 @@ namespace components::table {
                 return templated_check_row<std::string_view>(std::forward<Args>(args)...);
             default:
                 throw std::runtime_error("unhandled physical types");
-                return true;
         }
     }
 

@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <components/types/types.hpp>
-#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <memory_resource>

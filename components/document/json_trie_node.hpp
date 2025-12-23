@@ -5,12 +5,8 @@
 
 #include "container/json_array.hpp"
 #include "container/json_object.hpp"
-#include <components/document/base.hpp>
 #include <components/document/impl/allocator_intrusive_ref_counter.hpp>
-#include <components/document/impl/common_defs.hpp>
-#include <components/document/impl/document.hpp>
 #include <components/document/impl/element.hpp>
-#include <components/document/impl/mr_utils.hpp>
 
 namespace components::document::json {
 

@@ -1,8 +1,11 @@
 #pragma once
 
 #include "local_file_system.hpp"
+
+#include <functional>
 #include <map>
 #include <unordered_set>
+#include <vector>
 
 namespace core::filesystem {
 
@@ -23,7 +26,7 @@ namespace core::filesystem {
         std::vector<std::string> list_sub_system();
         local_file_system_t& find_file_system(const path_t& path);
         local_file_system_t& default_file_system() { return *(default_fs_.get()); }
-        std::string path_separator(const path_t& path);
+        // std::string path_separator(const path_t& path);
 
     private:
         local_file_system_t& find_file_system_(const path_t& path);

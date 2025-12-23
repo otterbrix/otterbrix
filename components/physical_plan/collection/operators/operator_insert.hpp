@@ -11,7 +11,7 @@ namespace components::collection::operators {
                         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>> = {});
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>> key_translation_;
     };

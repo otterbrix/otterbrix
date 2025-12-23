@@ -4,6 +4,7 @@
 
 #include "column_data.hpp"
 #include "column_segment.hpp"
+#include "storage/block_manager.hpp"
 #include "storage/buffer_manager.hpp"
 #include <components/vector/vector.hpp>
 

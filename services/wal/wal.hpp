@@ -127,8 +127,8 @@ namespace services::wal {
         void load(const session_id_t& session, address_t& sender, services::wal::id_t wal_id);
 
     private:
-        void write_buffer(buffer_t&) final;
-        void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const final;
+        void write_buffer(buffer_t&) override;
+        void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const override;
     };
 
     using wal_replicate_ptr = std::unique_ptr<wal_replicate_t, actor_zeta::pmr::deleter_t>;

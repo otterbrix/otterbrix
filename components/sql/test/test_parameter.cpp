@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include <components/document/document.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>

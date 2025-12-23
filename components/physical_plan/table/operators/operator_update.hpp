@@ -15,7 +15,7 @@ namespace components::table::operators {
                         expressions::compare_expression_ptr comp_expr = nullptr);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         std::pmr::vector<expressions::update_expr_ptr> updates_;
         expressions::compare_expression_ptr comp_expr_;

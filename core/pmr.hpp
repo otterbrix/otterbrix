@@ -3,7 +3,6 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
-#include <type_traits>
 
 namespace core::pmr {
 

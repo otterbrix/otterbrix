@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <components/vector/arrow/arrow.hpp>
 #include <list>
 #include <memory>
@@ -61,7 +60,7 @@ namespace components::vector::arrow {
         static constexpr arrow_type_info_type TYPE = arrow_type_info_type::STRUCT;
 
         explicit arrow_struct_info(std::vector<std::shared_ptr<arrow_type>> children);
-        ~arrow_struct_info() override;
+        ~arrow_struct_info() override = default;
 
         size_t child_count() const;
         const arrow_type& get_child(size_t index) const;

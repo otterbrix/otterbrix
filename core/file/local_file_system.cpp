@@ -2,6 +2,7 @@
 
 #include "path_utils.hpp"
 #include <algorithm>
+#include <cassert>
 #include <limits>
 
 #include <cstdint>

@@ -4,7 +4,6 @@
 #include <components/document/impl/element.hpp>
 #include <components/document/impl/tape_builder.hpp>
 #include <components/types/types.hpp>
-#include <cstdint>
 #include <string>
 
 namespace components::types {

@@ -2,7 +2,6 @@
 
 #include "expression.hpp"
 #include "key.hpp"
-#include <memory>
 #include <memory_resource>
 
 namespace components::expressions {

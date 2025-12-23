@@ -22,7 +22,7 @@ namespace components::document {
 
     document_t::~document_t() {
         if (is_root_) {
-            mr_delete(element_ind_->get_allocator(), mut_src_);
+            core::pmr::deallocate_ptr(element_ind_->get_allocator(), mut_src_);
         }
     }
 

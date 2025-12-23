@@ -1,6 +1,8 @@
 #pragma once
 
 #include "file_handle.hpp"
+#include <functional>
+#include <vector>
 
 namespace core::filesystem {
 

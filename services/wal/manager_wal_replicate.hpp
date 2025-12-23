@@ -8,7 +8,6 @@
 #include <components/configuration/configuration.hpp>
 #include <components/session/session.hpp>
 #include <core/excutor.hpp>
-#include <core/handler_by_id.hpp>
 #include <core/spinlock/spinlock.hpp>
 
 #include "base.hpp"
@@ -40,7 +39,7 @@ namespace services::wal {
                                 actor_zeta::scheduler_raw,
                                 configuration::config_wal,
                                 log_t&);
-        ~manager_wal_replicate_t() final;
+        ~manager_wal_replicate_t() override;
 
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
@@ -69,7 +68,7 @@ namespace services::wal {
         void create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr data);
 
     private:
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override;
 
         actor_zeta::scheduler_raw e_;
         configuration::config_wal config_;
@@ -113,7 +112,7 @@ namespace services::wal {
         log_t log_;
         actor_zeta::behavior_t always_success_;
 
-        auto enqueue_impl(actor_zeta::message_ptr, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr, actor_zeta::execution_unit*) -> void override;
         actor_zeta::scheduler_raw e_;
         spin_lock lock_;
 

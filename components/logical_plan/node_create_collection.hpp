@@ -19,9 +19,9 @@ namespace components::logical_plan {
         const std::pmr::vector<types::complex_logical_type>& schema() const;
 
     private:
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
 
         std::pmr::vector<types::complex_logical_type> schema_;
     };

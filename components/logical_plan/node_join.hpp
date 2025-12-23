@@ -21,7 +21,7 @@ namespace components::logical_plan {
 
         join_type type() const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_join_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         join_type type_;

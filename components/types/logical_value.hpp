@@ -183,7 +183,7 @@ namespace components::types {
 
     template<typename T>
     T logical_value_t::value() const {
-        assert(false);
+        throw std::logic_error("logical_value_t::value<T>(): is not implemented for a given T");
     }
 
     template<>
@@ -251,7 +251,8 @@ namespace components::types {
             case logical_type::TIMESTAMP_SEC:
                 return duration_cast<nanoseconds>(static_cast<seconds>(std::get<int64_t>(value_)));
             default:
-                assert(false && "incorrect value logical type");
+                throw std::logic_error(
+                    "logical_value_t::value<std::chrono::nanoseconds>(): incorrect value logical type");
                 return nanoseconds{0};
         }
     }
@@ -268,7 +269,8 @@ namespace components::types {
             case logical_type::TIMESTAMP_SEC:
                 return duration_cast<microseconds>(static_cast<seconds>(std::get<int64_t>(value_)));
             default:
-                assert(false && "incorrect value logical type");
+                throw std::logic_error(
+                    "logical_value_t::value<std::chrono::microseconds>(): incorrect value logical type");
                 return microseconds{0};
         }
     }
@@ -285,7 +287,8 @@ namespace components::types {
             case logical_type::TIMESTAMP_SEC:
                 return duration_cast<milliseconds>(static_cast<seconds>(std::get<int64_t>(value_)));
             default:
-                assert(false && "incorrect value logical type");
+                throw std::logic_error(
+                    "logical_value_t::value<std::chrono::milliseconds>(): incorrect value logical type");
                 return milliseconds{0};
         }
     }
@@ -302,7 +305,7 @@ namespace components::types {
             case logical_type::TIMESTAMP_SEC:
                 return static_cast<seconds>(std::get<int64_t>(value_));
             default:
-                assert(false && "incorrect value logical type");
+                throw std::logic_error("logical_value_t::value<std::chrono::seconds>(): incorrect value logical type");
                 return seconds{0};
         }
     }
@@ -385,7 +388,7 @@ void to_msgpack_(msgpack::packer<Stream>& o, const components::types::logical_va
             break;
         }
         default:
-            assert(false && "unsupported type");
+            throw std::logic_error("logical_value_t::to_msgpack_: incorrect logical type");
             break;
     }
 }

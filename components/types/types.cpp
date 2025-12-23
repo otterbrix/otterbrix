@@ -178,7 +178,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                break;
+                return 0; // no own payload
         }
     }
 
@@ -225,7 +225,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                break;
+                return 0; // no own payload
         }
     }
 

@@ -82,8 +82,9 @@ namespace components::table {
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
                                                 uint64_t block_size) {
-            assert(dict_offset + static_cast<int32_t>(block_size) >= 0 &&
-                   dict_offset <= static_cast<int32_t>(block_size));
+            if (dict_offset + static_cast<int32_t>(block_size) < 0 || dict_offset > static_cast<int32_t>(block_size)) {
+                throw std::runtime_error("fetch_string_location: incorrect pointer and size");
+            }
             if (dict_offset >= 0) {
                 return string_location_t(INVALID_BLOCK, dict_offset);
             }

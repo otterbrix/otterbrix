@@ -211,8 +211,7 @@ namespace services::wal {
               "wal_replicate_t::create_database {}, session: {}",
               data->collection_full_name().database,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -223,8 +222,7 @@ namespace services::wal {
               "wal_replicate_t::drop_database {}, session: {}",
               data->collection_full_name().database,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -236,8 +234,7 @@ namespace services::wal {
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -249,8 +246,7 @@ namespace services::wal {
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 

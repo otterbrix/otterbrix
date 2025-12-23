@@ -112,7 +112,7 @@ namespace components::types {
             case logical_type::INVALID:
                 [[fallthrough]];
             default:
-                break;
+                value_ = nullptr;
         }
     }
 
@@ -676,7 +676,7 @@ namespace components::types {
             case logical_type::POINTER:
                 return logical_value_t(reinterpret_cast<void*>(value));
             default:
-                assert(false && "Numeric requires numeric type");
+                throw std::runtime_error("logical_value_t::create_numeric: Numeric requires numeric type");
         }
     }
 

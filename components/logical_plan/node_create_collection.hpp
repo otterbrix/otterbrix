@@ -12,7 +12,8 @@ namespace components::logical_plan {
                                           const collection_full_name_t& collection,
                                           std::pmr::vector<types::complex_logical_type> schema = {});
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_create_collection_t>
+        deserialize(serializer::msgpack_deserializer_t* deserializer);
 
         std::pmr::vector<types::complex_logical_type>& schema();
         const std::pmr::vector<types::complex_logical_type>& schema() const;

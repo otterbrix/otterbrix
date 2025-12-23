@@ -2,6 +2,7 @@
 
 #include <absl/crc/crc32c.h>
 #include <actor-zeta.hpp>
+#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/log/log.hpp>
 #include <string>
 #include <thread>
@@ -298,11 +299,11 @@ TEST_CASE("insert many test") {
             REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
             const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
             int num = 0;
-            for (size_t i = 0; i < chunk.size(); i++) {
+            for (size_t j = 0; j < chunk.size(); j++) {
                 ++num;
-                REQUIRE(chunk.value(0, i).value<int64_t>() == num);
-                REQUIRE(chunk.value(1, i).value<std::string_view>() == gen_id(num, &resource));
-                REQUIRE(chunk.value(2, i).value<std::string_view>() == std::to_string(num));
+                REQUIRE(chunk.value(0, j).value<int64_t>() == num);
+                REQUIRE(chunk.value(1, j).value<std::string_view>() == gen_id(num, &resource));
+                REQUIRE(chunk.value(2, j).value<std::string_view>() == std::to_string(num));
             }
 
             read_index = finish;
@@ -428,15 +429,14 @@ TEST_CASE("update one test") {
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
+        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
             REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
-        REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
-                (num % 2 == 0));
+        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
         index = test_wal.wal->test_next_record(index);
     }
 }
@@ -481,15 +481,14 @@ TEST_CASE("update many test") {
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
+        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
             REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
-        REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
-                (num % 2 == 0));
+        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
         index = test_wal.wal->test_next_record(index);
     }
 }

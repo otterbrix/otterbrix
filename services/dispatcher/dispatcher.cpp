@@ -15,6 +15,8 @@
 #include <services/memory_storage/route.hpp>
 #include <services/wal/route.hpp>
 
+#include <boost/polymorphic_pointer_cast.hpp>
+
 using namespace components::logical_plan;
 using namespace components::cursor;
 using namespace components::catalog;
@@ -318,7 +320,7 @@ namespace services::dispatcher {
                 }
             }
             case node_type::drop_type_t: {
-                const auto& n = reinterpret_cast<const node_create_type_ptr&>(logic_plan);
+                const auto& n = boost::polymorphic_pointer_downcast<node_create_type_t>(logic_plan);
                 error = check_type_exists(n->type().alias());
                 if (error) {
                     break;
@@ -806,7 +808,7 @@ namespace services::dispatcher {
                 catalog_.drop_namespace(id.get_namespace());
                 break;
             case node_type::create_collection_t: {
-                auto node_info = reinterpret_cast<node_create_collection_ptr&>(node);
+                auto node_info = boost::polymorphic_pointer_downcast<node_create_collection_t>(node);
                 if (node_info->schema().empty()) {
                     auto err = catalog_.create_computing_table(id);
                     assert(!err);

@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     const std::pmr::vector<expressions::param_storage>& node_function_t::args() const noexcept { return args_; }
 
-    node_ptr node_function_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_function_ptr node_function_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
         std::pmr::vector<expressions::param_storage> args(deserializer->resource());
         deserializer->advance_array(2);

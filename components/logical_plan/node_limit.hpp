@@ -29,7 +29,7 @@ namespace components::logical_plan {
 
         const limit_t& limit() const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_limit_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         limit_t limit_;

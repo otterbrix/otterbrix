@@ -10,7 +10,7 @@ namespace components::logical_plan {
     public:
         explicit node_sort_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_sort_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         hash_t hash_impl() const final;

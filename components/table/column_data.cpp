@@ -295,8 +295,7 @@ namespace components::table {
                                       vector::vector_t& update_vector,
                                       int64_t* row_ids,
                                       uint64_t update_count,
-                                      uint64_t depth) {
-        assert(depth >= column_path.size());
+                                      uint64_t) {
         column_data_t::update(column_path[0], update_vector, row_ids, update_count);
     }
 

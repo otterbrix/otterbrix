@@ -84,6 +84,7 @@ namespace components::expressions {
                 return update_expr_calculate_t::deserialize(deserializer);
             default:
                 assert(false && "incorrect update_expr_type");
+                return nullptr;
         }
     }
 
@@ -131,6 +132,7 @@ namespace components::expressions {
                        *reinterpret_cast<const update_expr_calculate_ptr&>(rhs);
             default:
                 assert(false && "incorrect update_expr_type");
+                return false;
         }
     }
 

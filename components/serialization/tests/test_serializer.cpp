@@ -83,7 +83,7 @@ TEST_CASE("serialization::expressions") {
             msgpack_deserializer_t deserializer(res);
             deserializer.advance_array(0);
             auto type = deserializer.current_type();
-            assert(type == serialization_type::expression_compare);
+            REQUIRE(type == serialization_type::expression_compare);
             auto deserialized_res = compare_expression_t::deserialize(&deserializer);
             deserializer.pop_array();
         }
@@ -112,7 +112,7 @@ TEST_CASE("serialization::expressions") {
             msgpack_deserializer_t deserializer(res);
             deserializer.advance_array(0);
             auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_group);
+            REQUIRE(type == serialization_type::logical_node_group);
             auto deserialized_res = node_t::deserialize(&deserializer);
             REQUIRE(node_group->to_string() == deserialized_res->to_string());
             deserializer.pop_array();
@@ -143,7 +143,7 @@ TEST_CASE("serialization::logical_plan") {
         deserializer.advance_array(0);
         {
             auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_delete);
+            REQUIRE(type == serialization_type::logical_node_delete);
             auto deserialized_res = node_t::deserialize(&deserializer);
             REQUIRE(node_delete->to_string() == deserialized_res->to_string());
         }
@@ -151,7 +151,7 @@ TEST_CASE("serialization::logical_plan") {
         deserializer.advance_array(1);
         {
             auto type = deserializer.current_type();
-            assert(type == serialization_type::parameters);
+            REQUIRE(type == serialization_type::parameters);
             auto deserialized_res = parameter_node_t::deserialize(&deserializer);
             REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
         }

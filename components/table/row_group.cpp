@@ -10,8 +10,6 @@
 
 namespace components::table {
 
-    constexpr uint64_t COLUMN_IDENTIFIER_ROW_ID = std::numeric_limits<uint64_t>::max();
-
     row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
         : segment_base_t(start, count)
         , collection_(collection)
@@ -56,7 +54,7 @@ namespace components::table {
         if (column_pointers_.size() != columns_.size()) {
             throw std::logic_error("Lazy loading a column but the pointer was not set");
         }
-        assert(false);
+        throw std::runtime_error("row_group_t::get_column: unknown error");
     }
 
     storage::block_manager_t& row_group_t::block_manager() { return collection_->block_manager(); }
@@ -446,7 +444,7 @@ namespace components::table {
                              const std::vector<uint64_t>& column_ids) {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
-            assert(column != COLUMN_IDENTIFIER_ROW_ID);
+            assert(column != std::numeric_limits<uint64_t>::max());
             auto& col_data = get_column(column);
             assert(col_data.type().type() == update_chunk.data[i].type().type());
             if (offset > 0) {
@@ -466,7 +464,7 @@ namespace components::table {
         auto ids = row_ids.data<int64_t>();
 
         auto primary_column_idx = column_path[0];
-        assert(primary_column_idx != COLUMN_IDENTIFIER_ROW_ID);
+        assert(primary_column_idx != std::numeric_limits<uint64_t>::max());
         assert(primary_column_idx < columns_.size());
         auto& col_data = get_column(primary_column_idx);
         col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);

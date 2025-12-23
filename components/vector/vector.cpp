@@ -768,10 +768,10 @@ namespace components::vector {
         assert(auxiliary_);
         if (type_.type() == types::logical_type::LIST) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
-        } else if (type_.type() == types::logical_type::ARRAY) {
+        } else {
+            assert(type_.type() == types::logical_type::ARRAY);
             return static_cast<array_vector_buffer_t*>(auxiliary_.get())->nested_data();
         }
-        assert(false);
     }
 
     const vector_t& vector_t::entry() const {
@@ -783,10 +783,10 @@ namespace components::vector {
         assert(auxiliary_);
         if (type_.type() == types::logical_type::LIST) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
-        } else if (type_.type() == types::logical_type::ARRAY) {
+        } else {
+            assert(type_.type() == types::logical_type::ARRAY);
             return static_cast<array_vector_buffer_t*>(auxiliary_.get())->nested_data();
         }
-        assert(false);
     }
 
     vector_t& vector_t::child() {

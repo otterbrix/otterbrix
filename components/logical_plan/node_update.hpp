@@ -22,7 +22,7 @@ namespace components::logical_plan {
         bool upsert() const;
         const collection_full_name_t& collection_from() const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_update_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         collection_full_name_t collection_from_;

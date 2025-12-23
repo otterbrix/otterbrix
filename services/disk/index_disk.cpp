@@ -39,10 +39,11 @@ namespace services::disk {
                 return components::types::physical_value(value.value<uint64_t>());
             case logical_type::BIGINT:
                 return components::types::physical_value(value.value<int64_t>());
-            case logical_type::UHUGEINT:
-                return components::types::physical_value(value.value<components::types::uint128_t>());
-            case logical_type::HUGEINT:
-                return components::types::physical_value(value.value<components::types::int128_t>());
+            // TODO: physical_value does not support 128 bit integers for now
+            // case logical_type::UHUGEINT:
+            //     return components::types::physical_value(value.value<components::types::uint128_t>());
+            // case logical_type::HUGEINT:
+            //     return components::types::physical_value(value.value<components::types::int128_t>());
             case logical_type::FLOAT:
                 return components::types::physical_value(value.value<float>());
             case logical_type::DOUBLE:

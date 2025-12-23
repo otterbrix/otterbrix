@@ -32,7 +32,7 @@ namespace components::logical_plan {
 
         size_t size() const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_data_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         data_t data_;

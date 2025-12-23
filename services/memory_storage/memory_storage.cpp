@@ -1,5 +1,6 @@
 #include "memory_storage.hpp"
 #include "route.hpp"
+#include <boost/polymorphic_pointer_cast.hpp>
 #include <cassert>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -239,7 +240,7 @@ namespace services {
                                               components::logical_plan::node_ptr logical_plan) {
         trace(log_, "memory_storage_t:create_collection {}", logical_plan->collection_full_name().to_string());
         auto create_collection_plan =
-            reinterpret_cast<const components::logical_plan::node_create_collection_ptr&>(logical_plan);
+            boost::polymorphic_pointer_downcast<components::logical_plan::node_create_collection_t>(logical_plan);
         if (create_collection_plan->schema().empty()) {
             collections_.emplace(logical_plan->collection_full_name(),
                                  new collection::context_collection_t(resource(),

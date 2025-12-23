@@ -77,7 +77,9 @@ namespace components::table {
     }
 
     void chunk_constant_info::commit_append(uint64_t commit_id, uint64_t start, uint64_t end) {
-        assert(start == 0 && end == vector::DEFAULT_VECTOR_CAPACITY);
+        if (start != 0 || end != vector::DEFAULT_VECTOR_CAPACITY) {
+            throw std::runtime_error("chunk_constant_info::commit_append does not cover whole range");
+        }
         insert_id = commit_id;
     }
 

@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }
 
-    node_ptr node_create_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_create_index_ptr node_create_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto type = deserializer->deserialize_enum<index_type>(1);
         auto collection = deserializer->deserialize_collection(2);
         auto name = deserializer->deserialize_string(3);

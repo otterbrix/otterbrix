@@ -12,7 +12,7 @@ namespace components::logical_plan {
 
     const types::complex_logical_type& node_create_type_t::type() const noexcept { return type_; }
 
-    node_ptr node_create_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_create_type_ptr node_create_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         deserializer->advance_array(1);
         auto type = types::complex_logical_type::deserialize(deserializer);
         deserializer->pop_array();

@@ -7,8 +7,9 @@
 #include <components/index/disk/route.hpp>
 #include <core/system_command.hpp>
 #include <services/collection/collection.hpp>
-#include <services/collection/route.hpp>
 #include <services/dispatcher/route.hpp>
+
+#include <boost/polymorphic_pointer_cast.hpp>
 
 namespace services::disk {
 
@@ -427,7 +428,8 @@ namespace services::disk {
                     auto index = components::logical_plan::node_t::deserialize(&deserializer);
                     deserializer.pop_array();
                     if (collection.empty() || index->collection_name() == collection) {
-                        res.push_back(reinterpret_cast<const components::logical_plan::node_create_index_ptr&>(index));
+                        res.push_back(
+                            boost::polymorphic_pointer_downcast<components::logical_plan::node_create_index_t>(index));
                     }
                 } else {
                     break;

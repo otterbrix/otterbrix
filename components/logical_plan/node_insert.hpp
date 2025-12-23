@@ -14,7 +14,7 @@ namespace components::logical_plan {
         std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation();
         const std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation() const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_insert_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         hash_t hash_impl() const final;

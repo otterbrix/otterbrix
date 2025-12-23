@@ -59,7 +59,7 @@ namespace services {
             [this](services::collection::executor::executor_t* ptr) {
                 executor_ = collection::executor::executor_ptr(ptr, actor_zeta::pmr::deleter_t(resource()));
             },
-            std::move(log_.clone())));
+            log_.clone()));
     }
 
     memory_storage_t::~memory_storage_t() {

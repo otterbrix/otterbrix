@@ -97,7 +97,7 @@ namespace components::table {
 
         std::string_view read_string(std::byte* target, int32_t offset, uint32_t string_length) {
             auto ptr = target + offset;
-            return std::string(reinterpret_cast<char*>(ptr), string_length);
+            return std::string_view(reinterpret_cast<char*>(ptr), string_length);
         }
 
         std::string_view read_string_with_length(std::byte* target, int32_t offset) {
@@ -111,7 +111,7 @@ namespace components::table {
                                       string_location_t location,
                                       uint32_t string_length) {
             if (location.offset == 0) {
-                return std::string(nullptr, 0);
+                return std::string_view(nullptr, 0);
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }

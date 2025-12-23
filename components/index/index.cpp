@@ -6,7 +6,8 @@ namespace components::index {
                      components::logical_plan::index_type type,
                      std::string name,
                      const keys_base_storage_t& keys)
-        : resource_(resource)
+        : tape_(std::make_unique<document::impl::base_document>(resource))
+        , resource_(resource)
         , type_(type)
         , name_(std::move(name))
         , keys_(keys) {

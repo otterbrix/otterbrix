@@ -465,7 +465,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             query << "INSERT INTO TestDatabase.TestCollection (custom_type, oddness) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query << "(ROW(" << num << ", '"
-                      << "text_" << num + 1 << "', ROW(" << num + 0.5f << ", " << num * 2 << ")), "
+                      << "text_" << num + 1 << "', ROW(" << static_cast<float>(num) + 0.5f << ", " << num * 2 << ")), "
                       << (num % 2 == 0 ? R"_('even')_" : R"_('odd')_") << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
@@ -550,7 +550,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->chunk_data().column_count() == 1);
             for (size_t num = 0; num < 100; ++num) {
-                REQUIRE(core::is_equals(cur->chunk_data().value(0, num).value<float>(), (num + 0.5f) * 3.0f));
+                REQUIRE(core::is_equals(cur->chunk_data().value(0, num).value<float>(),
+                                        (static_cast<float>(num) + 0.5f) * 3.0f));
             }
         }
     }

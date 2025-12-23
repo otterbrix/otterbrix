@@ -105,7 +105,7 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->count() == 0);
             for (uint64_t i = 0; i < test_data_shuffled.size(); i++) {
                 REQUIRE(test_block->append(static_cast<data_ptr_t>(test_data_shuffled[i].data()),
-                                           test_data_shuffled[i].size()));
+                                           static_cast<uint32_t>(test_data_shuffled[i].size())));
                 auto index = key_getter({static_cast<data_ptr_t>(test_data_shuffled[i].data()),
                                          static_cast<uint32_t>(test_data_shuffled[i].size())});
                 REQUIRE(test_block->contains_index(index));
@@ -165,7 +165,7 @@ TEST_CASE("block_t") {
 
             for (uint64_t i = 0; i < test_data_shuffled.size(); i++) {
                 REQUIRE(test_block->remove(static_cast<data_ptr_t>(test_data_shuffled[i].data()),
-                                           test_data_shuffled[i].size()));
+                                           static_cast<uint32_t>(test_data_shuffled[i].size())));
                 REQUIRE_FALSE(
                     test_block->contains_index(key_getter({static_cast<data_ptr_t>(test_data_shuffled[i].data()),
                                                            static_cast<uint32_t>(test_data_shuffled[i].size())})));
@@ -190,7 +190,8 @@ TEST_CASE("block_t") {
             REQUIRE(test_block_1->unique_indices_count() == test_data_sorted.size());
             REQUIRE(test_block_1->count() == test_data_sorted.size());
 
-            std::unique_ptr<block_t> test_block_2 = test_block_1->split(test_data_sorted.size() / 2);
+            std::unique_ptr<block_t> test_block_2 =
+                test_block_1->split(static_cast<uint32_t>(test_data_sorted.size() / 2));
             REQUIRE(test_block_1->unique_indices_count() * 2 == test_data_sorted.size());
             REQUIRE(test_block_1->count() * 2 == test_data_sorted.size());
             REQUIRE(test_block_2->unique_indices_count() * 2 == test_data_sorted.size());
@@ -240,12 +241,12 @@ TEST_CASE("block_t") {
 
         for (uint64_t i = 0; i < test_data_size; i++) {
             std::string str;
-            str.push_back(i);
+            str.push_back(static_cast<char>(i));
             str.push_back(0);
             str.push_back(0);
             str.push_back(0);
             for (uint64_t j = 0; j < i; j++) {
-                str.push_back('a' + j);
+                str.push_back('a' + static_cast<char>(j));
             }
             for (size_t j = 0; j < duplicate_count; j++) {
                 test_data.emplace_back(str + std::to_string(j));
@@ -317,7 +318,7 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->unique_indices_count() == test_data_size);
             for (uint64_t i = 0; i < test_data.size(); i++) {
                 REQUIRE(test_block->remove(static_cast<data_ptr_t>(test_data[i].data()),
-                                           static_cast<uint64_t>(test_data[i].size())));
+                                           static_cast<uint32_t>(test_data[i].size())));
             }
             REQUIRE(test_block->count() == 0);
             REQUIRE(test_block->unique_indices_count() == 0);
@@ -753,7 +754,7 @@ TEST_CASE("segment_tree") {
             *buffer = test_data[i];
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
-            REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(buffer), dummy_size));
+            REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(buffer), static_cast<uint32_t>(dummy_size)));
             REQUIRE(tree.count() == i + 1);
             REQUIRE(tree.unique_indices_count() == i + 1);
         }
@@ -1024,7 +1025,7 @@ TEST_CASE("b+tree") {
         //! for some reason, using REQUIRE in all of the async functions fails with SEGFAULT from time to time
         //! but collecting results and checking them later works fine
         std::function<void(size_t)> append_func;
-        append_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        append_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 
@@ -1034,7 +1035,7 @@ TEST_CASE("b+tree") {
         };
 
         std::function<void(size_t)> get_func;
-        get_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        get_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 
@@ -1048,7 +1049,7 @@ TEST_CASE("b+tree") {
         };
 
         std::function<void(size_t)> remove_func;
-        remove_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        remove_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 

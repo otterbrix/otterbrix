@@ -398,7 +398,7 @@ namespace services::wal {
             record.crc32 = read_crc32(output, record.size);
             if (record.crc32 == static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}))) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
-                record.last_crc32 = deserializer.deserialize_uint64(0);
+                record.last_crc32 = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
                 record.id = deserializer.deserialize_uint64(1);
 
                 deserializer.advance_array(2);

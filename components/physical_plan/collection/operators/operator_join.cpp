@@ -95,23 +95,21 @@ namespace components::collection::operators {
                 if (check_expressions_(doc_left, doc_right, context)) {
                     visited_left = true;
                     visited_right[right_index] = true;
-                    output_->append(
-                        std::move(document::document_t::merge(doc_left, doc_right, left_->output()->resource())));
+                    output_->append(document::document_t::merge(doc_left, doc_right, left_->output()->resource()));
                 }
                 right_index++;
             }
             if (!visited_left) {
-                output_->append(
-                    std::move(document::document_t::merge(doc_left, empty_right, left_->output()->resource())));
+                output_->append(document::document_t::merge(doc_left, empty_right, left_->output()->resource()));
             }
         }
         for (size_t i = 0; i < visited_right.size(); ++i) {
             if (visited_right[i]) {
                 continue;
             }
-            output_->append(std::move(document::document_t::merge(empty_left,
-                                                                  right_->output()->documents().at(i),
-                                                                  left_->output()->resource())));
+            output_->append(document::document_t::merge(empty_left,
+                                                        right_->output()->documents().at(i),
+                                                        left_->output()->resource()));
         }
     }
 
@@ -130,13 +128,11 @@ namespace components::collection::operators {
             for (auto doc_right : right_->output()->documents()) {
                 if (check_expressions_(doc_left, doc_right, context)) {
                     visited_left = true;
-                    output_->append(
-                        std::move(document::document_t::merge(doc_left, doc_right, left_->output()->resource())));
+                    output_->append(document::document_t::merge(doc_left, doc_right, left_->output()->resource()));
                 }
             }
             if (!visited_left) {
-                output_->append(
-                    std::move(document::document_t::merge(doc_left, empty_right, left_->output()->resource())));
+                output_->append(document::document_t::merge(doc_left, empty_right, left_->output()->resource()));
             }
         }
     }
@@ -156,13 +152,11 @@ namespace components::collection::operators {
             for (auto doc_left : left_->output()->documents()) {
                 if (check_expressions_(doc_left, doc_right, context)) {
                     visited_right = true;
-                    output_->append(
-                        std::move(document::document_t::merge(doc_left, doc_right, left_->output()->resource())));
+                    output_->append(document::document_t::merge(doc_left, doc_right, left_->output()->resource()));
                 }
             }
             if (!visited_right) {
-                output_->append(
-                    std::move(document::document_t::merge(empty_left, doc_right, left_->output()->resource())));
+                output_->append(document::document_t::merge(empty_left, doc_right, left_->output()->resource()));
             }
         }
     }
@@ -170,8 +164,7 @@ namespace components::collection::operators {
     void operator_join_t::cross_join_(pipeline::context_t*) {
         for (auto doc_left : left_->output()->documents()) {
             for (auto doc_right : right_->output()->documents()) {
-                output_->append(
-                    std::move(document::document_t::merge(doc_left, doc_right, left_->output()->resource())));
+                output_->append(document::document_t::merge(doc_left, doc_right, left_->output()->resource()));
             }
         }
     }

@@ -85,7 +85,7 @@ namespace components::types {
     private:
         complex_logical_type type_;
 
-        std::variant<nullptr_t,
+        std::variant<std::nullptr_t,
                      bool,
                      int8_t,
                      int16_t,

@@ -42,8 +42,9 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 
-else()
+elseif((NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     # stack track
+    # unused by clang and generates an error with [-Werror,-Wunused-command-line-argument]
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
 endif()
 

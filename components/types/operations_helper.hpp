@@ -124,7 +124,7 @@ namespace components::types {
             case physical_type::STRING:
                 return callback.template operator()<std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return callback.template operator()<nullptr_t>(std::forward<Args>(args)...);
+            //     return callback.template operator()<std::nullptr_t>(std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }
@@ -163,7 +163,7 @@ namespace components::types {
             case physical_type::STRING:
                 return double_callback.template operator()<TypeLeft, std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return double_callback.template operator()<TypeLeft, nullptr_t>(std::forward<Args>(args)...);
+            //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }
@@ -202,7 +202,7 @@ namespace components::types {
                 return simple_physical_type_switch<DoubleCallback, std::string_view>(type_right,
                                                                                      std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return simple_physical_type_switch<DoubleCallback, nullptr_t>(type_right, std::forward<Args>(args)...);
+            //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }

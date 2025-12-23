@@ -61,7 +61,7 @@ namespace services::disk {
         : path_(path)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource, fs_, path, item_key_getter)) {
+        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
         db_->load();
     }
 

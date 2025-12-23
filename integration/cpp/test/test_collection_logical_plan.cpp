@@ -720,7 +720,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             std::pmr::vector<components::document::document_ptr> documents_right(dispatcher->resource());
             for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
                 auto doc_left = make_document(dispatcher->resource());
-                doc_left->set("_id", gen_id(num + 1, dispatcher->resource()));
+                doc_left->set("_id", gen_id(static_cast<int>(num + 1), dispatcher->resource()));
                 doc_left->set("name", "Name " + std::to_string(num));
                 doc_left->set("key_1", num);
                 doc_left->set("key_2", reversed);
@@ -728,7 +728,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             }
             for (int64_t num = 0; num < 100; ++num) {
                 auto doc_right = make_document(dispatcher->resource());
-                doc_right->set("_id", gen_id(num + 1001, dispatcher->resource()));
+                doc_right->set("_id", gen_id(static_cast<int>(num + 1001), dispatcher->resource()));
                 doc_right->set("value", (num + 25) * 2 * 10);
                 doc_right->set("key", (num + 25) * 2);
                 documents_right.emplace_back(std::move(doc_right));
@@ -978,7 +978,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             chunk_right.set_cardinality(100);
 
             for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
-                chunk_left.set_value(0, static_cast<size_t>(num), types::logical_value_t{gen_id(num + 1)});
+                chunk_left.set_value(0,
+                                     static_cast<size_t>(num),
+                                     types::logical_value_t{gen_id(static_cast<int>(num + 1))});
                 chunk_left.set_value(1,
                                      static_cast<size_t>(num),
                                      types::logical_value_t{"Name " + std::to_string(num)});
@@ -986,7 +988,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 chunk_left.set_value(3, static_cast<size_t>(num), types::logical_value_t{reversed});
             }
             for (int64_t num = 0; num < 100; ++num) {
-                chunk_right.set_value(0, static_cast<size_t>(num), types::logical_value_t{gen_id(num + 1001)});
+                chunk_right.set_value(0,
+                                      static_cast<size_t>(num),
+                                      types::logical_value_t{gen_id(static_cast<int>(num + 1001))});
                 chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2 * 10});
                 chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2});
             }

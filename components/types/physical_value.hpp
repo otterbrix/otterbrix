@@ -15,8 +15,8 @@ namespace components::types {
     public:
         // currently supported values
         // TODO: add memory ownership
-        explicit physical_value() = default; // nullptr_t
-        explicit physical_value(nullptr_t);
+        explicit physical_value() = default; // std::nullptr_t
+        explicit physical_value(std::nullptr_t);
         // string-like
         template<typename T>
         physical_value(const T& value, typename std::enable_if<core::is_buffer_like<T>>::type* = nullptr)
@@ -49,7 +49,7 @@ namespace components::types {
         physical_type type() const noexcept;
 
     private:
-        nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
+        std::nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
         bool value_(std::integral_constant<physical_type, physical_type::BOOL>) const noexcept;
         uint8_t value_(std::integral_constant<physical_type, physical_type::UINT8>) const noexcept;
         uint16_t value_(std::integral_constant<physical_type, physical_type::UINT16>) const noexcept;

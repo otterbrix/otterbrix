@@ -130,6 +130,5 @@ namespace otterbrix {
         spin_lock input_mtx_;
         std::condition_variable cv_;
         impl::session_block_t blocker_;
-        bool bool_store_;
     };
 } // namespace otterbrix

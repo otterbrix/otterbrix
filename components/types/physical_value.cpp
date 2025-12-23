@@ -198,7 +198,7 @@ namespace components::types {
 
     physical_type physical_value::type() const noexcept { return type_; }
 
-    nullptr_t physical_value::value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept {
+    std::nullptr_t physical_value::value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept {
         assert(type_ == physical_type::NA);
         return nullptr;
     }

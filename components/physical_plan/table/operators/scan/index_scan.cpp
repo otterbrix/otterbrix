@@ -48,7 +48,7 @@ namespace components::table::operators {
         vector::vector_t row_ids(index->resource(), types::logical_type::BIGINT, rows);
         for (const auto& range : ranges) {
             for (auto it = range.first; it != range.second; ++it) {
-                if (!limit.check(count)) {
+                if (!limit.check(static_cast<int>(count))) {
                     break;
                 }
                 row_ids.set_value(count, types::logical_value_t{it->row_index});

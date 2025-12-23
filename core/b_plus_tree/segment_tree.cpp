@@ -840,16 +840,15 @@ namespace core::b_plus_tree {
 
     segment_tree_t::metadata_range segment_tree_t::find_range_(const index_t& index) const {
         metadata_range result;
-        result.begin = std::lower_bound(
-            metadata_begin_,
-            metadata_end_,
-            index,
-            [this](const block_metadata& meta, const index_t& index) { return meta.max_index < index; });
-        result.end = std::lower_bound(
-            result.begin,
-            metadata_end_,
-            index,
-            [this](const block_metadata& meta, const index_t& index) { return meta.min_index <= index; });
+        result.begin =
+            std::lower_bound(metadata_begin_,
+                             metadata_end_,
+                             index,
+                             [](const block_metadata& meta, const index_t& index) { return meta.max_index < index; });
+        result.end =
+            std::lower_bound(result.begin, metadata_end_, index, [](const block_metadata& meta, const index_t& index) {
+                return meta.min_index <= index;
+            });
         return result;
     }
 

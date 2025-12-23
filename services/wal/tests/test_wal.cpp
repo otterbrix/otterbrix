@@ -23,7 +23,6 @@ using namespace components::expressions;
 
 constexpr auto database_name = "test_database";
 constexpr auto collection_name = "test_collection";
-constexpr std::size_t count_documents = 5;
 
 void test_insert_one_doc(wal_replicate_t* wal, std::pmr::memory_resource* resource) {
     for (int num = 1; num <= 5; ++num) {

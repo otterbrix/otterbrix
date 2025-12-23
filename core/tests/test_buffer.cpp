@@ -244,7 +244,22 @@ TEST_CASE("self move assignment") {
     auto capacity = buff.capacity();
     auto* mr = buff.memory_resource();
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-move"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpessimizing-move"
+#endif
+
     buff = std::move(buff);
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
     REQUIRE(nullptr != buff.data());
     REQUIRE(ptr == buff.data());
     REQUIRE(size == buff.size());

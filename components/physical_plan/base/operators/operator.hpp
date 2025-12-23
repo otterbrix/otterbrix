@@ -89,7 +89,7 @@ namespace components::base::operators {
         virtual void on_resume_impl(pipeline::context_t* pipeline_context);
         virtual void on_prepare_impl();
 
-        const operator_type type_;
+        operator_type type_;
         operator_state state_{operator_state::created};
         bool root{false};
     };
@@ -115,7 +115,7 @@ namespace components::base::operators {
         //void commit();
         //void rollback();
 
-    private:
+    protected:
         read_write_operator_state state_;
     };
 

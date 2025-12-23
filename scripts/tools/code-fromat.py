@@ -31,9 +31,8 @@ ext_to_format = [
     ".ipp",
     ".inl",
     ".inc",
-    # possible formating for Bison/Flex source files
-    #".y",
-    #".l",
+    ".y",
+    ".l",
 ]
 
 files_to_skip = [

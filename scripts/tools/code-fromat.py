@@ -30,9 +30,7 @@ ext_to_format = [
     ".ixx",
     ".ipp",
     ".inl",
-    ".inc",
-    ".y",
-    ".l",
+    ".inc"
 ]
 
 files_to_skip = [

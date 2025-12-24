@@ -83,11 +83,9 @@ namespace core::b_plus_tree {
         assert((size & (SECTOR_SIZE - 1)) == 0 && "block size should be a multiple of SECTOR_SIZE!");
         internal_buffer_ = static_cast<data_ptr_t>(resource_->allocate(size));
         full_size_ = size;
-        checksum_ = reinterpret_cast<uint32_t*>(internal_buffer_);
-        count_ = checksum_ + 1;
-        *count_ = 0;
-        unique_indices_count_ = count_ + 1;
-        *unique_indices_count_ = 0;
+        header_ = reinterpret_cast<header_t*>(internal_buffer_);
+        header_->count_ = 0;
+        header_->unique_indices_count_ = 0;
         end_ = reinterpret_cast<metadata*>(internal_buffer_ + size);
 
         restore_block();
@@ -126,9 +124,9 @@ namespace core::b_plus_tree {
             }
         }
 
-        (*count_)++;
+        header_->count_++;
         if (range.begin == range.end) {
-            (*unique_indices_count_)++;
+            header_->unique_indices_count_++;
         }
 
         std::memmove(last_metadata_ - 1,
@@ -169,9 +167,9 @@ namespace core::b_plus_tree {
             return false;
         }
 
-        (*count_)--;
+        header_->count_--;
         if (range.begin + 1 == range.end) {
-            (*unique_indices_count_)--;
+            header_->unique_indices_count_--;
         }
         for (metadata* it = range.begin; it != range.end; it++) {
             if (it->size == item.size && std::memcmp(item.data, internal_buffer_ + it->offset, item.size) == 0) {
@@ -212,8 +210,8 @@ namespace core::b_plus_tree {
 
         auto batch_size = static_cast<uint32_t>(range.end - range.begin);
 
-        *count_ -= batch_size;
-        (*unique_indices_count_)--;
+        header_->count_ -= batch_size;
+        header_->unique_indices_count_--;
 
         remove_range_(range);
 
@@ -275,12 +273,12 @@ namespace core::b_plus_tree {
 
     uint32_t block_t::count() const {
         assert(is_valid_ && "block is not initialized!");
-        return *count_;
+        return header_->count_;
     }
 
     uint32_t block_t::unique_indices_count() const {
         assert(is_valid_ && "block is not initialized!");
-        return *unique_indices_count_;
+        return header_->unique_indices_count_;
     }
 
     block_t::index_t block_t::min_index() const {
@@ -308,13 +306,13 @@ namespace core::b_plus_tree {
     uint32_t block_t::block_size() const { return full_size_; }
 
     void block_t::reset() {
-        *count_ = 0;
-        *unique_indices_count_ = 0;
+        header_->count_ = 0;
+        header_->unique_indices_count_ = 0;
         restore_block();
     }
 
     void block_t::restore_block() {
-        last_metadata_ = end_ - *count_;
+        last_metadata_ = end_ - header_->count_;
         buffer_ = internal_buffer_ + header_size;
         for (auto it = last_metadata_; it < end_; it++) {
             buffer_ += it->size;
@@ -335,9 +333,9 @@ namespace core::b_plus_tree {
         assert(occupied_memory() < new_size && "block data won't fit in new size");
         auto new_buffer = static_cast<data_ptr_t>(resource_->allocate(new_size));
         std::memcpy(new_buffer, internal_buffer_, static_cast<size_t>(buffer_ - internal_buffer_));
-        std::memcpy(new_buffer + new_size - *unique_indices_count_ * metadata_size,
+        std::memcpy(new_buffer + new_size - header_->unique_indices_count_ * metadata_size,
                     last_metadata_,
-                    *unique_indices_count_ * metadata_size);
+                    header_->unique_indices_count_ * metadata_size);
         auto* new_last_metadata = reinterpret_cast<metadata*>(
             new_buffer + full_size_ - (reinterpret_cast<data_ptr_t>(last_metadata_) - internal_buffer_));
         for (metadata* it = last_metadata_; reinterpret_cast<data_ptr_t>(new_last_metadata) < new_buffer + new_size;
@@ -355,11 +353,9 @@ namespace core::b_plus_tree {
         buffer_ = internal_buffer_ + buffer_offset;
         available_memory_ = new_size - full_size_;
         full_size_ = new_size;
-        checksum_ = reinterpret_cast<uint32_t*>(internal_buffer_);
-        count_ = checksum_ + 1;
-        unique_indices_count_ = count_ + 1;
+        header_ = reinterpret_cast<header_t*>(internal_buffer_);
         end_ = reinterpret_cast<metadata*>(internal_buffer_ + new_size);
-        last_metadata_ = end_ - *unique_indices_count_;
+        last_metadata_ = end_ - header_->unique_indices_count_;
     }
 
     // TODO: try to split into smaller blocks if current size is greater then DEFAULT_BLOCK_SIZE
@@ -433,21 +429,19 @@ namespace core::b_plus_tree {
 
     std::unique_ptr<block_t> block_t::split(uint32_t count) {
         assert(is_valid_ && "block is not initialized!");
-        assert(count <= *count_);
+        assert(count <= header_->count_);
 
         std::unique_ptr<block_t> splited_block = create_initialize(resource_, key_func_, full_size_);
         if (count == 0) {
             return splited_block;
         }
-        if (count == *count_) {
+        if (count == header_->count_) {
             // faster to swap pointers then to move all documents
             std::swap(internal_buffer_, splited_block->internal_buffer_);
             std::swap(buffer_, splited_block->buffer_);
             std::swap(last_metadata_, splited_block->last_metadata_);
             std::swap(end_, splited_block->end_);
-            std::swap(count_, splited_block->count_);
-            std::swap(unique_indices_count_, splited_block->unique_indices_count_);
-            std::swap(checksum_, splited_block->checksum_);
+            std::swap(header_, splited_block->header_);
             std::swap(available_memory_, splited_block->available_memory_);
             return splited_block;
         }
@@ -463,8 +457,8 @@ namespace core::b_plus_tree {
         }
         moved_indices.erase(std::unique(moved_indices.begin(), moved_indices.end()), moved_indices.end());
 
-        *count_ -= count;
-        *unique_indices_count_ -=
+        header_->count_ -= count;
+        header_->unique_indices_count_ -=
             static_cast<uint32_t>(moved_indices.size() - (split_item->index == moved_indices.front()));
 
         remove_range_({last_metadata_, split_item});
@@ -474,21 +468,19 @@ namespace core::b_plus_tree {
 
     std::unique_ptr<block_t> block_t::split_uniques(uint32_t count) {
         assert(is_valid_ && "block is not initialized!");
-        assert(count <= *unique_indices_count_);
+        assert(count <= header_->unique_indices_count_);
 
         std::unique_ptr<block_t> splited_block = create_initialize(resource_, key_func_, full_size_);
         if (count == 0) {
             return splited_block;
         }
-        if (count == *unique_indices_count_) {
+        if (count == header_->unique_indices_count_) {
             // faster to swap pointers then to move all documents
             std::swap(internal_buffer_, splited_block->internal_buffer_);
             std::swap(buffer_, splited_block->buffer_);
             std::swap(last_metadata_, splited_block->last_metadata_);
             std::swap(end_, splited_block->end_);
-            std::swap(count_, splited_block->count_);
-            std::swap(unique_indices_count_, splited_block->unique_indices_count_);
-            std::swap(checksum_, splited_block->checksum_);
+            std::swap(header_, splited_block->header_);
             std::swap(available_memory_, splited_block->available_memory_);
             return splited_block;
         }
@@ -506,9 +498,9 @@ namespace core::b_plus_tree {
                 moved_indices.emplace_back(index);
             }
             splited_block->append(metadata_to_item_data_(split_item++));
-            (*count_)--;
+            header_->count_--;
         }
-        *unique_indices_count_ -= count;
+        header_->unique_indices_count_ -= count;
 
         remove_range_({last_metadata_, split_item});
         return splited_block;
@@ -543,8 +535,8 @@ namespace core::b_plus_tree {
                 }
             }
             available_memory_ -= additional_offset + metadata_size * other->count();
-            *count_ += other->count();
-            *unique_indices_count_ += other->unique_indices_count() - overlap;
+            header_->count_ += other->count();
+            header_->unique_indices_count_ += other->unique_indices_count() - overlap;
         } else if (other->max_index() <= min_index()) {
             bool overlap = other->max_index() == min_index();
             uint32_t delta_offset = static_cast<uint32_t>(buffer_ - internal_buffer_) - header_size;
@@ -571,8 +563,8 @@ namespace core::b_plus_tree {
             }
             last_metadata_ -= other->count();
             available_memory_ -= additional_offset + metadata_size * other->count();
-            *count_ += other->count();
-            *unique_indices_count_ += other->unique_indices_count() - overlap;
+            header_->count_ += other->count();
+            header_->unique_indices_count_ += other->unique_indices_count() - overlap;
         } else {
             // there is range overlapping and cannot be copied trivially
             for (metadata* it = other->end_ - 1; it >= other->last_metadata_; it--) {
@@ -581,9 +573,9 @@ namespace core::b_plus_tree {
         }
     }
 
-    void block_t::recalculate_checksum() { *checksum_ = calculate_checksum_(); }
+    void block_t::recalculate_checksum() { header_->checksum_ = calculate_checksum_(); }
 
-    bool block_t::varify_checksum() const { return *checksum_ == calculate_checksum_(); }
+    bool block_t::varify_checksum() const { return header_->checksum_ == calculate_checksum_(); }
 
     block_t::metadata_range block_t::find_index_range_(const index_t& index) const {
         if (!is_valid_) {
@@ -667,7 +659,7 @@ namespace core::b_plus_tree {
 
     uint32_t block_t::calculate_checksum_() const {
         assert(is_valid_ && "block is not initialized!");
-        auto crc_buffer = reinterpret_cast<data_ptr_t>(count_);
+        auto crc_buffer = reinterpret_cast<data_ptr_t>(header_) + sizeof(header_->checksum_);
         auto size = static_cast<size_t>(full_size_ - (crc_buffer - internal_buffer_));
         return static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(crc_buffer), size}));
     }

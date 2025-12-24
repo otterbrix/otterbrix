@@ -53,10 +53,23 @@ namespace core::b_plus_tree {
             explicit operator bool() const noexcept { return data != nullptr; }
         };
 
+        struct header_t {
+            uint32_t checksum_;
+            uint32_t count_;
+            uint32_t unique_indices_count_;
+        };
+
+        static_assert(std::is_standard_layout_v<header_t>);
+        static_assert(std::is_trivially_constructible_v<header_t>);
+        static_assert(std::is_trivially_copyable_v<header_t>);
+
         struct metadata_range {
             metadata* begin = nullptr;
             metadata* end = nullptr;
         };
+
+        static constexpr uint32_t header_size = sizeof(header_t);
+        static constexpr uint32_t metadata_size = sizeof(metadata);
 
         class iterator {
         public:
@@ -312,24 +325,15 @@ namespace core::b_plus_tree {
         uint32_t available_memory_ = 0;
 
         // header data
-        uint32_t* count_ = nullptr;
-        uint32_t* unique_indices_count_ = nullptr;
-        uint32_t* checksum_ = nullptr;
-
-    public:
-        // header_size is used to pack this values inside block buffer to avoid recalculating them
-        static constexpr uint32_t header_size = sizeof(std::remove_pointer_t<decltype(count_)>) +
-                                                sizeof(std::remove_pointer_t<decltype(unique_indices_count_)>) +
-                                                sizeof(std::remove_pointer_t<decltype(checksum_)>);
-        static constexpr uint32_t metadata_size = sizeof(metadata);
+        header_t* header_;
     };
 
-    [[nodiscard]] static inline std::unique_ptr<block_t>
-    create_initialize(std::pmr::memory_resource* resource,
-                      block_t::index_t (*func)(const block_t::item_data&),
-                      uint32_t size = DEFAULT_BLOCK_SIZE) {
+    [[nodiscard]] inline std::unique_ptr<block_t> create_initialize(std::pmr::memory_resource* resource,
+                                                                    block_t::index_t (*func)(const block_t::item_data&),
+                                                                    uint32_t size = DEFAULT_BLOCK_SIZE) {
         std::unique_ptr<block_t> block = std::make_unique<block_t>(resource, func);
         block->initialize(size);
         return block;
     }
+
 } // namespace core::b_plus_tree

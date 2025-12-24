@@ -70,6 +70,16 @@ namespace core::b_plus_tree {
 
     // TODO: move memory overflow checks to b_plus_tree
     class segment_tree_t {
+        struct header_t {
+            size_t segments_count_;
+            size_t item_count_;
+            size_t unique_id_count_;
+        };
+
+        static_assert(std::is_standard_layout_v<header_t>);
+        static_assert(std::is_trivially_constructible_v<header_t>);
+        static_assert(std::is_trivially_copyable_v<header_t>);
+
         struct block_metadata {
             size_t file_offset;
             size_t size;
@@ -333,9 +343,7 @@ namespace core::b_plus_tree {
         index_t (*key_func_)(const item_data&);
         std::vector<node_t> segments_; // will become boost::intrusive
 
-        size_t* header_;
-        size_t* item_count_;
-        size_t* unique_id_count_;
+        header_t* header_;
         block_metadata* metadata_begin_;
         block_metadata* metadata_end_;
         // keep track of gaps in block record and try to fill them when creating new blocks

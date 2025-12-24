@@ -48,19 +48,15 @@ elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
 endif()
 
-# TODO: support -Werror for APPLE platforms
-set(ALLOW_WARNINGS "$<OR:$<BOOL:APPLE>, $<BOOL:$<STREQUAL:${ENABLE_ASAN},ON>>>")
-if (${ALLOW_WARNINGS})
-    message("Warnings are allowed")
-else ()
-    message("Warnings are not allowed")
-endif ()
+# We do not use -Werror flag with sanitizers for the following reasons:
+# 1) Sanitizers force us to build absl locally, which does contains warnings
+# 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
 
-            #Using sanitizers forces local builds of absl library, which contains warnings, therefore optional flag here
-            $<$<BOOL:$<NOT:${ALLOW_WARNINGS}>>:-Werror>
+            $<${USE_Werror}:-Werror>
 
             -Wall
             -Wextra

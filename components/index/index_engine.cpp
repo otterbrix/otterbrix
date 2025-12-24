@@ -3,8 +3,8 @@
 #include <iostream>
 #include <utility>
 
-#include "core/pmr.hpp"
 #include <components/vector/data_chunk.hpp>
+#include <core/pmr.hpp>
 
 #include <components/index/disk/route.hpp>
 

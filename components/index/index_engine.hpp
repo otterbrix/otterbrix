@@ -8,11 +8,11 @@
 #include <utility>
 #include <vector>
 
-#include "core/pmr.hpp"
 #include "forward.hpp"
 #include "index.hpp"
 #include <components/context/context.hpp>
 #include <core/btree/btree.hpp>
+#include <core/pmr.hpp>
 
 namespace components::vector {
     class data_chunk_t;

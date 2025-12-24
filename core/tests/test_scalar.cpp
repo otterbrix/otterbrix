@@ -5,7 +5,7 @@
 #include <random>
 #include <type_traits>
 
-#include "core/scalar.hpp"
+#include <core/scalar.hpp>
 
 template<typename T>
 struct gen_scalar final {

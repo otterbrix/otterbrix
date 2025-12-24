@@ -1,5 +1,6 @@
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
+#include <components/sql/transformer/utils.hpp>
 
 using namespace components::expressions;
 
@@ -29,42 +30,6 @@ namespace components::sql::transform {
                 return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
         }
         return {};
-    }
-
-    types::logical_value_t transformer::get_value(Node* node) {
-        switch (nodeTag(node)) {
-            case T_TypeCast: {
-                auto cast = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return types::logical_value_t(is_true);
-            }
-            case T_A_Const: {
-                auto value = &(pg_ptr_cast<A_Const>(node)->val);
-                switch (nodeTag(value)) {
-                    case T_String: {
-                        std::string str = strVal(value);
-                        return types::logical_value_t(str);
-                    }
-                    case T_Integer:
-                        return types::logical_value_t(intVal(value));
-                    case T_Float:
-                        return types::logical_value_t(static_cast<float>(floatVal(value)));
-                }
-            }
-            case T_RowExpr: {
-                auto row = pg_ptr_cast<RowExpr>(node);
-                std::vector<types::logical_value_t> fields;
-                fields.reserve(row->args->lst.size());
-                for (auto& field : row->args->lst) {
-                    fields.emplace_back(get_value(pg_ptr_cast<Node>(field.data)));
-                }
-                return types::logical_value_t::create_struct("", fields);
-            }
-            case T_ColumnRef:
-                assert(false);
-                return types::logical_value_t(strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
-        }
-        return types::logical_value_t(nullptr);
     }
 
     core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {

@@ -82,8 +82,7 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
     types.emplace_back(logical_type::STRING_LITERAL, "countStr");
     types.emplace_back(logical_type::DOUBLE, "countDouble");
     types.emplace_back(logical_type::BOOLEAN, "countBool");
-    // TODO: more complex types
-    // types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "countArray"));
+    types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "countArray"));
 
     components::vector::data_chunk_t chunk(resource, types, size);
     chunk.set_cardinality(size);
@@ -94,7 +93,6 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
         chunk.set_value(2, i - 1, logical_value_t{std::to_string(i + num)});
         chunk.set_value(3, i - 1, logical_value_t{double(i + num) + 0.1});
         chunk.set_value(4, i - 1, logical_value_t{(i + num) % 2 != 0});
-        /*
         {
             std::vector<logical_value_t> arr;
             arr.reserve(array_size);
@@ -103,7 +101,6 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
             }
             chunk.set_value(5, i - 1, logical_value_t::create_array(logical_type::UBIGINT, arr));
         }
-        */
     }
 
     return chunk;

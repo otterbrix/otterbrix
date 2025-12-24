@@ -32,7 +32,9 @@ TEST_CASE("sync documents from disk") {
             REQUIRE(doc != nullptr);
             REQUIRE(doc->get_string("_id") == gen_id(num, &resource));
             REQUIRE(doc->get_long("count") == num);
-            REQUIRE(doc->get_string("countStr") == std::pmr::string(std::to_string(num), &resource));
+            auto str1 = doc->get_string("countStr");
+            auto str2 = core::pmr::to_pmr_string(&resource, num);
+            REQUIRE(str1 == str2);
             REQUIRE(doc->get_double("countDouble") == Approx(float(num) + 0.1));
             REQUIRE(doc->get_bool("countBool") == (num % 2 != 0));
             REQUIRE(doc->get_array("countArray")->count() == 5);
@@ -51,7 +53,7 @@ TEST_CASE("sync documents from disk") {
                 REQUIRE(doc != nullptr);
                 REQUIRE(doc->get_string("_id") == gen_id(num, &resource));
                 REQUIRE(doc->get_long("count") == num);
-                REQUIRE(doc->get_string("countStr") == std::pmr::string(std::to_string(num), &resource));
+                REQUIRE(doc->get_string("countStr") == core::pmr::to_pmr_string(&resource, num));
                 REQUIRE(doc->get_double("countDouble") == Approx(float(num) + 0.1));
                 REQUIRE(doc->get_bool("countBool") == (num % 2 != 0));
                 REQUIRE(doc->get_array("countArray")->count() == 5);

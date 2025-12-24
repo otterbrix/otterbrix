@@ -6,7 +6,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "core/assert/assert.hpp"
+#include <core/assert/assert.hpp>
 
 namespace core {
 

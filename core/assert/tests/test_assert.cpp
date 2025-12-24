@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
 
-#include "core/assert/assert.hpp"
+#include <core/assert/assert.hpp>
 
 TEST_CASE("core::assert::test_ok") {
     //REQUIRE_NOTHROW([&]() { assertion_failed(true); }());

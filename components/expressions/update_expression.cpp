@@ -240,7 +240,7 @@ namespace components::expressions {
         // we have to check it twice
         if (side == side_t::undefined) {
             for (const auto& column : to.data) {
-                if (column.type().alias() == key().storage().front()) {
+                if (core::pmr::operator==(column.type().alias(), key().storage().front())) {
                     side = side_t::left;
                     key_.set_side(side);
                     break;
@@ -249,7 +249,7 @@ namespace components::expressions {
         }
         if (side == side_t::undefined) {
             for (const auto& column : from.data) {
-                if (column.type().alias() == key().storage().front()) {
+                if (core::pmr::operator==(column.type().alias(), key().storage().front())) {
                     side = side_t::right;
                     key_.set_side(side);
                     break;

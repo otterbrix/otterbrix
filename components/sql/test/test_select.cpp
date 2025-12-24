@@ -141,6 +141,10 @@ TEST_CASE("components::sql::select_from_where") {
         R"_($aggregate: {$match: {"column_name/sub_type/field1": )_"
         R"_({$gt: "column_name/sub_type/field2"}}, $group: {column_name/sub_type/*}})_",
         vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection WHERE array_field[1] = 10;)_",
+                       R"_($aggregate: {$match: {"array_field/1": {$eq: #0}}})_",
+                       vec({v(10l)}));
 }
 
 TEST_CASE("components::sql::select_from_order_by") {
@@ -176,6 +180,14 @@ TEST_CASE("components::sql::select_from_order_by") {
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10 ORDER BY number ASC, name DESC;)_",
         R"_($aggregate: {$match: {"number": {$gt: #0}}, $sort: {number: 1, name: -1}})_",
         vec({v(10l)}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection ORDER BY (struct_type).field1 DESC;)_",
+                       R"_($aggregate: {$sort: {struct_type/field1: -1}})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection ORDER BY array_field[1] DESC;)_",
+                       R"_($aggregate: {$sort: {array_field/1: -1}})_",
+                       vec());
 }
 
 TEST_CASE("components::sql::select_from_fields") {
@@ -193,6 +205,14 @@ TEST_CASE("components::sql::select_from_fields") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT struct_type.field_3 FROM TestDatabase.TestCollection;)_",
                        R"_($aggregate: {$group: {struct_type/field_3}})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT array_field[3] FROM TestCollection;)_",
+                       R"_($aggregate: {$group: {array_field/3}})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT matrix_field[3][2] FROM TestCollection;)_",
+                       R"_($aggregate: {$group: {matrix_field/3/2}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name as title FROM TestDatabase.TestCollection;)_",

@@ -21,8 +21,8 @@ namespace components::sql::transform {
     }
 
     template<class T>
-    static T* pg_ptr_assert_cast(void* ptr, NodeTag) {
-        assert(nodeTag(ptr));
+    static T* pg_ptr_assert_cast(void* ptr, [[maybe_unused]] NodeTag tag) {
+        assert(nodeTag(ptr) == tag);
         return pg_ptr_cast<T>(ptr);
     }
 
@@ -33,6 +33,8 @@ namespace components::sql::transform {
     inline std::string construct(const char* ptr) { return ptr ? ptr : std::string(); }
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
+
+    std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
 
     inline collection_full_name_t rangevar_to_collection(RangeVar* table) {
         return {construct(table->uid),
@@ -166,5 +168,8 @@ namespace components::sql::transform {
     types::complex_logical_type get_type(TypeName* type);
     std::vector<types::complex_logical_type> get_types(PGList& list);
     std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
+
+    types::logical_value_t get_value(Node* node);
+    types::logical_value_t get_array(PGList* list);
 
 } // namespace components::sql::transform

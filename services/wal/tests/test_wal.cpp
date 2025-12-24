@@ -1,3 +1,5 @@
+#include <core/pmr.hpp>
+
 #include <catch2/catch.hpp>
 
 #include <absl/crc/crc32c.h>

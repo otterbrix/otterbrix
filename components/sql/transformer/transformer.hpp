@@ -60,7 +60,6 @@ namespace components::sql::transform {
         transform_update_expr(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         std::string get_str_value(Node* node);
-        types::logical_value_t get_value(Node* node);
 
         core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
 

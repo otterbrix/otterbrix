@@ -76,5 +76,10 @@ TEST_CASE("components::sql::join") {
             R"_(select * from col1 join col2 on (col1.struct_type).field = (col2.struct_type).field;)_",
             R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "struct_type/field": {$eq: "struct_type/field"}}})_",
             vec());
+
+        TEST_JOIN(
+            R"_(select * from col1 join col2 on col1.array_type[1] = col2.array_type[2];)_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "array_type/1": {$eq: "array_type/2"}}})_",
+            vec());
     }
 }

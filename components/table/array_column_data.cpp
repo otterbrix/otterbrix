@@ -48,7 +48,7 @@ namespace components::table {
 
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
 
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         auto child_count = static_cast<uint64_t>(row_idx - start_) * size;
 
         assert(child_count <= child_column->max_entry());
@@ -58,8 +58,37 @@ namespace components::table {
         }
     }
 
-    uint64_t array_column_data_t::scan(uint64_t, column_scan_state& state, vector::vector_t& result, uint64_t count) {
-        return scan_count(state, result, count);
+    uint64_t array_column_data_t::scan(uint64_t vector_index,
+                                       column_scan_state& state,
+                                       vector::vector_t& result,
+                                       uint64_t count) {
+        size_t arr_size = array_size();
+        size_t remaining_count = arr_size * count;
+        uint64_t remaining_vector_index = vector_index * arr_size;
+        state.child_states[0].result_offset = state.result_offset * arr_size;
+        state.child_states[1].result_offset = state.result_offset * arr_size;
+
+        while (remaining_count > 0) {
+            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
+                auto result_count = child_column->scan(remaining_vector_index,
+                                                       state.child_states[1],
+                                                       result.entry(),
+                                                       vector::DEFAULT_VECTOR_CAPACITY);
+                remaining_count -= result_count;
+                remaining_vector_index++;
+                state.child_states[0].result_offset += result_count;
+                state.child_states[1].result_offset += result_count;
+            } else {
+                auto result_count =
+                    child_column->scan(remaining_vector_index, state.child_states[1], result.entry(), remaining_count);
+                remaining_count -= result_count;
+                state.child_states[0].result_offset += result_count;
+                state.child_states[1].result_offset += result_count;
+                break;
+            }
+        }
+        uint64_t result_count = (arr_size * count - remaining_count) / arr_size;
+        return result_count;
     }
 
     uint64_t array_column_data_t::scan_committed(uint64_t,
@@ -73,7 +102,7 @@ namespace components::table {
     uint64_t array_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_vec = result.entry();
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         state.child_states[1].result_offset = state.result_offset * size;
         child_column->scan_count(state.child_states[1], child_vec, count * size);
         return scan_count;
@@ -81,7 +110,7 @@ namespace components::table {
 
     void array_column_data_t::skip(column_scan_state& state, uint64_t count) {
         validity.skip(state.child_states[0], count);
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         child_column->skip(state.child_states[1], count * size);
     }
 
@@ -105,7 +134,7 @@ namespace components::table {
 
         validity.append(state.child_appends[0], vector, count);
         auto& child_vec = vector.entry();
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         child_column->append(state.child_appends[1], child_vec, count * size);
 
         count_ += count;
@@ -113,7 +142,7 @@ namespace components::table {
 
     void array_column_data_t::revert_append(int64_t start_row) {
         validity.revert_append(start_row);
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         child_column->revert_append(start_row * static_cast<int64_t>(size));
 
         count_ = static_cast<uint64_t>(start_row - start_);
@@ -123,13 +152,82 @@ namespace components::table {
         throw std::logic_error("Function is not implemented: Array fetch");
     }
 
-    void array_column_data_t::update(uint64_t, vector::vector_t&, int64_t*, uint64_t) {
-        throw std::logic_error("Function is not implemented: Array update is not supported.");
+    void array_column_data_t::update(uint64_t column_index,
+                                     vector::vector_t& update_vector,
+                                     int64_t* row_ids,
+                                     uint64_t update_count) {
+        size_t arr_size = array_size();
+        size_t remaining_count = arr_size * update_count;
+        std::pmr::vector<int64_t> sub_column_ids(resource_);
+        sub_column_ids.reserve(remaining_count);
+
+        for (auto it = row_ids; it != row_ids + update_count; ++it) {
+            for (int64_t i = 0; i < static_cast<int64_t>(arr_size); i++) {
+                sub_column_ids.emplace_back(*it * static_cast<int64_t>(arr_size) + i);
+            }
+        }
+
+        int64_t* remaining_sub_column_ids = sub_column_ids.data();
+        uint64_t remaining_column_index = column_index;
+        while (remaining_count > 0) {
+            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
+                child_column->update(remaining_column_index,
+                                     update_vector.entry(),
+                                     remaining_sub_column_ids,
+                                     vector::DEFAULT_VECTOR_CAPACITY);
+                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
+                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
+                remaining_column_index++;
+            } else {
+                child_column->update(remaining_column_index,
+                                     update_vector.entry(),
+                                     remaining_sub_column_ids,
+                                     remaining_count);
+                break;
+            }
+        }
     }
 
-    void
-    array_column_data_t::update_column(const std::vector<uint64_t>&, vector::vector_t&, int64_t*, uint64_t, uint64_t) {
-        throw std::logic_error("Function is not implemented: Array update Column is not supported");
+    void array_column_data_t::update_column(const std::vector<uint64_t>& column_path,
+                                            vector::vector_t& update_vector,
+                                            int64_t* row_ids,
+                                            uint64_t update_count,
+                                            uint64_t depth) {
+        size_t arr_size = array_size();
+        size_t remaining_count = arr_size * update_count;
+        std::pmr::vector<int64_t> sub_column_ids(resource_);
+        sub_column_ids.reserve(remaining_count);
+
+        for (auto it = row_ids; it != row_ids + update_count; ++it) {
+            for (int64_t i = 0; i < static_cast<int64_t>(arr_size); i++) {
+                sub_column_ids.emplace_back(*it * static_cast<int64_t>(arr_size) + i);
+            }
+        }
+
+        int64_t* remaining_sub_column_ids = sub_column_ids.data();
+        while (remaining_count > 0) {
+            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
+                child_column->update_column(column_path,
+                                            update_vector.entry(),
+                                            remaining_sub_column_ids,
+                                            vector::DEFAULT_VECTOR_CAPACITY,
+                                            depth);
+                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
+                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
+            } else {
+                child_column->update_column(column_path,
+                                            update_vector.entry(),
+                                            remaining_sub_column_ids,
+                                            remaining_count,
+                                            depth);
+                break;
+            }
+        }
+        child_column->update_column(column_path,
+                                    update_vector.entry(),
+                                    sub_column_ids.data(),
+                                    update_count * arr_size,
+                                    depth);
     }
 
     void array_column_data_t::fetch_row(column_fetch_state& state,
@@ -147,7 +245,7 @@ namespace components::table {
 
         auto child_state = std::make_unique<column_scan_state>();
         child_state->initialize(child_type);
-        auto size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+        auto size = array_size();
         const auto child_offset = start_ + (row_id - start_) * static_cast<int64_t>(size);
 
         child_column->initialize_scan_with_offset(*child_state, child_offset);
@@ -163,6 +261,10 @@ namespace components::table {
         validity.get_column_segment_info(row_group_index, col_path, result);
         col_path.back() = 1;
         child_column->get_column_segment_info(row_group_index, col_path, result);
+    }
+
+    size_t array_column_data_t::array_size() const {
+        return static_cast<const types::array_logical_type_extension*>(type_.extension())->size();
     }
 
 } // namespace components::table

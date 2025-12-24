@@ -191,4 +191,28 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
                            vec({v(1ul)}),
                            f);
     }
+
+    {
+        fields f;
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "array_type"}));
+        f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
+        TEST_SIMPLE_UPDATE(
+            "UPDATE TestDatabase.TestCollection SET array_type = ARRAY[1,2,3,4];",
+            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
+            vec({components::types::logical_value_t::create_array(components::types::logical_type::BIGINT,
+                                                                  {v(1l), v(2l), v(3l), v(4l)})}),
+            f);
+    }
+
+    {
+        fields f;
+        f.emplace_back(new update_expr_set_t(components::expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"array_type", &resource}, std::pmr::string{"4", &resource}},
+            &resource}}));
+        f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
+        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET array_type[4] = 196;",
+                           R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
+                           vec({v(196l)}),
+                           f);
+    }
 }

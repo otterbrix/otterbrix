@@ -37,6 +37,10 @@ TEST_CASE("components::sql::delete_from_where") {
                        R"_($delete: {$match: {"struct_type/number": {$eq: #0}}, $limit: -1})_",
                        vec({v(10l)}));
 
+    TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection WHERE array_type[15] == 10;",
+                       R"_($delete: {$match: {"array_type/15": {$eq: #0}}, $limit: -1})_",
+                       vec({v(10l)}));
+
     TEST_SIMPLE_DELETE(
         "DELETE FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR count = 2);",
         R"_($delete: {$match: {$and: [$not: ["number": {$eq: #0}], $not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}, $limit: -1})_",

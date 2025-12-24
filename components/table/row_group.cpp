@@ -237,7 +237,7 @@ namespace components::table {
             }
             int64_t current_row = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             auto max_count =
-                std::min(vector::DEFAULT_VECTOR_CAPACITY, static_cast<uint64_t>(state.max_row_group_row - current_row));
+                std::min(vector::DEFAULT_VECTOR_CAPACITY, static_cast<size_t>(state.max_row_group_row - current_row));
 
             if (!check_zonemap_segments(state)) {
                 continue;

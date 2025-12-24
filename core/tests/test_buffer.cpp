@@ -4,7 +4,7 @@
 #include <memory_resource>
 #include <random>
 
-#include "core/buffer.hpp"
+#include <core/buffer.hpp>
 
 std::size_t gen_size() {
     std::default_random_engine generator;

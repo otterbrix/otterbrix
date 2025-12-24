@@ -294,7 +294,6 @@ TEST_CASE("operator::delete") {
     }
 }
 
-// TODO: find fix for complex keys e.g. "countArray/0"
 TEST_CASE("operator::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
@@ -318,7 +317,8 @@ TEST_CASE("operator::update") {
 
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
-        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{&resource, "countArray/0"});
+        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -363,7 +363,7 @@ TEST_CASE("operator::update") {
                 REQUIRE(scan.output()->size() == 10);
                 /*
                 REQUIRE(scan.output()->data_chunk().value(4, 0) ==
-                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)).as_logical_value());
+                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
                 */
             }
         }
@@ -386,7 +386,8 @@ TEST_CASE("operator::update") {
                                                   core::parameter_id_t(2));
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
-        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{&resource, "countArray/0"});
+        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -421,7 +422,7 @@ TEST_CASE("operator::update") {
                 REQUIRE(scan.output()->size() == 0);
             }
 
-            table::operators::operator_update update_(d(table), {script_update_1 /* , script_update_2 */}, false);
+            table::operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
             update_.set_children(
                 boost::intrusive_ptr(new table::operators::full_scan(d(table), cond, logical_plan::limit_t(1))));
             update_.on_execute(&pipeline_context);
@@ -429,10 +430,8 @@ TEST_CASE("operator::update") {
                 table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 1);
-                /*
-                REQUIRE(scan.output()->data_chunk().value(4, 0) ==
-                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)).as_logical_value());
-                */
+                REQUIRE(scan.output()->data_chunk().value(5, 0).children()[0] ==
+                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }
     }
@@ -454,7 +453,8 @@ TEST_CASE("operator::update") {
                                                   core::parameter_id_t(2));
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
-        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{&resource, "countArray/0"});
+        update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
+            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -466,9 +466,7 @@ TEST_CASE("operator::update") {
                 REQUIRE(scan.output()->size() == 0);
             }
 
-            collection::operators::operator_update update_(d(collection),
-                                                           {script_update_1 /* , script_update_2 */},
-                                                           false);
+            collection::operators::operator_update update_(d(collection), {script_update_1, script_update_2}, false);
             update_.set_children(boost::intrusive_ptr(
                 new collection::operators::full_scan(d(collection),
                                                      collection::operators::predicates::create_predicate(cond),
@@ -480,10 +478,8 @@ TEST_CASE("operator::update") {
                                                       logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 5);
-                /*
-                REQUIRE(scan.output()->data_chunk().value(4, 0) ==
-                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)).as_logical_value());
-                */
+                REQUIRE(scan.output()->documents().front()->get_value("countArray/0").as_logical_value() ==
+                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }
         SECTION("table") {
@@ -493,7 +489,7 @@ TEST_CASE("operator::update") {
                 REQUIRE(scan.output()->size() == 0);
             }
 
-            table::operators::operator_update update_(d(table), {script_update_1 /* , script_update_2 */}, false);
+            table::operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
             update_.set_children(
                 boost::intrusive_ptr(new table::operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
             update_.on_execute(&pipeline_context);
@@ -501,10 +497,8 @@ TEST_CASE("operator::update") {
                 table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 5);
-                /*
-                REQUIRE(scan.output()->data_chunk().value(4, 0) ==
-                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)).as_logical_value());
-                */
+                REQUIRE(scan.output()->data_chunk().value(5, 0).children()[0] ==
+                        pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }
     }

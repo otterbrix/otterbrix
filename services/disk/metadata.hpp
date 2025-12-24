@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "core/file/local_file_system.hpp"
+#include <core/file/local_file_system.hpp>
 
 #include <components/base/collection_full_name.hpp>
 

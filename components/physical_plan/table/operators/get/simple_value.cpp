@@ -20,7 +20,7 @@ namespace components::table::operators::get {
                 return {local_values, local_values + size};
             }
             auto it = std::find_if(local_values, local_values + size, [&](const types::logical_value_t& value) {
-                return value.type().alias() == key_.storage()[i];
+                return core::pmr::operator==(value.type().alias(), key_.storage()[i]);
             });
             if (it == local_values + size) {
                 return {};

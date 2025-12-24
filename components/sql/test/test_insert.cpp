@@ -78,6 +78,24 @@ TEST_CASE("sql::insert_into") {
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t("some text"));
     }
 
+    SECTION("insert into array") {
+        auto select =
+            linitial(raw_parser(&arena_resource, R"(INSERT INTO TestCollection (array_type) VALUES(ARRAY[1, 2, 3]);)"));
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto node = result.node;
+        REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
+        REQUIRE(node->database_name() == "");
+        REQUIRE(node->collection_name() == "testcollection");
+        const auto& chunk =
+            reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
+        REQUIRE(chunk.size() == 1);
+        auto arr = components::types::logical_value_t::create_array(components::types::logical_type::BIGINT,
+                                                                    {components::types::logical_value_t{1l},
+                                                                     components::types::logical_value_t{2l},
+                                                                     components::types::logical_value_t{3l}});
+        REQUIRE(chunk.value(0, 0) == arr);
+    }
+
     SECTION("insert into multi-documents") {
         auto select = linitial(raw_parser(&arena_resource,
                                           "INSERT INTO TestCollection (id, name, count) VALUES "

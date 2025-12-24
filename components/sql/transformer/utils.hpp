@@ -34,6 +34,8 @@ namespace components::sql::transform {
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
 
+    std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
+
     static collection_full_name_t rangevar_to_collection(RangeVar* table) {
         return {construct(table->uid),
                 construct(table->catalogname),
@@ -166,5 +168,8 @@ namespace components::sql::transform {
     types::complex_logical_type get_type(TypeName* type);
     std::vector<types::complex_logical_type> get_types(PGList& list);
     std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
+
+    types::logical_value_t get_value(Node* node);
+    types::logical_value_t get_array(PGList* list);
 
 } // namespace components::sql::transform

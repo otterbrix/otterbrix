@@ -45,7 +45,7 @@ namespace components::table::operators {
                 for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
                     auto it =
                         std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                            return type.alias() == expression->primary_key().storage()[i];
+                            return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
                         });
                     assert(it != local_types + size);
                     indices.emplace_back(it - local_types);

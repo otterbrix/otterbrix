@@ -52,6 +52,8 @@ namespace components::table {
         void get_column_segment_info(uint64_t row_group_index,
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
+
+        size_t array_size() const;
     };
 
 } // namespace components::table

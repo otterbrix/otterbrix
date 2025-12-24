@@ -198,11 +198,18 @@ namespace components::sql::transform {
                         std::pmr::vector<std::pmr::string> path;
                         A_Indirection* indirection = pg_ptr_cast<A_Indirection>(res->val);
                         while (indirection) {
-                            auto data = indirection->indirection->lst.back().data;
-                            if (nodeTag(data) == T_A_Star) {
-                                path.emplace_back("*");
-                            } else {
-                                path.emplace_back(strVal(data));
+                            auto& lst = indirection->indirection->lst;
+                            // reverse order to be consistent with indirections stacking
+                            for (auto it = lst.rbegin(); it != lst.crend(); ++it) {
+                                auto data = it->data;
+                                if (nodeTag(data) == T_A_Star) {
+                                    path.emplace_back("*");
+                                } else if (nodeTag(data) == T_A_Indices) {
+                                    auto indices = pg_ptr_cast<A_Indices>(data);
+                                    path.emplace_back(indices_to_str(resource_, indices));
+                                } else {
+                                    path.emplace_back(pmrStrVal(data, resource_));
+                                }
                             }
                             if (nodeTag(indirection->arg) == T_A_Indirection) {
                                 indirection = pg_ptr_cast<A_Indirection>(indirection->arg);
@@ -214,7 +221,8 @@ namespace components::sql::transform {
                                     {});
                             } else {
                                 path.emplace_back(
-                                    strVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data));
+                                    pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
+                                              resource_));
                                 break;
                             }
                         }
@@ -260,8 +268,13 @@ namespace components::sql::transform {
             expressions.reserve(node.sortClause->lst.size());
             for (auto sort_it : node.sortClause->lst) {
                 auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
-                assert(nodeTag(sortby->node) == T_ColumnRef);
-                auto field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
+                column_ref_t field(resource_);
+                if (nodeTag(sortby->node) == T_ColumnRef) {
+                    field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
+                } else {
+                    assert(nodeTag(sortby->node) == T_A_Indirection);
+                    field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                }
                 expressions.emplace_back(
                     make_sort_expression(field.field,
                                          sortby->sortby_dir == SORTBY_DESC ? sort_order::desc : sort_order::asc));

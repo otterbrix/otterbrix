@@ -42,6 +42,11 @@ namespace components::sql::transform {
                 }
                 return {new update_expr_get_const_value_t(id)};
             }
+            case T_A_ArrayExpr: {
+                auto array = pg_ptr_cast<A_ArrayExpr>(node);
+                auto id = params->add_parameter(get_array(array->elements));
+                return {new update_expr_get_const_value_t(id)};
+            }
             case T_ParamRef: {
                 return {new update_expr_get_const_value_t(add_param_value(node, params))};
             }
@@ -166,7 +171,12 @@ namespace components::sql::transform {
                     std::pmr::vector<std::pmr::string> path{resource_};
                     path.emplace_back(std::pmr::string{res->name, resource_});
                     for (const auto& val : res->indirection->lst) {
-                        path.emplace_back(strVal(val.data));
+                        if (nodeTag(val.data) == T_A_Indices) {
+                            auto indices = pg_ptr_cast<A_Indices>(val.data);
+                            path.emplace_back(indices_to_str(resource_, indices));
+                        } else {
+                            path.emplace_back(pmrStrVal(val.data, resource_));
+                        }
                     }
                     updates.emplace_back(new update_expr_set_t(expressions::key_t{std::move(path), side_t::left}));
                     updates.back()->left() = transform_update_expr(res->val, names, params);

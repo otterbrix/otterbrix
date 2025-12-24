@@ -29,10 +29,10 @@ namespace components::document::json {
         other.allocator_ = nullptr;
         switch (type_) {
             case OBJECT:
-                value_.obj = std::move(other.value_.obj);
+                new (&value_.obj) json_object(std::move(other.value_.obj));
                 break;
             case ARRAY:
-                value_.arr = std::move(other.value_.arr);
+                new (&value_.arr) json_array(std::move(other.value_.arr));
                 break;
             case MUT:
                 value_.mut = other.value_.mut;
@@ -43,15 +43,19 @@ namespace components::document::json {
     }
 
     json_trie_node& json_trie_node::operator=(json_trie_node&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
         allocator_ = other.allocator_;
+        value_.~value_type();
         type_ = other.type_;
         other.allocator_ = nullptr;
         switch (type_) {
             case OBJECT:
-                value_.obj = std::move(other.value_.obj);
+                new (&value_.obj) json_object(std::move(other.value_.obj));
                 break;
             case ARRAY:
-                value_.arr = std::move(other.value_.arr);
+                new (&value_.arr) json_array(std::move(other.value_.arr));
                 break;
             case MUT:
                 value_.mut = other.value_.mut;

@@ -709,7 +709,7 @@ namespace core::filesystem {
         if ((flags & file_flags::APPEND) != file_flags::EMPTY) {
             set_file_pointer(*handle, file_size(*handle));
         }
-        return std::move(handle);
+        return handle;
     }
 
     bool set_file_pointer(local_file_system_t&, file_handle_t& handle, uint64_t location) {

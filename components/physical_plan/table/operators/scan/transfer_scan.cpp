@@ -28,7 +28,7 @@ namespace components::table::operators {
         context_->table_storage().table().scan(output_->data_chunk(), state);
         if (limit_.limit() >= 0) {
             output_->data_chunk().set_cardinality(
-                std::min(output_->data_chunk().size(), static_cast<size_t>(limit_.limit())));
+                std::min(output_->data_chunk().size(), static_cast<uint64_t>(limit_.limit())));
         }
     }
 

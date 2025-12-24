@@ -472,7 +472,10 @@ namespace core::filesystem {
         return true;
     }
 
-    bool trim(local_file_system_t&, [[maybe_unused]] file_handle_t& handle, [[maybe_unused]] uint64_t offset_bytes, [[maybe_unused]] uint64_t length_bytes) {
+    bool trim(local_file_system_t&,
+              [[maybe_unused]] file_handle_t& handle,
+              [[maybe_unused]] uint64_t offset_bytes,
+              [[maybe_unused]] uint64_t length_bytes) {
 #if defined(__linux__)
         // FALLOC_FL_PUNCH_HOLE requires glibc 2.18 or up
 #if __GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 18)

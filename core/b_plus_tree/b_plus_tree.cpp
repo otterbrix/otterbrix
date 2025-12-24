@@ -764,14 +764,12 @@ namespace core::b_plus_tree {
         *(buffer + 1) = leaf_nodes_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
 
-        size_t i = 0;
         // save each segment tree
         while (node) {
             node->flush();
             *buffer_writer = node->segment_tree_id();
             buffer_writer++;
             node = static_cast<leaf_node_t*>(node->right_node_);
-            i++;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);

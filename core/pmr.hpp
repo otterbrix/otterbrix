@@ -87,7 +87,7 @@ namespace core::pmr {
         auto size = static_cast<size_t>(std::snprintf(nullptr, 0, format, value));
         std::pmr::string result(resource);
         result.resize(size + 1); // +1 for null terminator
-        std::sprintf(result.data(), format, value);
+        std::snprintf(result.data(), size, format, value);
         // remove null terminator
         result.resize(size);
         return result;

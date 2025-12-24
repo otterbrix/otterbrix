@@ -20,7 +20,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-            brew update && (brew list ninja || brew install ninja) && (brew list cmake || brew install cmake) && (brew list flex || brew install flex) && (brew list bison || brew install bison@3.8.2)
+            brew update && (brew list ninja || brew install ninja) && (brew list cmake || brew install cmake) && (brew list flex || brew install flex) && (brew list bison || brew install bison)
+            brew link bison --force
             python3 -m pip install --no-cache-dir conan==2.20.0  pytest==6.2.5 --break-system-packages
 
       - name: conan installation and configuration

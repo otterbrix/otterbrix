@@ -971,15 +971,15 @@ namespace components::document {
         int size = 0;
         if constexpr (std::is_integral_v<T>) {
             if constexpr (std::is_signed_v<T>) {
-                size = std::sprintf(buffer.data(), "%i", static_cast<int>(value));
+                size = std::snprintf(buffer.data(), buffer.size(), "%i", static_cast<int>(value));
             } else {
-                size = std::sprintf(buffer.data(), "%u", static_cast<unsigned int>(value));
+                size = std::snprintf(buffer.data(), buffer.size(), "%u", static_cast<unsigned int>(value));
             }
         } else {
             if constexpr (std::is_same_v<T, float>) {
-                size = std::sprintf(buffer.data(), "%.9g", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%.9g", value);
             } else if (std::is_same_v<T, double>) {
-                size = std::sprintf(buffer.data(), "%.17g", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
             } else {
                 // unexpected type
                 assert(false);

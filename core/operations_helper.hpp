@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>

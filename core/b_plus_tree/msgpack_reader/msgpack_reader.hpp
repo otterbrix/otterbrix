@@ -21,9 +21,11 @@ namespace core::b_plus_tree {
         while (keys_it != keys.end()) {
             switch (pack->type) {
                 case msgpack::type::ARRAY: {
-                    int index;
+                    int index = -1;
                     auto result = std::from_chars(keys_it->data(), keys_it->data() + keys_it->size(), index);
-                    assert(result.ec != std::errc::invalid_argument);
+                    if (result.ec == std::errc::invalid_argument) {
+                        throw std::runtime_error("b_plus_tree::get_field error: invalid_argument");
+                    }
                     pack = &pack->via.array.ptr[index];
                     ++keys_it;
                     break;
@@ -39,7 +41,9 @@ namespace core::b_plus_tree {
                             break;
                         }
                     }
-                    assert(key_found);
+                    if (!key_found) {
+                        throw std::runtime_error("b_plus_tree::get_field error: key is non existant");
+                    }
                     ++keys_it;
                     break;
                 }

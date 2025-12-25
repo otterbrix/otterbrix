@@ -19,7 +19,7 @@ using namespace core::filesystem;
 
 struct dummy_alloc {
     data_ptr_t buffer;
-    size_t size;
+    uint32_t size;
 };
 
 class limited_resource_t : public std::pmr::memory_resource {
@@ -60,7 +60,7 @@ std::string gen_random(size_t len, std::size_t seed) {
     return result;
 }
 
-TEST_CASE("block_t") {
+TEST_CASE("core::b_plus_tree::block_t") {
     path_t testing_directory = "block_test";
     auto resource = std::pmr::synchronized_pool_resource();
 
@@ -104,8 +104,10 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->available_memory() == DEFAULT_BLOCK_SIZE - test_block->header_size);
             REQUIRE(test_block->count() == 0);
             for (uint64_t i = 0; i < test_data_shuffled.size(); i++) {
-                REQUIRE(test_block->append((data_ptr_t)(test_data_shuffled[i].data()), test_data_shuffled[i].size()));
-                auto index = key_getter({data_ptr_t(test_data_shuffled[i].data()), test_data_shuffled[i].size()});
+                REQUIRE(test_block->append(static_cast<data_ptr_t>(test_data_shuffled[i].data()),
+                                           static_cast<uint32_t>(test_data_shuffled[i].size())));
+                auto index = key_getter({static_cast<data_ptr_t>(test_data_shuffled[i].data()),
+                                         static_cast<uint32_t>(test_data_shuffled[i].size())});
                 REQUIRE(test_block->contains_index(index));
                 REQUIRE(test_block->count() == test_block->unique_indices_count());
             }
@@ -113,13 +115,13 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->unique_indices_count() == test_data_shuffled.size());
 
             // test iterators
-            REQUIRE(test_block->end() - test_block->begin() == test_data_shuffled.size());
+            REQUIRE(test_block->end() - test_block->begin() == static_cast<int64_t>(test_data_shuffled.size()));
             for (auto it = test_block->begin(); it != test_block->end(); ++it) {
-                size_t sorted_index = it - test_block->begin();
+                size_t sorted_index = static_cast<size_t>(it - test_block->begin());
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
             for (auto it = test_block->rbegin(); it != test_block->rend(); ++it) {
-                size_t sorted_index = test_data_sorted.size() - (it - test_block->rbegin()) - 1;
+                size_t sorted_index = test_data_sorted.size() - static_cast<size_t>(it - test_block->rbegin()) - 1;
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
 
@@ -129,7 +131,7 @@ TEST_CASE("block_t") {
 
             unique_ptr<file_handle_t> handle =
                 open_file(fs, fname, file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
-            handle->write((void*) test_block->internal_buffer(), test_block->block_size(), 0);
+            handle->write(test_block->internal_buffer(), test_block->block_size(), 0);
             // close the file
             handle.reset();
         }
@@ -139,7 +141,7 @@ TEST_CASE("block_t") {
 
             unique_ptr<file_handle_t> handle =
                 open_file(fs, fname, file_flags::READ | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
-            handle->read((void*) test_block->internal_buffer(), test_block->block_size(), 0);
+            handle->read(test_block->internal_buffer(), test_block->block_size(), 0);
             // close the file
             handle.reset();
 
@@ -151,20 +153,22 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->count() == test_data_sorted.size());
 
             // test iterators
-            REQUIRE(test_block->end() - test_block->begin() == test_data_sorted.size());
+            REQUIRE(test_block->end() - test_block->begin() == static_cast<int64_t>(test_data_sorted.size()));
             for (auto it = test_block->begin(); it != test_block->end(); ++it) {
-                size_t sorted_index = it - test_block->begin();
+                size_t sorted_index = static_cast<size_t>(it - test_block->begin());
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
             for (auto it = test_block->rbegin(); it != test_block->rend(); ++it) {
-                size_t sorted_index = test_data_sorted.size() - (it - test_block->rbegin()) - 1;
+                size_t sorted_index = test_data_sorted.size() - static_cast<size_t>(it - test_block->rbegin()) - 1;
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
 
             for (uint64_t i = 0; i < test_data_shuffled.size(); i++) {
-                REQUIRE(test_block->remove(data_ptr_t(test_data_shuffled[i].data()), test_data_shuffled[i].size()));
-                REQUIRE_FALSE(test_block->contains_index(
-                    key_getter({data_ptr_t(test_data_shuffled[i].data()), test_data_shuffled[i].size()})));
+                REQUIRE(test_block->remove(static_cast<data_ptr_t>(test_data_shuffled[i].data()),
+                                           static_cast<uint32_t>(test_data_shuffled[i].size())));
+                REQUIRE_FALSE(
+                    test_block->contains_index(key_getter({static_cast<data_ptr_t>(test_data_shuffled[i].data()),
+                                                           static_cast<uint32_t>(test_data_shuffled[i].size())})));
             }
             REQUIRE(test_block->count() == 0);
             REQUIRE(test_block->available_memory() == DEFAULT_BLOCK_SIZE - test_block->header_size);
@@ -175,7 +179,7 @@ TEST_CASE("block_t") {
 
             unique_ptr<file_handle_t> handle =
                 open_file(fs, fname, file_flags::READ | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
-            handle->read((void*) test_block_1->internal_buffer(), test_block_1->block_size(), 0);
+            handle->read(test_block_1->internal_buffer(), test_block_1->block_size(), 0);
             // close the file
             handle.reset();
 
@@ -186,17 +190,20 @@ TEST_CASE("block_t") {
             REQUIRE(test_block_1->unique_indices_count() == test_data_sorted.size());
             REQUIRE(test_block_1->count() == test_data_sorted.size());
 
-            std::unique_ptr<block_t> test_block_2 = test_block_1->split(test_data_sorted.size() / 2);
+            std::unique_ptr<block_t> test_block_2 =
+                test_block_1->split(static_cast<uint32_t>(test_data_sorted.size() / 2));
             REQUIRE(test_block_1->unique_indices_count() * 2 == test_data_sorted.size());
             REQUIRE(test_block_1->count() * 2 == test_data_sorted.size());
             REQUIRE(test_block_2->unique_indices_count() * 2 == test_data_sorted.size());
             REQUIRE(test_block_2->count() * 2 == test_data_sorted.size());
 
             for (size_t i = 0; i < test_data_sorted.size() / 2; i++) {
-                REQUIRE(test_block_1->contains({data_ptr_t(test_data_sorted[i].data()), test_data_sorted[i].size()}));
+                REQUIRE(test_block_1->contains({static_cast<data_ptr_t>(test_data_sorted[i].data()),
+                                                static_cast<uint32_t>(test_data_sorted[i].size())}));
             }
             for (size_t i = test_data_sorted.size() / 2; i < test_data_sorted.size(); i++) {
-                REQUIRE(test_block_2->contains({data_ptr_t(test_data_sorted[i].data()), test_data_sorted[i].size()}));
+                REQUIRE(test_block_2->contains({static_cast<data_ptr_t>(test_data_sorted[i].data()),
+                                                static_cast<uint32_t>(test_data_sorted[i].size())}));
             }
 
             // merge block 1 and 2, test again
@@ -207,13 +214,13 @@ TEST_CASE("block_t") {
             REQUIRE(test_block_1->unique_indices_count() == test_data_shuffled.size());
 
             // test iterators
-            REQUIRE(test_block_1->end() - test_block_1->begin() == test_data_shuffled.size());
+            REQUIRE(test_block_1->end() - test_block_1->begin() == static_cast<int64_t>(test_data_shuffled.size()));
             for (auto it = test_block_1->begin(); it != test_block_1->end(); ++it) {
-                size_t sorted_index = it - test_block_1->begin();
+                auto sorted_index = static_cast<size_t>(it - test_block_1->begin());
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
             for (auto it = test_block_1->rbegin(); it != test_block_1->rend(); ++it) {
-                size_t sorted_index = test_data_sorted.size() - (it - test_block_1->rbegin()) - 1;
+                auto sorted_index = test_data_sorted.size() - static_cast<size_t>(it - test_block_1->rbegin()) - 1;
                 REQUIRE(std::memcmp(it->item.data, (test_data_sorted[sorted_index]).data(), it->item.size) == 0);
             }
         }
@@ -234,12 +241,12 @@ TEST_CASE("block_t") {
 
         for (uint64_t i = 0; i < test_data_size; i++) {
             std::string str;
-            str.push_back(i);
+            str.push_back(static_cast<char>(i));
             str.push_back(0);
             str.push_back(0);
             str.push_back(0);
             for (uint64_t j = 0; j < i; j++) {
-                str.push_back('a' + j);
+                str.push_back('a' + static_cast<char>(j));
             }
             for (size_t j = 0; j < duplicate_count; j++) {
                 test_data.emplace_back(str + std::to_string(j));
@@ -254,8 +261,10 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->available_memory() == DEFAULT_BLOCK_SIZE - test_block->header_size);
             REQUIRE(test_block->count() == 0);
             for (uint64_t i = 0; i < test_data.size(); i++) {
-                REQUIRE(test_block->append((data_ptr_t)(test_data[i].data()), test_data[i].size()));
-                auto index = key_getter({data_ptr_t(test_data[i].data()), test_data[i].size()});
+                REQUIRE(test_block->append(static_cast<data_ptr_t>(test_data[i].data()),
+                                           static_cast<uint32_t>(test_data[i].size())));
+                auto index = key_getter(
+                    {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())});
                 REQUIRE(test_block->contains_index(index));
                 // test iterators
                 for (auto it = test_block->begin(); it != test_block->end(); ++it) {
@@ -284,7 +293,7 @@ TEST_CASE("block_t") {
                                                          fname,
                                                          file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
                                                          file_lock_type::NO_LOCK);
-            handle->write((void*) test_block->internal_buffer(), test_block->block_size(), 0);
+            handle->write(test_block->internal_buffer(), test_block->block_size(), 0);
             handle->sync();
 
             // remove by index
@@ -292,7 +301,7 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->count() == test_data_size * duplicate_count);
             REQUIRE(test_block->unique_indices_count() == test_data_size);
             for (uint32_t i = 0; i < test_data_size; i++) {
-                auto index = key_getter({data_ptr_t(&i), sizeof(uint32_t)});
+                auto index = key_getter({reinterpret_cast<data_ptr_t>(&i), sizeof(uint32_t)});
                 REQUIRE(test_block->remove_index(index));
                 REQUIRE_FALSE(test_block->contains_index(index));
             }
@@ -300,7 +309,7 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->unique_indices_count() == 0);
             REQUIRE(test_block->available_memory() == DEFAULT_BLOCK_SIZE - test_block->header_size);
 
-            handle->read((void*) test_block->internal_buffer(), test_block->block_size(), 0);
+            handle->read(test_block->internal_buffer(), test_block->block_size(), 0);
             test_block->restore_block();
 
             // remove one by one
@@ -308,8 +317,8 @@ TEST_CASE("block_t") {
             REQUIRE(test_block->count() == test_data_size * duplicate_count);
             REQUIRE(test_block->unique_indices_count() == test_data_size);
             for (uint64_t i = 0; i < test_data.size(); i++) {
-                REQUIRE(
-                    test_block->remove((data_ptr_t)(test_data[i].data()), static_cast<uint64_t>(test_data[i].size())));
+                REQUIRE(test_block->remove(static_cast<data_ptr_t>(test_data[i].data()),
+                                           static_cast<uint32_t>(test_data[i].size())));
             }
             REQUIRE(test_block->count() == 0);
             REQUIRE(test_block->unique_indices_count() == 0);
@@ -331,7 +340,7 @@ TEST_CASE("block_t") {
         }
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(std::string_view((char*) data.data, data.size));
+            return block_t::index_t(std::string_view(data.data, data.size));
         };
 
         std::unique_ptr<block_t> test_block = create_initialize(&resource, key_getter);
@@ -339,15 +348,18 @@ TEST_CASE("block_t") {
         for (uint64_t i = 0; i < test_count; i++) {
             REQUIRE(test_block->count() == i);
             REQUIRE(test_block->unique_indices_count() == i);
-            REQUIRE(test_block->append((data_ptr_t) test_data[i].data(), test_data[i].size()));
-            REQUIRE(test_block->contains({(data_ptr_t) test_data[i].data(), test_data[i].size()}));
+            REQUIRE(test_block->append(static_cast<data_ptr_t>(test_data[i].data()),
+                                       static_cast<uint32_t>(test_data[i].size())));
+            REQUIRE(test_block->contains(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())}));
             REQUIRE(test_block->count() == i + 1);
             REQUIRE(test_block->unique_indices_count() == i + 1);
         }
 
         std::sort(test_data.begin(), test_data.end());
         for (uint64_t i = 0; i < test_count; i++) {
-            REQUIRE(test_block->contains_index(key_getter({(data_ptr_t) test_data[i].data(), test_data[i].size()})));
+            REQUIRE(test_block->contains_index(key_getter(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())})));
         }
     }
 
@@ -359,7 +371,7 @@ TEST_CASE("block_t") {
     }
 }
 
-TEST_CASE("segment_tree") {
+TEST_CASE("core::b_plus_tree::segment_tree") {
     auto resource = std::pmr::synchronized_pool_resource();
     path_t testing_directory = "segment_tree_test";
 
@@ -382,14 +394,14 @@ TEST_CASE("segment_tree") {
         for (uint64_t i = 1; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
-            dummy.buffer = (data_ptr_t) resource.allocate(dummy.size);
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
         for (uint64_t i = 0; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
-            dummy.buffer = (data_ptr_t) resource.allocate(dummy.size);
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
@@ -540,14 +552,14 @@ TEST_CASE("segment_tree") {
         for (uint64_t i = 0; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
-            dummy.buffer = (data_ptr_t)(resource.allocate(dummy.size));
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
         for (uint64_t i = 1; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
-            dummy.buffer = (data_ptr_t)(resource.allocate(dummy.size));
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
@@ -653,7 +665,7 @@ TEST_CASE("segment_tree") {
     }
 
     INFO("segment_tree: duplicates") {
-        size_t fake_item_size = 8192;
+        uint32_t fake_item_size = 8192;
         size_t duplicate_count = 50;
         size_t key_num = 1000;
         local_file_system_t fs = local_file_system_t();
@@ -678,7 +690,7 @@ TEST_CASE("segment_tree") {
 
         std::vector<size_t> duplicates(key_num, 0);
         size_t unique_added = 0;
-        uint64_t* fake_buffer = (uint64_t*) (resource.allocate(fake_item_size));
+        uint64_t* fake_buffer = static_cast<uint64_t*>(resource.allocate(fake_item_size));
 
         for (uint64_t i = 0; i < key_num * duplicate_count; i++) {
             *fake_buffer = test_data[i].first;
@@ -730,7 +742,7 @@ TEST_CASE("segment_tree") {
         size_t dummy_size = DEFAULT_BLOCK_SIZE / 32;
         size_t test_count = 5000; // about x10 of what allocator can handle
         // just use one buffer
-        uint64_t* buffer = (uint64_t*) (resource.allocate(dummy_size));
+        uint64_t* buffer = static_cast<uint64_t*>(resource.allocate(dummy_size));
         std::vector<uint64_t> test_data;
         test_data.reserve(test_count);
         for (uint64_t i = 0; i < test_count; i++) {
@@ -742,7 +754,7 @@ TEST_CASE("segment_tree") {
             *buffer = test_data[i];
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
-            REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(buffer), dummy_size));
+            REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(buffer), static_cast<uint32_t>(dummy_size)));
             REQUIRE(tree.count() == i + 1);
             REQUIRE(tree.unique_indices_count() == i + 1);
         }
@@ -783,7 +795,7 @@ TEST_CASE("segment_tree") {
         }
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(std::string_view((char*) data.data, data.size));
+            return block_t::index_t(std::string_view(data.data, data.size));
         };
 
         segment_tree_t tree(&resource, key_getter, std::move(handle));
@@ -791,8 +803,10 @@ TEST_CASE("segment_tree") {
         for (uint64_t i = 0; i < test_count; i++) {
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
-            REQUIRE(tree.append((data_ptr_t) test_data[i].data(), test_data[i].size()));
-            REQUIRE(tree.contains({(data_ptr_t) test_data[i].data(), test_data[i].size()}));
+            REQUIRE(
+                tree.append(static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())));
+            REQUIRE(tree.contains(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())}));
             REQUIRE(tree.count() == i + 1);
             REQUIRE(tree.unique_indices_count() == i + 1);
         }
@@ -801,7 +815,8 @@ TEST_CASE("segment_tree") {
         tree.clean_load();
 
         for (uint64_t i = 0; i < test_count; i++) {
-            segment_tree_t::index_t index = key_getter({(data_ptr_t) test_data[i].data(), test_data[i].size()});
+            segment_tree_t::index_t index =
+                key_getter({static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())});
             REQUIRE(tree.contains_index(index));
             REQUIRE(tree.remove_index(index));
             REQUIRE_FALSE(tree.contains_index(index));
@@ -810,9 +825,11 @@ TEST_CASE("segment_tree") {
         tree.lazy_load();
 
         for (uint64_t i = 0; i < test_count; i++) {
-            segment_tree_t::index_t index = key_getter({(data_ptr_t) test_data[i].data(), test_data[i].size()});
+            segment_tree_t::index_t index =
+                key_getter({static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())});
             REQUIRE(tree.contains_index(index));
-            REQUIRE(tree.remove({(data_ptr_t) test_data[i].data(), test_data[i].size()}));
+            REQUIRE(tree.remove(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())}));
             REQUIRE_FALSE(tree.contains_index(index));
         }
     }
@@ -825,7 +842,7 @@ TEST_CASE("segment_tree") {
     }
 }
 
-TEST_CASE("b+tree") {
+TEST_CASE("core::b_plus_tree::b+tree") {
     auto resource = std::pmr::synchronized_pool_resource();
     path_t testing_directory = "b+tree_test";
 
@@ -852,14 +869,14 @@ TEST_CASE("b+tree") {
         for (uint64_t i = 0; i < test_size; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
-            dummy.buffer = (data_ptr_t)(resource.allocate(dummy.size));
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
         for (uint64_t i = 1; i < test_size; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
-            dummy.buffer = (data_ptr_t)(resource.allocate(dummy.size));
+            dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
             *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
             test_data.push_back(dummy);
         }
@@ -887,13 +904,14 @@ TEST_CASE("b+tree") {
             [](void* buf, uint64_t size) { return std::string(static_cast<char*>(buf), size); });
         REQUIRE(scan_result.size() == test_size);
         for (uint64_t j = 0; j < scan_result.size(); j++) {
-            auto index = key_getter({data_ptr_t(scan_result[j].data()), scan_result[j].size()});
+            auto index = key_getter(
+                {static_cast<data_ptr_t>(scan_result[j].data()), static_cast<uint32_t>(scan_result[j].size())});
             auto dummy = std::find_if(test_data.begin(), test_data.end(), [&index](const dummy_alloc& dummy) {
                 return *reinterpret_cast<uint64_t*>(dummy.buffer) ==
                        index.value<components::types::physical_type::UINT64>();
             });
             REQUIRE(dummy != test_data.end());
-            REQUIRE(dummy->size == scan_result[j].size());
+            REQUIRE(dummy->size == static_cast<uint32_t>(scan_result[j].size()));
             REQUIRE(memcmp(dummy->buffer, scan_result[j].data(), dummy->size) == 0);
         }
         scan_result.clear();
@@ -905,13 +923,14 @@ TEST_CASE("b+tree") {
             [](void* buf, uint64_t size) { return std::string(static_cast<char*>(buf), size); });
         REQUIRE(scan_result.size() == test_size);
         for (uint64_t j = 0; j < scan_result.size(); j++) {
-            auto index = key_getter({data_ptr_t(scan_result[j].data()), scan_result[j].size()});
+            auto index = key_getter(
+                {static_cast<data_ptr_t>(scan_result[j].data()), static_cast<uint32_t>(scan_result[j].size())});
             auto dummy = std::find_if(test_data.begin(), test_data.end(), [&index](const dummy_alloc& dummy) {
                 return *reinterpret_cast<uint64_t*>(dummy.buffer) ==
                        index.value<components::types::physical_type::UINT64>();
             });
             REQUIRE(dummy != test_data.end());
-            REQUIRE(dummy->size == scan_result[j].size());
+            REQUIRE(dummy->size == static_cast<uint32_t>(scan_result[j].size()));
             REQUIRE(memcmp(dummy->buffer, scan_result[j].data(), dummy->size) == 0);
         }
 
@@ -1006,7 +1025,7 @@ TEST_CASE("b+tree") {
         //! for some reason, using REQUIRE in all of the async functions fails with SEGFAULT from time to time
         //! but collecting results and checking them later works fine
         std::function<void(size_t)> append_func;
-        append_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        append_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 
@@ -1016,7 +1035,7 @@ TEST_CASE("b+tree") {
         };
 
         std::function<void(size_t)> get_func;
-        get_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        get_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 
@@ -1030,7 +1049,7 @@ TEST_CASE("b+tree") {
         };
 
         std::function<void(size_t)> remove_func;
-        remove_func = [&tree, &keys, &results, work_per_thread](size_t id) {
+        remove_func = [&tree, &keys, &results](size_t id) {
             size_t start = work_per_thread * id;
             size_t end = work_per_thread * (id + 1);
 
@@ -1100,7 +1119,7 @@ TEST_CASE("b+tree") {
         REQUIRE(tree.size() == 0);
     }
     INFO("btree: non unique ids") {
-        size_t fake_item_size = 8192;
+        uint32_t fake_item_size = 8192;
         size_t duplicate_count = 50;
         size_t key_num = 2000;
         local_file_system_t fs = local_file_system_t();
@@ -1124,7 +1143,7 @@ TEST_CASE("b+tree") {
 
         std::vector<size_t> duplicates(key_num, 0);
         size_t unique_added = 0;
-        uint64_t* fake_buffer = (uint64_t*) (resource.allocate(fake_item_size));
+        uint64_t* fake_buffer = static_cast<uint64_t*>(resource.allocate(fake_item_size));
         REQUIRE(tree.size() == 0);
         for (uint64_t i = 0; i < key_num * duplicate_count; i++) {
             *fake_buffer = test_data[i].first;
@@ -1183,7 +1202,7 @@ TEST_CASE("b+tree") {
         }
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(std::string_view((char*) data.data, data.size));
+            return block_t::index_t(std::string_view(data.data, data.size));
         };
 
         btree_t tree(&resource, fs, dname, key_getter, 64);
@@ -1191,9 +1210,11 @@ TEST_CASE("b+tree") {
         for (uint64_t i = 0; i < test_count; i++) {
             REQUIRE(tree.size() == i);
             REQUIRE(tree.unique_indices_count() == i);
-            REQUIRE(tree.append({(data_ptr_t) test_data[i].data(), test_data[i].size()}));
+            REQUIRE(tree.append(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())}));
             for (uint64_t j = 0; j <= i; j++) {
-                REQUIRE(tree.contains_index(key_getter({(data_ptr_t) test_data[j].data(), test_data[j].size()})));
+                REQUIRE(tree.contains_index(key_getter(
+                    {static_cast<data_ptr_t>(test_data[j].data()), static_cast<uint32_t>(test_data[j].size())})));
             }
             REQUIRE(tree.size() == i + 1);
             REQUIRE(tree.unique_indices_count() == i + 1);
@@ -1203,7 +1224,8 @@ TEST_CASE("b+tree") {
         tree.load();
 
         for (uint64_t i = 0; i < test_count; i++) {
-            segment_tree_t::index_t index = key_getter({(data_ptr_t) test_data[i].data(), test_data[i].size()});
+            segment_tree_t::index_t index =
+                key_getter({static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())});
             REQUIRE(tree.contains_index(index));
             REQUIRE(tree.remove_index(index));
             REQUIRE_FALSE(tree.contains_index(index));
@@ -1212,9 +1234,11 @@ TEST_CASE("b+tree") {
         tree.load();
 
         for (uint64_t i = 0; i < test_count; i++) {
-            segment_tree_t::index_t index = key_getter({(data_ptr_t) test_data[i].data(), test_data[i].size()});
+            segment_tree_t::index_t index =
+                key_getter({static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())});
             REQUIRE(tree.contains_index(index));
-            REQUIRE(tree.remove({(data_ptr_t) test_data[i].data(), test_data[i].size()}));
+            REQUIRE(tree.remove(
+                {static_cast<data_ptr_t>(test_data[i].data()), static_cast<uint32_t>(test_data[i].size())}));
             REQUIRE_FALSE(tree.contains_index(index));
         }
     }

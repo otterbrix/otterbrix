@@ -2,6 +2,7 @@
 
 #include "path_utils.hpp"
 #include <algorithm>
+#include <cassert>
 #include <limits>
 
 #include <cstdint>
@@ -50,7 +51,7 @@ namespace core::filesystem {
     std::string local_file_system_t::enviroment_variable(const std::string& name) {
         const char* env = getenv(name.c_str());
         if (!env) {
-            return std::string();
+            return {};
         }
         return env;
     }
@@ -167,7 +168,7 @@ namespace core::filesystem {
 
 #endif
 
-    const path_t& local_file_system_t::home_directory() {
+    path_t local_file_system_t::home_directory() {
         if (!home_directory_.empty()) {
             return home_directory_;
         }
@@ -471,7 +472,10 @@ namespace core::filesystem {
         return true;
     }
 
-    bool trim(local_file_system_t&, file_handle_t& handle, uint64_t offset_bytes, uint64_t length_bytes) {
+    bool trim(local_file_system_t&,
+              [[maybe_unused]] file_handle_t& handle,
+              [[maybe_unused]] uint64_t offset_bytes,
+              [[maybe_unused]] uint64_t length_bytes) {
 #if defined(__linux__)
         // FALLOC_FL_PUNCH_HOLE requires glibc 2.18 or up
 #if __GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 18)
@@ -708,7 +712,7 @@ namespace core::filesystem {
         if ((flags & file_flags::APPEND) != file_flags::EMPTY) {
             set_file_pointer(*handle, file_size(*handle));
         }
-        return std::move(handle);
+        return handle;
     }
 
     bool set_file_pointer(local_file_system_t&, file_handle_t& handle, uint64_t location) {

@@ -5,7 +5,7 @@
 using namespace components::expressions;
 using key = components::expressions::key_t;
 
-TEST_CASE("expression::compare::equals") {
+TEST_CASE("components::expression::compare::equals") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr1 = make_compare_expression(&resource,
                                          compare_type::eq,
@@ -48,7 +48,7 @@ TEST_CASE("expression::compare::equals") {
     REQUIRE_FALSE(expression_equal()(expr_union1, expr_union4));
 }
 
-TEST_CASE("expression::compare::to_string") {
+TEST_CASE("components::expression::compare::to_string") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr = make_compare_expression(&resource,
                                         compare_type::eq,

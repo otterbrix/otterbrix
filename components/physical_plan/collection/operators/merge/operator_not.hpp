@@ -4,12 +4,12 @@
 
 namespace components::collection::operators::merge {
 
-    class operator_not_t : public operator_merge_t {
+    class operator_not_t final : public operator_merge_t {
     public:
         explicit operator_not_t(services::collection::context_collection_t* context, logical_plan::limit_t limit);
 
     private:
-        void on_merge_impl(pipeline::context_t* pipeline_context) final;
+        void on_merge_impl(pipeline::context_t* pipeline_context) override;
     };
 
 } // namespace components::collection::operators::merge

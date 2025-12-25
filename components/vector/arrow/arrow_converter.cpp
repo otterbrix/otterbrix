@@ -142,7 +142,8 @@ namespace components::vector::arrow {
             case logical_type::DECIMAL: {
                 auto* decimal_extension = static_cast<types::decimal_logical_type_extension*>(type.extension());
                 uint8_t width = decimal_extension->width(), scale = decimal_extension->scale();
-                std::string format = "d:" + std::to_string(width) + "," + std::to_string(scale);
+                std::string format = "d:" + std::to_string(static_cast<uint32_t>(width)) + "," +
+                                     std::to_string(static_cast<uint32_t>(scale));
                 root_holder.owned_type_names.push_back(add_name(format));
                 child.format = root_holder.owned_type_names.back().get();
                 break;

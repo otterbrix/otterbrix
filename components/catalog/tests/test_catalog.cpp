@@ -9,7 +9,7 @@ using namespace test;
 using namespace components::types;
 using namespace components::catalog;
 
-TEST_CASE("catalog::schema_test") {
+TEST_CASE("components::catalog::schema_test") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
 
@@ -76,7 +76,7 @@ TEST_CASE("catalog::schema_test") {
     }
 }
 
-TEST_CASE("catalog::trie_test") {
+TEST_CASE("components::catalog::trie_test") {
     auto mr = std::pmr::synchronized_pool_resource();
     SECTION("correctness") {
         catalog cat(&mr);
@@ -172,7 +172,7 @@ TEST_CASE("catalog::trie_test") {
     }
 }
 
-TEST_CASE("catalog::compute_schema") {
+TEST_CASE("components::catalog::compute_schema") {
     auto mr = std::pmr::synchronized_pool_resource();
 
     catalog cat(&mr);

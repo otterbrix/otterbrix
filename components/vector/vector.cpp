@@ -482,8 +482,8 @@ namespace components::vector {
                     }
                     assert(auxiliary_->type() == vector_buffer_type::STRING);
                     reinterpret_cast<std::string_view*>(data_)[index] =
-                        std::string_view((char*) static_cast<string_vector_buffer_t*>(auxiliary_.get())
-                                             ->insert(*(val.value<std::string*>())),
+                        std::string_view(reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(auxiliary_.get())
+                                                                     ->insert(*(val.value<std::string*>()))),
                                          val.value<std::string*>()->size());
                 }
                 break;
@@ -768,10 +768,10 @@ namespace components::vector {
         assert(auxiliary_);
         if (type_.type() == types::logical_type::LIST) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
-        } else if (type_.type() == types::logical_type::ARRAY) {
+        } else {
+            assert(type_.type() == types::logical_type::ARRAY);
             return static_cast<array_vector_buffer_t*>(auxiliary_.get())->nested_data();
         }
-        assert(false);
     }
 
     const vector_t& vector_t::entry() const {
@@ -783,10 +783,10 @@ namespace components::vector {
         assert(auxiliary_);
         if (type_.type() == types::logical_type::LIST) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
-        } else if (type_.type() == types::logical_type::ARRAY) {
+        } else {
+            assert(type_.type() == types::logical_type::ARRAY);
             return static_cast<array_vector_buffer_t*>(auxiliary_.get())->nested_data();
         }
-        assert(false);
     }
 
     vector_t& vector_t::child() {
@@ -839,7 +839,7 @@ namespace components::vector {
     static void templated_flatten_constant_vector(std::byte* data, std::byte* old_data, uint64_t count) {
         T constant;
         std::memcpy(&constant, old_data, sizeof(T));
-        auto output = (T*) data;
+        auto output = reinterpret_cast<T*>(data);
         for (uint64_t i = 0; i < count; i++) {
             output[i] = constant;
         }
@@ -1020,7 +1020,7 @@ namespace components::vector {
                 break;
             }
             case vector_type::CONSTANT:
-                format.referenced_indexing = zero_indexing_vector(resource(), count, format.owned_indexing);
+                format.referenced_indexing = zero_indexing_vector(count, format.owned_indexing);
                 format.data = data_;
                 format.validity = validity_;
                 break;

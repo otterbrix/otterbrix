@@ -1,6 +1,6 @@
 #include "physical_value.hpp"
 
-#include <array>
+#include <core/operations_helper.hpp>
 
 template<class T, class U>
 constexpr bool cmp_less(T t, U u) noexcept {
@@ -198,7 +198,7 @@ namespace components::types {
 
     physical_type physical_value::type() const noexcept { return type_; }
 
-    nullptr_t physical_value::value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept {
+    std::nullptr_t physical_value::value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept {
         assert(type_ == physical_type::NA);
         return nullptr;
     }
@@ -210,17 +210,17 @@ namespace components::types {
 
     uint8_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT8>) const noexcept {
         assert(type_ == physical_type::UINT8);
-        return *reinterpret_cast<const uint8_t*>(&data_);
+        return core::bit_cast<uint8_t>(data_);
     }
 
     uint16_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT16>) const noexcept {
         assert(type_ == physical_type::UINT16);
-        return *reinterpret_cast<const uint16_t*>(&data_);
+        return core::bit_cast<uint16_t>(data_);
     }
 
     uint32_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT32>) const noexcept {
         assert(type_ == physical_type::UINT32);
-        return *reinterpret_cast<const uint32_t*>(&data_);
+        return core::bit_cast<uint32_t>(data_);
     }
 
     uint64_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT64>) const noexcept {
@@ -230,38 +230,38 @@ namespace components::types {
 
     int8_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT8>) const noexcept {
         assert(type_ == physical_type::INT8);
-        return *reinterpret_cast<const int8_t*>(&data_);
+        return core::bit_cast<int8_t>(data_);
     }
 
     int16_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT16>) const noexcept {
         assert(type_ == physical_type::INT16);
-        return *reinterpret_cast<const int16_t*>(&data_);
+        return core::bit_cast<int16_t>(data_);
     }
 
     int32_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT32>) const noexcept {
         assert(type_ == physical_type::INT32);
-        return *reinterpret_cast<const int32_t*>(&data_);
+        return core::bit_cast<int32_t>(data_);
     }
 
     int64_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT64>) const noexcept {
         assert(type_ == physical_type::INT64);
-        return *reinterpret_cast<const int64_t*>(&data_);
+        return core::bit_cast<int64_t>(data_);
     }
 
     float physical_value::value_(std::integral_constant<physical_type, physical_type::FLOAT>) const noexcept {
         assert(type_ == physical_type::FLOAT);
-        return *reinterpret_cast<const float*>(&data_);
+        return core::bit_cast<float>(data_);
     }
 
     double physical_value::value_(std::integral_constant<physical_type, physical_type::DOUBLE>) const noexcept {
         assert(type_ == physical_type::DOUBLE);
-        return *reinterpret_cast<const double*>(&data_);
+        return core::bit_cast<double>(data_);
     }
 
     std::string_view
     physical_value::value_(std::integral_constant<physical_type, physical_type::STRING>) const noexcept {
         assert(type_ == physical_type::STRING);
-        return std::string_view(reinterpret_cast<const char*>(data_), size_);
+        return {reinterpret_cast<const char*>(data_), size_};
     }
 
 } // namespace components::types

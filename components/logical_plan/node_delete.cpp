@@ -22,7 +22,7 @@ namespace components::logical_plan {
 
     const collection_full_name_t& node_delete_t::collection_from() const { return collection_from_; }
 
-    node_ptr node_delete_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_delete_ptr node_delete_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         collection_full_name_t collection = deserializer->deserialize_collection(1);
 
         deserializer->advance_array(2);
@@ -34,10 +34,7 @@ namespace components::logical_plan {
         deserializer->pop_array();
         deserializer->pop_array();
 
-        return make_node_delete(deserializer->resource(),
-                                collection,
-                                reinterpret_cast<const node_match_ptr&>(match),
-                                reinterpret_cast<const node_limit_ptr&>(limit));
+        return make_node_delete(deserializer->resource(), collection, match, limit);
     }
 
     hash_t node_delete_t::hash_impl() const { return 0; }

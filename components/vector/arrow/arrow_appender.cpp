@@ -182,6 +182,7 @@ namespace components::vector::arrow {
                         throw std::runtime_error("Unsupported internal decimal type");
                         break;
                 }
+                break;
             }
             case logical_type::STRING_LITERAL:
             case logical_type::BLOB:

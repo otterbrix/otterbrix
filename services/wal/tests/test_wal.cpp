@@ -4,6 +4,7 @@
 
 #include <absl/crc/crc32c.h>
 #include <actor-zeta.hpp>
+#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/log/log.hpp>
 #include <string>
 #include <thread>
@@ -25,7 +26,6 @@ using namespace components::expressions;
 
 constexpr auto database_name = "test_database";
 constexpr auto collection_name = "test_collection";
-constexpr std::size_t count_documents = 5;
 
 void test_insert_one_doc(wal_replicate_t* wal, std::pmr::memory_resource* resource) {
     for (int num = 1; num <= 5; ++num) {
@@ -88,7 +88,7 @@ test_wal create_test_wal(const std::filesystem::path& path, std::pmr::memory_res
     return {path, resource};
 }
 
-TEST_CASE("insert one test") {
+TEST_CASE("services::wal::insert_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_one_doc", &resource);
@@ -156,7 +156,7 @@ TEST_CASE("insert one test") {
     }
 }
 
-TEST_CASE("insert many empty test") {
+TEST_CASE("services::wal::insert_many_empty_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_many_docs_empty", &resource);
@@ -215,7 +215,7 @@ TEST_CASE("insert many empty test") {
     }
 }
 
-TEST_CASE("insert many test") {
+TEST_CASE("services::wal::insert_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/insert_many_docs", &resource);
@@ -301,11 +301,11 @@ TEST_CASE("insert many test") {
             REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
             const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
             int num = 0;
-            for (size_t i = 0; i < chunk.size(); i++) {
+            for (size_t j = 0; j < chunk.size(); j++) {
                 ++num;
-                REQUIRE(chunk.value(0, i).value<int64_t>() == num);
-                REQUIRE(chunk.value(1, i).value<std::string_view>() == gen_id(num, &resource));
-                REQUIRE(chunk.value(2, i).value<std::string_view>() == std::to_string(num));
+                REQUIRE(chunk.value(0, j).value<int64_t>() == num);
+                REQUIRE(chunk.value(1, j).value<std::string_view>() == gen_id(num, &resource));
+                REQUIRE(chunk.value(2, j).value<std::string_view>() == std::to_string(num));
             }
 
             read_index = finish;
@@ -313,7 +313,7 @@ TEST_CASE("insert many test") {
     }
 }
 
-TEST_CASE("delete one test") {
+TEST_CASE("services::wal::delete_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/delete_one", &resource);
 
@@ -352,7 +352,7 @@ TEST_CASE("delete one test") {
     }
 }
 
-TEST_CASE("delete many test") {
+TEST_CASE("services::wal::delete_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/delete_many", &resource);
 
@@ -391,7 +391,7 @@ TEST_CASE("delete many test") {
     }
 }
 
-TEST_CASE("update one test") {
+TEST_CASE("services::wal::update_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/update_one", &resource);
 
@@ -431,20 +431,19 @@ TEST_CASE("update one test") {
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
+        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
             REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
-        REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
-                (num % 2 == 0));
+        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
         index = test_wal.wal->test_next_record(index);
     }
 }
 
-TEST_CASE("update many test") {
+TEST_CASE("services::wal::update_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/update_many", &resource);
 
@@ -484,20 +483,19 @@ TEST_CASE("update many test") {
         REQUIRE(match->value() == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->updates();
+        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
         {
             REQUIRE(updates.front()->type() == update_expr_type::set);
             REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
                     core::parameter_id_t{2});
             REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
         }
-        REQUIRE(reinterpret_cast<const components::logical_plan::node_update_ptr&>(record.data)->upsert() ==
-                (num % 2 == 0));
+        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
         index = test_wal.wal->test_next_record(index);
     }
 }
 
-TEST_CASE("test find start record") {
+TEST_CASE("services::wal::find_start_record") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/find_start_record_docs", &resource);
@@ -521,7 +519,7 @@ TEST_CASE("test find start record") {
     }
 }
 
-TEST_CASE("test read id") {
+TEST_CASE("services::wal::read_id") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/read_id_docs", &resource);
@@ -547,7 +545,7 @@ TEST_CASE("test read id") {
     }
 }
 
-TEST_CASE("test read record") {
+TEST_CASE("services::wal::read_record") {
     auto resource = std::pmr::synchronized_pool_resource();
     SECTION("documents") {
         auto test_wal = create_test_wal("/tmp/wal/read_record_docs", &resource);

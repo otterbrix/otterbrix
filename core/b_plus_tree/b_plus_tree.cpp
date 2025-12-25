@@ -83,8 +83,8 @@ namespace core::b_plus_tree {
         base_node_t** it = std::lower_bound(nodes_, nodes_end_, index, [](base_node_t* n, const index_t& index) {
             return n->min_index() < index;
         });
-        size_t move_count = nodes_end_ - it;
-        size_t pos = it - nodes_;
+        auto move_count = static_cast<size_t>(nodes_end_ - it);
+        auto pos = static_cast<size_t>(it - nodes_);
         std::memmove(nodes_ + pos + 1, nodes_ + pos, move_count * sizeof(base_node_t*));
         *it = node;
 
@@ -111,7 +111,7 @@ namespace core::b_plus_tree {
         base_node_t** it = std::find_if(nodes_, nodes_end_, [&node](base_node_t* n) { return n == node; });
 
         assert(it != nodes_end_ && "node is not present");
-        std::memmove(it, it + 1, (nodes_end_ - it - 1) * sizeof(base_node_t*));
+        std::memmove(it, it + 1, static_cast<size_t>(nodes_end_ - it - 1) * sizeof(base_node_t*));
         nodes_end_--;
         if (node->left_node_) {
             node->left_node_->right_node_ = (node->right_node_) ? node->right_node_ : nullptr;
@@ -135,7 +135,7 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::inner_node_t::balance(base_node_t* neighbour) {
-        assert(left_node_ == neighbour || right_node_ == neighbour && "balance_node requires neighbouring nodes");
+        assert((left_node_ == neighbour || right_node_ == neighbour) && "balance_node requires neighbouring nodes");
         assert(min_index() > neighbour->max_index() || max_index() < neighbour->min_index());
         // easier to check it where it is needed, then to add 2 new cases for it
         assert(count() < neighbour->count());
@@ -157,7 +157,7 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::inner_node_t::merge(base_node_t* neighbour) {
-        assert(left_node_ == neighbour || right_node_ == neighbour && "merge requires neighbouring nodes");
+        assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
         assert(min_index() > neighbour->max_index() || max_index() < neighbour->min_index());
         assert(count() != 0 && neighbour->count() != 0);
 
@@ -180,7 +180,7 @@ namespace core::b_plus_tree {
         nodes_end_ = nodes_ + count;
     }
 
-    size_t btree_t::inner_node_t::count() const { return nodes_end_ - nodes_; }
+    size_t btree_t::inner_node_t::count() const { return static_cast<size_t>(nodes_end_ - nodes_); }
 
     size_t btree_t::inner_node_t::unique_entry_count() const { return count(); }
 
@@ -233,7 +233,7 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::leaf_node_t::balance(base_node_t* neighbour) {
-        assert(left_node_ == neighbour || right_node_ == neighbour && "balance_node requires neighbouring nodes");
+        assert((left_node_ == neighbour || right_node_ == neighbour) && "balance_node requires neighbouring nodes");
         if (unique_entry_count() > neighbour->unique_entry_count()) {
             static_cast<leaf_node_t*>(neighbour)->segment_tree_->balance_with(segment_tree_);
         } else {
@@ -242,7 +242,7 @@ namespace core::b_plus_tree {
     }
 
     void btree_t::leaf_node_t::merge(base_node_t* neighbour) {
-        assert(left_node_ == neighbour || right_node_ == neighbour && "merge requires neighbouring nodes");
+        assert((left_node_ == neighbour || right_node_ == neighbour) && "merge requires neighbouring nodes");
         segment_tree_->merge(static_cast<leaf_node_t*>(neighbour)->segment_tree_);
     }
 
@@ -274,8 +274,8 @@ namespace core::b_plus_tree {
                      size_t max_node_capacity)
         : fs_(fs)
         , resource_(resource)
-        , storage_directory_(storage_directory)
         , key_func_(func)
+        , storage_directory_(storage_directory)
         , min_node_capacity_(max_node_capacity / 4)
         , merge_share_boundary_(max_node_capacity / 2)
         , max_node_capacity_(max_node_capacity) {
@@ -289,7 +289,7 @@ namespace core::b_plus_tree {
         }
     }
 
-    bool btree_t::append(data_ptr_t data, size_t size) { return append(item_data{data, size}); }
+    bool btree_t::append(data_ptr_t data, uint32_t size) { return append(item_data{data, size}); }
 
     bool btree_t::append(item_data item) {
         tree_mutex_.lock(); // needed for root check
@@ -430,7 +430,7 @@ namespace core::b_plus_tree {
         return result;
     }
 
-    bool btree_t::remove(data_ptr_t data, size_t size) { return remove(item_data{data, size}); }
+    bool btree_t::remove(data_ptr_t data, uint32_t size) { return remove(item_data{data, size}); }
 
     bool btree_t::remove(item_data item) {
         index_t index = key_func_(item);
@@ -496,7 +496,7 @@ namespace core::b_plus_tree {
             // merge puts node further from lower and upper rebalancing point, so it is preferable
             // TODO: do some test to check if it is the right approach or "first share then merge" approach will be faster
 
-            assert(current_node->left_node_ || current_node->right_node_ && "not a root node has no neighbours");
+            assert((current_node->left_node_ || current_node->right_node_) && "not a root node has no neighbours");
             // guaranteed that at least one neighbour exist
 
             result = static_cast<leaf_node_t*>(current_node)->remove(index, item);
@@ -642,7 +642,7 @@ namespace core::b_plus_tree {
             // merge puts node further from lower and upper rebalancing point, so it is preferable
             // TODO: do some test to check if it is the right approach or "first share then merge" approach will be faster
 
-            assert(current_node->left_node_ || current_node->right_node_ && "not a root node has no neighbours");
+            assert((current_node->left_node_ || current_node->right_node_) && "not a root node has no neighbours");
             // guaranteed that at least one neighbour exist
 
             result = static_cast<leaf_node_t*>(current_node)->remove_index(index);
@@ -764,14 +764,12 @@ namespace core::b_plus_tree {
         *(buffer + 1) = leaf_nodes_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
 
-        size_t i = 0;
         // save each segment tree
         while (node) {
             node->flush();
             *buffer_writer = node->segment_tree_id();
             buffer_writer++;
             node = static_cast<leaf_node_t*>(node->right_node_);
-            i++;
         }
         std::unique_ptr<core::filesystem::file_handle_t> file =
             open_file(fs_, file_name, file_flags::WRITE | file_flags::FILE_CREATE);

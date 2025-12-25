@@ -1,3 +1,4 @@
+#include <components/expressions/function_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>

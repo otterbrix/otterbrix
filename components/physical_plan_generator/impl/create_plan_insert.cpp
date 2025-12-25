@@ -33,7 +33,6 @@ namespace services::table::planner::impl {
     components::base::operators::operator_ptr create_plan_insert(const context_storage_t& context,
                                                                  const components::logical_plan::node_ptr& node,
                                                                  components::logical_plan::limit_t limit) {
-        const auto* insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
         // TODO: figure out key translation
         auto plan = boost::intrusive_ptr(
             //new components::table::operators::operator_insert(context.at(node->collection_full_name()),

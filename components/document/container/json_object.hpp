@@ -4,6 +4,7 @@
 #include <string>
 
 #include <absl/container/flat_hash_map.h>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <components/document/base.hpp>
 
 namespace components::document::json {

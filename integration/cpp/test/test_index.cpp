@@ -124,7 +124,7 @@ constexpr int kDocuments = 100;
         REQUIRE(std::filesystem::is_directory(path) == EXISTS);                                                        \
     } while (false)
 
-TEST_CASE("integration::test_index::base") {
+TEST_CASE("integration::cpp::test_index::base") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
     test_clear_directory(config);
     test_spaces space(config);
@@ -165,7 +165,7 @@ TEST_CASE("integration::test_index::base") {
     }
 }
 
-TEST_CASE("integration::test_index::save_load") {
+TEST_CASE("integration::cpp::test_index::save_load") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/save_load");
     test_clear_directory(config);
 
@@ -195,7 +195,7 @@ TEST_CASE("integration::test_index::save_load") {
     }
 }
 
-TEST_CASE("integration::test_index::drop") {
+TEST_CASE("integration::cpp::test_index::drop") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/drop");
     test_clear_directory(config);
     test_spaces space(config);
@@ -245,7 +245,7 @@ TEST_CASE("integration::test_index::drop") {
     }
 }
 
-TEST_CASE("integration::test_index::index already exist") {
+TEST_CASE("integration::cpp::test_index::index already exist") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
     test_clear_directory(config);
     test_spaces space(config);
@@ -282,7 +282,7 @@ TEST_CASE("integration::test_index::index already exist") {
     }
 }
 
-TEST_CASE("integration::test_index::no_type base check") {
+TEST_CASE("integration::cpp::test_index::no_type base check") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
     test_clear_directory(config);
     test_spaces space(config);
@@ -312,7 +312,7 @@ TEST_CASE("integration::test_index::no_type base check") {
     }
 }
 
-TEST_CASE("integration::test_index::no_type save_load") {
+TEST_CASE("integration::cpp::test_index::no_type save_load") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/save_load");
     test_clear_directory(config);
 

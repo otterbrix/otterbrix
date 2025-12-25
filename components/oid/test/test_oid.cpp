@@ -15,7 +15,7 @@ struct test_id12_size {
     static constexpr uint size_increment = 3;
 };
 
-TEST_CASE("oid::is_valid") {
+TEST_CASE("components::oid::is_valid") {
     using oid8_t = oid_t<test_id8_size>;
     REQUIRE(oid8_t::is_valid("0123456789abcdef"));
     REQUIRE_FALSE(oid8_t::is_valid("0123456789abcde"));
@@ -23,7 +23,7 @@ TEST_CASE("oid::is_valid") {
     REQUIRE_FALSE(oid8_t::is_valid("0123456789abcdeg"));
 }
 
-TEST_CASE("oid::initialization") {
+TEST_CASE("components::oid::initialization") {
     using oid8_t = oid_t<test_id8_size>;
     REQUIRE(oid8_t("0123456789abcdef").to_string() == "0123456789abcdef");
     REQUIRE(oid8_t("0123456789abcde").to_string() == "0000000000000000");
@@ -31,7 +31,7 @@ TEST_CASE("oid::initialization") {
     REQUIRE(oid8_t::max().to_string() == "ffffffffffffffff");
 }
 
-TEST_CASE("oid::operators") {
+TEST_CASE("components::oid::operators") {
     using oid8_t = oid_t<test_id8_size>;
     REQUIRE(oid8_t("0000000000000000") == oid8_t::null());
     REQUIRE(oid8_t::null() < oid8_t("0000000000000001"));
@@ -39,7 +39,7 @@ TEST_CASE("oid::operators") {
     REQUIRE(oid8_t("ffffffffffffffff") == oid8_t::max());
 }
 
-TEST_CASE("oid::generate by time") {
+TEST_CASE("components::oid::generate by time") {
     using oid12_t = oid_t<test_id12_size>;
     REQUIRE(oid12_t(0x1).get_timestamp() == 0x1);
     REQUIRE(oid12_t(0xffff).get_timestamp() == 0xffff);
@@ -49,7 +49,7 @@ TEST_CASE("oid::generate by time") {
 
 #ifdef EXAMPLE_OID_GENERATE
 #include <iostream>
-TEST_CASE("oid::generate") {
+TEST_CASE("components::oid::generate") {
     using oid12_t = oid_t<test_id12_size>;
     for (uint i = 0; i < 10; ++i) {
         std::cerr << "~~~ GENERATING N" << i + 1 << " ~~~" << std::endl;
@@ -95,7 +95,7 @@ namespace ns4 {
     };
     using oid12_t = oid_t<test_id_size>;
 } // namespace ns4
-TEST_CASE("oid::generate") {
+TEST_CASE("components::oid::generate") {
     std::cerr << ns1::oid12_t() << std::endl;
     usleep(1000000);
     std::cerr << ns2::oid12_t() << std::endl;

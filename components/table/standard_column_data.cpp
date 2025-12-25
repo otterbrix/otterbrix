@@ -5,13 +5,13 @@ namespace components::table {
     standard_column_data_t::standard_column_data_t(std::pmr::memory_resource* resource,
                                                    storage::block_manager_t& block_manager,
                                                    uint64_t column_index,
-                                                   uint64_t start_row,
+                                                   int64_t start_row,
                                                    types::complex_logical_type type,
                                                    column_data_t* parent)
         : column_data_t(resource, block_manager, column_index, start_row, std::move(type), parent)
         , validity(resource, block_manager, 0, start_row, *this) {}
 
-    void standard_column_data_t::set_start(uint64_t new_start) {
+    void standard_column_data_t::set_start(int64_t new_start) {
         column_data_t::set_start(new_start);
         validity.set_start(new_start);
     }
@@ -36,7 +36,7 @@ namespace components::table {
         validity.initialize_scan(state.child_states[0]);
     }
 
-    void standard_column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
+    void standard_column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         column_data_t::initialize_scan_with_offset(state, row_idx);
 
         assert(state.child_states.size() == 1);

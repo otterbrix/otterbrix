@@ -7,7 +7,7 @@
 #include <core/file/local_file_system.hpp>
 #include <filesystem>
 
-TEST_CASE("column") {
+TEST_CASE("components::table::column") {
     using namespace components::types;
     using namespace components::vector;
     using namespace components::table;
@@ -37,12 +37,12 @@ TEST_CASE("column") {
         vector_t v(std::pmr::get_default_resource(), column->type(), update_size);
         column_fetch_state state;
         for (size_t i = 0; i < update_size; i++) {
-            column->fetch_row(state, i, v, update_size - i - 1);
+            column->fetch_row(state, static_cast<int64_t>(i), v, update_size - i - 1);
         }
         return v;
     };
 
-    auto generate_string = [str_index_length](size_t i) {
+    auto generate_string = [](size_t i) {
         auto number = std::to_string(i);
         while (number.size() < str_index_length) {
             number.insert(number.begin(), '0');
@@ -81,7 +81,7 @@ TEST_CASE("column") {
             vector_t v(std::pmr::get_default_resource(), logical_type::UBIGINT, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -160,7 +160,7 @@ TEST_CASE("column") {
             vector_t v(std::pmr::get_default_resource(), logical_type::STRING_LITERAL, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -252,7 +252,7 @@ TEST_CASE("column") {
                        test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -358,7 +358,7 @@ TEST_CASE("column") {
                        test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -468,7 +468,7 @@ TEST_CASE("column") {
                        test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -574,7 +574,7 @@ TEST_CASE("column") {
                        test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -657,7 +657,7 @@ TEST_CASE("column") {
             for (size_t j = 0; j < i; j++) {
                 arr.emplace_back(j);
             }
-            test_data.emplace_back((bool) (i % 2), i, std::move(s), std::move(arr));
+            test_data.emplace_back(i % 2 != 0, i, std::move(s), std::move(arr));
         }
 
         core::filesystem::local_file_system_t fs;
@@ -678,7 +678,7 @@ TEST_CASE("column") {
                     arr.emplace_back(uint16_t(j));
                 }
                 std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(logical_value_t{(bool) (i % 2)});
+                value_fiels.emplace_back(logical_value_t{i % 2 != 0});
                 value_fiels.emplace_back(logical_value_t{int32_t(i)});
                 value_fiels.emplace_back(logical_value_t{generate_string(i)});
                 value_fiels.emplace_back(logical_value_t::create_list(logical_type::USMALLINT, arr));
@@ -695,7 +695,7 @@ TEST_CASE("column") {
             vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
-                column->fetch_row(state, i, v, i);
+                column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value = v.value(i);
@@ -717,7 +717,7 @@ TEST_CASE("column") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
         }
@@ -757,7 +757,7 @@ TEST_CASE("column") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
         }
@@ -809,7 +809,7 @@ TEST_CASE("column") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[inverse].array.size());
                 for(size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[inverse].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[inverse].array[j]);
                 }
             }
             for(size_t i = update_size; i < test_size; i++) {
@@ -832,7 +832,7 @@ TEST_CASE("column") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for(size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
         }

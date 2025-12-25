@@ -9,7 +9,7 @@ namespace components::expressions {
     class aggregate_expression_t;
     using aggregate_expression_ptr = boost::intrusive_ptr<aggregate_expression_t>;
 
-    class aggregate_expression_t : public expression_i {
+    class aggregate_expression_t final : public expression_i {
     public:
         aggregate_expression_t(const aggregate_expression_t&) = delete;
         aggregate_expression_t(aggregate_expression_t&&) noexcept = default;
@@ -29,10 +29,10 @@ namespace components::expressions {
         key_t key_;
         std::pmr::vector<param_storage> params_;
 
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        bool equal_impl(const expression_i* rhs) const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        bool equal_impl(const expression_i* rhs) const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     aggregate_expression_ptr

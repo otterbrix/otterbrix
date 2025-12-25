@@ -14,7 +14,7 @@ namespace components::logical_plan {
         : node_t(resource, node_type::create_collection_t, collection)
         , schema_(std::move(schema)) {}
 
-    node_ptr node_create_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_create_collection_ptr node_create_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return make_node_create_collection(deserializer->resource(), deserializer->deserialize_collection(1));
     }
 

@@ -1,10 +1,8 @@
 #pragma once
 #include <components/physical_plan/base/operators/operator.hpp>
-#include <memory>
 
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
-#include <string>
 
 namespace components::base::operators {
 
@@ -14,7 +12,7 @@ namespace components::base::operators {
                             logical_plan::node_drop_index_ptr node);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         logical_plan::node_drop_index_ptr node_;
     };

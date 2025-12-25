@@ -16,7 +16,7 @@ namespace components::table::operators {
                   logical_plan::limit_t limit);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;

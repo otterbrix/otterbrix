@@ -8,7 +8,7 @@ namespace components::table {
         validity_column_data_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                uint64_t column_index,
-                               uint64_t start_row,
+                               int64_t start_row,
                                column_data_t& parent);
 
         filter_propagate_result_t check_zonemap(column_scan_state& state, table_filter_t& filter) override;

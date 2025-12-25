@@ -44,7 +44,7 @@ namespace components::table {
         }
 
         assert(removed_column < column_definitions_.size());
-        column_definitions_.erase(column_definitions_.begin() + removed_column);
+        column_definitions_.erase(column_definitions_.begin() + static_cast<int64_t>(removed_column));
 
         uint64_t storage_idx = 0;
         for (uint64_t i = 0; i < column_definitions_.size(); i++) {
@@ -61,7 +61,7 @@ namespace components::table {
     data_table_t::data_table_t(data_table_t& parent,
                                uint64_t changed_idx,
                                const types::complex_logical_type& target_type,
-                               const std::vector<storage_index_t>& bound_columns)
+                               const std::vector<storage_index_t>&)
         : resource_(parent.resource_)
         , is_root_(true) {
         std::lock_guard lock(append_lock_);
@@ -70,9 +70,6 @@ namespace components::table {
         }
 
         column_definitions_[changed_idx].type() = target_type;
-
-        // TODO: type casting
-        // this->row_groups_ = parent.row_groups_->alter_type(resource_, changed_idx, target_type, bound_columns);
 
         parent.is_root_ = false;
     }
@@ -97,8 +94,8 @@ namespace components::table {
 
     void data_table_t::initialize_scan_with_offset(table_scan_state& state,
                                                    const std::vector<storage_index_t>& column_ids,
-                                                   uint64_t start_row,
-                                                   uint64_t end_row) {
+                                                   int64_t start_row,
+                                                   int64_t end_row) {
         state.initialize(column_ids);
         row_groups_->initialize_scan_with_offset(state.table_state, column_ids, start_row, end_row);
     }
@@ -155,13 +152,13 @@ namespace components::table {
 
     void data_table_t::finalize_append(table_append_state& state) { row_groups_->finalize_append(state); }
 
-    void data_table_t::scan_table_segment(uint64_t row_start,
+    void data_table_t::scan_table_segment(int64_t row_start,
                                           uint64_t count,
                                           const std::function<void(vector::data_chunk_t& chunk)>& function) {
         if (count == 0) {
             return;
         }
-        uint64_t end = row_start + count;
+        int64_t end = row_start + static_cast<int64_t>(count);
 
         std::vector<storage_index_t> column_ids;
         std::pmr::vector<types::complex_logical_type> types(resource_);
@@ -174,28 +171,28 @@ namespace components::table {
 
         create_index_scan_state state(resource_);
 
-        initialize_scan_with_offset(state, column_ids, row_start, row_start + count);
-        auto row_start_aligned =
-            state.table_state.row_group->start + state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        initialize_scan_with_offset(state, column_ids, row_start, row_start + static_cast<int64_t>(count));
+        auto row_start_aligned = state.table_state.row_group->start +
+                                 static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
 
-        uint64_t current_row = row_start_aligned;
+        int64_t current_row = row_start_aligned;
         while (current_row < end) {
             state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS);
             if (chunk.size() == 0) {
                 break;
             }
-            uint64_t end_row = current_row + chunk.size();
-            uint64_t chunk_start = std::max<uint64_t>(current_row, row_start);
-            uint64_t chunk_end = std::min<uint64_t>(end_row, end);
+            int64_t end_row = current_row + static_cast<int64_t>(chunk.size());
+            int64_t chunk_start = std::max(current_row, row_start);
+            int64_t chunk_end = std::min(end_row, end);
             assert(chunk_start < chunk_end);
-            uint64_t chunk_count = chunk_end - chunk_start;
+            uint64_t chunk_count = static_cast<uint64_t>(chunk_end - chunk_start);
             if (chunk_count != chunk.size()) {
                 assert(chunk_count <= chunk.size());
                 uint64_t start_in_chunk;
                 if (current_row >= row_start) {
                     start_in_chunk = 0;
                 } else {
-                    start_in_chunk = row_start - current_row;
+                    start_in_chunk = static_cast<uint64_t>(row_start - current_row);
                 }
                 vector::indexing_vector_t indexing(resource_, start_in_chunk, chunk_count);
                 chunk.slice(indexing, chunk_count);
@@ -222,7 +219,7 @@ namespace components::table {
         return result;
     }
 
-    uint64_t data_table_t::delete_rows(table_delete_state& state, vector::vector_t& row_identifiers, uint64_t count) {
+    uint64_t data_table_t::delete_rows(table_delete_state&, vector::vector_t& row_identifiers, uint64_t count) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return 0;
@@ -235,9 +232,9 @@ namespace components::table {
         uint64_t delete_count = 0;
         while (pos < count) {
             uint64_t start = pos;
-            bool is_transaction_delete = ids[pos] >= MAX_ROW_ID;
+            bool is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
             for (pos++; pos < count; pos++) {
-                bool row_is_transaction_delete = ids[pos] >= MAX_ROW_ID;
+                bool row_is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
                 if (row_is_transaction_delete != is_transaction_delete) {
                     break;
                 }
@@ -258,13 +255,13 @@ namespace components::table {
         return result;
     }
 
-    void data_table_t::update(table_update_state& state,
+    void data_table_t::update(table_update_state&,
                               vector::vector_t& row_ids,
                               // const std::vector<uint64_t>& column_ids,
                               vector::data_chunk_t& data) {
         assert(row_ids.type().to_physical_type() == types::physical_type::INT64);
 
-        auto count = data.size();
+        uint64_t count = data.size();
         if (count == 0) {
             return;
         }

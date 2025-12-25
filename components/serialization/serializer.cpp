@@ -33,7 +33,7 @@ namespace components::serializer {
         end_array();
     }
 
-    void msgpack_serializer_t::start_array(size_t size) { packer_.pack_array(size); }
+    void msgpack_serializer_t::start_array(size_t size) { packer_.pack_array(static_cast<uint32_t>(size)); }
 
     void msgpack_serializer_t::end_array() {
         // nothing to do here

@@ -1,8 +1,11 @@
 #pragma once
 
 #include "local_file_system.hpp"
+
+#include <functional>
 #include <map>
 #include <unordered_set>
+#include <vector>
 
 namespace core::filesystem {
 
@@ -23,7 +26,7 @@ namespace core::filesystem {
         std::vector<std::string> list_sub_system();
         local_file_system_t& find_file_system(const path_t& path);
         local_file_system_t& default_file_system() { return *(default_fs_.get()); }
-        std::string path_separator(const path_t& path);
+        // std::string path_separator(const path_t& path);
 
     private:
         local_file_system_t& find_file_system_(const path_t& path);
@@ -37,8 +40,6 @@ namespace core::filesystem {
     std::unique_ptr<file_handle_t> open_file(virtual_file_system_t&, const path_t& path, file_flags flags);
     bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
-    bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
-    int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     int64_t file_size(virtual_file_system_t&, file_handle_t& handle);
     time_t last_modified_time(virtual_file_system_t&, file_handle_t& handle);
     file_type_t file_type(virtual_file_system_t&, file_handle_t& handle);
@@ -47,7 +48,9 @@ namespace core::filesystem {
     bool directory_exists(virtual_file_system_t&, const path_t& directory);
     bool create_directory(virtual_file_system_t&, const path_t& directory);
     bool remove_directory(virtual_file_system_t&, const path_t& directory);
-    bool list_files(virtual_file_system_t&, path_t directory, const std::function<void(const path_t&, bool)>& callback);
+    bool list_files(virtual_file_system_t&,
+                    const path_t& directory,
+                    const std::function<void(const path_t&, bool)>& callback);
     bool move_files(virtual_file_system_t&, const path_t& source, const path_t& target);
     bool file_exists(virtual_file_system_t&, const path_t& filename);
     bool is_pipe(virtual_file_system_t&, const path_t& filename);

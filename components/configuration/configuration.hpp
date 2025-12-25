@@ -2,7 +2,6 @@
 
 #include <components/log/log.hpp>
 #include <filesystem>
-#include <mutex>
 
 namespace configuration {
 
@@ -44,8 +43,8 @@ namespace configuration {
     };
 
     inline config::config(const std::filesystem::path& path)
-        : disk(path)
-        , log(path)
+        : log(path)
         , wal(path)
+        , disk(path)
         , main_path(path) {}
 } // namespace configuration

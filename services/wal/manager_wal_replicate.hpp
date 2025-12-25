@@ -8,7 +8,6 @@
 #include <components/configuration/configuration.hpp>
 #include <components/session/session.hpp>
 #include <core/excutor.hpp>
-#include <core/handler_by_id.hpp>
 #include <core/spinlock/spinlock.hpp>
 
 #include "base.hpp"
@@ -40,11 +39,11 @@ namespace services::wal {
                                 actor_zeta::scheduler_raw,
                                 configuration::config_wal,
                                 log_t&);
-        ~manager_wal_replicate_t() final;
+        ~manager_wal_replicate_t() override;
 
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         void create_wal_worker();
         void load(const session_id_t& session, services::wal::id_t wal_id);
@@ -69,10 +68,12 @@ namespace services::wal {
         void create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr data);
 
     private:
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override;
 
-        // Behaviors
         actor_zeta::scheduler_raw e_;
+        configuration::config_wal config_;
+        log_t log_;
+        // Behaviors
         actor_zeta::behavior_t create_;
         actor_zeta::behavior_t load_;
         actor_zeta::behavior_t create_database_;
@@ -90,8 +91,6 @@ namespace services::wal {
 
         actor_zeta::address_t manager_disk_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t manager_dispatcher_ = actor_zeta::address_t::empty_address();
-        configuration::config_wal config_;
-        log_t log_;
         std::unordered_map<std::string, actor_zeta::address_t> dispatcher_to_address_book_;
         std::vector<wal_replicate_ptr> dispatchers_;
         spin_lock lock_;
@@ -107,13 +106,13 @@ namespace services::wal {
         manager_wal_replicate_empty_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t&);
         actor_zeta::behavior_t behavior();
         auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
     private:
         log_t log_;
         actor_zeta::behavior_t always_success_;
 
-        auto enqueue_impl(actor_zeta::message_ptr, actor_zeta::execution_unit*) -> void final;
+        auto enqueue_impl(actor_zeta::message_ptr, actor_zeta::execution_unit*) -> void override;
         actor_zeta::scheduler_raw e_;
         spin_lock lock_;
 

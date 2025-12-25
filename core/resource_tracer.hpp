@@ -1,8 +1,10 @@
+#pragma once
+
 #include <iostream>
 #include <memory_resource>
 #include <unordered_map>
 
-static inline size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
+static size_t align_to(size_t size, size_t align) { return (size + (align - 1)) / align * align; }
 
 template<class memory_pool_t>
 class memory_tracer_t : public memory_pool_t {
@@ -26,7 +28,7 @@ protected:
     std::unordered_map<uint64_t, uint64_t> addresses_;
 
     void* do_allocate(size_t bytes, size_t alignment) override {
-        void* ptr = memory_pool_t::do_allocate(bytes, alignment);
+        std::byte* ptr = memory_pool_t::do_allocate(bytes, alignment);
         size_t with_alignment = align_to(bytes, alignment);
         auto it = addresses_.find(reinterpret_cast<uint64_t>(ptr));
         if (it == addresses_.end()) {

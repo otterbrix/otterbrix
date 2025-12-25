@@ -10,7 +10,7 @@ namespace otterbrix {
     components::cursor::cursor_t_ptr connection_t::execute(const std::string& query) {
         assert(instance_);
         auto session = session_id_t();
-        cursor_store_ = std::move(instance_->dispatcher()->execute_sql(session, query));
+        cursor_store_ = instance_->dispatcher()->execute_sql(session, query);
         return cursor_store_;
     }
 

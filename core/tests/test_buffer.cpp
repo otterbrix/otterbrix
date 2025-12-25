@@ -19,8 +19,8 @@ std::size_t gen_size() {
 void sequence(core::buffer& buffer) {
     auto* ptr = static_cast<char*>(buffer.data());
     auto size = buffer.size();
-    for (int i = 0; i < size; ++i) {
-        ptr[i] = i;
+    for (size_t i = 0; i < size; ++i) {
+        ptr[i] = static_cast<char>(i % std::numeric_limits<char>::max());
     }
 }
 
@@ -38,25 +38,25 @@ bool equal(core::buffer& buffer1, core::buffer& buffer2) {
     return result;
 }
 
-TEST_CASE("empty buffer") {
+TEST_CASE("core::tests::empty_buffer") {
     auto mr = std::pmr::synchronized_pool_resource();
     core::buffer buff(&mr, 0);
     REQUIRE(buff.is_empty());
 }
 
-TEST_CASE("memory resource") {
+TEST_CASE("core::tests::memory_resource") {
     auto mr = std::pmr::synchronized_pool_resource();
     const auto size = gen_size();
     core::buffer buff(&mr, size);
     REQUIRE(nullptr != buff.data());
     REQUIRE(size == buff.size());
-    REQUIRE(size == buff.ssize());
+    REQUIRE(static_cast<int64_t>(size) == buff.ssize());
     REQUIRE(size == buff.capacity());
     REQUIRE(&mr == buff.memory_resource());
     REQUIRE(mr.is_equal(*buff.memory_resource()));
 }
 
-TEST_CASE("copy from raw pointer") {
+TEST_CASE("core::tests::copy_from_raw_pointer") {
     auto mr = std::pmr::synchronized_pool_resource();
     auto size = gen_size();
     void* device_memory = malloc(size);
@@ -69,7 +69,7 @@ TEST_CASE("copy from raw pointer") {
     free(device_memory);
 }
 
-TEST_CASE("copy from nullptr") {
+TEST_CASE("core::tests::copy_from_nullptr") {
     auto mr = std::pmr::synchronized_pool_resource();
     core::buffer buff(&mr, nullptr, 0);
     REQUIRE(nullptr == buff.data());
@@ -78,9 +78,9 @@ TEST_CASE("copy from nullptr") {
     REQUIRE(&mr == buff.memory_resource());
 }
 
-TEST_CASE("copy constructor") {
+TEST_CASE("core::tests::copy_constructor") {
     auto mr = std::pmr::synchronized_pool_resource();
-    const auto size = 200;
+    const size_t size = 200;
     core::buffer buff(&mr, size);
 
     sequence(buff);
@@ -102,9 +102,9 @@ TEST_CASE("copy constructor") {
     REQUIRE(equal(buff, buff_copy));
 }
 
-TEST_CASE("copy capacity larger than size") {
+TEST_CASE("core::tests::copy_capacity_larger_than_size") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
     auto new_size = size - 1;
     buff.resize(new_size);
@@ -121,9 +121,9 @@ TEST_CASE("copy capacity larger than size") {
     REQUIRE(equal(buff, buff_copy));
 }
 
-TEST_CASE("copy constructor explicit memory resource") {
+TEST_CASE("core::tests::copy_constructor_explicit_memory_resource") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
 
     sequence(buff);
@@ -138,9 +138,9 @@ TEST_CASE("copy constructor explicit memory resource") {
     REQUIRE(equal(buff, buff_copy));
 }
 
-TEST_CASE("copy capacity larger than size explicit memory resource") {
+TEST_CASE("core::tests::copy_capacity_larger_than_size_explicit_memory_resource") {
     auto mr = std::pmr::synchronized_pool_resource();
-    auto size = 200;
+    size_t size = 200;
     core::buffer buff(&mr, size);
 
     auto new_size = size - 1;
@@ -161,7 +161,7 @@ TEST_CASE("copy capacity larger than size explicit memory resource") {
     REQUIRE(equal(buff, buff_copy));
 }
 
-TEST_CASE("move constructor") {
+TEST_CASE("core::tests::move_constructor") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -184,7 +184,7 @@ TEST_CASE("move constructor") {
     REQUIRE(nullptr != buff.memory_resource());
 }
 
-TEST_CASE("move assignment to default") {
+TEST_CASE("core::tests::move_assignment_to_default") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -209,7 +209,7 @@ TEST_CASE("move assignment to default") {
     REQUIRE(nullptr != src.memory_resource());
 }
 
-TEST_CASE("move assignment") {
+TEST_CASE("core::tests::move_assignment") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -234,7 +234,7 @@ TEST_CASE("move assignment") {
     REQUIRE(nullptr != src.memory_resource());
 }
 
-TEST_CASE("self move assignment") {
+TEST_CASE("core::tests::self_move_assignment") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -244,7 +244,22 @@ TEST_CASE("self move assignment") {
     auto capacity = buff.capacity();
     auto* mr = buff.memory_resource();
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-move"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpessimizing-move"
+#endif
+
     buff = std::move(buff);
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
     REQUIRE(nullptr != buff.data());
     REQUIRE(ptr == buff.data());
     REQUIRE(size == buff.size());
@@ -252,9 +267,9 @@ TEST_CASE("self move assignment") {
     REQUIRE(mr == buff.memory_resource());
 }
 
-TEST_CASE("resize smaller") {
+TEST_CASE("core::tests::resize_smaller") {
     auto mr = std::pmr::synchronized_pool_resource();
-    const auto size = 200;
+    const size_t size = 200;
 
     core::buffer buff(&mr, size);
 
@@ -278,7 +293,7 @@ TEST_CASE("resize smaller") {
     REQUIRE(equal(buff, old_content));
 }
 
-TEST_CASE("resize bigger") {
+TEST_CASE("core::tests::resize bigger") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -291,7 +306,7 @@ TEST_CASE("resize bigger") {
     REQUIRE(old_data != buff.data());
 }
 
-TEST_CASE("reserve smaller") {
+TEST_CASE("core::tests::reserve smaller") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 
@@ -305,7 +320,7 @@ TEST_CASE("reserve smaller") {
     REQUIRE(old_data == buff.data());
 }
 
-TEST_CASE("reserve bigger") {
+TEST_CASE("core::tests::reserve bigger") {
     auto mr_tmp = std::pmr::synchronized_pool_resource();
     const auto size_tmp = gen_size();
 

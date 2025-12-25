@@ -18,7 +18,7 @@ namespace components::collection::operators {
         const predicates::predicate_ptr predicate_;
         const logical_plan::limit_t limit_;
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };
 
 } // namespace components::collection::operators

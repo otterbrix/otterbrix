@@ -1,8 +1,6 @@
 #pragma once
 
-#include <cassert>
 #include <cstdint>
-#include <optional>
 #include <string>
 
 namespace components::catalog {

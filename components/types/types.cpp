@@ -6,6 +6,8 @@
 
 namespace components::types {
 
+    static const complex_logical_type INVALID_TYPE = complex_logical_type{logical_type::INVALID};
+
     complex_logical_type::complex_logical_type(logical_type type, std::string alias)
         : type_(type) {
         if (!alias.empty()) {
@@ -176,7 +178,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                break;
+                return 0; // no own payload
         }
     }
 
@@ -223,7 +225,7 @@ namespace components::types {
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
-                break;
+                return 0; // no own payload
         }
     }
 
@@ -310,7 +312,8 @@ namespace components::types {
         } else if (type_ == logical_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        return "";
+        static std::string null_str = "";
+        return null_str;
     }
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {
@@ -340,7 +343,7 @@ namespace components::types {
             return static_cast<list_logical_type_extension*>(extension_.get())->node();
         }
 
-        return logical_type::INVALID;
+        return INVALID_TYPE;
     }
 
     std::vector<complex_logical_type>& complex_logical_type::child_types() {

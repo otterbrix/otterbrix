@@ -7,7 +7,7 @@
 namespace components::catalog {
     class catalog : public std::enable_shared_from_this<catalog> {
     public:
-        catalog(std::pmr::memory_resource* resource);
+        explicit catalog(std::pmr::memory_resource* resource);
 
         catalog(const catalog&) = delete;
         catalog(catalog&&) = delete;

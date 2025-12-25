@@ -29,7 +29,7 @@ namespace components::logical_plan {
 
     const collection_full_name_t& node_update_t::collection_from() const { return collection_from_; }
 
-    node_ptr node_update_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_update_ptr node_update_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection_to = deserializer->deserialize_collection(1);
         auto collection_from = deserializer->deserialize_collection(2);
 
@@ -55,8 +55,8 @@ namespace components::logical_plan {
         return make_node_update(deserializer->resource(),
                                 collection_to,
                                 collection_from,
-                                reinterpret_cast<const node_match_ptr&>(match),
-                                reinterpret_cast<const node_limit_ptr&>(limit),
+                                match,
+                                limit,
                                 updates,
                                 upsert);
     }

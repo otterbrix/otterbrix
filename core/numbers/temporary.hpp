@@ -2,8 +2,6 @@
 
 #include <dataframe/types.hpp>
 
-#include <climits>
-
 #include <absl/numeric/int128.h>
 #include <algorithm>
 #include <limits>

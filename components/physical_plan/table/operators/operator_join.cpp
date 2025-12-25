@@ -97,7 +97,7 @@ namespace components::table::operators {
         }
     }
 
-    void operator_join_t::inner_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
+    void operator_join_t::inner_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -138,7 +138,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_full_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
+    void operator_join_t::outer_full_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -198,7 +198,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_left_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
+    void operator_join_t::outer_left_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -246,7 +246,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_right_join_(predicates::predicate_ptr predicate, pipeline::context_t* context) {
+    void operator_join_t::outer_right_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -294,7 +294,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::cross_join_(predicates::predicate_ptr, pipeline::context_t* context) {
+    void operator_join_t::cross_join_(predicates::predicate_ptr, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();

@@ -1,10 +1,12 @@
+#include "core/operations_helper.hpp"
+
 #include <catch2/catch.hpp>
 
 #include <components/types/physical_value.hpp>
 
 using namespace components::types;
 
-TEST_CASE("physical_value") {
+TEST_CASE("components::types::physical_value") {
     std::vector<physical_value> values;
     std::string_view str1 = "test string";
     std::string_view str2 = "bigger test string but shouldn't be; b < t";
@@ -39,8 +41,8 @@ TEST_CASE("physical_value") {
         REQUIRE(values[8].value<physical_type::INT16>() == int16_t(-731));
         REQUIRE(values[9].value<physical_type::INT32>() == int32_t(-9691));
         REQUIRE(values[10].value<physical_type::INT64>() == int64_t(-478346));
-        REQUIRE(values[11].value<physical_type::FLOAT>() == float(-63.239f));
-        REQUIRE(values[12].value<physical_type::DOUBLE>() == double(577.3910246));
+        REQUIRE(core::is_equals(values[11].value<physical_type::FLOAT>(), -63.239f));
+        REQUIRE(core::is_equals(values[12].value<physical_type::DOUBLE>(), 577.3910246));
         REQUIRE(values[13].value<physical_type::STRING>() == str1);
         REQUIRE(values[14].value<physical_type::STRING>() == str2);
     }

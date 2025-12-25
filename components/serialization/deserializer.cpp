@@ -74,7 +74,9 @@ namespace components::serializer {
     }
 
     core::parameter_id_t msgpack_deserializer_t::deserialize_param_id(size_t index) {
-        return static_cast<core::parameter_id_t>(working_tree_.top()->ptr[index].via.u64);
+        core::parameter_id_t::base_type res{0};
+        std::memcpy(&res, &(working_tree_.top()->ptr[index].via.u64), sizeof(res));
+        return core::parameter_id_t{res};
     }
 
     expressions::key_t msgpack_deserializer_t::deserialize_key(size_t index) {

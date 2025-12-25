@@ -85,7 +85,7 @@ namespace components::catalog {
             return {};
         }
 
-        return to_struct(schema_struct_).descriptions()[find_idx_by_name(name)];
+        return to_struct(schema_struct_).descriptions()[idx];
     }
 
     const std::pmr::vector<field_id_t>& schema::primary_key() const { return primary_key_field_ids_; }

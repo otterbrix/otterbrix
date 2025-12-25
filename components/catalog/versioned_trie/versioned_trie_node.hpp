@@ -171,9 +171,9 @@ namespace components::catalog {
         void erase(std::size_t i) {
             // this empty-keys situation happens only in the header node.
             if (!keys_.empty()) {
-                keys_.erase(keys_.begin() + i);
+                keys_.erase(keys_.begin() + static_cast<int64_t>(i));
             }
-            auto it = children_.erase(children_.begin() + i);
+            auto it = children_.erase(children_.begin() + static_cast<int64_t>(i));
             parent_index_.erase(it, children_.end());
         }
 
@@ -200,7 +200,7 @@ namespace components::catalog {
 
     private:
         versioned_trie_node const* const_this() { return const_cast<versioned_trie_node const*>(this); }
-        key_element const& key(const_iterator it) const { return keys_[it - children_.begin()]; }
+        key_element const& key(const_iterator it) const { return keys_[static_cast<size_t>(it - children_.begin())]; }
 
         keys_t keys_;
         children_t children_;

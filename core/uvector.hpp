@@ -1,6 +1,7 @@
 #pragma once
 
 #include "buffer.hpp"
+#include "operations_helper.hpp"
 
 #include <cstddef>
 #include <type_traits>
@@ -62,7 +63,7 @@ namespace core {
             }
 
             if constexpr (std::is_fundamental<value_type>::value) {
-                if (value == value_type{0}) {
+                if (core::is_equals<value_type>(value, {0})) {
                     set_element_to_zero(element_index);
                     return;
                 }

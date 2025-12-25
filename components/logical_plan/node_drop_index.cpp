@@ -16,7 +16,7 @@ namespace components::logical_plan {
 
     const std::string& node_drop_index_t::name() const noexcept { return name_; }
 
-    node_ptr node_drop_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_drop_index_ptr node_drop_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
         auto name = deserializer->deserialize_string(2);
         return make_node_drop_index(deserializer->resource(), collection, name);

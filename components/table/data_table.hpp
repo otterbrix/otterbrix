@@ -52,8 +52,8 @@ namespace components::table {
         void initialize_append(table_append_state& state);
         void append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state);
-        void commit_append(uint64_t row_start, uint64_t count);
-        void scan_table_segment(uint64_t start_row,
+        void commit_append(int64_t row_start, int64_t count);
+        void scan_table_segment(int64_t start_row,
                                 uint64_t count,
                                 const std::function<void(vector::data_chunk_t& chunk)>& function);
 
@@ -82,8 +82,8 @@ namespace components::table {
     private:
         void initialize_scan_with_offset(table_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
-                                         uint64_t start_row,
-                                         uint64_t end_row);
+                                         int64_t start_row,
+                                         int64_t end_row);
 
         std::pmr::memory_resource* resource_;
         std::vector<column_definition_t> column_definitions_;

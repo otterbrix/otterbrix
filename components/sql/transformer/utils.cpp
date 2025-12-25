@@ -237,10 +237,13 @@ namespace components::sql::transform {
             } else {
                 if (list_length(type->typmods) != 2) {
                     throw parser_exception_t{"Incorrect modifiers for DECIMAL, width and scale required", ""};
+                } else if (nodeTag(linitial(type->typmods)) != T_A_Const ||
+                           nodeTag(lsecond(type->typmods)) != T_A_Const) {
+                    throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
                 }
 
-                auto width = pg_ptr_assert_cast<A_Const>(linitial(type->typmods), T_A_Const);
-                auto scale = pg_ptr_assert_cast<A_Const>(lsecond(type->typmods), T_A_Const);
+                auto width = pg_ptr_cast<A_Const>(linitial(type->typmods));
+                auto scale = pg_ptr_cast<A_Const>(lsecond(type->typmods));
 
                 if (width->val.type != scale->val.type || width->val.type != T_Integer) {
                     throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
@@ -258,8 +261,7 @@ namespace components::sql::transform {
         }
 
         if (list_length(type->arrayBounds)) {
-            auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Value);
-            assert(size->type == T_Integer);
+            auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Integer);
             column = types::complex_logical_type::create_array(column, intVal(size));
         }
         return column;

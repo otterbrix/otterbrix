@@ -7,25 +7,25 @@ namespace components::vector::vector_ops {
     namespace {
 
         template<typename T, typename COMP>
-        int64_t indexing_const(vector_t& left,
-                               vector_t& right,
-                               int64_t count,
-                               indexing_vector_t* true_indexing,
-                               indexing_vector_t* false_indexing) {
+        uint64_t indexing_const(vector_t& left,
+                                vector_t& right,
+                                uint64_t count,
+                                indexing_vector_t* true_indexing,
+                                indexing_vector_t* false_indexing) {
             auto ldata = left.data<T>();
             auto rdata = right.data<T>();
 
             COMP comp{};
             if (left.is_null() || right.is_null() || !comp(*ldata, *rdata)) {
                 if (false_indexing) {
-                    for (int64_t i = 0; i < count; i++) {
+                    for (uint64_t i = 0; i < count; i++) {
                         false_indexing->set_index(i, incremental_indexing_vector(left.resource())->get_index(i));
                     }
                 }
                 return 0;
             } else {
                 if (true_indexing) {
-                    for (int64_t i = 0; i < count; i++) {
+                    for (uint64_t i = 0; i < count; i++) {
                         true_indexing->set_index(i, incremental_indexing_vector(left.resource())->get_index(i));
                     }
                 }
@@ -39,23 +39,24 @@ namespace components::vector::vector_ops {
                  bool RIGHT_CONSTANT,
                  bool HAS_true_indexing,
                  bool HAS_false_indexing>
-        int64_t indexing_flat_loop(const T* ldata,
-                                   const T* rdata,
-                                   int64_t count,
-                                   validity_mask_t& validity_mask,
-                                   indexing_vector_t* true_indexing,
-                                   indexing_vector_t* false_indexing) {
-            int64_t true_count = 0, false_count = 0;
-            int64_t base_idx = 0;
+        uint64_t indexing_flat_loop(const T* ldata,
+                                    const T* rdata,
+                                    uint64_t count,
+                                    validity_mask_t& validity_mask,
+                                    indexing_vector_t* true_indexing,
+                                    indexing_vector_t* false_indexing) {
+            uint64_t true_count = 0, false_count = 0;
+            uint64_t base_idx = 0;
             auto entry_count = validity_data_t::entry_count(count);
-            for (int64_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+            for (uint64_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
                 auto validity_entry = validity_mask.get_validity_entry(entry_idx);
-                int64_t next = std::min<int64_t>(base_idx + validity_mask_t::BITS_PER_VALUE, count);
+                uint64_t next = std::min<uint64_t>(base_idx + validity_mask_t::BITS_PER_VALUE, count);
                 if (validity_entry == validity_data_t::MAX_ENTRY) {
                     for (; base_idx < next; base_idx++) {
-                        int64_t result_idx = incremental_indexing_vector(validity_mask.resource())->get_index(base_idx);
-                        int64_t lidx = LEFT_CONSTANT ? 0 : base_idx;
-                        int64_t ridx = RIGHT_CONSTANT ? 0 : base_idx;
+                        uint64_t result_idx =
+                            incremental_indexing_vector(validity_mask.resource())->get_index(base_idx);
+                        uint64_t lidx = LEFT_CONSTANT ? 0 : base_idx;
+                        uint64_t ridx = RIGHT_CONSTANT ? 0 : base_idx;
                         COMP comp{};
                         bool comparison_result = comp(ldata[lidx], rdata[ridx]);
                         if (HAS_true_indexing) {
@@ -70,7 +71,7 @@ namespace components::vector::vector_ops {
                 } else if (validity_entry == 0) {
                     if (HAS_false_indexing) {
                         for (; base_idx < next; base_idx++) {
-                            int64_t result_idx =
+                            uint64_t result_idx =
                                 incremental_indexing_vector(validity_mask.resource())->get_index(base_idx);
                             false_indexing->set_index(false_count, result_idx);
                             false_count++;
@@ -78,11 +79,12 @@ namespace components::vector::vector_ops {
                     }
                     base_idx = next;
                 } else {
-                    int64_t start = base_idx;
+                    uint64_t start = base_idx;
                     for (; base_idx < next; base_idx++) {
-                        int64_t result_idx = incremental_indexing_vector(validity_mask.resource())->get_index(base_idx);
-                        int64_t lidx = LEFT_CONSTANT ? 0 : base_idx;
-                        int64_t ridx = RIGHT_CONSTANT ? 0 : base_idx;
+                        uint64_t result_idx =
+                            incremental_indexing_vector(validity_mask.resource())->get_index(base_idx);
+                        uint64_t lidx = LEFT_CONSTANT ? 0 : base_idx;
+                        uint64_t ridx = RIGHT_CONSTANT ? 0 : base_idx;
                         COMP comp{};
                         bool comparison_result = (validity_entry & uint64_t(1) << uint64_t(base_idx - start)) &&
                                                  comp(ldata[lidx], rdata[ridx]);
@@ -105,12 +107,12 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP, bool LEFT_CONSTANT, bool RIGHT_CONSTANT>
-        int64_t indexing_flat_loop_switch(const T* ldata,
-                                          const T* rdata,
-                                          int64_t count,
-                                          validity_mask_t& mask,
-                                          indexing_vector_t* true_indexing,
-                                          indexing_vector_t* false_indexing) {
+        uint64_t indexing_flat_loop_switch(const T* ldata,
+                                           const T* rdata,
+                                           uint64_t count,
+                                           validity_mask_t& mask,
+                                           indexing_vector_t* true_indexing,
+                                           indexing_vector_t* false_indexing) {
             if (true_indexing && false_indexing) {
                 return indexing_flat_loop<T, COMP, LEFT_CONSTANT, RIGHT_CONSTANT, true, true>(ldata,
                                                                                               rdata,
@@ -137,17 +139,17 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP, bool LEFT_CONSTANT, bool RIGHT_CONSTANT>
-        int64_t indexing_flat(vector_t& left,
-                              vector_t& right,
-                              int64_t count,
-                              indexing_vector_t* true_indexing,
-                              indexing_vector_t* false_indexing) {
+        uint64_t indexing_flat(vector_t& left,
+                               vector_t& right,
+                               uint64_t count,
+                               indexing_vector_t* true_indexing,
+                               indexing_vector_t* false_indexing) {
             auto ldata = left.data<T>();
             auto rdata = right.data<T>();
 
-            if (LEFT_CONSTANT && left.is_null() || RIGHT_CONSTANT && right.is_null()) {
+            if ((LEFT_CONSTANT && left.is_null()) || (RIGHT_CONSTANT && right.is_null())) {
                 if (false_indexing) {
-                    for (int64_t i = 0; i < count; i++) {
+                    for (uint64_t i = 0; i < count; i++) {
                         false_indexing->set_index(i, incremental_indexing_vector(left.resource())->get_index(i));
                     }
                 }
@@ -181,17 +183,17 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP, bool NO_NULL, bool HAS_true_indexing, bool HAS_false_indexing>
-        int64_t indexing_generic_loop(const T* ldata,
-                                      const T* rdata,
-                                      const indexing_vector_t* l_indexing,
-                                      const indexing_vector_t* r_indexing,
-                                      int64_t count,
-                                      validity_mask_t& lvalidity,
-                                      validity_mask_t& rvalidity,
-                                      indexing_vector_t* true_indexing,
-                                      indexing_vector_t* false_indexing) {
-            int64_t true_count = 0, false_count = 0;
-            for (int64_t i = 0; i < count; i++) {
+        uint64_t indexing_generic_loop(const T* ldata,
+                                       const T* rdata,
+                                       const indexing_vector_t* l_indexing,
+                                       const indexing_vector_t* r_indexing,
+                                       uint64_t count,
+                                       validity_mask_t& lvalidity,
+                                       validity_mask_t& rvalidity,
+                                       indexing_vector_t* true_indexing,
+                                       indexing_vector_t* false_indexing) {
+            uint64_t true_count = 0, false_count = 0;
+            for (uint64_t i = 0; i < count; i++) {
                 auto result_idx = incremental_indexing_vector(lvalidity.resource())->get_index(i);
                 auto lindex = l_indexing->get_index(i);
                 auto rindex = r_indexing->get_index(i);
@@ -215,15 +217,15 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP, bool NO_NULL>
-        int64_t indexing_generic_loop_indexing_switch(const T* ldata,
-                                                      const T* rdata,
-                                                      const indexing_vector_t* l_indexing,
-                                                      const indexing_vector_t* r_indexing,
-                                                      int64_t count,
-                                                      validity_mask_t& lvalidity,
-                                                      validity_mask_t& rvalidity,
-                                                      indexing_vector_t* true_indexing,
-                                                      indexing_vector_t* false_indexing) {
+        uint64_t indexing_generic_loop_indexing_switch(const T* ldata,
+                                                       const T* rdata,
+                                                       const indexing_vector_t* l_indexing,
+                                                       const indexing_vector_t* r_indexing,
+                                                       uint64_t count,
+                                                       validity_mask_t& lvalidity,
+                                                       validity_mask_t& rvalidity,
+                                                       indexing_vector_t* true_indexing,
+                                                       indexing_vector_t* false_indexing) {
             if (true_indexing && false_indexing) {
                 return indexing_generic_loop<T, COMP, NO_NULL, true, true>(ldata,
                                                                            rdata,
@@ -259,15 +261,15 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP>
-        int64_t indexing_generic_loop_switch(const T* ldata,
-                                             const T* rdata,
-                                             const indexing_vector_t* l_indexing,
-                                             const indexing_vector_t* r_indexing,
-                                             int64_t count,
-                                             validity_mask_t& lvalidity,
-                                             validity_mask_t& rvalidity,
-                                             indexing_vector_t* true_indexing,
-                                             indexing_vector_t* false_indexing) {
+        uint64_t indexing_generic_loop_switch(const T* ldata,
+                                              const T* rdata,
+                                              const indexing_vector_t* l_indexing,
+                                              const indexing_vector_t* r_indexing,
+                                              uint64_t count,
+                                              validity_mask_t& lvalidity,
+                                              validity_mask_t& rvalidity,
+                                              indexing_vector_t* true_indexing,
+                                              indexing_vector_t* false_indexing) {
             if (!lvalidity.all_valid() || !rvalidity.all_valid()) {
                 return indexing_generic_loop_indexing_switch<T, COMP, false>(ldata,
                                                                              rdata,
@@ -292,11 +294,11 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP>
-        int64_t index_generic(vector_t& left,
-                              vector_t& right,
-                              int64_t count,
-                              indexing_vector_t* true_indexing,
-                              indexing_vector_t* false_indexing) {
+        uint64_t index_generic(vector_t& left,
+                               vector_t& right,
+                               uint64_t count,
+                               indexing_vector_t* true_indexing,
+                               indexing_vector_t* false_indexing) {
             unified_vector_format ldata(left.resource(), left.size());
             unified_vector_format rdata(right.resource(), right.size());
 
@@ -315,11 +317,11 @@ namespace components::vector::vector_ops {
         }
 
         template<typename T, typename COMP>
-        int64_t index(vector_t& left,
-                      vector_t& right,
-                      int64_t count,
-                      indexing_vector_t* true_indexing,
-                      indexing_vector_t* false_indexing) {
+        uint64_t index(vector_t& left,
+                       vector_t& right,
+                       uint64_t count,
+                       indexing_vector_t* true_indexing,
+                       indexing_vector_t* false_indexing) {
             if (left.get_vector_type() == vector_type::CONSTANT && right.get_vector_type() == vector_type::CONSTANT) {
                 return indexing_const<T, COMP>(left, right, count, true_indexing, false_indexing);
             } else if (left.get_vector_type() == vector_type::CONSTANT &&
@@ -369,11 +371,11 @@ namespace components::vector::vector_ops {
     void combine_hash(vector_t& hashes, vector_t& input, const indexing_vector_t& rindexing, uint64_t count);
 
     template<typename COMP>
-    int64_t compare(vector_t& left,
-                    vector_t& right,
-                    int64_t count,
-                    indexing_vector_t* true_indexing,
-                    indexing_vector_t* false_indexing) {
+    uint64_t compare(vector_t& left,
+                     vector_t& right,
+                     uint64_t count,
+                     indexing_vector_t* true_indexing,
+                     indexing_vector_t* false_indexing) {
         assert(left.type().to_physical_type() == right.type().to_physical_type());
 
         switch (left.type().to_physical_type()) {

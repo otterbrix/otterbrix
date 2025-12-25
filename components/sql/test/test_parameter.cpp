@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include <components/document/document.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
@@ -59,7 +60,7 @@ using vec = std::vector<v>;
         REQUIRE(node->collection_name() == "testcollection");                                                          \
     }
 
-TEST_CASE("sql::select_bind") {
+TEST_CASE("components::sql::select_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -78,7 +79,7 @@ TEST_CASE("sql::select_bind") {
                        vec({v(5l), v(true)}));
 }
 
-TEST_CASE("sql::update_bind") {
+TEST_CASE("components::sql::update_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -124,7 +125,7 @@ TEST_CASE("sql::update_bind") {
     }
 }
 
-TEST_CASE("sql::insert_bind") {
+TEST_CASE("components::sql::insert_bind") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -193,7 +194,7 @@ TEST_CASE("sql::insert_bind") {
     }
 }
 
-TEST_CASE("sql::transform_result") {
+TEST_CASE("components::sql::transform_result") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

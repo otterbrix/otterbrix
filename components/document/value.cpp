@@ -34,9 +34,9 @@ namespace components::document {
             case types::physical_type::INT128:
                 return as_int128() == rhs.as_int128();
             case types::physical_type::FLOAT:
-                return types::is_equals(as_float(), rhs.as_float());
+                return core::is_equals(as_float(), rhs.as_float());
             case types::physical_type::DOUBLE:
-                return types::is_equals(as_double(), rhs.as_double());
+                return core::is_equals(as_double(), rhs.as_double());
             case types::physical_type::STRING:
                 return as_string() == rhs.as_string();
             default: // special values are always equal

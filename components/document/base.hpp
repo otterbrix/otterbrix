@@ -1,7 +1,6 @@
 #pragma once
 
 #include <absl/numeric/int128.h>
-#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <components/types/types.hpp>
 
 namespace components::document {

@@ -7,7 +7,7 @@ using components::document::document_t;
 using components::document::impl::error_code_t;
 using namespace components::types;
 
-TEST_CASE("document_t::is/get value") {
+TEST_CASE("components::document::is/get_value") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = gen_doc(1, &allocator);
 
@@ -44,7 +44,7 @@ TEST_CASE("document_t::is/get value") {
     REQUIRE_FALSE(doc->is_exists("/countDict/other"));
 }
 
-TEST_CASE("document_t::compare") {
+TEST_CASE("components::document::compare") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc1 = make_document(&allocator);
     auto doc2 = make_document(&allocator);
@@ -75,7 +75,7 @@ TEST_CASE("document_t::compare") {
     REQUIRE(doc1->compare(more, doc2, more) == compare_t::more);
 }
 
-TEST_CASE("document_t::tiny int") {
+TEST_CASE("components::document::tiny_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -91,13 +91,13 @@ TEST_CASE("document_t::tiny int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::tiny negative int") {
+TEST_CASE("components::document::tiny_negative_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -112,11 +112,11 @@ TEST_CASE("document_t::tiny negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::small int") {
+TEST_CASE("components::document::small_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -131,13 +131,13 @@ TEST_CASE("document_t::small int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::small negative int") {
+TEST_CASE("components::document::small_negative_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -151,11 +151,11 @@ TEST_CASE("document_t::small negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::int") {
+TEST_CASE("components::document::int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -168,13 +168,13 @@ TEST_CASE("document_t::int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::negative int") {
+TEST_CASE("components::document::negative_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -187,18 +187,16 @@ TEST_CASE("document_t::negative int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::big int") {
+TEST_CASE("components::document::big_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
     std::string_view key("/countInt");
     constexpr int64_t value = std::numeric_limits<int64_t>::max();
-    constexpr auto v1 = std::numeric_limits<int128_t>::max();
-    constexpr auto v2 = std::numeric_limits<int128_t>::min();
     doc->set(key, value);
 
     REQUIRE(doc->is_exists(key));
@@ -206,11 +204,11 @@ TEST_CASE("document_t::big int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::negative big int") {
+TEST_CASE("components::document::negative_big_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -222,11 +220,11 @@ TEST_CASE("document_t::negative big int") {
     REQUIRE(doc->is_long(key));
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::unsigned tiny int") {
+TEST_CASE("components::document::unsigned_tiny_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -243,13 +241,13 @@ TEST_CASE("document_t::unsigned tiny int") {
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
     REQUIRE(doc->get_usmallint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::unsigned small int") {
+TEST_CASE("components::document::unsigned_small_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -264,13 +262,13 @@ TEST_CASE("document_t::unsigned small int") {
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::unsigned int") {
+TEST_CASE("components::document::unsigned_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -280,17 +278,16 @@ TEST_CASE("document_t::unsigned int") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_uint(key));
-    REQUIRE(doc->get_uint(key) == value);
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
     REQUIRE(doc->get_hugeint(key) == value);
-    REQUIRE(doc->get_uint(key) == value);
-    REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_uint(key), value));
+    REQUIRE(core::is_equals(doc->get_ulong(key), value));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::hugeint") {
+TEST_CASE("components::document::hugeint") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -305,15 +302,15 @@ TEST_CASE("document_t::hugeint") {
     REQUIRE(doc->get_smallint(key) == value);
     REQUIRE(doc->get_int(key) == value);
     REQUIRE(doc->get_long(key) == value);
-    REQUIRE(doc->get_utinyint(key) == value);
-    REQUIRE(doc->get_usmallint(key) == value);
+    REQUIRE(doc->get_utinyint(key) == static_cast<uint8_t>(value));
+    REQUIRE(doc->get_usmallint(key) == static_cast<uint16_t>(value));
     REQUIRE(doc->get_uint(key) == value);
     REQUIRE(doc->get_ulong(key) == value);
-    REQUIRE(is_equals(doc->get_float(key), float(value)));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), float(value)));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::float min") {
+TEST_CASE("components::document::float_min") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -323,11 +320,11 @@ TEST_CASE("document_t::float min") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_float(key));
-    REQUIRE(is_equals(doc->get_float(key), value));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), value));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::float max") {
+TEST_CASE("components::document::float_max") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -337,11 +334,11 @@ TEST_CASE("document_t::float max") {
 
     REQUIRE(doc->is_exists(key));
     REQUIRE(doc->is_float(key));
-    REQUIRE(is_equals(doc->get_float(key), value));
-    REQUIRE(is_equals(doc->get_double(key), double(value)));
+    REQUIRE(core::is_equals(doc->get_float(key), value));
+    REQUIRE(core::is_equals(doc->get_double(key), double(value)));
 }
 
-TEST_CASE("document_t::cast signed to signed") {
+TEST_CASE("components::document::cast signed_to_signed") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -352,7 +349,7 @@ TEST_CASE("document_t::cast signed to signed") {
     REQUIRE(doc->get_int(key) == value);
 }
 
-TEST_CASE("document_t::cast float to int") {
+TEST_CASE("components::document::cast float_to_int") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = make_document(&allocator);
 
@@ -360,10 +357,10 @@ TEST_CASE("document_t::cast float to int") {
     float value = 4.0f;
     doc->set(key, value);
 
-    REQUIRE(doc->get_int(key) == value);
+    REQUIRE(doc->get_int(key) == static_cast<int32_t>(value));
 }
 
-TEST_CASE("document_t::set") {
+TEST_CASE("components::document::set") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = gen_doc(1, &allocator);
 
@@ -383,7 +380,7 @@ TEST_CASE("document_t::set") {
     REQUIRE(doc->get_string(key) == value);
 }
 
-TEST_CASE("document_t::set nullptr") {
+TEST_CASE("components::document::set_nullptr") {
     auto allocator = std::pmr::new_delete_resource();
     auto doc = make_document(allocator);
 
@@ -394,7 +391,7 @@ TEST_CASE("document_t::set nullptr") {
     REQUIRE(doc->is_null(key));
 }
 
-TEST_CASE("document_t::set doc") {
+TEST_CASE("components::document::set_doc") {
     auto json = R"(
 {
   "number": 2
@@ -425,7 +422,7 @@ TEST_CASE("document_t::set doc") {
     REQUIRE(doc->get_long("/nestedDoc/other_number") == 3);
 }
 
-TEST_CASE("document_t::merge") {
+TEST_CASE("components::document::merge") {
     {
         auto target = R"(
 {
@@ -495,7 +492,7 @@ TEST_CASE("document_t::merge") {
     }
 }
 
-TEST_CASE("document_t::is_equals_documents") {
+TEST_CASE("components::document::is_equals_documents") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -524,7 +521,7 @@ TEST_CASE("document_t::is_equals_documents") {
     REQUIRE(document_t::is_equals_documents(doc1, doc2));
 }
 
-TEST_CASE("document_t::is_equals_documents fail when different types") {
+TEST_CASE("components::document::is_equals_documents_fail_different_types") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -554,7 +551,7 @@ TEST_CASE("document_t::is_equals_documents fail when different types") {
     REQUIRE_FALSE(document_t::is_equals_documents(doc1, doc2));
 }
 
-TEST_CASE("document_t::is_equals_documents fail when different values") {
+TEST_CASE("components::document::is_equals_documents_fail_different_values") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -584,7 +581,7 @@ TEST_CASE("document_t::is_equals_documents fail when different values") {
     REQUIRE_FALSE(document_t::is_equals_documents(doc1, doc2));
 }
 
-TEST_CASE("document_t::remove") {
+TEST_CASE("components::document::remove") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -609,7 +606,7 @@ TEST_CASE("document_t::remove") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::remove fail when no element") {
+TEST_CASE("components::document::remove_fail_no_element") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -628,7 +625,7 @@ TEST_CASE("document_t::remove fail when no element") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::remove when removing array element") {
+TEST_CASE("components::document::removing_array_element") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -652,7 +649,7 @@ TEST_CASE("document_t::remove when removing array element") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::move") {
+TEST_CASE("components::document::move") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -691,7 +688,7 @@ TEST_CASE("document_t::move") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::move fail when no element") {
+TEST_CASE("components::document::move_fail_no_element") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -715,7 +712,7 @@ TEST_CASE("document_t::move fail when no element") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::move when moving array element") {
+TEST_CASE("components::document::move_array_element") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -739,7 +736,7 @@ TEST_CASE("document_t::move when moving array element") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::copy") {
+TEST_CASE("components::document::copy") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -776,7 +773,7 @@ TEST_CASE("document_t::copy") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t::copy independent") {
+TEST_CASE("components::document::copy_independent") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -819,7 +816,7 @@ TEST_CASE("document_t::copy independent") {
     REQUIRE(document_t::is_equals_documents(doc, res_doc));
 }
 
-TEST_CASE("document_t:: json pointer escape /") {
+TEST_CASE("components::document::json_pointer_escape /") {
     auto allocator = std::pmr::synchronized_pool_resource();
 
     auto doc = make_document(&allocator);
@@ -829,7 +826,7 @@ TEST_CASE("document_t:: json pointer escape /") {
     REQUIRE(doc->to_json() == "{\"m/n\":true}");
 }
 
-TEST_CASE("document_t:: json pointer escape ~") {
+TEST_CASE("components::document::json_pointer_escape ~") {
     auto allocator = std::pmr::synchronized_pool_resource();
 
     auto doc = make_document(&allocator);
@@ -839,7 +836,7 @@ TEST_CASE("document_t:: json pointer escape ~") {
     REQUIRE(doc->to_json() == "{\"m~n\":true}");
 }
 
-TEST_CASE("document_t:: json pointer failure") {
+TEST_CASE("components::document::json_pointer_failure") {
     auto allocator = std::pmr::synchronized_pool_resource();
 
     auto doc = make_document(&allocator);
@@ -849,7 +846,7 @@ TEST_CASE("document_t:: json pointer failure") {
     REQUIRE(doc->set("/m~2n/key", false) == error_code_t::INVALID_JSON_POINTER);
 }
 
-TEST_CASE("document_t:: json pointer read") {
+TEST_CASE("components::document::json_pointer_read") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",

@@ -6,7 +6,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <boost/process/environment.hpp>
+#include <boost/process/v1/environment.hpp>
 #include <filesystem>
 #include <spdlog/async.h>
 #include <utility>

@@ -14,7 +14,7 @@ namespace components::vector::vector_ops {
             auto value = T(start);
             for (uint64_t i = 0; i < count; i++) {
                 if (i > 0) {
-                    value += increment;
+                    value += static_cast<T>(increment);
                 }
                 result_data[i] = value;
             }
@@ -582,7 +582,7 @@ namespace components::vector::vector_ops {
                     return;
                 }
                 case vector_type::CONSTANT:
-                    indexing_ptr = zero_indexing_vector(source_ptr->resource(), copy_count, owned_indexing);
+                    indexing_ptr = zero_indexing_vector(copy_count, owned_indexing);
                     finished = true;
                     break;
                 case vector_type::FLAT:
@@ -726,10 +726,10 @@ namespace components::vector::vector_ops {
                     }
                     auto target_idx = target_offset + i;
                     if (tmask.row_is_valid(target_idx)) {
-                        tdata[target_idx] =
-                            std::string_view((char*) static_cast<string_vector_buffer_t*>(target.auxiliary().get())
-                                                 ->insert(ldata[source_idx]),
-                                             ldata[source_idx].size());
+                        tdata[target_idx] = std::string_view(
+                            reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(target.auxiliary().get())
+                                                        ->insert(ldata[source_idx])),
+                            ldata[source_idx].size());
                     }
                 }
                 break;

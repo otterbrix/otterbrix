@@ -7,28 +7,24 @@
 #include <type_traits>
 
 #include "types.hpp"
+#include <core/operations_helper.hpp>
 
 namespace components::types {
-    template<typename, typename = void>
-    constexpr bool is_buffer_like = false;
-    template<typename T>
-    constexpr bool
-        is_buffer_like<T, std::void_t<decltype(std::declval<T>().data()), decltype(std::declval<T>().size())>> = true;
 
     class physical_value {
     public:
         // currently supported values
         // TODO: add memory ownership
-        explicit physical_value() = default; // nullptr_t
-        explicit physical_value(nullptr_t);
+        explicit physical_value() = default; // std::nullptr_t
+        explicit physical_value(std::nullptr_t);
         // string-like
         template<typename T>
-        physical_value(const T& value, typename std::enable_if<is_buffer_like<T>>::type* = nullptr)
-            : physical_value(value.data(), value.size()) {}
+        physical_value(const T& value, typename std::enable_if<core::is_buffer_like<T>>::type* = nullptr)
+            : physical_value(value.data(), static_cast<uint32_t>(value.size())) {}
         explicit physical_value(const char* data, uint32_t size);
         // all integral types
         template<typename T>
-        physical_value(T value, typename std::enable_if<!is_buffer_like<T>>::type* = nullptr)
+        physical_value(T value, typename std::enable_if<!core::is_buffer_like<T>>::type* = nullptr)
             : type_(physical_value::get_type_<T>()) {
             std::memcpy(&data_, &value, sizeof(value));
         }
@@ -53,7 +49,7 @@ namespace components::types {
         physical_type type() const noexcept;
 
     private:
-        nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
+        std::nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
         bool value_(std::integral_constant<physical_type, physical_type::BOOL>) const noexcept;
         uint8_t value_(std::integral_constant<physical_type, physical_type::UINT8>) const noexcept;
         uint16_t value_(std::integral_constant<physical_type, physical_type::UINT16>) const noexcept;

@@ -23,7 +23,7 @@ namespace components::table::operators {
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 
-        void on_execute_impl(pipeline::context_t* context) final;
+        void on_execute_impl(pipeline::context_t* context) override;
         void inner_join_(predicates::predicate_ptr, pipeline::context_t* context);
         void outer_full_join_(predicates::predicate_ptr, pipeline::context_t* context);
         void outer_left_join_(predicates::predicate_ptr, pipeline::context_t* context);

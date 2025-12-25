@@ -129,7 +129,7 @@ namespace services::disk {
             data += "\n";
         }
         file_->write(data.data(), data.size(), 0);
-        file_->truncate(data.size());
+        file_->truncate(static_cast<int64_t>(data.size()));
     }
 
 } //namespace services::disk

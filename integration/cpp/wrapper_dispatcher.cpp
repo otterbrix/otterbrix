@@ -65,7 +65,7 @@ namespace otterbrix {
         });
     }
 
-    auto wrapper_dispatcher_t::make_type() const noexcept -> const char* const { return "wrapper_dispatcher"; }
+    auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }
 
     auto wrapper_dispatcher_t::load() -> void {
         session_id_t session;

@@ -9,8 +9,8 @@ namespace components::table::operators::aggregate {
         explicit operator_count_t(services::collection::context_collection_t* collection);
 
     private:
-        types::logical_value_t aggregate_impl() final;
-        std::string key_impl() const final;
+        types::logical_value_t aggregate_impl() override;
+        std::string key_impl() const override;
     };
 
 } // namespace components::table::operators::aggregate

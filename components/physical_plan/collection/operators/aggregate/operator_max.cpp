@@ -5,7 +5,7 @@ namespace components::collection::operators::aggregate {
 
     constexpr auto key_result_ = "max";
 
-    operator_max_t::operator_max_t(services::collection::context_collection_t* context, index::key_t key)
+    operator_max_t::operator_max_t(services::collection::context_collection_t* context, expressions::key_t key)
         : operator_aggregate_t(context)
         , key_(std::move(key)) {}
 

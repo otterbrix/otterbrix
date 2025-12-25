@@ -3,10 +3,8 @@
 #include "schema.hpp"
 #include "versioned_trie/versioned_trie.hpp"
 
-#include <components/base/collection_full_name.hpp>
 #include <components/types/types.hpp>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace components::catalog {
     class computed_schema {

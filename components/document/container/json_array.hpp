@@ -3,6 +3,7 @@
 #include <memory_resource>
 #include <string>
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <components/document/base.hpp>
 
 namespace components::document::json {

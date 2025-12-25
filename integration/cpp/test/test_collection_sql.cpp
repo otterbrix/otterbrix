@@ -262,7 +262,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(doc->get_long("count_") == 10);
             REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
             REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(doc->get_double("avg_") == (number % 20 + (number + 10) % 20) / 2);
+            REQUIRE(
+                core::is_equals(doc->get_double("avg_"), static_cast<double>((number % 20 + (number + 10) % 20) / 2)));
             REQUIRE(doc->get_long("min_") == number % 20);
             REQUIRE(doc->get_long("max_") == (number + 10) % 20);
             ++number;
@@ -286,7 +287,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(doc->get_long("count_") == 10);
             REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
             REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(doc->get_double("avg_") == (number % 20 + (number + 10) % 20) / 2);
+            REQUIRE(
+                core::is_equals(doc->get_double("avg_"), static_cast<double>((number % 20 + (number + 10) % 20) / 2)));
             REQUIRE(doc->get_long("min_") == number % 20);
             REQUIRE(doc->get_long("max_") == (number + 10) % 20);
             --number;
@@ -463,7 +465,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             query << "INSERT INTO TestDatabase.TestCollection (custom_type, oddness) VALUES ";
             for (int num = 0; num < 100; ++num) {
                 query << "(ROW(" << num << ", '"
-                      << "text_" << num + 1 << "', ROW(" << num + 0.5f << ", " << num * 2 << ")), "
+                      << "text_" << num + 1 << "', ROW(" << static_cast<float>(num) + 0.5f << ", " << num * 2 << ")), "
                       << (num % 2 == 0 ? R"_('even')_" : R"_('odd')_") << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
@@ -547,8 +549,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->chunk_data().column_count() == 1);
-            for (int num = 0; num < 100; ++num) {
-                REQUIRE(types::is_equals(cur->chunk_data().value(0, num).value<float>(), (num + 0.5f) * 3.0f));
+            for (size_t num = 0; num < 100; ++num) {
+                REQUIRE(core::is_equals(cur->chunk_data().value(0, num).value<float>(),
+                                        (static_cast<float>(num) + 0.5f) * 3.0f));
             }
         }
     }

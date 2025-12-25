@@ -18,6 +18,8 @@ namespace components::document::json {
             case MUT:
                 value_.mut.~element();
                 break;
+            default:
+                break;
         }
     }
 
@@ -27,30 +29,38 @@ namespace components::document::json {
         other.allocator_ = nullptr;
         switch (type_) {
             case OBJECT:
-                value_.obj = std::move(other.value_.obj);
+                new (&value_.obj) json_object(std::move(other.value_.obj));
                 break;
             case ARRAY:
-                value_.arr = std::move(other.value_.arr);
+                new (&value_.arr) json_array(std::move(other.value_.arr));
                 break;
             case MUT:
                 value_.mut = other.value_.mut;
+                break;
+            default:
                 break;
         }
     }
 
     json_trie_node& json_trie_node::operator=(json_trie_node&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
         allocator_ = other.allocator_;
+        value_.~value_type();
         type_ = other.type_;
         other.allocator_ = nullptr;
         switch (type_) {
             case OBJECT:
-                value_.obj = std::move(other.value_.obj);
+                new (&value_.obj) json_object(std::move(other.value_.obj));
                 break;
             case ARRAY:
-                value_.arr = std::move(other.value_.arr);
+                new (&value_.arr) json_array(std::move(other.value_.arr));
                 break;
             case MUT:
                 value_.mut = other.value_.mut;
+                break;
+            default:
                 break;
         }
         return *this;
@@ -78,6 +88,9 @@ namespace components::document::json {
                 return create(value_.mut, allocator_);
             case DELETER:
                 return create_deleter(allocator_);
+            default:
+                assert(false);
+                return nullptr;
         }
     }
 
@@ -127,6 +140,9 @@ namespace components::document::json {
                 return to_json_mut(&value_.mut, allocator_);
             case DELETER:
                 return {"DELETER", allocator_};
+            default:
+                assert(false);
+                return std::pmr::string{allocator_};
         }
     }
 
@@ -145,6 +161,7 @@ namespace components::document::json {
             case DELETER:
                 return true;
         }
+        return false;
     }
 
     json_trie_node* json_trie_node::merge(json_trie_node* node1, json_trie_node* node2, allocator_type* allocator) {
@@ -173,12 +190,12 @@ namespace components::document::json {
 
     json_trie_node* json_trie_node::create_array(json_trie_node::allocator_type* allocator) {
         return new (allocator->allocate(sizeof(json_trie_node), alignof(json_trie_node)))
-            json_trie_node(allocator, std::move(json_array(allocator)), ARRAY);
+            json_trie_node(allocator, json_array(allocator), ARRAY);
     }
 
     json_trie_node* json_trie_node::create_object(json_trie_node::allocator_type* allocator) {
         return new (allocator->allocate(sizeof(json_trie_node), alignof(json_trie_node)))
-            json_trie_node(allocator, std::move(json_object(allocator)), OBJECT);
+            json_trie_node(allocator, json_object(allocator), OBJECT);
     }
 
     json_trie_node* json_trie_node::create_deleter(json_trie_node::allocator_type* allocator) {

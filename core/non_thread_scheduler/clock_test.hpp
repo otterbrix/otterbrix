@@ -1,10 +1,8 @@
 #pragma once
 
-#include <algorithm>
 #include <chrono>
 #include <map>
 
-#include <actor-zeta.hpp>
 #include <actor-zeta/clock/clock.hpp>
 
 namespace core::non_thread_scheduler {

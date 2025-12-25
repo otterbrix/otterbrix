@@ -1,5 +1,7 @@
 #include "fixed_size_list_data.hpp"
 
+#include <components/vector/arrow/arrow_appender.hpp>
+
 namespace components::vector::arrow::appender {
     using types::complex_logical_type;
 

@@ -1,6 +1,7 @@
 #include "wrapper_database.hpp"
 #include "forward.hpp"
 #include "spaces.hpp"
+#include "wrapper_collection.hpp"
 
 namespace otterbrix {
 

@@ -96,8 +96,7 @@ namespace components::vector::arrow {
         return metadata;
     }
 
-    arrow_schema_metadata_t arrow_schema_metadata_t::non_canonical_type(const std::string& type_name,
-                                                                        const std::string& vendor_name) {
+    arrow_schema_metadata_t arrow_schema_metadata_t::non_canonical_type(const std::string&, const std::string&) {
         arrow_schema_metadata_t metadata;
         metadata.add_option(ARROW_EXTENSION_NAME, arrow_extension_metadata_t::ARROW_EXTENSION_NON_CANONICAL);
         return metadata;

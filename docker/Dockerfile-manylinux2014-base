@@ -1,6 +1,6 @@
 FROM quay.io/pypa/manylinux2014_x86_64
 
-RUN yum install -y ninja-build python3-pip wget unzip zip gcc-c++ java-11-openjdk-devel
+RUN yum install -y ninja-build python3-pip wget unzip zip gcc-c++ java-11-openjdk-devel flex bison
 RUN wget https://releases.bazel.build/4.1.0/release/bazel-4.1.0-dist.zip
 RUN unzip bazel-4.1.0-dist.zip -d bazel
 RUN ls -l /usr/lib/jvm/

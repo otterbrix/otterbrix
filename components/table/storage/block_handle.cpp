@@ -114,33 +114,33 @@ namespace components::table::storage {
         }
     }
 
-    void block_handle_t::change_memory_usage(std::unique_lock<std::mutex>& l, int64_t delta) {
+    void block_handle_t::change_memory_usage(std::unique_lock<std::mutex>&, int64_t delta) {
         assert(delta < 0);
         memory_usage_ += static_cast<uint64_t>(delta);
         memory_charge_.resize(memory_usage_);
     }
 
-    std::unique_ptr<file_buffer_t>& block_handle_t::get_buffer(std::unique_lock<std::mutex>& l) { return buffer_; }
+    std::unique_ptr<file_buffer_t>& block_handle_t::get_buffer(std::unique_lock<std::mutex>&) { return buffer_; }
 
-    buffer_pool_reservation_t& block_handle_t::memory_usage(std::unique_lock<std::mutex>& l) { return memory_charge_; }
+    buffer_pool_reservation_t& block_handle_t::memory_usage(std::unique_lock<std::mutex>&) { return memory_charge_; }
 
-    void block_handle_t::merge_memory_reservation(std::unique_lock<std::mutex>& l,
+    void block_handle_t::merge_memory_reservation(std::unique_lock<std::mutex>&,
                                                   buffer_pool_reservation_t reservation) {
         memory_charge_.merge(std::move(reservation));
     }
 
-    void block_handle_t::resize_memory(std::unique_lock<std::mutex>& l, uint64_t alloc_size) {
+    void block_handle_t::resize_memory(std::unique_lock<std::mutex>&, uint64_t alloc_size) {
         memory_charge_.resize(alloc_size);
     }
 
-    void block_handle_t::resize_buffer(std::unique_lock<std::mutex>& l, uint64_t block_size, int64_t memory_delta) {
+    void block_handle_t::resize_buffer(std::unique_lock<std::mutex>&, uint64_t block_size, int64_t memory_delta) {
         assert(buffer_);
         buffer_->resize(block_size);
         memory_usage_ = static_cast<uint64_t>(static_cast<int64_t>(memory_usage_.load()) + memory_delta);
         assert(memory_usage_ == buffer_->allocation_size());
     }
 
-    buffer_handle_t block_handle_t::load_from_buffer(std::unique_lock<std::mutex>& l,
+    buffer_handle_t block_handle_t::load_from_buffer(std::unique_lock<std::mutex>&,
                                                      std::byte* data,
                                                      std::unique_ptr<file_buffer_t> reusable_buffer,
                                                      buffer_pool_reservation_t reservation) {
@@ -174,7 +174,7 @@ namespace components::table::storage {
         return buffer_handle_t(shared_from_this(), buffer_.get());
     }
 
-    std::unique_ptr<file_buffer_t> block_handle_t::unload_and_take_block(std::unique_lock<std::mutex>& lock) {
+    std::unique_ptr<file_buffer_t> block_handle_t::unload_and_take_block(std::unique_lock<std::mutex>&) {
         if (state_ == block_state::UNLOADED) {
             return nullptr;
         }

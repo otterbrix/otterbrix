@@ -10,7 +10,7 @@ namespace components::logical_plan {
 
         const std::string& name() const noexcept;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_drop_type_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         hash_t hash_impl() const final;

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <atomic>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <random>
 
@@ -160,10 +158,10 @@ namespace components::table {
 
         row_group_t* row_group;
         uint64_t vector_index;
-        uint64_t max_row_group_row;
+        int64_t max_row_group_row;
         std::vector<column_scan_state> column_scans;
         row_group_segment_tree_t* row_groups;
-        uint64_t max_row;
+        int64_t max_row;
         uint64_t batch_index;
         vector::indexing_vector_t valid_indexing;
 
@@ -272,7 +270,7 @@ namespace components::table {
     };
 
     struct table_delete_state {
-        table_delete_state(std::pmr::memory_resource* resource) {}
+        table_delete_state(std::pmr::memory_resource*) {}
         std::unique_ptr<constraint_state> constraint;
         bool has_delete_constraints = false;
         std::vector<storage_index_t> col_ids;

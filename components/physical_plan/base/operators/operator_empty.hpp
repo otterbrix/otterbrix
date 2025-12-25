@@ -9,7 +9,7 @@ namespace components::base::operators {
         operator_empty_t(services::collection::context_collection_t* context, operator_data_ptr&& data);
 
     private:
-        void on_execute_impl(pipeline::context_t*) final;
+        void on_execute_impl(pipeline::context_t*) override;
     };
 
 } // namespace components::base::operators

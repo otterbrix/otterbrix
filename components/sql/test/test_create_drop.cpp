@@ -48,7 +48,7 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("sql::database") {
+TEST_CASE("components::sql::database") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -62,7 +62,7 @@ TEST_CASE("sql::database") {
     TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($drop_database: db_name)_");
 }
 
-TEST_CASE("sql::table") {
+TEST_CASE("components::sql::table") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -199,7 +199,7 @@ TEST_CASE("sql::table") {
     }
 }
 
-TEST_CASE("sql::index") {
+TEST_CASE("components::sql::index") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -246,7 +246,7 @@ TEST_CASE("sql::index") {
     TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($drop_index: db.table name:some_idx)_");
 }
 
-TEST_CASE("sql::types") {
+TEST_CASE("components::sql::types") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

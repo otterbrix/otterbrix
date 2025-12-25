@@ -5,7 +5,7 @@ namespace components::table {
     validity_column_data_t::validity_column_data_t(std::pmr::memory_resource* resource,
                                                    storage::block_manager_t& block_manager,
                                                    uint64_t column_index,
-                                                   uint64_t start_row,
+                                                   int64_t start_row,
                                                    column_data_t& parent)
         : column_data_t(resource,
                         block_manager,
@@ -14,7 +14,7 @@ namespace components::table {
                         types::complex_logical_type(types::logical_type::VALIDITY),
                         &parent) {}
 
-    filter_propagate_result_t validity_column_data_t::check_zonemap(column_scan_state& state, table_filter_t& filter) {
+    filter_propagate_result_t validity_column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 

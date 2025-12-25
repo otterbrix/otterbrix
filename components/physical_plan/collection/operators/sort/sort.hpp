@@ -1,7 +1,6 @@
 #pragma once
 #include <components/document/document.hpp>
 #include <functional>
-#include <memory>
 
 using components::document::document_ptr;
 

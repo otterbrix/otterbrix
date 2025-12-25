@@ -16,9 +16,9 @@ namespace components::table::operators {
             context_->table_storage().table().append_lock(state);
             context_->table_storage().table().initialize_append(state);
             for (size_t id = 0; id < left_->output()->data_chunk().size(); id++) {
-                modified_->append(id + state.row_start);
+                modified_->append(id + static_cast<size_t>(state.row_start));
                 context_->index_engine()->insert_row(left_->output()->data_chunk(),
-                                                     id + state.row_start,
+                                                     id + static_cast<size_t>(state.row_start),
                                                      pipeline_context);
             }
             context_->table_storage().table().append(left_->output()->data_chunk(), state);

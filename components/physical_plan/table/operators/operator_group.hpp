@@ -33,7 +33,7 @@ namespace components::table::operators {
         std::pmr::vector<types::complex_logical_type> result_types_;
         impl::value_matrix_t transposed_output_;
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         void create_list_rows();
         void calc_aggregate_values(pipeline::context_t* pipeline_context);

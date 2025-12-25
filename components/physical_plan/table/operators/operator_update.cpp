@@ -40,7 +40,7 @@ namespace components::table::operators {
                     table::table_append_state state(context_->resource());
                     context_->table_storage().table().initialize_append(state);
                     for (size_t id = 0; id < output_->data_chunk().size(); id++) {
-                        modified_->append(id + state.row_start);
+                        modified_->append(id + static_cast<size_t>(state.row_start));
                         context_->index_engine()->insert_row(output_->data_chunk(), id, pipeline_context);
                     }
                     context_->table_storage().table().append(output_->data_chunk(), state);
@@ -115,7 +115,8 @@ namespace components::table::operators {
                 for (size_t i = 0; i < chunk.size(); i++) {
                     if (predicate->check(chunk, i)) {
                         if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                            out_chunk.row_ids.data<int64_t>()[index] = chunk.data.front().indexing().get_index(i);
+                            out_chunk.row_ids.data<int64_t>()[index] =
+                                static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
                         } else {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
                         }

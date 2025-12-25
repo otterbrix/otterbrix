@@ -6,7 +6,7 @@
 
 namespace components::catalog {
     struct transaction_list {
-        transaction_list(std::pmr::memory_resource* resource);
+        explicit transaction_list(std::pmr::memory_resource* resource);
 
         transaction_list(const transaction_list&) = delete;
         transaction_list(transaction_list&& other) = delete;

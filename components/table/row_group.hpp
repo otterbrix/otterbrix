@@ -21,7 +21,7 @@ namespace components::table {
     public:
         friend class column_data_t;
 
-        row_group_t(collection_t* collection, uint64_t start, uint64_t count);
+        row_group_t(collection_t* collection, int64_t start, uint64_t count);
         ~row_group_t() = default;
 
     private:
@@ -32,7 +32,7 @@ namespace components::table {
         std::vector<std::shared_ptr<column_data_t>> columns_;
 
     public:
-        void move_to_collection(collection_t* collection, uint64_t new_start);
+        void move_to_collection(collection_t* collection, int64_t new_start);
         collection_t& collection() { return *collection_; }
 
         storage::block_manager_t& block_manager();
@@ -54,7 +54,7 @@ namespace components::table {
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        bool check_predicate(uint64_t row_id, const table_filter_t* filter);
+        bool check_predicate(int64_t row_id, const table_filter_t* filter);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,

@@ -12,7 +12,7 @@ namespace components::logical_plan {
                                                    const collection_full_name_t& collection)
         : node_t(resource, node_type::drop_collection_t, collection) {}
 
-    node_ptr node_drop_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_drop_collection_ptr node_drop_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return make_node_drop_collection(deserializer->resource(), deserializer->deserialize_collection(1));
     }
 

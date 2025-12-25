@@ -658,7 +658,6 @@ static inline Node* castNodeImpl(NodeTag type, void* ptr) {
 */
 
 /*
-/*
 * nodes/copyfuncs.c
 */
 extern void* copyObject(std::pmr::memory_resource* resource, const void* obj); // mdxn: used only once - gram.y 17070

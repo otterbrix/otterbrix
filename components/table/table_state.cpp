@@ -126,7 +126,7 @@ namespace components::table {
             } else if (!observe_ && iteration_count_ == execute_interval_) {
                 prev_mean_ = runtime_sum_ / static_cast<double>(iteration_count_);
 
-                auto random_number = 1 + std::rand() / ((RAND_MAX + 1u) / right_random_border_);
+                auto random_number = 1 + static_cast<uint64_t>(std::rand()) / ((RAND_MAX + 1u) / right_random_border_);
 
                 swap_idx_ = random_number / 100;
                 uint64_t likeliness = random_number - 100 * swap_idx_;
@@ -178,7 +178,7 @@ namespace components::table {
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
         while (row_group) {
             row_group->scan(*this, result);
-            if (max_row <= row_group->start + row_group->count) {
+            if (max_row <= row_group->start + static_cast<int64_t>(row_group->count)) {
                 row_group = nullptr;
                 return false;
             } else {

@@ -608,7 +608,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 auto cur = dispatcher->execute_plan(session, agg);
                 REQUIRE(cur->size() == 10);
                 data.reserve(cur->size());
-                for (int num = 0; num < cur->size(); ++num) {
+                for (size_t num = 0; num < cur->size(); ++num) {
                     REQUIRE(cur->has_next());
                     cur->next_document();
                     data.emplace_back(cur->get_document());
@@ -654,10 +654,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {doc_database_name, doc_other_collection_name});
                 auto cur = dispatcher->execute_plan(session, agg);
                 REQUIRE(cur->size() == 10);
-                for (int num = 0; num < cur->size(); ++num) {
+                for (size_t num = 0; num < cur->size(); ++num) {
                     REQUIRE(cur->has_next());
                     cur->next_document();
-                    REQUIRE((91 + num) * 2 == cur->get_document()->get_long("count"));
+                    REQUIRE(static_cast<int64_t>(91 + num) * 2 == cur->get_document()->get_long("count"));
                 }
             }
         }
@@ -707,8 +707,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              {table_database_name, table_other_collection_name});
                 auto cur = dispatcher->execute_plan(session, agg);
                 REQUIRE(cur->size() == 10);
-                for (int num = 0; num < cur->size(); ++num) {
-                    REQUIRE(cur->chunk_data().value(0, num).value<int64_t>() == (91 + num) * 2);
+                for (size_t num = 0; num < cur->size(); ++num) {
+                    REQUIRE(cur->chunk_data().value(0, num).value<int64_t>() == static_cast<int64_t>(91 + num) * 2);
                 }
             }
         }
@@ -720,7 +720,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             std::pmr::vector<components::document::document_ptr> documents_right(dispatcher->resource());
             for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
                 auto doc_left = make_document(dispatcher->resource());
-                doc_left->set("_id", gen_id(num + 1, dispatcher->resource()));
+                doc_left->set("_id", gen_id(static_cast<int>(num + 1), dispatcher->resource()));
                 doc_left->set("name", "Name " + std::to_string(num));
                 doc_left->set("key_1", num);
                 doc_left->set("key_2", reversed);
@@ -728,7 +728,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             }
             for (int64_t num = 0; num < 100; ++num) {
                 auto doc_right = make_document(dispatcher->resource());
-                doc_right->set("_id", gen_id(num + 1001, dispatcher->resource()));
+                doc_right->set("_id", gen_id(static_cast<int>(num + 1001), dispatcher->resource()));
                 doc_right->set("value", (num + 25) * 2 * 10);
                 doc_right->set("key", (num + 25) * 2);
                 documents_right.emplace_back(std::move(doc_right));
@@ -964,7 +964,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == documents_left.size());
 
-                for (int num = 0; num < cur->size(); ++num) {
+                for (size_t num = 0; num < cur->size(); ++num) {
                     REQUIRE(cur->has_next());
                     cur->next_document();
                     REQUIRE(cur->get_document() == documents_left[num]);
@@ -978,15 +978,21 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             chunk_right.set_cardinality(100);
 
             for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
-                chunk_left.set_value(0, num, types::logical_value_t{gen_id(num + 1)});
-                chunk_left.set_value(1, num, types::logical_value_t{"Name " + std::to_string(num)});
-                chunk_left.set_value(2, num, types::logical_value_t{num});
-                chunk_left.set_value(3, num, types::logical_value_t{reversed});
+                chunk_left.set_value(0,
+                                     static_cast<size_t>(num),
+                                     types::logical_value_t{gen_id(static_cast<int>(num + 1))});
+                chunk_left.set_value(1,
+                                     static_cast<size_t>(num),
+                                     types::logical_value_t{"Name " + std::to_string(num)});
+                chunk_left.set_value(2, static_cast<size_t>(num), types::logical_value_t{num});
+                chunk_left.set_value(3, static_cast<size_t>(num), types::logical_value_t{reversed});
             }
             for (int64_t num = 0; num < 100; ++num) {
-                chunk_right.set_value(0, num, types::logical_value_t{gen_id(num + 1001)});
-                chunk_right.set_value(1, num, types::logical_value_t{(num + 25) * 2 * 10});
-                chunk_right.set_value(2, num, types::logical_value_t{(num + 25) * 2});
+                chunk_right.set_value(0,
+                                      static_cast<size_t>(num),
+                                      types::logical_value_t{gen_id(static_cast<int>(num + 1001))});
+                chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2 * 10});
+                chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2});
             }
             {
                 auto session = otterbrix::session_id_t();
@@ -1020,10 +1026,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->size() == 26);
 
                 for (int num = 0; num < 26; ++num) {
-                    REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(5, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() ==
+                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                             "Name " + std::to_string((num + 25) * 2));
                 }
             }
@@ -1045,10 +1052,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->size() == 26);
 
                 for (int num = 0; num < 26; ++num) {
-                    REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(5, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() ==
+                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                             "Name " + std::to_string((num + 25) * 2));
                 }
             }
@@ -1069,10 +1077,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->size() == 26);
 
                 for (int num = 0; num < 26; ++num) {
-                    REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(5, num).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() ==
+                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                             "Name " + std::to_string((num + 25) * 2));
                 }
             }
@@ -1104,10 +1113,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->size() == 13);
 
                 for (int index = 0, num = 13; index < 13; ++index, ++num) {
-                    REQUIRE(cur->chunk_data().value(2, index).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(5, index).value<int64_t>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(4, index).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(1, index).value<std::string_view>() ==
+                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
+                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(index)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(index)).value<std::string_view>() ==
                             "Name " + std::to_string((num + 25) * 2));
                 }
             }
@@ -1206,11 +1216,15 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
 
                 for (int num = 12; num >= 0; --num) {
-                    REQUIRE(cur->chunk_data().value(1, num).value<uint64_t>() == 1);
-                    REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(3, num).value<double>() == (num + 25) * 2);
-                    REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == (num + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(5, num).value<int64_t>() == (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
+                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(core::is_equals(cur->chunk_data().value(3, static_cast<size_t>(num)).value<double>(),
+                                            static_cast<double>((num + 25) * 2)));
+                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
+                            (num + 25) * 2 * 10);
                 }
             }
             INFO("just raw data") {

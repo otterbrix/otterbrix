@@ -25,7 +25,7 @@ using vec = std::vector<v>;
         }                                                                                                              \
     }
 
-TEST_CASE("sql::functions") {
+TEST_CASE("components::sql::functions") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

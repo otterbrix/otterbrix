@@ -38,8 +38,8 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 
             std::stringstream query;
             query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
-            for (int num = start; num < end; ++num) {
-                query << "('" << gen_id(num + 1, dispatcher->resource()) << "', "
+            for (size_t num = start; num < end; ++num) {
+                query << "('" << gen_id(static_cast<int>(num + 1), dispatcher->resource()) << "', "
                       << "'Name " << num << "', " << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto session = otterbrix::session_id_t();
@@ -123,8 +123,8 @@ TEST_CASE("integration::cpp::test_connectors") {
 
             std::stringstream query;
             query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
-            for (int num = start; num < end; ++num) {
-                query << "('" << gen_id(num + 1, otterbrix->dispatcher()->resource()) << "', "
+            for (size_t num = start; num < end; ++num) {
+                query << "('" << gen_id(static_cast<int>(num + 1), otterbrix->dispatcher()->resource()) << "', "
                       << "'Name " << num << "', " << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto c = connectors[id]->execute(query.str());

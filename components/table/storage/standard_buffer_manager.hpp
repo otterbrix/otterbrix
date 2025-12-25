@@ -22,6 +22,7 @@ namespace components::table::storage {
                                   buffer_pool_t& buffer_pool);
 
         std::shared_ptr<block_handle_t> register_transient_memory(uint64_t size, uint64_t block_size) final;
+        std::shared_ptr<block_handle_t> register_small_memory(uint64_t size) final;
         std::shared_ptr<block_handle_t> register_small_memory(memory_tag tag, uint64_t size) final;
 
         uint64_t block_allocation_size() const final;
@@ -35,7 +36,7 @@ namespace components::table::storage {
         void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) final;
         void unpin(std::shared_ptr<block_handle_t>& handle) final;
 
-        void set_memory_limit(uint64_t limit = (uint64_t) -1) final;
+        void set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max()) final;
 
         std::vector<memory_info_t> get_memory_usage_info() const override;
 
@@ -63,14 +64,14 @@ namespace components::table::storage {
         void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) final;
 
         void batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
-                        const std::map<uint32_t, uint64_t>& load_map,
-                        uint32_t first_block,
-                        uint32_t last_block);
+                        const std::map<uint64_t, uint64_t>& load_map,
+                        uint64_t first_block,
+                        uint64_t last_block);
 
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t& fs_;
         buffer_pool_t& buffer_pool_;
-        std::atomic<uint32_t> temp_id_;
+        std::atomic<uint64_t> temp_id_;
         std::unique_ptr<block_manager_t> temp_block_manager_;
         std::atomic<uint64_t> evicted_data_per_tag_[static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT)];
     };

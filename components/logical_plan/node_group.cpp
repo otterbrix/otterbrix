@@ -11,7 +11,7 @@ namespace components::logical_plan {
     node_group_t::node_group_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
         : node_t(resource, node_type::group_t, collection) {}
 
-    node_ptr node_group_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_group_ptr node_group_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
         deserializer->advance_array(2);
         std::pmr::vector<logical_plan::expression_ptr> exprs(deserializer->resource());

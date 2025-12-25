@@ -17,7 +17,7 @@ namespace components::collection::operators {
     private:
         sort::sorter_t sorter_;
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };
 
 } // namespace components::collection::operators

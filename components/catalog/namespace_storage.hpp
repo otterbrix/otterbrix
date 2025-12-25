@@ -6,7 +6,6 @@
 #include "versioned_trie/versioned_trie.hpp"
 
 #include <map>
-#include <stdexcept>
 
 namespace components::catalog {
 

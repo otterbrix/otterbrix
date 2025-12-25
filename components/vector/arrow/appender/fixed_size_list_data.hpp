@@ -1,7 +1,6 @@
 #pragma once
 
 #include "append_data.hpp"
-#include <components/vector/arrow/arrow_appender.hpp>
 
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>

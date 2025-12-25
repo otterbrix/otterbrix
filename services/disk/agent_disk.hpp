@@ -3,7 +3,6 @@
 #include "command.hpp"
 #include "disk.hpp"
 
-#include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <core/excutor.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -19,7 +18,7 @@ namespace services::disk {
     class agent_disk_t final : public actor_zeta::basic_actor<agent_disk_t> {
     public:
         agent_disk_t(manager_disk_t*, const path_t& path_db, log_t& log);
-        ~agent_disk_t();
+        ~agent_disk_t() override;
 
         auto load(const session_id_t& session, actor_zeta::address_t dispatcher) -> void;
 
@@ -34,7 +33,7 @@ namespace services::disk {
 
         auto fix_wal_id(wal::id_t wal_id) -> void;
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
 
         actor_zeta::behavior_t behavior();
 

@@ -7,8 +7,8 @@
 
 #include <core/assert/assert.hpp>
 
-#include "dataframe/types.hpp"
 #include "temporary.hpp"
+#include <dataframe/types.hpp>
 
 namespace core::numbers {
 

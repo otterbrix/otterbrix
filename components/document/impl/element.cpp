@@ -292,13 +292,13 @@ namespace components::document::impl {
                 return absl::uint128(tape_.template next_tape_value<int8_t>());
             }
             case types::physical_type::UINT8: {
-                return absl::uint128(tape_.template next_tape_value<uint8_t>());
+                return absl::uint128(static_cast<uint64_t>(tape_.template next_tape_value<uint8_t>()));
             }
             case types::physical_type::INT16: {
                 return absl::uint128(tape_.template next_tape_value<int16_t>());
             }
             case types::physical_type::UINT16: {
-                return absl::uint128(tape_.template next_tape_value<uint16_t>());
+                return absl::uint128(static_cast<uint64_t>(tape_.template next_tape_value<uint16_t>()));
             }
             case types::physical_type::INT32: {
                 return absl::uint128(tape_.template next_tape_value<int32_t>());
@@ -491,13 +491,13 @@ namespace components::document::impl {
                 return absl::int128(tape_.template next_tape_value<int8_t>());
             }
             case types::physical_type::UINT8: {
-                return absl::int128(tape_.template next_tape_value<uint8_t>());
+                return absl::int128(static_cast<uint64_t>(tape_.template next_tape_value<uint8_t>()));
             }
             case types::physical_type::INT16: {
                 return absl::int128(tape_.template next_tape_value<int16_t>());
             }
             case types::physical_type::UINT16: {
-                return absl::int128(tape_.template next_tape_value<uint16_t>());
+                return absl::int128(static_cast<uint64_t>(tape_.template next_tape_value<uint16_t>()));
             }
             case types::physical_type::INT32: {
                 return absl::int128(tape_.template next_tape_value<int32_t>());

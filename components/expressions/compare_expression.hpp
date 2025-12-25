@@ -2,7 +2,6 @@
 
 #include "expression.hpp"
 #include "key.hpp"
-#include <memory>
 #include <memory_resource>
 
 namespace components::expressions {
@@ -10,11 +9,11 @@ namespace components::expressions {
     class compare_expression_t;
     using compare_expression_ptr = boost::intrusive_ptr<compare_expression_t>;
 
-    class compare_expression_t : public expression_i {
+    class compare_expression_t final : public expression_i {
     public:
         compare_expression_t(const compare_expression_t&) = delete;
         compare_expression_t(compare_expression_t&&) noexcept = default;
-        ~compare_expression_t() final = default;
+        ~compare_expression_t() override = default;
 
         compare_expression_t(std::pmr::memory_resource* resource,
                              compare_type type,
@@ -45,10 +44,10 @@ namespace components::expressions {
         core::parameter_id_t value_;
         std::pmr::vector<expression_ptr> children_;
 
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        bool equal_impl(const expression_i* rhs) const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        bool equal_impl(const expression_i* rhs) const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,

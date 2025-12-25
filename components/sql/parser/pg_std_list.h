@@ -35,7 +35,7 @@ inline Nil_t NIL;
 
 static inline PGListCell* list_head(const PGList* l) { return const_cast<PGListCell*>(l ? &*l->lst.begin() : nullptr); }
 
-static inline int list_length(const PGList* l) { return l->lst.size(); }
+static inline size_t list_length(const PGList* l) { return l->lst.size(); }
 
 #define lfirst(lc) ((lc)->data)
 #define linitial(l) lfirst(list_head(l))

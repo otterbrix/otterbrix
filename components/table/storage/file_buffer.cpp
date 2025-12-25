@@ -45,7 +45,7 @@ namespace components::table::storage {
     }
 
     void file_buffer_t::reallocate_buffer(size_t new_size) {
-        std::byte* new_buffer = (std::byte*) resource_->allocate(new_size);
+        std::byte* new_buffer = static_cast<std::byte*>(resource_->allocate(new_size));
         if (internal_buffer_) {
             std::memcpy(new_buffer, internal_buffer_, std::min(new_size, size_));
             resource_->deallocate(internal_buffer_, internal_size_);

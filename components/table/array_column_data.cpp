@@ -8,20 +8,20 @@ namespace components::table {
     array_column_data_t::array_column_data_t(std::pmr::memory_resource* resource,
                                              storage::block_manager_t& block_manager,
                                              uint64_t column_index,
-                                             uint64_t start_row,
+                                             int64_t start_row,
                                              types::complex_logical_type type,
                                              column_data_t* parent)
         : column_data_t(resource, block_manager, column_index, start_row, std::move(type), parent)
         , child_column(create_column(resource, block_manager, 1, start_row, type_.child_type(), this))
         , validity(resource, block_manager, 0, start_row, *this) {}
 
-    void array_column_data_t::set_start(uint64_t new_start) {
+    void array_column_data_t::set_start(int64_t new_start) {
         start_ = new_start;
         child_column->set_start(new_start);
         validity.set_start(new_start);
     }
 
-    filter_propagate_result_t array_column_data_t::check_zonemap(column_scan_state& state, table_filter_t& filter) {
+    filter_propagate_result_t array_column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -35,7 +35,7 @@ namespace components::table {
         child_column->initialize_scan(state.child_states[1]);
     }
 
-    void array_column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
+    void array_column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         assert(state.child_states.size() == 2);
 
         if (row_idx == 0) {
@@ -49,11 +49,11 @@ namespace components::table {
         validity.initialize_scan_with_offset(state.child_states[0], row_idx);
 
         auto size = array_size();
-        auto child_count = (row_idx - start_) * size;
+        auto child_count = static_cast<uint64_t>(row_idx - start_) * size;
 
         assert(child_count <= child_column->max_entry());
         if (child_count < child_column->max_entry()) {
-            const auto child_offset = start_ + child_count;
+            const auto child_offset = start_ + static_cast<int64_t>(child_count);
             child_column->initialize_scan_with_offset(state.child_states[1], child_offset);
         }
     }
@@ -91,10 +91,10 @@ namespace components::table {
         return result_count;
     }
 
-    uint64_t array_column_data_t::scan_committed(uint64_t vector_index,
+    uint64_t array_column_data_t::scan_committed(uint64_t,
                                                  column_scan_state& state,
                                                  vector::vector_t& result,
-                                                 bool allow_updates,
+                                                 bool,
                                                  uint64_t count) {
         return scan_count(state, result, count);
     }
@@ -143,12 +143,12 @@ namespace components::table {
     void array_column_data_t::revert_append(int64_t start_row) {
         validity.revert_append(start_row);
         auto size = array_size();
-        child_column->revert_append(start_row * size);
+        child_column->revert_append(start_row * static_cast<int64_t>(size));
 
-        count_ = start_row - start_;
+        count_ = static_cast<uint64_t>(start_row - start_);
     }
 
-    uint64_t array_column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
+    uint64_t array_column_data_t::fetch(column_scan_state&, int64_t, vector::vector_t&) {
         throw std::logic_error("Function is not implemented: Array fetch");
     }
 
@@ -246,7 +246,7 @@ namespace components::table {
         auto child_state = std::make_unique<column_scan_state>();
         child_state->initialize(child_type);
         auto size = array_size();
-        const auto child_offset = start_ + (static_cast<uint64_t>(row_id) - start_) * size;
+        const auto child_offset = start_ + (row_id - start_) * static_cast<int64_t>(size);
 
         child_column->initialize_scan_with_offset(*child_state, child_offset);
         vector::vector_t child_scan(resource_, child_type, size);

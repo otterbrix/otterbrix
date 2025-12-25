@@ -8,7 +8,7 @@ namespace components::table::operators::aggregate {
 
     void operator_aggregate_t::on_execute_impl(pipeline::context_t*) { aggregate_result_ = aggregate_impl(); }
 
-    void operator_aggregate_t::set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view key) const {
+    void operator_aggregate_t::set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view) const {
         auto res_it = std::find_if(row.begin(), row.end(), [&](const types::logical_value_t& v) {
             return !v.type().extension() ? false : v.type().alias() == key_impl();
         });

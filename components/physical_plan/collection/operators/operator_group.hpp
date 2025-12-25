@@ -29,7 +29,7 @@ namespace components::collection::operators {
         std::pmr::vector<group_value_t> values_;
         std::pmr::vector<base::operators::operator_data_ptr> input_documents_;
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         void create_list_documents();
         void calc_aggregate_values(pipeline::context_t* pipeline_context);

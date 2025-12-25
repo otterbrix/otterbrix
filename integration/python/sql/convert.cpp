@@ -132,13 +132,13 @@ auto from_document(const json_trie_node* value) -> py::object {
             std::string key(it->first->get_mut()->get_string().value());
             dict[py::str(key)] = from_document(it->second.get());
         }
-        return std::move(dict);
+        return dict;
     } else if (value->type() == json_type::ARRAY) {
         py::list list;
         for (uint32_t i = 0; i < value->get_array()->size(); ++i) {
             list.append(from_document(value->get_array()->get(i)));
         }
-        return std::move(list);
+        return list;
     }
     if (value->type() == json_type::MUT) {
         return from_document(value->get_mut());

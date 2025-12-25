@@ -64,7 +64,7 @@ namespace core::b_plus_tree {
                         uint64_t segment_tree_id,
                         size_t min_node_capacity,
                         size_t max_node_capacity);
-            ~leaf_node_t() = default;
+            ~leaf_node_t() override = default;
 
             bool is_inner_node() const override { return false; }
             bool is_leaf_node() const override { return true; }
@@ -112,7 +112,7 @@ namespace core::b_plus_tree {
         class inner_node_t : public base_node_t {
         public:
             inner_node_t(std::pmr::memory_resource* resource, size_t min_node_capacity, size_t max_node_capacity);
-            ~inner_node_t();
+            ~inner_node_t() override;
 
             bool is_inner_node() const override { return true; }
             bool is_leaf_node() const override { return false; }
@@ -148,9 +148,9 @@ namespace core::b_plus_tree {
 
         //template<typename T, typename Serializer>
         //bool append(T item, Serializer serializer);
-        bool append(data_ptr_t data, size_t size);
+        bool append(data_ptr_t data, uint32_t size);
         bool append(item_data item);
-        bool remove(data_ptr_t data, size_t size);
+        bool remove(data_ptr_t data, uint32_t size);
         bool remove(item_data item);
         //template<typename T>
         //bool remove_index(T value); // transforms value to index_t

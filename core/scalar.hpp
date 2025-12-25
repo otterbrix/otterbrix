@@ -9,7 +9,7 @@ namespace core {
     template<typename T>
     class scalar {
     public:
-        static_assert(std::is_trivially_copyable<T>::value, "Scalar type must be trivially copyable");
+        static_assert(std::is_trivially_copyable_v<T>, "Scalar type must be trivially copyable");
 
         using value_type = typename uvector<T>::value_type;
         using reference = typename uvector<T>::reference;
@@ -41,7 +41,7 @@ namespace core {
 
         void set_value(value_type&&) = delete;
 
-        void set_value_to_zero() { _storage.set_element_to_zero(value_type{0}); }
+        void set_value_to_zero() { _storage.set_element_to_zero(static_cast<size_t>(value_type{0})); }
 
         [[nodiscard]] pointer data() noexcept { return static_cast<pointer>(_storage.data()); }
 

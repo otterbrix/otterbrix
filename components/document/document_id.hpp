@@ -3,7 +3,6 @@
 #include <cstdint>
 
 #include <components/oid/oid.hpp>
-#include <memory>
 
 namespace components::document {
 

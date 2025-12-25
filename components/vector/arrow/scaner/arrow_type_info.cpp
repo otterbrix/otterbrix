@@ -1,4 +1,5 @@
 #include "arrow_type_info.hpp"
+#include <cassert>
 
 namespace components::vector::arrow {
 
@@ -10,8 +11,6 @@ namespace components::vector::arrow {
         , children_(std::move(children)) {}
 
     size_t arrow_struct_info::child_count() const { return children_.size(); }
-
-    arrow_struct_info::~arrow_struct_info() {}
 
     const arrow_type& arrow_struct_info::get_child(size_t index) const {
         assert(index < children_.size());

@@ -30,7 +30,7 @@ using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 using fields = std::pmr::vector<update_expr_ptr>;
 
-TEST_CASE("sql::update") {
+TEST_CASE("components::sql::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -80,7 +80,7 @@ TEST_CASE("sql::update") {
     }
 }
 
-TEST_CASE("sql::update_where") {
+TEST_CASE("components::sql::update_where") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
@@ -132,7 +132,7 @@ TEST_CASE("sql::update_where") {
     }
 }
 
-TEST_CASE("sql::update_from") {
+TEST_CASE("components::sql::update_from") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);

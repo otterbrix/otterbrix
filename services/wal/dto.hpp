@@ -4,7 +4,6 @@
 
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <cstdint>
 #include <msgpack.hpp>
 
 namespace services::wal {

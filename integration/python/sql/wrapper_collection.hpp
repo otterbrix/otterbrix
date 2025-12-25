@@ -1,8 +1,6 @@
 #pragma once
 
-#include <condition_variable>
 #include <memory>
-#include <mutex>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
@@ -13,7 +11,6 @@
 
 #include <components/log/log.hpp>
 
-#include "forward.hpp"
 #include "integration/cpp/wrapper_dispatcher.hpp"
 #include "wrapper_cursor.hpp"
 

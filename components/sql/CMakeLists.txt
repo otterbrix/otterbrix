@@ -1,10 +1,23 @@
 project(sql CXX)
 
+find_package(BISON REQUIRED)
+find_package(FLEX REQUIRED)
+
+bison_target(
+        Parser
+        parser/gram.y
+        ${CMAKE_CURRENT_BINARY_DIR}/parser/gram.cpp
+        DEFINES_FILE ${CMAKE_CURRENT_BINARY_DIR}/parser/gram.hpp
+)
+flex_target(Lexer parser/scan.l ${CMAKE_CURRENT_BINARY_DIR}/parser/scan.cpp)
+add_flex_bison_dependency(Lexer Parser)
+
 set(SOURCE_${PROJECT_NAME}
-    parser/gram.cpp
+    ${BISON_Parser_OUTPUTS}
+    ${FLEX_Lexer_OUTPUTS}
+
     parser/pg_functions.cpp
     parser/pg_std_list.cpp
-    parser/scan.cpp
     parser/scansup.cpp
     parser/keyword.cpp
     parser/parser.cpp
@@ -50,8 +63,9 @@ target_link_libraries(
 )
 
 target_include_directories(
-    otterbrix_${PROJECT_NAME}
-    PUBLIC
+    otterbrix_${PROJECT_NAME} PUBLIC
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/parser
 )
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")

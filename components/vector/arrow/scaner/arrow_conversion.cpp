@@ -27,7 +27,8 @@ namespace components::vector::arrow::scaner {
 
     template<class T>
     T* arrow_buffer_data(ArrowArray& array, size_t buffer_idx) {
-        return (T*) array.buffers[buffer_idx];
+        // due to ArrowArray structure, const_cast is necessary to use buffers
+        return const_cast<T*>(static_cast<const T*>(array.buffers[buffer_idx]));
     }
 
     static void get_validity(validity_mask_t& mask,
@@ -236,7 +237,7 @@ namespace components::vector::arrow::scaner {
                                          size_t size,
                                          const arrow_type& arrow_type,
                                          int64_t nested_offset,
-                                         validity_mask_t* parent_mask,
+                                         validity_mask_t*,
                                          uint64_t parent_offset) {
         assert(array.n_children == 2);
         auto& run_ends_array = *array.children[0];
@@ -811,7 +812,8 @@ namespace components::vector::arrow::scaner {
                                 vector.set_auxiliary(std::make_shared<string_vector_buffer_t>(vector.resource()));
                             }
                             auto auxiliary = static_cast<string_vector_buffer_t*>(vector.auxiliary().get());
-                            result[row_idx] = std::string_view((char*) auxiliary->insert(cdata + offset, blob_len));
+                            result[row_idx] =
+                                std::string_view(static_cast<char*>(auxiliary->insert(cdata + offset, blob_len)));
                             offset += blob_len;
                         }
                     }

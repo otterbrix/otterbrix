@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
 #include <components/sql/parser/parser.h>
 
-TEST_CASE("sql::raw_parser_create") {
+TEST_CASE("components::sql::raw_parser_create") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource, R"_(create table test(a integer, b varchar(200));)_");
     REQUIRE(nodeTag(linitial(test)) == T_CreateStmt);
@@ -27,7 +27,7 @@ TEST_CASE("sql::raw_parser_create") {
     REQUIRE(nodeTag(linitial(test)) == T_CreateStmt);
 }
 
-TEST_CASE("sql::raw_parser_select") {
+TEST_CASE("components::sql::raw_parser_select") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource,
                            R"_(select * from tbl1 )_"
@@ -46,7 +46,7 @@ TEST_CASE("sql::raw_parser_select") {
     REQUIRE(nodeTag(linitial(test)) == T_SelectStmt);
 }
 
-TEST_CASE("sql::raw_parser_update") {
+TEST_CASE("components::sql::raw_parser_update") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource, R"_(update test set a = 1, b = 2 where test.a == 0;)_");
     REQUIRE(nodeTag(linitial(test)) == T_UpdateStmt);
@@ -57,7 +57,7 @@ TEST_CASE("sql::raw_parser_update") {
     REQUIRE(nodeTag(linitial(test)) == T_UpdateStmt);
 }
 
-TEST_CASE("sql::raw_parser_insert") {
+TEST_CASE("components::sql::raw_parser_insert") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource,
                            R"_(insert into employees (id, name, department_id) )_"
@@ -65,7 +65,7 @@ TEST_CASE("sql::raw_parser_insert") {
     REQUIRE(nodeTag(linitial(test)) == T_InsertStmt);
 }
 
-TEST_CASE("sql::raw_parser_drop") {
+TEST_CASE("components::sql::raw_parser_drop") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource, "drop table test;");
     REQUIRE(nodeTag(linitial(test)) == T_DropStmt);
@@ -76,7 +76,7 @@ TEST_CASE("sql::raw_parser_drop") {
     REQUIRE(nodeTag(linitial(test)) == T_DeleteStmt);
 }
 
-TEST_CASE("sql::raw_parser_index") {
+TEST_CASE("components::sql::raw_parser_index") {
     std::pmr::monotonic_buffer_resource arena_resource;
     auto test = raw_parser(&arena_resource, R"_(create index idx_name on employees (salary, department_id);)_");
     REQUIRE(nodeTag(linitial(test)) == T_IndexStmt);

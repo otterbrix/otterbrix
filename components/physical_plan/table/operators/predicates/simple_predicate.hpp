@@ -5,7 +5,7 @@
 
 namespace components::table::operators::predicates {
 
-    class simple_predicate : public predicate {
+    class simple_predicate final : public predicate {
     public:
         using check_function_t = std::function<bool(const vector::data_chunk_t& chunk_left,
                                                     const vector::data_chunk_t& chunk_right,
@@ -18,7 +18,7 @@ namespace components::table::operators::predicates {
         bool check_impl(const vector::data_chunk_t& chunk_left,
                         const vector::data_chunk_t& chunk_right,
                         size_t index_left,
-                        size_t index_right) final;
+                        size_t index_right) override;
 
         check_function_t func_;
         std::vector<predicate_ptr> nested_;

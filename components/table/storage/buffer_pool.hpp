@@ -55,7 +55,7 @@ namespace components::table::storage {
         std::vector<buffer_eviction_node_t> purge_nodes_;
     };
 
-    static uint64_t estimated_CPU_id() { return std::hash<std::thread::id>()(std::this_thread::get_id()); }
+    inline uint64_t estimated_CPU_id() { return std::hash<std::thread::id>()(std::this_thread::get_id()); }
 
     class buffer_pool_t {
         friend class block_handle_t;
@@ -130,7 +130,7 @@ namespace components::table::storage {
             uint64_t used_memory(memory_usage_caches cache) { return used_memory(TOTAL_MEMORY_USAGE_INDEX, cache); }
 
             uint64_t used_memory(memory_tag tag, memory_usage_caches cache) {
-                return used_memory((uint64_t) tag, cache);
+                return used_memory(static_cast<uint64_t>(tag), cache);
             }
 
             uint64_t used_memory(uint64_t index, memory_usage_caches cache) {
@@ -139,8 +139,8 @@ namespace components::table::storage {
                     return used_memory > 0 ? static_cast<uint64_t>(used_memory) : 0;
                 }
                 int64_t cached = 0;
-                for (auto& cache : memory_usage_caches_array) {
-                    cached += cache[index].exchange(0, std::memory_order_relaxed);
+                for (auto& cache_elem : memory_usage_caches_array) {
+                    cached += cache_elem[index].exchange(0, std::memory_order_relaxed);
                 }
                 auto used_memory = memory_usage[index].fetch_add(cached, std::memory_order_relaxed) + cached;
                 return used_memory > 0 ? static_cast<uint64_t>(used_memory) : 0;

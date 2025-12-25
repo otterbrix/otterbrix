@@ -9,7 +9,7 @@ using namespace test;
 using namespace components::types;
 using namespace components::catalog;
 
-TEST_CASE("catalog::transactions::commit_abort") {
+TEST_CASE("components::catalog::transactions::commit_abort") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
 
@@ -61,7 +61,7 @@ TEST_CASE("catalog::transactions::commit_abort") {
     }
 }
 
-TEST_CASE("catalog::transactions::changes") {
+TEST_CASE("components::catalog::transactions::changes") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
 
@@ -99,7 +99,7 @@ TEST_CASE("catalog::transactions::changes") {
     }
 }
 
-TEST_CASE("catalog::transactions::savepoints") {
+TEST_CASE("components::catalog::transactions::savepoints") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
 
@@ -141,7 +141,7 @@ TEST_CASE("catalog::transactions::savepoints") {
     }
 }
 
-TEST_CASE("catalog::transactions::edge_cases") {
+TEST_CASE("components::catalog::transactions::edge_cases") {
     auto mr = std::pmr::synchronized_pool_resource();
 
     SECTION("catalog_destroyed") {

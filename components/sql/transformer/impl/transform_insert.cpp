@@ -1,4 +1,5 @@
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>

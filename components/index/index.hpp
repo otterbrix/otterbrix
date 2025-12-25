@@ -32,7 +32,7 @@ namespace components::index {
             class iterator_impl_t;
 
             explicit iterator_t(iterator_impl_t*);
-            virtual ~iterator_t();
+            ~iterator_t();
 
             iterator_t(const iterator_t& other);
             iterator_t& operator=(const iterator_t& other);
@@ -102,7 +102,7 @@ namespace components::index {
         virtual void clean_memory_to_new_elements_impl(std::size_t count) = 0;
 
     protected:
-        std::unique_ptr<document::impl::base_document> tape_{new document::impl::base_document(resource_)};
+        std::unique_ptr<document::impl::base_document> tape_;
 
     private:
         std::pmr::memory_resource* resource_;

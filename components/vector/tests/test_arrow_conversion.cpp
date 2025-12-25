@@ -9,7 +9,7 @@ using namespace components::vector::arrow;
 using namespace components::vector;
 using namespace components::types;
 
-TEST_CASE("data_chunk to arrow") {
+TEST_CASE("components::vector::data_chunk_to_arrow") {
     constexpr size_t chunk_size = 2048;
     constexpr size_t array_size = 5;
     constexpr size_t max_list_size = 128;
@@ -46,7 +46,7 @@ TEST_CASE("data_chunk to arrow") {
         // double
         { chunk.set_value(2, i, logical_value_t{double(i) + 0.1}); }
         // bool
-        { chunk.set_value(3, i, logical_value_t{(bool) (i % 2)}); }
+        { chunk.set_value(3, i, logical_value_t{i % 2 != 0}); }
         // array_fixed
         {
             std::vector<logical_value_t> arr;
@@ -93,7 +93,7 @@ TEST_CASE("data_chunk to arrow") {
                 arr.emplace_back(j);
             }
             std::vector<logical_value_t> value_fiels;
-            value_fiels.emplace_back(logical_value_t{(bool) (i % 2)});
+            value_fiels.emplace_back(logical_value_t{i % 2 != 0});
             value_fiels.emplace_back(logical_value_t{static_cast<int32_t>(i)});
             value_fiels.emplace_back(logical_value_t{std::string{"long_string_with_index_" + std::to_string(i)}});
             value_fiels.emplace_back(logical_value_t::create_list(logical_type::USMALLINT, arr));

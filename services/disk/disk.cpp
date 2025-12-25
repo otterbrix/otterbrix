@@ -11,9 +11,7 @@ namespace services::disk {
 
     auto key_getter = [](const core::b_plus_tree::btree_t::item_data& item) -> core::b_plus_tree::btree_t::index_t {
         msgpack::unpacked msg;
-        msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
-            return true;
-        });
+        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
         return core::b_plus_tree::get_field(msg.get(), "/_id");
     };
 
@@ -55,7 +53,8 @@ namespace services::disk {
                                                              path_ / database / collection / base_index_name,
                                                              key_getter);
         }
-        db_[{database, collection}]->append(core::b_plus_tree::data_ptr_t(sbuf.data()), sbuf.size());
+        db_[{database, collection}]->append(core::b_plus_tree::data_ptr_t(sbuf.data()),
+                                            static_cast<uint32_t>(sbuf.size()));
         db_[{database, collection}]->flush();
     }
 
@@ -66,7 +65,7 @@ namespace services::disk {
 
         if (item.data) {
             msgpack::unpacked msg;
-            msgpack::unpack(msg, (char*) item.data, item.size);
+            msgpack::unpack(msg, item.data, item.size);
             msgpack::object obj = msg.get();
             return components::document::to_document(obj, resource_);
         }
@@ -84,7 +83,8 @@ namespace services::disk {
                                                                 const collection_name_t& collection) const {
         std::pmr::vector<document_id_t> id_documents;
         db_.at({database, collection})->full_scan(&id_documents, [](void* data, size_t size) {
-            auto key = key_getter(core::b_plus_tree::btree_t::item_data{core::b_plus_tree::data_ptr_t(data), size});
+            auto key = key_getter(core::b_plus_tree::btree_t::item_data{core::b_plus_tree::data_ptr_t(data),
+                                                                        static_cast<uint32_t>(size)});
             return document_id_t{key.value<components::types::physical_type::STRING>()};
         });
 
@@ -97,7 +97,7 @@ namespace services::disk {
         result.reserve(db_.at({database, collection})->size());
         db_.at({database, collection})->full_scan(&result, [&](void* data, size_t size) {
             msgpack::unpacked msg;
-            msgpack::unpack(msg, (char*) data, size);
+            msgpack::unpack(msg, static_cast<char*>(data), size);
             msgpack::object obj = msg.get();
             return components::document::to_document(obj, resource_);
         });
@@ -137,7 +137,7 @@ namespace services::disk {
     void disk_t::fix_wal_id(wal::id_t wal_id) {
         auto id = std::to_string(wal_id);
         file_wal_id_->write(id.data(), id.size(), 0);
-        file_wal_id_->truncate(id.size());
+        file_wal_id_->truncate(static_cast<int64_t>(id.size()));
     }
 
     wal::id_t disk_t::wal_id() const { return wal::id_from_string(file_wal_id_->read_line()); }

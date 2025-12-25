@@ -4,9 +4,8 @@
 
 namespace components::vector::arrow::appender {
 
-    void arrow_bool_data_t::initialize(arrow_append_data_t& result,
-                                       const types::complex_logical_type& type,
-                                       uint64_t capacity) {
+    void
+    arrow_bool_data_t::initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
         auto byte_count = (capacity + 7) / 8;
         result.main_buffer().reserve(byte_count);
     }
@@ -44,7 +43,7 @@ namespace components::vector::arrow::appender {
     }
 
     void arrow_bool_data_t::finalize(arrow_append_data_t& append_data,
-                                     const types::complex_logical_type& type,
+                                     const types::complex_logical_type&,
                                      ArrowArray* result) {
         result->n_buffers = 2;
         result->buffers[1] = append_data.main_buffer().data();

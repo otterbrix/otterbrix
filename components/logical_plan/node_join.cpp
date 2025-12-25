@@ -16,7 +16,7 @@ namespace components::logical_plan {
 
     join_type node_join_t::type() const { return type_; }
 
-    node_ptr node_join_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_join_ptr node_join_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto type = deserializer->deserialize_enum<join_type>(1);
         auto collection = deserializer->deserialize_collection(2);
         auto res = make_node_join(deserializer->resource(), collection, type);

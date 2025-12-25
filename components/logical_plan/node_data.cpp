@@ -102,9 +102,9 @@ namespace components::logical_plan {
         }
     }
 
-    node_ptr node_data_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_data_ptr node_data_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         bool uses_data_chunk = deserializer->deserialize_bool(1);
-        node_ptr result;
+        node_data_ptr result;
         if (uses_data_chunk) {
             deserializer->advance_array(2);
             result = make_node_raw_data(deserializer->resource(), vector::data_chunk_t::deserialize(deserializer));

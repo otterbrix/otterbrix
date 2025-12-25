@@ -10,7 +10,7 @@ namespace components::logical_plan {
 
     const std::string& node_drop_type_t::name() const noexcept { return name_; }
 
-    node_ptr node_drop_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_drop_type_ptr node_drop_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
         return make_node_drop_type(deserializer->resource(), std::move(name));
     }

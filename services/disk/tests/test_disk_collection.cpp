@@ -7,7 +7,7 @@ const std::string database_name2 = "test_database2";
 
 using namespace services::disk;
 
-TEST_CASE("sync collection from disk") {
+TEST_CASE("services::disk::sync_collection_from_disk") {
     auto resource = std::pmr::synchronized_pool_resource();
     core::filesystem::local_file_system_t fs = core::filesystem::local_file_system_t();
     if (directory_exists(fs, test_folder)) {

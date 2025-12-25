@@ -11,7 +11,7 @@ namespace components::table::operators {
                                  expressions::compare_expression_ptr expr = nullptr);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         expressions::compare_expression_ptr compare_expression_;
     };

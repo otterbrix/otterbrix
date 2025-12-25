@@ -9,8 +9,7 @@ namespace components::vector::arrow::appender {
 
     template<class SRC = std::string_view, class BUFTYPE = int64_t>
     struct arrow_string_data_t {
-        static void
-        initialize(arrow_append_data_t& result, const types::complex_logical_type& type, uint64_t capacity) {
+        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
             result.main_buffer().reserve((capacity + 1) * sizeof(BUFTYPE));
             result.auxiliary_buffer().reserve(capacity);
         }
@@ -26,7 +25,7 @@ namespace components::vector::arrow::appender {
             auto& aux_buffer = append_data.auxiliary_buffer();
 
             validity_buffer.resize_validity(append_data.row_count + size);
-            auto validity_data = (uint8_t*) validity_buffer.data();
+            auto validity_data = validity_buffer.data();
 
             main_buffer.resize(main_buffer.size() + sizeof(BUFTYPE) * (size + 1));
             auto data = format.get_data<SRC>();
@@ -66,8 +65,7 @@ namespace components::vector::arrow::appender {
             append_templated<false>(append_data, input, from, to, input_size);
         }
 
-        static void
-        finalize(arrow_append_data_t& append_data, const types::complex_logical_type& type, ArrowArray* result) {
+        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 3;
             result->buffers[1] = append_data.main_buffer().data();
             result->buffers[2] = append_data.auxiliary_buffer().data();

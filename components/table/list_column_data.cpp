@@ -5,7 +5,7 @@ namespace components::table {
     list_column_data_t::list_column_data_t(std::pmr::memory_resource* resource,
                                            storage::block_manager_t& block_manager,
                                            uint64_t column_index,
-                                           uint64_t start_row,
+                                           int64_t start_row,
                                            types::complex_logical_type type,
                                            column_data_t* parent)
         : column_data_t(resource, block_manager, column_index, start_row, std::move(type), parent)
@@ -14,13 +14,13 @@ namespace components::table {
         assert(type_.to_physical_type() == types::physical_type::LIST);
     }
 
-    void list_column_data_t::set_start(uint64_t new_start) {
+    void list_column_data_t::set_start(int64_t new_start) {
         column_data_t::set_start(new_start);
         child_column->set_start(new_start);
         validity.set_start(new_start);
     }
 
-    filter_propagate_result_t list_column_data_t::check_zonemap(column_scan_state& state, table_filter_t& filter) {
+    filter_propagate_result_t list_column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -33,7 +33,7 @@ namespace components::table {
         child_column->initialize_scan(state.child_states[1]);
     }
 
-    uint64_t list_column_data_t::fetch_list_offset(uint64_t row_idx) {
+    uint64_t list_column_data_t::fetch_list_offset(int64_t row_idx) {
         auto segment = data_.get_segment(row_idx);
         column_fetch_state fetch_state;
         vector::vector_t result(resource_, type_, 1);
@@ -42,7 +42,7 @@ namespace components::table {
         return result.data<uint64_t>()[0];
     }
 
-    void list_column_data_t::initialize_scan_with_offset(column_scan_state& state, uint64_t row_idx) {
+    void list_column_data_t::initialize_scan_with_offset(column_scan_state& state, int64_t row_idx) {
         if (row_idx == 0) {
             initialize_scan(state);
             return;
@@ -55,22 +55,20 @@ namespace components::table {
         auto child_offset = row_idx == start_ ? 0 : fetch_list_offset(row_idx - 1);
         assert(child_offset <= child_column->max_entry());
         if (child_offset < child_column->max_entry()) {
-            child_column->initialize_scan_with_offset(state.child_states[1], start_ + child_offset);
+            child_column->initialize_scan_with_offset(state.child_states[1],
+                                                      start_ + static_cast<int64_t>(child_offset));
         }
         state.last_offset = child_offset;
     }
 
-    uint64_t list_column_data_t::scan(uint64_t vector_index,
-                                      column_scan_state& state,
-                                      vector::vector_t& result,
-                                      uint64_t count) {
+    uint64_t list_column_data_t::scan(uint64_t, column_scan_state& state, vector::vector_t& result, uint64_t count) {
         return scan_count(state, result, count);
     }
 
-    uint64_t list_column_data_t::scan_committed(uint64_t vector_index,
+    uint64_t list_column_data_t::scan_committed(uint64_t,
                                                 column_scan_state& state,
                                                 vector::vector_t& result,
-                                                bool allow_updates,
+                                                bool,
                                                 uint64_t count) {
         return scan_count(state, result, count);
     }
@@ -113,8 +111,8 @@ namespace components::table {
             auto& child_entry = result.entry();
             if (child_entry.type().to_physical_type() != types::physical_type::STRUCT &&
                 child_entry.type().to_physical_type() != types::physical_type::ARRAY &&
-                state.child_states[1].row_index + child_scan_count >
-                    child_column->start() + child_column->max_entry()) {
+                static_cast<uint64_t>(state.child_states[1].row_index) + child_scan_count >
+                    static_cast<uint64_t>(child_column->start()) + child_column->max_entry()) {
                 throw std::runtime_error("list_column_data_t::scan_count - internal list scan offset is out of range");
             }
             state.child_states[1].result_offset = prev_size;
@@ -222,29 +220,23 @@ namespace components::table {
     void list_column_data_t::revert_append(int64_t start_row) {
         column_data_t::revert_append(start_row);
         validity.revert_append(start_row);
-        auto column_count = max_entry();
+        auto column_count = static_cast<int64_t>(max_entry());
         if (column_count > start_) {
             auto list_offset = fetch_list_offset(column_count - 1);
-            child_column->revert_append(list_offset);
+            child_column->revert_append(static_cast<int64_t>(list_offset));
         }
     }
 
-    uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
+    uint64_t list_column_data_t::fetch(column_scan_state&, int64_t, vector::vector_t&) {
         throw std::logic_error("Function is not implemented: List fetch");
     }
 
-    void list_column_data_t::update(uint64_t column_index,
-                                    vector::vector_t& update_vector,
-                                    int64_t* row_ids,
-                                    uint64_t update_count) {
+    void list_column_data_t::update(uint64_t, vector::vector_t&, int64_t*, uint64_t) {
         throw std::logic_error("Function is not implemented: List update is not supported.");
     }
 
-    void list_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                           vector::vector_t& update_vector,
-                                           int64_t* row_ids,
-                                           uint64_t update_count,
-                                           uint64_t depth) {
+    void
+    list_column_data_t::update_column(const std::vector<uint64_t>&, vector::vector_t&, int64_t*, uint64_t, uint64_t) {
         throw std::logic_error("Function is not implemented: List update Column is not supported");
     }
 
@@ -257,16 +249,16 @@ namespace components::table {
             state.child_states.push_back(std::move(child_state));
         }
 
-        auto start_offset = uint64_t(row_id) == start_ ? 0 : fetch_list_offset(static_cast<uint64_t>(row_id - 1));
-        auto end_offset = fetch_list_offset(static_cast<uint64_t>(row_id));
+        auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
+        auto end_offset = fetch_list_offset(row_id);
         validity.fetch_row(*state.child_states[0], row_id, result, result_idx);
 
-        auto& validity = result.validity();
+        auto& res_validity = result.validity();
         auto list_data = result.data<types::list_entry_t>();
         auto& list_entry = list_data[result_idx];
         list_entry.offset = result.size();
         list_entry.length = end_offset - start_offset;
-        if (!validity.row_is_valid(result_idx)) {
+        if (!res_validity.row_is_valid(result_idx)) {
             assert(list_entry.length == 0);
             return;
         }
@@ -277,9 +269,10 @@ namespace components::table {
             auto& child_type = result.type().child_type();
             vector::vector_t child_scan(result.resource(), child_type, child_scan_count);
             child_state->initialize(child_type);
-            child_column->initialize_scan_with_offset(*child_state, start_ + start_offset);
+            child_column->initialize_scan_with_offset(*child_state, start_ + static_cast<int64_t>(start_offset));
             assert(child_type.to_physical_type() == types::physical_type::STRUCT ||
-                   child_state->row_index + child_scan_count - start_ <= child_column->max_entry());
+                   static_cast<uint64_t>(child_state->row_index) + child_scan_count - static_cast<uint64_t>(start_) <=
+                       child_column->max_entry());
             child_column->scan_count(*child_state, child_scan, child_scan_count);
 
             result.append(child_scan, child_scan_count);

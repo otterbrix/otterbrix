@@ -21,7 +21,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
-TEST_CASE("operator::insert") {
+TEST_CASE("components::physical_plan::insert") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     SECTION("documents") {
@@ -34,7 +34,7 @@ TEST_CASE("operator::insert") {
     }
 }
 
-TEST_CASE("operator::full_scan") {
+TEST_CASE("components::physical_plan::full_scan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -201,7 +201,7 @@ TEST_CASE("operator::full_scan") {
     }
 }
 
-TEST_CASE("operator::delete") {
+TEST_CASE("components::physical_plan::delete") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -294,7 +294,7 @@ TEST_CASE("operator::delete") {
     }
 }
 
-TEST_CASE("operator::update") {
+TEST_CASE("components::physical_plan::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -504,7 +504,7 @@ TEST_CASE("operator::update") {
     }
 }
 
-TEST_CASE("operator::index_scan") {
+TEST_CASE("components::physical_plan::index_scan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = create_collection(&resource);
     auto table = create_table(&resource);
@@ -685,7 +685,7 @@ TEST_CASE("operator::index_scan") {
     }
 }
 
-TEST_CASE("operator::transfer_scan") {
+TEST_CASE("components::physical_plan::transfer_scan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -730,7 +730,7 @@ TEST_CASE("operator::transfer_scan") {
     }
 }
 
-TEST_CASE("operator::index::delete_and_update") {
+TEST_CASE("components::physical_plan::index::delete_and_update") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = create_collection(&resource);
     auto table = create_table(&resource);

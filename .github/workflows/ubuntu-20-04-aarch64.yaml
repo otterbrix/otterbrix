@@ -27,7 +27,7 @@ jobs:
           githubToken: ${{ github.token }}
 
           run: |
-            apt update && apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https  cmake
+            apt update && apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https cmake flex bison
             
             pip install conan==2.20.0 pytest==6.2.5
             conan profile detect --force

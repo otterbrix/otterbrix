@@ -12,7 +12,7 @@ namespace components::logical_plan {
                                                    const collection_full_name_t& collection)
         : node_t(resource, node_type::create_database_t, collection) {}
 
-    node_ptr node_create_database_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_create_database_ptr node_create_database_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return make_node_create_database(deserializer->resource(), deserializer->deserialize_collection(1));
     }
 

@@ -2,9 +2,7 @@
 
 namespace components::planner {
 
-    auto planner_t::create_plan(std::pmr::memory_resource* resource, logical_plan::node_ptr node)
-        -> logical_plan::node_ptr {
-        assert(resource && node);
+    auto planner_t::create_plan(std::pmr::memory_resource*, logical_plan::node_ptr node) -> logical_plan::node_ptr {
         return node;
     }
 

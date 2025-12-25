@@ -6,12 +6,10 @@
 #include <core/btree/btree.hpp>
 #include <core/pmr.hpp>
 
-#include <components/context/context.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/document/document.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/log/log.hpp>
-#include <components/logical_plan/node.hpp>
 #include <components/session/session.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>

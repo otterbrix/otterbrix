@@ -21,7 +21,7 @@ namespace components::logical_plan {
         return key_translation_;
     }
 
-    node_ptr node_insert_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_insert_ptr node_insert_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto collection = deserializer->deserialize_collection(1);
 
         auto res = make_node_insert(deserializer->resource(), collection);

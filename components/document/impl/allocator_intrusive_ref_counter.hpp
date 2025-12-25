@@ -1,7 +1,7 @@
 #pragma once
 
 #include <atomic>
-#include <components/document/impl/mr_utils.hpp>
+#include <core/pmr.hpp>
 #include <memory_resource>
 
 template<typename T>
@@ -26,7 +26,7 @@ public:
     friend void intrusive_ptr_release(allocator_intrusive_ref_counter<T>* p) {
         if (p->ref_count_.fetch_sub(1, std::memory_order_release) == 1) {
             std::atomic_thread_fence(std::memory_order_acquire);
-            mr_delete(p->get_allocator(), static_cast<T*>(p));
+            core::pmr::deallocate_ptr(p->get_allocator(), static_cast<T*>(p));
         }
     }
 

@@ -1,13 +1,11 @@
 #pragma once
 #include <components/types/types.hpp>
-#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
 #include <components/table/storage/buffer_handle.hpp>
-
-#include "segment_tree.hpp"
 
 #include <expressions/forward.hpp>
 #include <types/logical_value.hpp>
@@ -172,8 +170,8 @@ namespace components::table {
     };
     struct column_scan_state {
         column_segment_t* current = nullptr;
-        uint64_t row_index = 0;
-        uint64_t internal_index = 0;
+        int64_t row_index = 0;
+        int64_t internal_index = 0;
         std::unique_ptr<storage::buffer_handle_t> scan_state;
         std::vector<column_scan_state> child_states;
         bool initialized = false;
@@ -189,7 +187,7 @@ namespace components::table {
     };
 
     struct column_fetch_state {
-        std::unordered_map<uint32_t, storage::buffer_handle_t> handles;
+        std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
 
         storage::buffer_handle_t& get_or_insert_handle(column_segment_t& segment);
@@ -240,7 +238,7 @@ namespace components::table {
         std::string column_path;
         uint64_t segment_idx;
         std::string segment_type;
-        uint64_t segment_start;
+        int64_t segment_start;
         uint64_t segment_count;
         bool has_updates;
         uint32_t block_id;

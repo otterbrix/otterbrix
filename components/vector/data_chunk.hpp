@@ -15,9 +15,6 @@ namespace components::vector {
         data_chunk_t& operator=(data_chunk_t&&) = default;
         ~data_chunk_t() = default;
 
-        std::vector<vector_t> data;
-        vector_t row_ids;
-
         bool empty() const { return count_ == 0; }
         uint64_t size() const { return count_; }
         uint64_t capacity() const { return capacity_; }
@@ -91,6 +88,10 @@ namespace components::vector {
         std::pmr::memory_resource* resource_;
         uint64_t count_ = 0;
         uint64_t capacity_ = DEFAULT_VECTOR_CAPACITY;
+
+    public:
+        vector_t row_ids;
+        std::vector<vector_t> data;
     };
 
     void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);

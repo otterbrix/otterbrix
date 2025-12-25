@@ -74,7 +74,7 @@ namespace services::wal {
 
     auto manager_wal_replicate_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
 
-    auto manager_wal_replicate_t::make_type() const noexcept -> const char* const { return "manager_wal"; }
+    auto manager_wal_replicate_t::make_type() const noexcept -> const char* { return "manager_wal"; }
 
     auto manager_wal_replicate_t::enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void {
         std::unique_lock<spin_lock> _(lock_);
@@ -151,7 +151,7 @@ namespace services::wal {
             // TODO review
             //     auto address = spawn_actor<wal_replicate_t>(
             //         [this](wal_replicate_t* ptr) {
-            //             dispatchers_.emplace_back(ptr, [&](wal_replicate_t* agent) { mr_delete(resource(), agent); });
+            //             dispatchers_.emplace_back(ptr, [&](wal_replicate_t* agent) { core::pmr::deallocate_ptr(resource(), agent); });
             //         },
             //         log_,
             //         config_);
@@ -159,7 +159,7 @@ namespace services::wal {
             //     trace(log_, "manager_wal_replicate_t::create_wal_worker without disk");
             //     auto address = spawn_actor<wal_replicate_without_disk_t>(
             //         [this](wal_replicate_t* ptr) {
-            //             dispatchers_.emplace_back(ptr, [&](wal_replicate_t* agent) { mr_delete(resource(), agent); });
+            //             dispatchers_.emplace_back(ptr, [&](wal_replicate_t* agent) { core::pmr::deallocate_ptr(resource(), agent); });
             //         },
             //         log_,
             //         config_);
@@ -344,7 +344,7 @@ namespace services::wal {
 
     auto manager_wal_replicate_empty_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
 
-    auto manager_wal_replicate_empty_t::make_type() const noexcept -> const char* const { return "manager_wal_empty"; }
+    auto manager_wal_replicate_empty_t::make_type() const noexcept -> const char* { return "manager_wal_empty"; }
 
     actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {

@@ -2,7 +2,6 @@
 
 #include <components/document/base.hpp>
 
-#include <memory>
 #include <memory_resource>
 
 namespace components::document::impl {

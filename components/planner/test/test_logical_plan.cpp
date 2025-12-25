@@ -29,7 +29,7 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("logical_plan::create_database") {
+TEST_CASE("components::planner::create_database") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto plan = make_node_create_database(&resource, {database_name, {}});
     components::planner::planner_t planner;
@@ -37,7 +37,7 @@ TEST_CASE("logical_plan::create_database") {
     REQUIRE(node->to_string() == R"_($create_database: database)_");
 }
 
-TEST_CASE("logical_plan::drop_database") {
+TEST_CASE("components::planner::drop_database") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto plan = make_node_drop_database(&resource, {database_name, {}});
     components::planner::planner_t planner;
@@ -45,7 +45,7 @@ TEST_CASE("logical_plan::drop_database") {
     REQUIRE(node->to_string() == R"_($drop_database: database)_");
 }
 
-TEST_CASE("logical_plan::create_collection") {
+TEST_CASE("components::planner::create_collection") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto plan = make_node_create_collection(&resource, {database_name, collection_name});
     components::planner::planner_t planner;
@@ -53,7 +53,7 @@ TEST_CASE("logical_plan::create_collection") {
     REQUIRE(node->to_string() == R"_($create_collection: database.collection)_");
 }
 
-TEST_CASE("logical_plan::drop_collection") {
+TEST_CASE("components::planner::drop_collection") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto plan = make_node_drop_collection(&resource, {database_name, collection_name});
     components::planner::planner_t planner;
@@ -61,7 +61,7 @@ TEST_CASE("logical_plan::drop_collection") {
     REQUIRE(node->to_string() == R"_($drop_collection: database.collection)_");
 }
 
-TEST_CASE("logical_plan::match") {
+TEST_CASE("components::planner::match") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto node_match = make_node_match(&resource,
                                       get_name(),
@@ -72,7 +72,7 @@ TEST_CASE("logical_plan::match") {
     REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
 }
 
-TEST_CASE("logical_plan::group") {
+TEST_CASE("components::planner::group") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::vector<expression_ptr> expressions;
@@ -107,7 +107,7 @@ TEST_CASE("logical_plan::group") {
     }
 }
 
-TEST_CASE("logical_plan::sort") {
+TEST_CASE("components::planner::sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::vector<expression_ptr> expressions;
@@ -124,7 +124,7 @@ TEST_CASE("logical_plan::sort") {
     }
 }
 
-TEST_CASE("logical_plan::aggregate") {
+TEST_CASE("components::planner::aggregate") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto aggregate = make_node_aggregate(&resource, {database_name, collection_name});
 
@@ -163,7 +163,7 @@ TEST_CASE("logical_plan::aggregate") {
                                            R"_(})_");
 }
 
-TEST_CASE("logical_plan::insert") {
+TEST_CASE("components::planner::insert") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::pmr::vector<components::document::document_ptr> documents = {};
@@ -198,7 +198,7 @@ TEST_CASE("logical_plan::insert") {
     }
 }
 
-TEST_CASE("logical_plan::limit") {
+TEST_CASE("components::planner::limit") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         auto limit = limit_t::limit_one();
@@ -217,7 +217,7 @@ TEST_CASE("logical_plan::limit") {
     }
 }
 
-TEST_CASE("logical_plan::delete") {
+TEST_CASE("components::planner::delete") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto match = make_node_match(&resource,
                                  {database_name, collection_name},
@@ -240,7 +240,7 @@ TEST_CASE("logical_plan::delete") {
     }
 }
 
-TEST_CASE("logical_plan::update") {
+TEST_CASE("components::planner::update") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto match = make_node_match(&resource,
                                  {database_name, collection_name},

@@ -12,7 +12,7 @@ namespace components::collection::operators {
                                  predicates::predicate_ptr&& match_predicate = nullptr);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         predicates::predicate_ptr match_predicate_;
     };

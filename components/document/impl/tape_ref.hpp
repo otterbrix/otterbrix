@@ -39,13 +39,28 @@ namespace components::document {
                 return x;
             }
 
-            template<typename T, typename std::enable_if<(sizeof(T) >= sizeof(uint64_t)), uint8_t>::type = 1>
+            template<typename T, typename std::enable_if<(sizeof(T) == sizeof(uint64_t)), uint8_t>::type = 1>
             T next_tape_value() const noexcept {
-                static_assert(sizeof(T) == sizeof(uint64_t) || sizeof(T) == 2 * sizeof(uint64_t),
-                              "next_tape_value() template parameter must be 8, 16, 32, 64 or 128-bit");
                 T x;
                 std::memcpy(&x, &doc_->get_tape(json_index_ + 1), sizeof(T));
                 return x;
+            }
+
+            template<typename T, typename std::enable_if<(sizeof(T) == sizeof(uint64_t) * 2), uint8_t>::type = 1>
+            T next_tape_value() const noexcept {
+                if constexpr (std::is_same_v<T, int128_t>) {
+                    int64_t high;
+                    uint64_t low;
+                    std::memcpy(&high, &doc_->get_tape(json_index_ + 1), sizeof(int64_t));
+                    std::memcpy(&low, &doc_->get_tape(json_index_ + 2), sizeof(uint64_t));
+                    return absl::MakeInt128(high, low);
+                } else {
+                    uint64_t high;
+                    uint64_t low;
+                    std::memcpy(&high, &doc_->get_tape(json_index_ + 1), sizeof(int64_t));
+                    std::memcpy(&low, &doc_->get_tape(json_index_ + 2), sizeof(uint64_t));
+                    return absl::MakeUint128(high, low);
+                }
             }
 
             uint32_t get_string_length() const noexcept;

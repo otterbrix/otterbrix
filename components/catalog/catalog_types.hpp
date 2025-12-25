@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <chrono>
 
 #include <components/types/types.hpp>

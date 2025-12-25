@@ -2,7 +2,6 @@
 
 #include "append_data.hpp"
 #include <components/vector/arrow/arrow.hpp>
-#include <components/vector/arrow/arrow_appender.hpp>
 
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
@@ -20,7 +19,7 @@ namespace components::vector::arrow::appender {
         static bool skip_nulls() { return false; }
 
         template<class TGT>
-        static void set_null(TGT& value) {}
+        static void set_null(TGT&) {}
     };
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
@@ -56,13 +55,11 @@ namespace components::vector::arrow::appender {
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
     struct arrow_scala_data : public arrow_scalar_base_data_t<TGT, SRC, OP> {
-        static void
-        initialize(arrow_append_data_t& result, const types::complex_logical_type& type, uint64_t capacity) {
+        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
             result.main_buffer().reserve(capacity * sizeof(TGT));
         }
 
-        static void
-        finalize(arrow_append_data_t& append_data, const types::complex_logical_type& type, ArrowArray* result) {
+        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 2;
             result->buffers[1] = append_data.main_buffer().data();
         }

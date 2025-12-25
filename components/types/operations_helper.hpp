@@ -2,20 +2,16 @@
 
 #include "types.hpp"
 #include <boost/math/special_functions/factorials.hpp>
+#include <core/operations_helper.hpp>
 
 namespace components::types {
-
-    template<typename T, typename = std::enable_if_t<std::is_floating_point_v<T>>>
-    static inline bool is_equals(T x, T y) {
-        return std::fabs(x - y) < std::numeric_limits<T>::epsilon();
-    }
 
     // This could be useful in other places, but for now it is here
     // Default only accepts int as amount
     constexpr int128_t operator<<(int128_t lhs, int128_t amount) { return lhs << static_cast<int>(amount); }
     constexpr int128_t operator>>(int128_t lhs, int128_t amount) { return lhs >> static_cast<int>(amount); }
 
-    // there is no std::shift_left operator
+    // there is no std variants for them
     template<typename T = void>
     struct shift_left;
     template<typename T = void>
@@ -79,7 +75,7 @@ namespace components::types {
     struct fact<void> {
         template<typename T>
         constexpr auto operator()(T&& x) const {
-            return boost::math::factorial<double>(std::forward<T>(x));
+            return boost::math::factorial<double>(static_cast<unsigned>(std::forward<T>(x)));
         }
     };
 
@@ -128,7 +124,7 @@ namespace components::types {
             case physical_type::STRING:
                 return callback.template operator()<std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return callback.template operator()<nullptr_t>(std::forward<Args>(args)...);
+            //     return callback.template operator()<std::nullptr_t>(std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }
@@ -167,7 +163,7 @@ namespace components::types {
             case physical_type::STRING:
                 return double_callback.template operator()<TypeLeft, std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return double_callback.template operator()<TypeLeft, nullptr_t>(std::forward<Args>(args)...);
+            //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }
@@ -206,7 +202,7 @@ namespace components::types {
                 return simple_physical_type_switch<DoubleCallback, std::string_view>(type_right,
                                                                                      std::forward<Args>(args)...);
             // case physical_type::NA:
-            //     return simple_physical_type_switch<DoubleCallback, nullptr_t>(type_right, std::forward<Args>(args)...);
+            //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
                 throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
         }

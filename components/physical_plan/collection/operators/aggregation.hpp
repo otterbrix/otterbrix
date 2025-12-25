@@ -17,8 +17,8 @@ namespace components::collection::operators {
         operator_ptr group_{nullptr};
         operator_ptr sort_{nullptr};
 
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
-        void on_prepare_impl() final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
+        void on_prepare_impl() override;
     };
 
 } // namespace components::collection::operators

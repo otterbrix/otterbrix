@@ -22,7 +22,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
-TEST_CASE("operator::group::base") {
+TEST_CASE("components::physical_plan::group::base") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -111,7 +111,7 @@ TEST_CASE("operator::group::base") {
     }
 }
 
-TEST_CASE("operator::group::sort") {
+TEST_CASE("components::physical_plan::group::sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -179,7 +179,7 @@ TEST_CASE("operator::group::sort") {
     }
 }
 
-TEST_CASE("operator::group::all") {
+TEST_CASE("components::physical_plan::group::all") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);

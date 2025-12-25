@@ -4,7 +4,6 @@
 #include <components/document/impl/error.hpp>
 #include <components/document/impl/tape_ref.hpp>
 #include <components/types/types.hpp>
-#include <cstdint>
 #include <type_traits>
 
 namespace components::document {

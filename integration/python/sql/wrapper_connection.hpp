@@ -8,7 +8,6 @@
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
 
-#include "forward.hpp"
 #include "wrapper_client.hpp"
 
 namespace py = pybind11;

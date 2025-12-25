@@ -12,8 +12,8 @@ namespace components::table::operators {
         , limit_(limit) {}
 
     void operator_match_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        int count = 0;
-        if (!limit_.check(count)) {
+        size_t count = 0;
+        if (!limit_.check(static_cast<int>(count))) {
             return; //limit = 0
         }
         if (!left_) {
@@ -40,7 +40,7 @@ namespace components::table::operators {
                         out_chunk.set_value(j, count, chunk.data[j].value(i));
                     }
                     ++count;
-                    if (!limit_.check(count)) {
+                    if (!limit_.check(static_cast<int>(count))) {
                         out_chunk.set_cardinality(count);
                         return;
                     }

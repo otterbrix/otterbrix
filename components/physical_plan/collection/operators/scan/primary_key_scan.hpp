@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/document/document_id.hpp>
 #include <components/physical_plan/base/operators/operator.hpp>
 
 namespace components::collection::operators {
@@ -10,7 +9,7 @@ namespace components::collection::operators {
         explicit primary_key_scan(services::collection::context_collection_t* context);
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
+        void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };
 
 } // namespace components::collection::operators

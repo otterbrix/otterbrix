@@ -3,7 +3,6 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
-#include <type_traits>
 
 namespace core::pmr {
 
@@ -85,12 +84,14 @@ namespace core::pmr {
     std::pmr::string to_pmr_string(std::pmr::memory_resource* resource, const char* format, T value) {
         // somewhat inconvenient way to convert a number into std::pmr::string without calling default allocator
         // TODO: use std::format_to() after C++20
-        auto size = static_cast<size_t>(std::snprintf(nullptr, 0, format, value));
         std::pmr::string result(resource);
-        result.resize(size + 1); // +1 for null terminator
-        std::sprintf(result.data(), format, value);
-        // remove null terminator
-        result.resize(size);
+        auto size = std::snprintf(nullptr, 0, format, value);
+        if (size > 0) {
+            result.resize(static_cast<size_t>(size) + 1); // +1 for null terminator
+            std::snprintf(result.data(), static_cast<size_t>(size) + 1, format, value);
+            // remove null terminator
+            result.resize(static_cast<size_t>(size));
+        }
         return result;
     }
 

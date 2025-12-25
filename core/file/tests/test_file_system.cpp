@@ -20,7 +20,7 @@ static void create_dummy_file(string fname1) {
     outfile.close();
 }
 
-TEST_CASE("filesystem") {
+TEST_CASE("core::file::filesystem") {
     INFO("initialization") {
         local_file_system_t fs = local_file_system_t();
         if (!directory_exists(fs, testing_directory)) {
@@ -74,14 +74,14 @@ TEST_CASE("filesystem") {
         REQUIRE_FALSE(file_exists(fs, fname_in_dir2));
     }
 
-    size_t size = 512;
+    constexpr size_t size = 512;
 
     INFO("write_close_read") {
         local_file_system_t fs = local_file_system_t();
         unique_ptr<file_handle_t> handle;
         int64_t test_data[size];
-        for (int i = 0; i < size; i++) {
-            test_data[i] = i;
+        for (size_t i = 0; i < size; i++) {
+            test_data[i] = static_cast<int64_t>(i);
         }
 
         auto fname = testing_directory;
@@ -92,17 +92,17 @@ TEST_CASE("filesystem") {
         // open file for writing
         handle = open_file(fs, fname, file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
         // write 10 integers
-        handle->write((void*) test_data, sizeof(int64_t) * size, 0);
+        handle->write(test_data, sizeof(int64_t) * size, 0);
         // close the file
         handle.reset();
 
-        for (int i = 0; i < size; i++) {
+        for (size_t i = 0; i < size; i++) {
             test_data[i] = 0;
         }
         // now open the file for reading
         handle = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
         // read the 10 integers back
-        handle->read((void*) test_data, sizeof(int64_t) * size, 0);
+        handle->read(test_data, sizeof(int64_t) * size, 0);
         // check the values of the integers
         for (int i = 0; i < 10; i++) {
             REQUIRE(test_data[i] == i);
@@ -114,8 +114,8 @@ TEST_CASE("filesystem") {
         local_file_system_t fs = local_file_system_t();
         unique_ptr<file_handle_t> handle;
         int64_t test_data[size];
-        for (int i = 0; i < size; i++) {
-            test_data[i] = i;
+        for (size_t i = 0; i < size; i++) {
+            test_data[i] = static_cast<int64_t>(i);
         }
 
         auto fname = testing_directory;
@@ -129,14 +129,14 @@ TEST_CASE("filesystem") {
                            file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                            file_lock_type::NO_LOCK);
         // write 10 integers
-        handle->write((void*) test_data, sizeof(int64_t) * size, 0);
+        handle->write(test_data, sizeof(int64_t) * size, 0);
         handle->sync();
 
-        for (int i = 0; i < size; i++) {
+        for (size_t i = 0; i < size; i++) {
             test_data[i] = 0;
         }
         // read the 10 integers back
-        handle->read((void*) test_data, sizeof(int64_t) * size, 0);
+        handle->read(test_data, sizeof(int64_t) * size, 0);
         // check the values of the integers
         for (int i = 0; i < 10; i++) {
             REQUIRE(test_data[i] == i);

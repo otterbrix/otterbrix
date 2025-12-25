@@ -12,7 +12,9 @@ RUN apt update && \
         python3-pip \
         python3-venv \
         python3-dev curl gnupg apt-transport-https \
-        zlib1g && \
+        zlib1g \
+        flex \
+        bison && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -32,11 +34,13 @@ COPY ./cmake ./cmake
 COPY ./components ./components
 COPY ./core ./core
 COPY ./services ./services
+COPY ./example ./example
 COPY ./CMakeLists.txt ./CMakeLists.txt
 
 WORKDIR /app/build
 
-RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON && \
+RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
+    -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON && \
     cmake --build . --target all -- -j $(nproc)
 
 RUN ctest -C Release -V --output-on-failure --timeout 60

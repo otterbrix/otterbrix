@@ -6,7 +6,7 @@ namespace components::table::operators::aggregate {
 
     constexpr auto key_result_ = "min";
 
-    operator_min_t::operator_min_t(services::collection::context_collection_t* context, index::key_t key)
+    operator_min_t::operator_min_t(services::collection::context_collection_t* context, expressions::key_t key)
         : operator_aggregate_t(context)
         , key_(std::move(key)) {}
 

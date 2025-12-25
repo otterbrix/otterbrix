@@ -15,7 +15,7 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("create_plan::match") {
+TEST_CASE("components::physical_plan_generator::match") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     {

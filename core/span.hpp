@@ -1,3 +1,4 @@
+#pragma once
 #include <boost/core/span.hpp>
 #include <cstring>
 #include <memory_resource>

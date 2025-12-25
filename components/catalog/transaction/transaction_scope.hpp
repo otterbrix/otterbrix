@@ -4,7 +4,6 @@
 #include "transaction_list.hpp"
 
 #include <memory>
-#include <optional>
 
 namespace components::catalog {
     class catalog;

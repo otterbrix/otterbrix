@@ -20,7 +20,7 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("serialization::document") {
+TEST_CASE("components::serialization::document") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(10, &resource);
     {
@@ -41,7 +41,7 @@ TEST_CASE("serialization::document") {
         REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
     }
 }
-TEST_CASE("serialization::data_chunk") {
+TEST_CASE("components::serialization::data_chunk") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto chunk1 = gen_data_chunk(10, &resource);
     {
@@ -60,7 +60,7 @@ TEST_CASE("serialization::data_chunk") {
         }
     }
 }
-TEST_CASE("serialization::expressions") {
+TEST_CASE("components::serialization::expressions") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         auto expr_and = make_compare_union_expression(&resource, compare_type::union_and);
@@ -83,7 +83,7 @@ TEST_CASE("serialization::expressions") {
             msgpack_deserializer_t deserializer(res);
             deserializer.advance_array(0);
             auto type = deserializer.current_type();
-            assert(type == serialization_type::expression_compare);
+            REQUIRE(type == serialization_type::expression_compare);
             auto deserialized_res = compare_expression_t::deserialize(&deserializer);
             deserializer.pop_array();
         }
@@ -112,14 +112,14 @@ TEST_CASE("serialization::expressions") {
             msgpack_deserializer_t deserializer(res);
             deserializer.advance_array(0);
             auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_group);
+            REQUIRE(type == serialization_type::logical_node_group);
             auto deserialized_res = node_t::deserialize(&deserializer);
             REQUIRE(node_group->to_string() == deserialized_res->to_string());
             deserializer.pop_array();
         }
     }
 }
-TEST_CASE("serialization::logical_plan") {
+TEST_CASE("components::serialization::logical_plan") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto node_delete =
         make_node_delete_many(&resource,
@@ -143,7 +143,7 @@ TEST_CASE("serialization::logical_plan") {
         deserializer.advance_array(0);
         {
             auto type = deserializer.current_type();
-            assert(type == serialization_type::logical_node_delete);
+            REQUIRE(type == serialization_type::logical_node_delete);
             auto deserialized_res = node_t::deserialize(&deserializer);
             REQUIRE(node_delete->to_string() == deserialized_res->to_string());
         }
@@ -151,7 +151,7 @@ TEST_CASE("serialization::logical_plan") {
         deserializer.advance_array(1);
         {
             auto type = deserializer.current_type();
-            assert(type == serialization_type::parameters);
+            REQUIRE(type == serialization_type::parameters);
             auto deserialized_res = parameter_node_t::deserialize(&deserializer);
             REQUIRE(params->parameters().parameters == deserialized_res->parameters().parameters);
         }

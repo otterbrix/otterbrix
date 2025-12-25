@@ -52,12 +52,14 @@ typedef uintptr_t Datum;
 
 #define PointerIsValid(pointer) ((const void*) (pointer) != NULL)
 
-// mdxn: elog.h
-//#define Insist(assertion) \
-//	do {				  \
-//		if (!(assertion))										   \
-//			elog_internalerror(__FILE__, __LINE__, PG_FUNCNAME_MACRO);	\
-//	} while(0)
+/*
+mdxn: elog.h
+#define Insist(assertion)                                                                                              \
+	do {				                                                                                               \
+		if (!(assertion))										                                                       \
+			elog_internalerror(__FILE__, __LINE__, PG_FUNCNAME_MACRO);	                                               \
+	} while(0)
+*/
 
 #define Insist(assertion)                                                                                              \
     do {                                                                                                               \
@@ -80,10 +82,7 @@ typedef uintptr_t Datum;
     16 /* Client communication problems; same as LOG
 								 * for server reporting, but never sent to
 								 * client. */
-// This clashes with INFO("") from catch2
-// TODO: figure out what to do with thats
-/*
-#define INFO                                                                                                           \
+#define PG_INFO                                                                                                        \
     17 /* Messages specifically requested by user (eg
 								 * VACUUM VERBOSE output); always sent to
 								 * client regardless of client_min_messages,

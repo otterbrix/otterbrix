@@ -22,7 +22,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
-TEST_CASE("operator::aggregate::count") {
+TEST_CASE("components::physical_plan::aggregate::count") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -76,7 +76,7 @@ TEST_CASE("operator::aggregate::count") {
     }
 }
 
-TEST_CASE("operator::aggregate::min") {
+TEST_CASE("components::physical_plan::aggregate::min") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -130,7 +130,7 @@ TEST_CASE("operator::aggregate::min") {
     }
 }
 
-TEST_CASE("operator::aggregate::max") {
+TEST_CASE("components::physical_plan::aggregate::max") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -184,7 +184,7 @@ TEST_CASE("operator::aggregate::max") {
     }
 }
 
-TEST_CASE("operator::aggregate::sum") {
+TEST_CASE("components::physical_plan::aggregate::sum") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -238,7 +238,7 @@ TEST_CASE("operator::aggregate::sum") {
     }
 }
 
-TEST_CASE("operator::aggregate::avg") {
+TEST_CASE("components::physical_plan::aggregate::avg") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto collection = init_collection(&resource);
     auto table = init_table(&resource);
@@ -253,14 +253,14 @@ TEST_CASE("operator::aggregate::avg") {
                                                      collection::operators::predicates::create_predicate(cond),
                                                      logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
-            REQUIRE(avg_.value().as_double() == 50.5);
+            REQUIRE(core::is_equals(avg_.value().as_double(), 50.5));
         }
         SECTION("table") {
             table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
-            REQUIRE(avg_.value().value<double>() == 50.5);
+            REQUIRE(core::is_equals(avg_.value().value<double>(), 50.5));
         }
     }
 
@@ -279,14 +279,14 @@ TEST_CASE("operator::aggregate::avg") {
                                                      collection::operators::predicates::create_predicate(cond),
                                                      logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);
-            REQUIRE(avg_.value().as_double() == 5.0);
+            REQUIRE(core::is_equals(avg_.value().as_double(), 5.0));
         }
         SECTION("table") {
             table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);
-            REQUIRE(avg_.value().value<double>() == 5.0);
+            REQUIRE(core::is_equals(avg_.value().value<double>(), 5.0));
         }
     }
 }

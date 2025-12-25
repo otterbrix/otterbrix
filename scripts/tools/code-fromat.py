@@ -30,12 +30,10 @@ ext_to_format = [
     ".ixx",
     ".ipp",
     ".inl",
-    ".inc",
+    ".inc"
 ]
 
 files_to_skip = [
-  "gram.hpp",
-  "gram.cpp",
 ]
 
 class Clang:

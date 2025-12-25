@@ -18,15 +18,14 @@ namespace components::expressions {
 
     bool update_expr_t::execute(document::document_ptr& to,
                                 const document::document_ptr& from,
-                                document::impl::base_document* tape,
                                 const logical_plan::storage_parameters* parameters) {
         if (left_) {
-            left_->execute(to, from, tape, parameters);
+            left_->execute(to, from, parameters);
         }
         if (right_) {
-            right_->execute(to, from, tape, parameters);
+            right_->execute(to, from, parameters);
         }
-        return execute_impl(to, from, tape, parameters);
+        return execute_impl(to, from, parameters);
     }
 
     bool update_expr_t::execute(vector::data_chunk_t& to,
@@ -85,6 +84,7 @@ namespace components::expressions {
                 return update_expr_calculate_t::deserialize(deserializer);
             default:
                 assert(false && "incorrect update_expr_type");
+                return nullptr;
         }
     }
 
@@ -132,6 +132,7 @@ namespace components::expressions {
                        *reinterpret_cast<const update_expr_calculate_ptr&>(rhs);
             default:
                 assert(false && "incorrect update_expr_type");
+                return false;
         }
     }
 
@@ -163,8 +164,7 @@ namespace components::expressions {
     }
 
     bool update_expr_set_t::execute_impl(document::document_ptr& to,
-                                         const document::document_ptr& from,
-                                         document::impl::base_document*,
+                                         const document::document_ptr&,
                                          const logical_plan::storage_parameters*) {
         if (left_) {
             return to->update(key_.as_string(), left_->output().value());
@@ -173,10 +173,10 @@ namespace components::expressions {
     }
 
     bool update_expr_set_t::execute_impl(vector::data_chunk_t& to,
-                                         const vector::data_chunk_t& from,
+                                         const vector::data_chunk_t&,
                                          size_t row_to,
-                                         size_t row_from,
-                                         const logical_plan::storage_parameters* parameters) {
+                                         size_t,
+                                         const logical_plan::storage_parameters*) {
         if (left_) {
             auto indices = to.sub_column_indices(key_.storage());
             assert(indices.front() != size_t(-1));
@@ -212,7 +212,6 @@ namespace components::expressions {
 
     bool update_expr_get_value_t::execute_impl(document::document_ptr& to,
                                                const document::document_ptr& from,
-                                               document::impl::base_document* tape,
                                                const logical_plan::storage_parameters*) {
         auto side = key_.side();
         if (side == side_t::undefined) {
@@ -236,7 +235,7 @@ namespace components::expressions {
                                                const vector::data_chunk_t& from,
                                                size_t row_to,
                                                size_t row_from,
-                                               const logical_plan::storage_parameters* parameters) {
+                                               const logical_plan::storage_parameters*) {
         auto side = key_.side();
         // we have to check it twice
         if (side == side_t::undefined) {
@@ -291,18 +290,17 @@ namespace components::expressions {
         return {new update_expr_get_const_value_t(deserializer->deserialize_param_id(2))};
     }
 
-    bool update_expr_get_const_value_t::execute_impl(document::document_ptr& to,
-                                                     const document::document_ptr& from,
-                                                     document::impl::base_document*,
+    bool update_expr_get_const_value_t::execute_impl(document::document_ptr&,
+                                                     const document::document_ptr&,
                                                      const logical_plan::storage_parameters* parameters) {
         output_ = parameters->parameters.at(id_);
         return false;
     }
 
-    bool update_expr_get_const_value_t::execute_impl(vector::data_chunk_t& to,
-                                                     const vector::data_chunk_t& from,
-                                                     size_t row_to,
-                                                     size_t row_from,
+    bool update_expr_get_const_value_t::execute_impl(vector::data_chunk_t&,
+                                                     const vector::data_chunk_t&,
+                                                     size_t,
+                                                     size_t,
                                                      const logical_plan::storage_parameters* parameters) {
         output_ = parameters->parameters.at(id_);
         return false;
@@ -337,7 +335,6 @@ namespace components::expressions {
 
     bool update_expr_calculate_t::execute_impl(document::document_ptr&,
                                                const document::document_ptr&,
-                                               document::impl::base_document* tape,
                                                const logical_plan::storage_parameters*) {
         switch (type_) {
             case update_expr_type::add:
@@ -394,11 +391,11 @@ namespace components::expressions {
         return false;
     }
 
-    bool update_expr_calculate_t::execute_impl(vector::data_chunk_t& to,
-                                               const vector::data_chunk_t& from,
-                                               size_t row_to,
-                                               size_t row_from,
-                                               const logical_plan::storage_parameters* parameters) {
+    bool update_expr_calculate_t::execute_impl(vector::data_chunk_t&,
+                                               const vector::data_chunk_t&,
+                                               size_t,
+                                               size_t,
+                                               const logical_plan::storage_parameters*) {
         switch (type_) {
             case update_expr_type::add:
                 output_ = types::logical_value_t::sum(left_->output().value(), right_->output().value());

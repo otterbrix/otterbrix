@@ -53,14 +53,14 @@ template<typename Stream>
 void to_msgpack_(msgpack::packer<Stream>& o, const json_trie_node* value) {
     if (value->type() == json_type::OBJECT) {
         auto* dict = value->get_object();
-        o.pack_map(dict->size());
+        o.pack_map(static_cast<uint32_t>(dict->size()));
         for (auto it = dict->begin(); it != dict->end(); ++it) {
             to_msgpack_(o, it->first.get());
             to_msgpack_(o, it->second.get());
         }
     } else if (value->type() == json_type::ARRAY) {
         auto* array = value->get_array();
-        o.pack_array(array->size());
+        o.pack_array(static_cast<uint32_t>(array->size()));
         for (auto it = array->begin(); it != array->end(); ++it) {
             to_msgpack_(o, it->get());
         }

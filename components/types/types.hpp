@@ -1,7 +1,6 @@
 #pragma once
 #include <absl/numeric/int128.h>
 #include <chrono>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -289,7 +288,7 @@ namespace components::types {
         if (type1 == type2) {
             return type1;
         }
-        assert(is_numeric(type1) && is_numeric(type2) || is_duration(type1) && is_duration(type2));
+        assert((is_numeric(type1) && is_numeric(type2)) || (is_duration(type1) && is_duration(type2)));
 
         constexpr uint8_t signage_difference =
             static_cast<uint8_t>(logical_type::UTINYINT) - static_cast<uint8_t>(logical_type::TINYINT);
@@ -307,6 +306,7 @@ namespace components::types {
                         default:
                             break;
                     }
+                    break;
                 case logical_type::TIMESTAMP_MS:
                     switch (type2) {
                         case logical_type::TIMESTAMP_SEC:
@@ -318,6 +318,7 @@ namespace components::types {
                         default:
                             break;
                     }
+                    break;
                 case logical_type::TIMESTAMP_US:
                     switch (type2) {
                         case logical_type::TIMESTAMP_SEC:
@@ -329,6 +330,7 @@ namespace components::types {
                         default:
                             break;
                     }
+                    break;
                 case logical_type::TIMESTAMP_NS:
                     switch (type2) {
                         case logical_type::TIMESTAMP_SEC:
@@ -340,6 +342,7 @@ namespace components::types {
                         default:
                             break;
                     }
+                    break;
                 default:
                     break;
             }

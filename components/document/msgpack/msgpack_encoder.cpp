@@ -22,6 +22,8 @@ void build_primitive(components::document::tape_builder& builder, const msgpack:
         case msgpack::type::STR:
             builder.build(std::string(msg_object.via.str.ptr, msg_object.via.str.size));
             break;
+        default:
+            break;
     }
 }
 

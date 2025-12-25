@@ -6,7 +6,7 @@
 #include <core/file/local_file_system.hpp>
 #include <math.h>
 
-TEST_CASE("data_table_t") {
+TEST_CASE("components::table::data_table") {
     using namespace components::types;
     using namespace components::vector;
     using namespace components::table;
@@ -28,14 +28,14 @@ TEST_CASE("data_table_t") {
 
     // set test_size to some uneven multiple of DEFAULT_VECTOR_CAPACITY
     // ideally it should be a much bigger than DEFAULT_VECTOR_CAPACITY
-    constexpr size_t test_size = DEFAULT_VECTOR_CAPACITY * M_PI_2;
+    constexpr size_t test_size = static_cast<size_t>(static_cast<double>(DEFAULT_VECTOR_CAPACITY) * M_PI_2);
     static_assert(test_size % 2 == 0 && "for data_table_t test it is required to have an even test size");
     constexpr size_t array_size = 128;
     constexpr size_t max_list_size = 128;
     constexpr size_t str_index_length = 10;
     auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
 
-    auto generate_string = [str_index_length](size_t i) {
+    auto generate_string = [](size_t i) {
         auto number = std::to_string(i);
         while (number.size() < str_index_length) {
             number.insert(number.begin(), '0');
@@ -82,7 +82,7 @@ TEST_CASE("data_table_t") {
         for (size_t j = 0; j < i; j++) {
             arr.emplace_back(j);
         }
-        test_data.emplace_back((bool) (i % 2), i, std::move(s), std::move(arr));
+        test_data.emplace_back(i % 2 != 0, i, std::move(s), std::move(arr));
     }
 
     auto data_table = std::make_unique<data_table_t>(&resource, block_manager, std::move(columns));
@@ -189,12 +189,12 @@ TEST_CASE("data_table_t") {
         column_fetch_state state;
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
-        for (int64_t i = 0; i < data_table->column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < data_table->column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         vector_t rows(&resource, logical_type::BIGINT, test_size);
-        for (int64_t i = 0; i < test_size; i++) {
-            rows.set_value(i, logical_value_t(i));
+        for (size_t i = 0; i < test_size; i++) {
+            rows.set_value(i, logical_value_t(static_cast<int64_t>(i)));
         }
         data_chunk_t result(&resource, data_table->copy_types(), test_size);
         data_table->fetch(result, column_indices, rows, test_size, state);
@@ -210,8 +210,8 @@ TEST_CASE("data_table_t") {
             {
                 logical_value_t value = result.data[1].value(i);
                 REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(i));
+                std::string res = *value.value<std::string*>();
+                REQUIRE(res == generate_string(i));
             }
             // ARRAY<UBIGINT>
             {
@@ -228,8 +228,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * array_size + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * array_size + j));
                 }
             }
             // LIST<UBIGINT>
@@ -247,8 +247,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * list_length(i) + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * list_length(i) + j));
                 }
             }
             // STRUCT
@@ -272,7 +272,7 @@ TEST_CASE("data_table_t") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
             // UNION
@@ -309,8 +309,8 @@ TEST_CASE("data_table_t") {
     INFO("Scan") {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
-        for (int64_t i = 0; i < data_table->column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < data_table->column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table_scan_state state(&resource);
         data_chunk_t result(&resource, data_table->copy_types(), test_size);
@@ -328,8 +328,8 @@ TEST_CASE("data_table_t") {
             {
                 logical_value_t value = result.data[1].value(i);
                 REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(i));
+                std::string res = *value.value<std::string*>();
+                REQUIRE(res == generate_string(i));
             }
             // ARRAY<UBIGINT>
             {
@@ -346,8 +346,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * array_size + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * array_size + j));
                 }
             }
             // LIST<UBIGINT>
@@ -365,8 +365,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * list_length(i) + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * list_length(i) + j));
                 }
             }
             // STRUCT
@@ -390,7 +390,7 @@ TEST_CASE("data_table_t") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
             // UNION
@@ -427,11 +427,11 @@ TEST_CASE("data_table_t") {
     INFO("Scan with predicates") {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
-        for (int64_t i = 0; i < data_table->column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < data_table->column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table_scan_state state(&resource);
-        std::pair<uint64_t, uint64_t> row_range{uint64_t(test_size * 0.25f), uint64_t(test_size * 0.75f)};
+        std::pair row_range{uint64_t(test_size * 0.25f), uint64_t(test_size * 0.75f)};
         auto conj_and = std::make_unique<conjunction_and_filter_t>();
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::gte,
@@ -456,8 +456,8 @@ TEST_CASE("data_table_t") {
             {
                 logical_value_t value = result.data[1].value(res_index);
                 REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(i));
+                std::string res = *value.value<std::string*>();
+                REQUIRE(res == generate_string(i));
             }
             // ARRAY<UBIGINT>
             {
@@ -474,8 +474,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * array_size + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * array_size + j));
                 }
             }
             // LIST<UBIGINT>
@@ -493,8 +493,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(i * list_length(i) + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(i * list_length(i) + j));
                 }
             }
             // STRUCT
@@ -518,7 +518,7 @@ TEST_CASE("data_table_t") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[i].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
                 }
             }
             // UNION
@@ -564,8 +564,8 @@ TEST_CASE("data_table_t") {
     INFO("Scan after delete") {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
-        for (int64_t i = 0; i < data_table->column_count(); i++) {
-            column_indices.emplace_back(i);
+        for (size_t i = 0; i < data_table->column_count(); i++) {
+            column_indices.emplace_back(static_cast<int64_t>(i));
         }
         table_scan_state state(&resource);
         data_chunk_t result(&resource, data_table->copy_types(), test_size / 2);
@@ -586,8 +586,8 @@ TEST_CASE("data_table_t") {
             {
                 logical_value_t value = result.data[1].value(i);
                 REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
-                REQUIRE(result == generate_string(test_data_index));
+                std::string res = *value.value<std::string*>();
+                REQUIRE(res == generate_string(test_data_index));
             }
             // ARRAY<UBIGINT>
             {
@@ -604,8 +604,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(test_data_index * array_size + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(test_data_index * array_size + j));
                 }
             }
             // LIST<UBIGINT>
@@ -624,8 +624,8 @@ TEST_CASE("data_table_t") {
                 REQUIRE(value.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(test_data_index); j++) {
                     REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
-                    REQUIRE(result == generate_string(test_data_index * list_length(test_data_index) + j));
+                    std::string res = *value.children()[j].value<std::string*>();
+                    REQUIRE(res == generate_string(test_data_index * list_length(test_data_index) + j));
                 }
             }
             // STRUCT
@@ -649,7 +649,7 @@ TEST_CASE("data_table_t") {
                 std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                 REQUIRE(arr.size() == test_data[test_data_index].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
-                    arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
+                    REQUIRE(arr[j].value<uint16_t>() == test_data[test_data_index].array[j]);
                 }
             }
             // UNION
@@ -709,8 +709,8 @@ TEST_CASE("data_table_t") {
         {
             std::vector<storage_index_t> column_indices;
             column_indices.reserve(extended_table->column_count());
-            for (int64_t i = 0; i < extended_table->column_count(); i++) {
-                column_indices.emplace_back(i);
+            for (size_t i = 0; i < extended_table->column_count(); i++) {
+                column_indices.emplace_back(static_cast<int64_t>(i));
             }
             table_scan_state state(&resource);
             data_chunk_t result(&resource, extended_table->copy_types());
@@ -729,8 +729,8 @@ TEST_CASE("data_table_t") {
                 {
                     logical_value_t value = result.data[1].value(i);
                     REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.value<std::string*>());
-                    REQUIRE(result == generate_string(test_data_index));
+                    std::string res = *value.value<std::string*>();
+                    REQUIRE(res == generate_string(test_data_index));
                 }
                 // ARRAY<UBIGINT>
                 {
@@ -747,8 +747,8 @@ TEST_CASE("data_table_t") {
                     REQUIRE(value.type().type() == logical_type::ARRAY);
                     for (size_t j = 0; j < array_size; j++) {
                         REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                        std::string result = *(value.children()[j].value<std::string*>());
-                        REQUIRE(result == generate_string(test_data_index * array_size + j));
+                        std::string res = *value.children()[j].value<std::string*>();
+                        REQUIRE(res == generate_string(test_data_index * array_size + j));
                     }
                 }
                 // LIST<UBIGINT>
@@ -767,8 +767,8 @@ TEST_CASE("data_table_t") {
                     REQUIRE(value.type().type() == logical_type::LIST);
                     for (size_t j = 0; j < list_length(test_data_index); j++) {
                         REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                        std::string result = *(value.children()[j].value<std::string*>());
-                        REQUIRE(result == generate_string(test_data_index * list_length(test_data_index) + j));
+                        std::string res = *value.children()[j].value<std::string*>();
+                        REQUIRE(res == generate_string(test_data_index * list_length(test_data_index) + j));
                     }
                 }
                 // STRUCT
@@ -792,7 +792,7 @@ TEST_CASE("data_table_t") {
                     std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                     REQUIRE(arr.size() == test_data[test_data_index].array.size());
                     for (size_t j = 0; j < arr.size(); j++) {
-                        arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
+                        REQUIRE(arr[j].value<uint16_t>() == test_data[test_data_index].array[j]);
                     }
                 }
                 // UNION
@@ -828,7 +828,7 @@ TEST_CASE("data_table_t") {
                 {
                     logical_value_t value = result.data[8].value(i);
                     REQUIRE(value.type().type() == logical_type::SMALLINT);
-                    REQUIRE(value.value<int16_t>() == test_data_index);
+                    REQUIRE(value.value<int16_t>() == static_cast<int16_t>(test_data_index));
                 }
             }
         }
@@ -840,8 +840,8 @@ TEST_CASE("data_table_t") {
         {
             std::vector<storage_index_t> column_indices;
             column_indices.reserve(short_table->column_count());
-            for (int64_t i = 0; i < short_table->column_count(); i++) {
-                column_indices.emplace_back(i);
+            for (size_t i = 0; i < short_table->column_count(); i++) {
+                column_indices.emplace_back(static_cast<int64_t>(i));
             }
             table_scan_state state(&resource);
             data_chunk_t result(&resource, short_table->copy_types());
@@ -854,8 +854,8 @@ TEST_CASE("data_table_t") {
                 {
                     logical_value_t value = result.data[0].value(i);
                     REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.value<std::string*>());
-                    REQUIRE(result == generate_string(test_data_index));
+                    std::string res = *value.value<std::string*>();
+                    REQUIRE(res == generate_string(test_data_index));
                 }
                 // ARRAY<UBIGINT>
                 {
@@ -872,8 +872,8 @@ TEST_CASE("data_table_t") {
                     REQUIRE(value.type().type() == logical_type::ARRAY);
                     for (size_t j = 0; j < array_size; j++) {
                         REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                        std::string result = *(value.children()[j].value<std::string*>());
-                        REQUIRE(result == generate_string(test_data_index * array_size + j));
+                        std::string res = *value.children()[j].value<std::string*>();
+                        REQUIRE(res == generate_string(test_data_index * array_size + j));
                     }
                 }
                 // LIST<UBIGINT>
@@ -917,7 +917,7 @@ TEST_CASE("data_table_t") {
                     std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
                     REQUIRE(arr.size() == test_data[test_data_index].array.size());
                     for (size_t j = 0; j < arr.size(); j++) {
-                        arr[j].value<uint16_t>() == test_data[test_data_index].array[j];
+                        REQUIRE(arr[j].value<uint16_t>() == test_data[test_data_index].array[j]);
                     }
                 }
                 // UNION
@@ -953,7 +953,7 @@ TEST_CASE("data_table_t") {
                 {
                     logical_value_t value = result.data[7].value(i);
                     REQUIRE(value.type().type() == logical_type::SMALLINT);
-                    REQUIRE(value.value<int16_t>() == test_data_index);
+                    REQUIRE(value.value<int16_t>() == static_cast<int16_t>(test_data_index));
                 }
             }
         }

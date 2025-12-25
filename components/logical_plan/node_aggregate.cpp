@@ -11,7 +11,7 @@ namespace components::logical_plan {
     node_aggregate_t::node_aggregate_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
         : node_t(resource, node_type::aggregate_t, collection) {}
 
-    node_ptr node_aggregate_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    node_aggregate_ptr node_aggregate_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         collection_full_name_t collection = deserializer->deserialize_collection(1);
         auto res = make_node_aggregate(deserializer->resource(), collection);
 

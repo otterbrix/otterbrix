@@ -1,6 +1,5 @@
 #pragma once
 
-#include <boost/intrusive/list_hook.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/document/document.hpp>
 #include <memory_resource>

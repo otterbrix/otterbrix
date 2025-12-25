@@ -13,7 +13,7 @@ using namespace components::collection::operators::merge;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
-TEST_CASE("operator_merge::and") {
+TEST_CASE("components::physical_plan_merge::and") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
@@ -39,7 +39,7 @@ TEST_CASE("operator_merge::and") {
     REQUIRE(op_and.output()->size() == 10);
 }
 
-TEST_CASE("operator_merge::or") {
+TEST_CASE("components::physical_plan_merge::or") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
@@ -65,7 +65,7 @@ TEST_CASE("operator_merge::or") {
     REQUIRE(op_or.output()->size() == 20);
 }
 
-TEST_CASE("operator_merge::not") {
+TEST_CASE("components::physical_plan_merge::not") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);
@@ -83,7 +83,7 @@ TEST_CASE("operator_merge::not") {
     REQUIRE(op_not.output()->size() == 10);
 }
 
-TEST_CASE("operator_merge::complex") {
+TEST_CASE("components::physical_plan_merge::complex") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     auto collection = init_collection(&resource);

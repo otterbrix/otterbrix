@@ -141,7 +141,7 @@ namespace services::wal {
         });
     }
 
-    auto wal_replicate_t::make_type() const noexcept -> const char* const { return "wal"; }
+    auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
     void wal_replicate_t::send_success(const session_id_t& session, address_t& sender) {
         if (sender) {
@@ -211,8 +211,7 @@ namespace services::wal {
               "wal_replicate_t::create_database {}, session: {}",
               data->collection_full_name().database,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -223,8 +222,7 @@ namespace services::wal {
               "wal_replicate_t::drop_database {}, session: {}",
               data->collection_full_name().database,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -236,8 +234,7 @@ namespace services::wal {
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -249,8 +246,7 @@ namespace services::wal {
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(reinterpret_cast<const components::logical_plan::node_ptr&>(data),
-                    components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
         send_success(session, sender);
     }
 
@@ -398,7 +394,7 @@ namespace services::wal {
             record.crc32 = read_crc32(output, record.size);
             if (record.crc32 == static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}))) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
-                record.last_crc32 = deserializer.deserialize_uint64(0);
+                record.last_crc32 = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
                 record.id = deserializer.deserialize_uint64(1);
 
                 deserializer.advance_array(2);

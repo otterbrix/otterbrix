@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cassert>
 #include <core/pmr.hpp>
 #include <cstdint>
-#include <cstring>
 
 #include "indexing_vector.hpp"
 

@@ -1,11 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <cstring>
 
-#include <set>
 #include <stdexcept>
-#include <unordered_map>
 #include <vector>
 
 #if defined(PLATFORM_WINDOWS)

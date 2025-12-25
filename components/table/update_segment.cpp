@@ -4,15 +4,16 @@
 
 #include "column_data.hpp"
 #include "column_segment.hpp"
+#include "storage/block_manager.hpp"
 #include "storage/buffer_manager.hpp"
 #include <components/vector/vector.hpp>
 
 namespace components::table {
 
-    static int64_t sort_indexing_vector(std::pmr::memory_resource* resource,
-                                        vector::indexing_vector_t& indexing,
-                                        uint64_t count,
-                                        int64_t* ids) {
+    static uint64_t sort_indexing_vector(std::pmr::memory_resource* resource,
+                                         vector::indexing_vector_t& indexing,
+                                         uint64_t count,
+                                         int64_t* ids) {
         assert(count > 0);
 
         bool is_sorted = true;
@@ -79,7 +80,7 @@ namespace components::table {
         }
     }
 
-    update_info_t* create_empty_update_info(uint64_t type_size, uint64_t count, std::unique_ptr<std::byte[]>& data) {
+    update_info_t* create_empty_update_info(uint64_t type_size, uint64_t, std::unique_ptr<std::byte[]>& data) {
         data = std::make_unique<std::byte[]>(update_info_t::allocation_size(type_size));
         auto update_info = reinterpret_cast<update_info_t*>(data.get());
         update_info->initialize();
@@ -160,7 +161,9 @@ namespace components::table {
         return undo_buffer_reference(*head, std::move(handle), current_position);
     }
 
-    uint32_t* update_info_t::tuples() { return reinterpret_cast<uint32_t*>((std::byte*) this + sizeof(update_info_t)); }
+    uint32_t* update_info_t::tuples() {
+        return reinterpret_cast<uint32_t*>(reinterpret_cast<std::byte*>(this) + sizeof(update_info_t));
+    }
 
     std::byte* update_info_t::values() {
         return reinterpret_cast<std::byte*>(this) + sizeof(update_info_t) + sizeof(uint32_t) * max;
@@ -216,13 +219,13 @@ namespace components::table {
         return update_node(vector_index).is_set();
     }
 
-    bool update_segment_t::has_updates(uint64_t start_row_idx, uint64_t end_row_idx) {
+    bool update_segment_t::has_updates(int64_t start_row_idx, int64_t end_row_idx) {
         auto read_lock = std::shared_lock(m_);
         if (!root_) {
             return false;
         }
-        uint64_t base_vector_index = start_row_idx / vector::DEFAULT_VECTOR_CAPACITY;
-        uint64_t end_vector_index = end_row_idx / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t base_vector_index = static_cast<uint64_t>(start_row_idx) / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t end_vector_index = static_cast<uint64_t>(end_row_idx) / vector::DEFAULT_VECTOR_CAPACITY;
         for (uint64_t i = base_vector_index; i <= end_vector_index; i++) {
             auto entry = update_node(i);
             if (entry.is_set()) {
@@ -254,15 +257,15 @@ namespace components::table {
         fetch_committed(pin.update_info(), result_offset, result);
     }
 
-    void update_segment_t::fetch_committed_range(uint64_t start_row, uint64_t count, vector::vector_t& result) {
+    void update_segment_t::fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result) {
         assert(count > 0);
         if (!root_) {
             return;
         }
         assert(result.get_vector_type() == vector::vector_type::FLAT);
 
-        uint64_t end_row = start_row + count;
-        uint64_t start_vector = start_row / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t end_row = static_cast<uint64_t>(start_row) + count;
+        uint64_t start_vector = static_cast<uint64_t>(start_row) / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t end_vector = (end_row - 1) / vector::DEFAULT_VECTOR_CAPACITY;
         assert(start_vector <= end_vector);
 
@@ -272,13 +275,15 @@ namespace components::table {
                 continue;
             }
             auto pin = entry.pin();
-            uint64_t start_in_vector =
-                vector_idx == start_vector ? start_row - start_vector * vector::DEFAULT_VECTOR_CAPACITY : 0;
+            uint64_t start_in_vector = vector_idx == start_vector ? static_cast<uint64_t>(start_row) -
+                                                                        start_vector * vector::DEFAULT_VECTOR_CAPACITY
+                                                                  : 0;
             uint64_t end_in_vector = vector_idx == end_vector ? end_row - end_vector * vector::DEFAULT_VECTOR_CAPACITY
                                                               : vector::DEFAULT_VECTOR_CAPACITY;
             assert(start_in_vector < end_in_vector);
             assert(end_in_vector > 0 && end_in_vector <= vector::DEFAULT_VECTOR_CAPACITY);
-            uint64_t result_offset = ((vector_idx * vector::DEFAULT_VECTOR_CAPACITY) + start_in_vector) - start_row;
+            uint64_t result_offset =
+                vector_idx * vector::DEFAULT_VECTOR_CAPACITY + start_in_vector - static_cast<uint64_t>(start_row);
             fetch_committed_range(pin.update_info(), start_in_vector, end_in_vector, result_offset, result);
         }
     }
@@ -302,11 +307,12 @@ namespace components::table {
 
         auto first_id = ids[indexing.get_index(0)];
         uint64_t vector_index =
-            (static_cast<uint64_t>(first_id) - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
-        uint64_t vector_offset = column_data_->start() + vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+            static_cast<uint64_t>(first_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t vector_offset =
+            static_cast<uint64_t>(column_data_->start()) + vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         initialize_update_info(vector_index);
 
-        assert(uint64_t(first_id) >= column_data_->start());
+        assert(first_id >= column_data_->start());
 
         if (root_->info[vector_index].is_set()) {
             auto root_pointer = root_->info[vector_index];
@@ -361,24 +367,26 @@ namespace components::table {
         }
     }
 
-    void update_segment_t::fetch_row(uint64_t row_id, vector::vector_t& result, uint64_t result_idx) {
-        uint64_t vector_index = (row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
+    void update_segment_t::fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx) {
+        uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
         auto entry = update_node(vector_index);
         if (!entry.is_set()) {
             return;
         }
-        uint64_t row_in_vector = (row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t row_in_vector =
+            static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         auto pin = entry.pin();
         fetch_row(pin.update_info(), row_in_vector, result, result_idx);
     }
 
-    bool update_segment_t::check_row(uint64_t row_id, const table_filter_t* filter) {
-        uint64_t vector_index = (row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
+    bool update_segment_t::check_row(int64_t row_id, const table_filter_t* filter) {
+        uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
         auto entry = update_node(vector_index);
         if (!entry.is_set()) {
             return true;
         }
-        uint64_t row_in_vector = (row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t row_in_vector =
+            static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         auto pin = entry.pin();
         return check_row(pin.update_info(), row_in_vector, filter);
     }
@@ -450,7 +458,7 @@ namespace components::table {
         }
     }
 
-    uint64_t update_segment_t::start() const { return column_data_->start(); }
+    int64_t update_segment_t::start() const { return column_data_->start(); }
 
     void update_segment_t::initialize_update_validity(update_info_t& base_info,
                                                       const vector::vector_t& base_data,

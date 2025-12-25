@@ -4,9 +4,7 @@
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_data.hpp>
-#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/sql/parser/nodes/parsenodes.h>
 
 namespace components::sql::transform {
     struct result_view {
@@ -71,25 +69,27 @@ namespace components::sql::transform {
                     return *this;
                 }
 
-                for (auto& [i, key] : it->second) {
-                    auto column =
-                        std::find_if(param_insert_rows_.data.begin(),
-                                     param_insert_rows_.data.end(),
-                                     [&](const vector::vector_t& column) { return column.type().alias() == key; });
-                    size_t column_index = column - param_insert_rows_.data.begin();
+                // captured structure biding are not possible before C++20
+                // TODO: const auto& [i, key] : it->second after C++20
+                for (const auto& param : it->second) {
+                    auto column = std::find_if(
+                        param_insert_rows_.data.begin(),
+                        param_insert_rows_.data.end(),
+                        [&param](const vector::vector_t& column) { return column.type().alias() == param.second; });
+                    size_t column_index = static_cast<size_t>(column - param_insert_rows_.data.begin());
                     if (column == param_insert_rows_.data.end()) {
-                        value.set_alias(key);
+                        value.set_alias(param.second);
                         param_insert_rows_.data.emplace_back(param_insert_rows_.resource(),
                                                              value.type(),
                                                              param_insert_rows_.capacity());
                     } else if (column->type() != value.type()) {
                         // column was inserted before, however type has changed
-                        value.set_alias(key);
+                        value.set_alias(param.second);
                         *column = vector::vector_t(param_insert_rows_.resource(),
                                                    value.type(),
                                                    param_insert_rows_.capacity());
                     }
-                    param_insert_rows_.set_value(column_index, i, std::move(value));
+                    param_insert_rows_.set_value(column_index, param.first, std::move(value));
                 }
             } else {
                 auto it = param_map_.find(id);

@@ -10,19 +10,31 @@ namespace core::b_plus_tree {
         get_block();
     }
 
+    segment_tree_t::iterator::iterator(const iterator& other)
+        : seg_tree_(other.seg_tree_)
+        , metadata_(other.metadata_) {
+        get_block();
+    }
+
+    segment_tree_t::iterator::iterator(iterator&& other) noexcept
+        : seg_tree_(other.seg_tree_)
+        , metadata_(other.metadata_)
+        , block_(other.block_) {}
+
     void segment_tree_t::iterator::get_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            block_ = seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block.get();
-            seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].last_used = std::chrono::system_clock::now();
+            block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
+            seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].last_used =
+                std::chrono::system_clock::now();
         } else {
             block_ = nullptr;
         }
     }
     void segment_tree_t::iterator::load_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            if (!seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block) {
+            if (!seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block) {
                 seg_tree_->load_segment_(metadata_);
-                block_ = seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block.get();
+                block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
             }
         } else {
             assert(false && "segment_tree::iterator: out of range");
@@ -35,19 +47,31 @@ namespace core::b_plus_tree {
         get_block();
     }
 
+    segment_tree_t::r_iterator::r_iterator(const r_iterator& other)
+        : seg_tree_(other.seg_tree_)
+        , metadata_(other.metadata_) {
+        get_block();
+    }
+
+    segment_tree_t::r_iterator::r_iterator(r_iterator&& other) noexcept
+        : seg_tree_(other.seg_tree_)
+        , metadata_(other.metadata_)
+        , block_(other.block_) {}
+
     void segment_tree_t::r_iterator::get_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            block_ = seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block.get();
-            seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].last_used = std::chrono::system_clock::now();
+            block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
+            seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].last_used =
+                std::chrono::system_clock::now();
         } else {
             block_ = nullptr;
         }
     }
     void segment_tree_t::r_iterator::load_block() {
         if (metadata_ < seg_tree_->metadata_end_ && metadata_ >= seg_tree_->metadata_begin_) {
-            if (!seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block.get()) {
+            if (!seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get()) {
                 seg_tree_->load_segment_(metadata_);
-                block_ = seg_tree_->segments_[metadata_ - seg_tree_->metadata_begin_].block.get();
+                block_ = seg_tree_->segments_[static_cast<size_t>(metadata_ - seg_tree_->metadata_begin_)].block.get();
             }
         } else {
             assert(false && "segment_tree::r_iterator: out of range");
@@ -60,22 +84,20 @@ namespace core::b_plus_tree {
         : resource_(resource)
         , key_func_(func)
         , file_(std::move(file)) {
-        header_ = static_cast<size_t*>(resource_->allocate(header_size));
-        item_count_ = header_ + 1;
-        unique_id_count_ = header_ + 2;
-        *header_ = 0;
-        *item_count_ = 0;
-        *unique_id_count_ = 0;
-        metadata_begin_ = reinterpret_cast<block_metadata*>(unique_id_count_ + 1);
+        header_ = static_cast<header_t*>(resource_->allocate(header_size, alignof(size_t)));
+        header_->segments_count_ = 0;
+        header_->item_count_ = 0;
+        header_->unique_id_count_ = 0;
+        metadata_begin_ = reinterpret_cast<block_metadata*>(header_ + 1);
         metadata_end_ = metadata_begin_;
     }
 
     segment_tree_t::~segment_tree_t() {
         file_.reset();
-        resource_->deallocate(static_cast<void*>(header_), header_size);
+        resource_->deallocate(header_, header_size, alignof(size_t));
     }
 
-    bool segment_tree_t::append(data_ptr_t data, size_t size) { return append(item_data{data, size}); }
+    bool segment_tree_t::append(data_ptr_t data, uint32_t size) { return append(item_data{data, size}); }
 
     bool segment_tree_t::append(item_data item) {
         index_t index = key_func_(item);
@@ -87,7 +109,7 @@ namespace core::b_plus_tree {
             segments_.reserve(2);
             string_storage_.reserve(2);
             insert_segment_(segments_.end(), construct_new_node_(item));
-            (*unique_id_count_)++;
+            header_->unique_id_count_++;
         } else {
             // reserve +2 items to be sure that iterators won't be invalidated
             if (segments_.size() + 2 > segments_.capacity()) {
@@ -110,7 +132,7 @@ namespace core::b_plus_tree {
                     return false;
                 }
             }
-            *unique_id_count_ += !index_exists;
+            header_->unique_id_count_ += !index_exists;
             // go back to regular append
             metadata = range.begin - (range.begin == metadata_end_);
             append_node = segments_.begin() + (metadata - metadata_begin_);
@@ -194,11 +216,11 @@ namespace core::b_plus_tree {
             }
         }
 
-        (*item_count_)++;
+        header_->item_count_++;
         return true;
     }
 
-    bool segment_tree_t::remove(data_ptr_t data, size_t size) { return remove(item_data{data, size}); }
+    bool segment_tree_t::remove(data_ptr_t data, uint32_t size) { return remove(item_data{data, size}); }
 
     bool segment_tree_t::remove(item_data item) {
         index_t index = key_func_(item);
@@ -232,9 +254,9 @@ namespace core::b_plus_tree {
                     remove_node->last_used = std::chrono::system_clock::now();
                     update_metadata_(remove_node, metadata);
                     if (list_count == 1) {
-                        (*unique_id_count_)--;
+                        header_->unique_id_count_--;
                     }
-                    (*item_count_)--;
+                    header_->item_count_--;
                     // only way range.begin == range.end is is this block contains other indices
                     // so don`t have to delete it
                     return true;
@@ -252,13 +274,13 @@ namespace core::b_plus_tree {
             if (remove_node->block->contains(index, item)) {
                 // since items are unique, we do not have to check other blocks after
                 if (remove_node->block->item_count(index) == 1) {
-                    (*unique_id_count_)--;
+                    header_->unique_id_count_--;
                 }
                 remove_node->block->remove(index, item);
 
                 if (remove_node->block->count() == 0) {
                     remove_segment_(remove_node);
-                    (*item_count_)--;
+                    header_->item_count_--;
                     return true;
                 }
                 break;
@@ -297,7 +319,7 @@ namespace core::b_plus_tree {
                 remove_segment_(remove_node);
             }
         }
-        (*item_count_)--;
+        header_->item_count_--;
         return true;
     }
 
@@ -363,8 +385,8 @@ namespace core::b_plus_tree {
         }
 
         remove_range_(delete_range);
-        (*unique_id_count_)--;
-        *item_count_ -= count;
+        header_->unique_id_count_--;
+        header_->item_count_ -= count;
         return true;
     }
 
@@ -372,12 +394,12 @@ namespace core::b_plus_tree {
     segment_tree_t::split(std::unique_ptr<filesystem::file_handle_t> file) {
         // make no sense to split tree with 0 blocks
         assert(metadata_begin_ != metadata_end_);
-        assert(*unique_id_count_ > 1);
+        assert(header_->unique_id_count_ > 1);
 
         std::unique_ptr<segment_tree_t> splited_tree =
             std::make_unique<segment_tree_t>(resource_, key_func_, std::move(file));
 
-        size_t split_size = *unique_id_count_ / 2;
+        size_t split_size = header_->unique_id_count_ / 2;
         index_t prev_index{};
         splited_tree->segments_.reserve(segments_.size());
         splited_tree->string_storage_.reserve(string_storage_.size());
@@ -393,33 +415,33 @@ namespace core::b_plus_tree {
             count -= prev_index == node->block->max_index();
             if (count <= split_size) {
                 prev_index = node->block->min_index();
-                // move this block to splited_tree
+                // move this block to split_tree
                 size_t item_count = node->block->count();
                 node->modified = true;
                 splited_tree->insert_segment_(splited_tree->segments_.begin(), std::move(*node));
                 remove_segment_(node);
                 split_size -= count;
-                *item_count_ -= item_count;
-                *unique_id_count_ -= count;
-                *(splited_tree->item_count_) += item_count;
-                *(splited_tree->unique_id_count_) += count;
+                header_->item_count_ -= item_count;
+                header_->unique_id_count_ -= count;
+                splited_tree->header_->item_count_ += item_count;
+                splited_tree->header_->unique_id_count_ += count;
             } else {
                 // split required amount from that block and break the loop
-                size_t split_unique = split_size + (prev_index == node->block->min_index());
+                auto split_unique = static_cast<uint32_t>(split_size + (prev_index == node->block->min_index()));
                 if (split_unique == 0 || split_unique == node->block->unique_indices_count()) {
                     break;
                 }
-                size_t item_count = node->block->count();
+                uint32_t item_count = node->block->count();
                 splited_tree->insert_segment_(splited_tree->segments_.begin(),
                                               segment_tree_t::node_t{node->block->split_uniques(split_unique),
                                                                      std::chrono::system_clock::now(),
                                                                      true});
                 item_count -= node->block->count();
                 update_metadata_(node, metadata);
-                *item_count_ -= item_count;
-                *unique_id_count_ -= split_size;
-                *(splited_tree->item_count_) += item_count;
-                *(splited_tree->unique_id_count_) += split_size;
+                header_->item_count_ -= item_count;
+                header_->unique_id_count_ -= split_size;
+                splited_tree->header_->item_count_ += item_count;
+                splited_tree->header_->unique_id_count_ += split_size;
                 break;
             }
         }
@@ -429,13 +451,14 @@ namespace core::b_plus_tree {
 
     void segment_tree_t::balance_with(std::unique_ptr<segment_tree_t>& other) {
         assert(min_index() > other->max_index() || max_index() < other->min_index());
-        assert(*unique_id_count_ != *(other->unique_id_count_) && *unique_id_count_ != 0 &&
-               *(other->unique_id_count_) != 0);
+        assert(header_->unique_id_count_ != other->header_->unique_id_count_ && header_->unique_id_count_ != 0 &&
+               other->header_->unique_id_count_ != 0);
         // easier to check it where it is needed, then to add 2 new cases for it
-        assert(*unique_id_count_ < *(other->unique_id_count_));
+        assert(header_->unique_id_count_ < other->header_->unique_id_count_);
 
-        // we also have to make sure that same indices won't be splited
-        size_t rebalance_size = (*unique_id_count_ + *other->unique_id_count_) / 2 - *unique_id_count_;
+        // we also have to make sure that same indices won't be split
+        size_t rebalance_size =
+            (header_->unique_id_count_ + other->header_->unique_id_count_) / 2 - header_->unique_id_count_;
         segments_.reserve(segments_.size() + other->segments_.size());
         string_storage_.reserve(string_storage_.size() + other->string_storage_.size());
         if (min_index() > other->max_index()) {
@@ -458,17 +481,18 @@ namespace core::b_plus_tree {
                     insert_segment_(segments_.begin(), std::move(*node));
                     other->remove_segment_(node);
                     rebalance_size -= count;
-                    *item_count_ += item_count;
-                    *unique_id_count_ += count;
-                    *(other->item_count_) -= item_count;
-                    *(other->unique_id_count_) -= count;
+                    header_->item_count_ += item_count;
+                    header_->unique_id_count_ += count;
+                    other->header_->item_count_ -= item_count;
+                    other->header_->unique_id_count_ -= count;
                 } else {
                     // split required amount from that block and break the loop
-                    size_t split_unique = rebalance_size + (prev_index == node->block->min_index());
+                    auto split_unique =
+                        static_cast<uint32_t>(rebalance_size + (prev_index == node->block->min_index()));
                     if (split_unique == 0 || split_unique == node->block->unique_indices_count()) {
                         break;
                     }
-                    size_t item_count = node->block->count();
+                    uint32_t item_count = node->block->count();
                     insert_segment_(segments_.begin(),
                                     segment_tree_t::node_t{node->block->split_uniques(split_unique),
                                                            std::chrono::system_clock::now(),
@@ -477,10 +501,10 @@ namespace core::b_plus_tree {
                     assert(segments_.begin()->block->count() != 0 && "incorrect node split");
                     assert(node->block->count() != 0 && "incorrect node split");
                     other->update_metadata_(node, metadata);
-                    *item_count_ += item_count;
-                    *unique_id_count_ += rebalance_size;
-                    *(other->item_count_) -= item_count;
-                    *(other->unique_id_count_) -= rebalance_size;
+                    header_->item_count_ += item_count;
+                    header_->unique_id_count_ += rebalance_size;
+                    other->header_->item_count_ -= item_count;
+                    other->header_->unique_id_count_ -= rebalance_size;
                     break;
                 }
             }
@@ -504,17 +528,18 @@ namespace core::b_plus_tree {
                     insert_segment_(segments_.end(), std::move(*node));
                     other->remove_segment_(node);
                     rebalance_size -= count;
-                    *item_count_ += item_count;
-                    *unique_id_count_ += count;
-                    *(other->item_count_) -= item_count;
-                    *(other->unique_id_count_) -= count;
+                    header_->item_count_ += item_count;
+                    header_->unique_id_count_ += count;
+                    other->header_->item_count_ -= item_count;
+                    other->header_->unique_id_count_ -= count;
                 } else {
                     // split required amount from that block and break the loop
                     if (count - rebalance_size == 0 || count - rebalance_size == node->block->unique_indices_count()) {
                         break;
                     }
                     size_t item_count = node->block->count();
-                    std::unique_ptr<block_t> temp_block_ptr = node->block->split_uniques(count - rebalance_size);
+                    std::unique_ptr<block_t> temp_block_ptr =
+                        node->block->split_uniques(static_cast<uint32_t>(count - rebalance_size));
                     assert(temp_block_ptr->count() != 0 && "incorrect node split");
                     assert(node->block->count() != 0 && "incorrect node split");
                     insert_segment_(
@@ -524,10 +549,10 @@ namespace core::b_plus_tree {
                     item_count -= node->block->count();
                     node->modified = true;
                     other->update_metadata_(node, metadata);
-                    *item_count_ += item_count;
-                    *unique_id_count_ += rebalance_size;
-                    *(other->item_count_) -= item_count;
-                    *(other->unique_id_count_) -= rebalance_size;
+                    header_->item_count_ += item_count;
+                    header_->unique_id_count_ += rebalance_size;
+                    other->header_->item_count_ -= item_count;
+                    other->header_->unique_id_count_ -= rebalance_size;
                     break;
                 }
             }
@@ -535,20 +560,20 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::merge(std::unique_ptr<segment_tree_t>& other) {
-        assert(*item_count_ != 0 && *(other->item_count_) != 0);
+        assert(header_->item_count_ != 0 && other->header_->item_count_ != 0);
         assert(min_index() > other->max_index() || max_index() < other->min_index());
 
-        *unique_id_count_ += *other->unique_id_count_;
-        *item_count_ += *other->item_count_;
-        *(other->item_count_) = 0;
-        *(other->unique_id_count_) = 0;
+        header_->unique_id_count_ += other->header_->unique_id_count_;
+        header_->item_count_ += other->header_->item_count_;
+        other->header_->item_count_ = 0;
+        other->header_->unique_id_count_ = 0;
         segments_.reserve(segments_.size() + other->segments_.size());
         string_storage_.reserve(string_storage_.size() + other->string_storage_.size());
         if (min_index() > other->max_index()) {
             // insert all at begin pos
-            *unique_id_count_ += *other->unique_id_count_;
-            *item_count_ += *other->item_count_;
-            while (other->segments_.size() != 0) {
+            header_->unique_id_count_ += other->header_->unique_id_count_;
+            header_->item_count_ += other->header_->item_count_;
+            while (!other->segments_.empty()) {
                 if (!(other->segments_.end() - 1)->block) {
                     other->load_segment_(other->metadata_end_ - 1);
                 }
@@ -558,7 +583,7 @@ namespace core::b_plus_tree {
             }
         } else {
             // insert all at end pos
-            while (other->segments_.size() != 0) {
+            while (!other->segments_.empty()) {
                 if (!other->segments_.begin()->block) {
                     other->load_segment_(other->metadata_begin_);
                 }
@@ -567,8 +592,8 @@ namespace core::b_plus_tree {
                 other->remove_segment_(other->segments_.begin());
             }
         }
-        *(other->item_count_) = 0;
-        *(other->unique_id_count_) = 0;
+        other->header_->item_count_ = 0;
+        other->header_->unique_id_count_ = 0;
     }
 
     bool segment_tree_t::contains_index(const index_t& index) {
@@ -649,7 +674,7 @@ namespace core::b_plus_tree {
                 load_segment_(range.begin);
             }
 
-            return node->block->get_item(index, position);
+            return node->block->get_item(index, static_cast<uint32_t>(position));
         }
         size_t skipped_count = 0;
         size_t current_count = 0;
@@ -660,7 +685,8 @@ namespace core::b_plus_tree {
             }
             current_count = node->block->item_count(index);
             if (skipped_count + current_count > position) {
-                return node->block->get_item(index, skipped_count + current_count - position - 1);
+                return node->block->get_item(index,
+                                             static_cast<uint32_t>(skipped_count + current_count - position - 1));
             }
             skipped_count += current_count;
         }
@@ -720,9 +746,9 @@ namespace core::b_plus_tree {
 
     size_t segment_tree_t::blocks_count() const { return segments_.size(); }
 
-    size_t segment_tree_t::count() const { return *item_count_; }
+    size_t segment_tree_t::count() const { return header_->item_count_; }
 
-    size_t segment_tree_t::unique_indices_count() const { return *unique_id_count_; }
+    size_t segment_tree_t::unique_indices_count() const { return header_->unique_id_count_; }
 
     void segment_tree_t::flush() {
         close_gaps_();
@@ -754,17 +780,18 @@ namespace core::b_plus_tree {
         string_storage_.clear();
         file_->seek(0);
         file_->read(static_cast<void*>(header_), header_size);
-        metadata_end_ = metadata_begin_ + *header_;
+        metadata_end_ = metadata_begin_ + header_->segments_count_;
         gap_tracker_.init(file_->file_size(), INVALID_SIZE);
 
-        segments_.reserve(*header_);
-        string_storage_.reserve(*header_);
+        segments_.reserve(header_->segments_count_);
+        string_storage_.reserve(header_->segments_count_);
         // TODO: it would be faster to load blocks in offset order, instead of their id (especially on hard drives)
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
             // call directly because there is no need to modify header
-            segments_.emplace_back(node_t{create_initialize(resource_, key_func_, metadata->size),
-                                          std::chrono::system_clock::now(),
-                                          false});
+            segments_.emplace_back(
+                node_t{create_initialize(resource_, key_func_, static_cast<uint32_t>(metadata->size)),
+                       std::chrono::system_clock::now(),
+                       false});
             string_storage_.emplace_back();
             file_->read(segments_.back().block->internal_buffer(), metadata->size, metadata->file_offset);
             assert(segments_.back().block->varify_checksum() && "block was modified outside of segment tree");
@@ -791,11 +818,11 @@ namespace core::b_plus_tree {
         string_storage_.clear();
         file_->seek(0);
         file_->read(static_cast<void*>(header_), header_size);
-        metadata_end_ = metadata_begin_ + *header_;
+        metadata_end_ = metadata_begin_ + header_->segments_count_;
         gap_tracker_.init(file_->file_size(), std::numeric_limits<size_t>::max());
 
-        segments_.reserve(*header_);
-        string_storage_.reserve(*header_);
+        segments_.reserve(header_->segments_count_);
+        string_storage_.reserve(header_->segments_count_);
         // NOTE: while index_t is not stored on stack entirely
         // we have to load block to get min/max indices from it, if requires any heap allocations
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
@@ -812,16 +839,15 @@ namespace core::b_plus_tree {
 
     segment_tree_t::metadata_range segment_tree_t::find_range_(const index_t& index) const {
         metadata_range result;
-        result.begin = std::lower_bound(
-            metadata_begin_,
-            metadata_end_,
-            index,
-            [this](const block_metadata& meta, const index_t& index) { return meta.max_index < index; });
-        result.end = std::lower_bound(
-            result.begin,
-            metadata_end_,
-            index,
-            [this](const block_metadata& meta, const index_t& index) { return meta.min_index <= index; });
+        result.begin =
+            std::lower_bound(metadata_begin_,
+                             metadata_end_,
+                             index,
+                             [](const block_metadata& meta, const index_t& index) { return meta.max_index < index; });
+        result.end =
+            std::lower_bound(result.begin, metadata_end_, index, [](const block_metadata& meta, const index_t& index) {
+                return meta.min_index <= index;
+            });
         return result;
     }
 
@@ -834,14 +860,14 @@ namespace core::b_plus_tree {
             gap_tracker_.remove_gap({it->file_offset, it->size});
         }
         gap_tracker_.clean_gaps();
-        std::memmove(range.begin, range.end, (metadata_end_ - range.end) * block_metadata_size);
+        std::memmove(range.begin, range.end, static_cast<size_t>(metadata_end_ - range.end) * block_metadata_size);
         metadata_end_ -= range.end - range.begin;
 
         segments_.erase(segments_.begin() + (range.begin - metadata_begin_),
                         segments_.begin() + (range.end - metadata_begin_));
         string_storage_.erase(string_storage_.begin() + (range.begin - metadata_begin_),
                               string_storage_.begin() + (range.end - metadata_begin_));
-        *header_ = segments_.size();
+        header_->segments_count_ = segments_.size();
     }
 
     segment_tree_t::node_t segment_tree_t::construct_new_node_(const index_t& index, item_data item) {
@@ -872,10 +898,10 @@ namespace core::b_plus_tree {
 
         // if there is not enough memory, flush old blocks
         try {
-            node->block = create_initialize(resource_, key_func_, metadata->size);
+            node->block = create_initialize(resource_, key_func_, static_cast<uint32_t>(metadata->size));
         } catch (...) {
             unload_old_segments_();
-            node->block = create_initialize(resource_, key_func_, metadata->size);
+            node->block = create_initialize(resource_, key_func_, static_cast<uint32_t>(metadata->size));
         }
 
         file_->read(node->block->internal_buffer(), metadata->size, metadata->file_offset);
@@ -915,26 +941,26 @@ namespace core::b_plus_tree {
         node.last_used = std::chrono::system_clock::now();
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
-        std::memmove(metadata + 1, metadata, (segments_.size() - index) * block_metadata_size);
+        std::memmove(metadata + 1, metadata, (segments_.size() - static_cast<size_t>(index)) * block_metadata_size);
         metadata->file_offset = gap_tracker_.find_gap(node.block->block_size());
         metadata->size = node.block->block_size();
         segments_.insert(pos, std::move(node));
         string_storage_.emplace(string_storage_.begin() + index);
         update_metadata_(pos, metadata);
         metadata_end_++;
-        *header_ = segments_.size();
+        header_->segments_count_ = segments_.size();
     }
 
     void segment_tree_t::remove_segment_(it pos) {
         auto index = pos - segments_.begin();
         block_metadata* metadata = metadata_begin_ + index;
         gap_tracker_.remove_gap({metadata->file_offset, metadata->size});
-        std::memmove(metadata, metadata + 1, (segments_.size() - index) * block_metadata_size);
+        std::memmove(metadata, metadata + 1, (segments_.size() - static_cast<size_t>(index)) * block_metadata_size);
         metadata_end_--;
 
         segments_.erase(pos);
         string_storage_.erase(string_storage_.begin() + index);
-        *header_ = segments_.size();
+        header_->segments_count_ = segments_.size();
     }
 
     void segment_tree_t::update_metadata_(it pos, block_metadata* metadata) {

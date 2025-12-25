@@ -22,7 +22,7 @@ namespace components::document {
 
     document_t::~document_t() {
         if (is_root_) {
-            mr_delete(element_ind_->get_allocator(), mut_src_);
+            core::pmr::deallocate_ptr(element_ind_->get_allocator(), mut_src_);
         }
     }
 
@@ -412,7 +412,7 @@ namespace components::document {
                 }
                 current = current->get_object()->get(is_unescaped ? unescaped_key : key);
             } else if (current->is_array()) {
-                current = current->get_array()->get(atol(key.data()));
+                current = current->get_array()->get(static_cast<size_t>(atoll(key.data())));
             } else {
                 return {nullptr, impl::error_code_t::NO_SUCH_ELEMENT};
             }
@@ -568,17 +568,18 @@ namespace components::document {
             case logical_type::UBIGINT:
                 return value1->get_uint64().value() == value2->get_uint64().value();
             case logical_type::FLOAT:
-                return types::is_equals(value1->get_float().value(), value2->get_float().value());
+                return core::is_equals(value1->get_float().value(), value2->get_float().value());
             case logical_type::DOUBLE:
-                return types::is_equals(value1->get_double().value(), value2->get_double().value());
+                return core::is_equals(value1->get_double().value(), value2->get_double().value());
             case logical_type::STRING_LITERAL:
                 return value1->get_string().value() == value2->get_string().value();
             case logical_type::BOOLEAN:
                 return value1->get_bool().value() == value2->get_bool().value();
             case logical_type::NA:
                 return true;
+            default:
+                return false;
         }
-        return false;
     }
 
     bool document_t::is_equals_documents(const document_ptr& doc1, const document_ptr& doc2) {
@@ -647,8 +648,9 @@ namespace components::document {
             }
             case logical_type::NA:
                 return {"null", allocator};
+            default:
+                return {};
         }
-        return {};
     }
 
     std::pmr::string document_t::to_json() const { return element_ind_->to_json(&value_to_string); }
@@ -675,9 +677,9 @@ namespace components::document {
             case types::physical_type::INT128:
                 return value.as_int128() == get_hugeint(json_pointer);
             case types::physical_type::FLOAT:
-                return value.as_float() == get_float(json_pointer);
+                return core::is_equals(value.as_float(), get_float(json_pointer));
             case types::physical_type::DOUBLE:
-                return value.as_double() == get_double(json_pointer);
+                return core::is_equals(value.as_double(), get_double(json_pointer));
             case types::physical_type::STRING:
                 return value.as_string() == get_string(json_pointer);
             default:
@@ -762,7 +764,7 @@ namespace components::document {
                         case types::physical_type::FLOAT:
                         case types::physical_type::DOUBLE: {
                             auto new_value = elem->get_double().value();
-                            if (get_as<decltype(new_value)>(key_field) != new_value) {
+                            if (!core::is_equals(get_as<decltype(new_value)>(key_field), new_value)) {
                                 set(key_field, new_value);
                                 result = true;
                             }
@@ -878,7 +880,7 @@ namespace components::document {
             case types::physical_type::FLOAT:
             case types::physical_type::DOUBLE: {
                 auto new_value = elem->get_double().value();
-                if (get_as<decltype(new_value)>(json_pointer) != new_value) {
+                if (!core::is_equals(get_as<decltype(new_value)>(json_pointer), new_value)) {
                     set(json_pointer, new_value);
                     result = true;
                 }
@@ -901,7 +903,7 @@ namespace components::document {
     template<typename T>
     bool templated_update(document_t& doc, std::string_view json_pointer, const types::logical_value_t& update) {
         T new_value = update.value<T>();
-        if (doc.get_as<T>(json_pointer) != new_value) {
+        if (!core::is_equals(doc.get_as<T>(json_pointer), new_value)) {
             doc.set(json_pointer, new_value);
             return true;
         }
@@ -938,8 +940,9 @@ namespace components::document {
                 return templated_update<double>(*this, json_pointer, update);
             case types::physical_type::STRING:
                 return templated_update<std::string_view>(*this, json_pointer, update);
+            default:
+                return false;
         }
-        return false;
     }
 
     std::pmr::string serialize_document(const document_ptr& document) { return document->to_json(); }
@@ -968,15 +971,15 @@ namespace components::document {
         int size = 0;
         if constexpr (std::is_integral_v<T>) {
             if constexpr (std::is_signed_v<T>) {
-                size = std::sprintf(buffer.data(), "%i", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%i", static_cast<int>(value));
             } else {
-                size = std::sprintf(buffer.data(), "%u", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%u", static_cast<unsigned int>(value));
             }
         } else {
             if constexpr (std::is_same_v<T, float>) {
-                size = std::sprintf(buffer.data(), "%.9g", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%.9g", value);
             } else if (std::is_same_v<T, double>) {
-                size = std::sprintf(buffer.data(), "%.17g", value);
+                size = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
             } else {
                 // unexpected type
                 assert(false);
@@ -1035,7 +1038,7 @@ namespace components::document {
         auto type1 = element1->logical_type();
         auto type2 = element2->logical_type();
 
-        if (type1 == type2 || element1->is_number() && element2->is_number()) {
+        if (type1 == type2 || (element1->is_number() && element2->is_number())) {
             switch (type1) {
                 case logical_type::TINYINT:
                     return equals_<int8_t>(element1, element2);
@@ -1065,6 +1068,8 @@ namespace components::document {
                     return equals_<bool>(element1, element2);
                 case logical_type::NA:
                     return compare_t::equals;
+                default:
+                    break;
             }
         }
         if (type1 == logical_type::NA) {

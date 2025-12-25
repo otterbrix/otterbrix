@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/base/operators/operator.hpp>

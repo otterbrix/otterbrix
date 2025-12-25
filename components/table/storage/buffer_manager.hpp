@@ -3,7 +3,6 @@
 #include <filesystem>
 
 #include "block_handle.hpp"
-#include "block_manager.hpp"
 
 namespace core::filesystem {
     class local_file_system_t;
@@ -12,7 +11,7 @@ namespace core::filesystem {
 namespace components::table::storage {
     class buffer_pool_t;
 
-    constexpr size_t DEFAULT_BLOCK_ALLOC_SIZE = uint64_t(1) << 18; // 262144
+    constexpr size_t DEFAULT_BLOCK_ALLOC_SIZE = size_t{1} << 18; // 262144
 
     template<typename T>
     static T align_value(T n, T val = 8) {
@@ -55,7 +54,7 @@ namespace components::table::storage {
         virtual void reserve_memory(uint64_t size);
         virtual void free_reserved_memory(uint64_t size);
         virtual std::vector<memory_info_t> get_memory_usage_info() const = 0;
-        virtual void set_memory_limit(uint64_t limit = (uint64_t) -1);
+        virtual void set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max());
 
         virtual std::unique_ptr<file_buffer_t>
         construct_manager_buffer(uint64_t size,

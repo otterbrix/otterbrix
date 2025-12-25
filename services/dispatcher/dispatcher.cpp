@@ -1,6 +1,7 @@
 #include "dispatcher.hpp"
 
 #include <components/logical_plan/node_create_type.hpp>
+#include <components/logical_plan/node_data.hpp>
 
 #include <core/system_command.hpp>
 #include <core/tracy/tracy.hpp>
@@ -14,6 +15,8 @@
 #include <services/memory_storage/context_storage.hpp>
 #include <services/memory_storage/route.hpp>
 #include <services/wal/route.hpp>
+
+#include <boost/polymorphic_pointer_cast.hpp>
 
 using namespace components::logical_plan;
 using namespace components::cursor;
@@ -81,7 +84,7 @@ namespace services::dispatcher {
 
     dispatcher_t::~dispatcher_t() { trace(log_, "delete dispatcher_t"); }
 
-    auto dispatcher_t::make_type() const noexcept -> const char* const { return "dispatcher_t"; }
+    auto dispatcher_t::make_type() const noexcept -> const char* { return "dispatcher_t"; }
 
     actor_zeta::behavior_t dispatcher_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
@@ -318,7 +321,7 @@ namespace services::dispatcher {
                 }
             }
             case node_type::drop_type_t: {
-                const auto& n = reinterpret_cast<const node_create_type_ptr&>(logic_plan);
+                const auto& n = boost::polymorphic_pointer_downcast<node_create_type_t>(logic_plan);
                 error = check_type_exists(n->type().alias());
                 if (error) {
                     break;
@@ -806,7 +809,7 @@ namespace services::dispatcher {
                 catalog_.drop_namespace(id.get_namespace());
                 break;
             case node_type::create_collection_t: {
-                auto node_info = reinterpret_cast<node_create_collection_ptr&>(node);
+                auto node_info = boost::polymorphic_pointer_downcast<node_create_collection_t>(node);
                 if (node_info->schema().empty()) {
                     auto err = catalog_.create_computing_table(id);
                     assert(!err);
@@ -871,8 +874,8 @@ namespace services::dispatcher {
                             // }
                         }
                     }
-                    break;
                 }
+                break;
             }
             case node_type::delete_t: {
                 if (catalog_.table_computes(id)) {
@@ -929,7 +932,7 @@ namespace services::dispatcher {
         trace(log_, "delete manager_dispatcher_t");
     }
 
-    auto manager_dispatcher_t::make_type() const noexcept -> const char* const { return "manager_dispatcher"; }
+    auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
     auto manager_dispatcher_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
 
@@ -976,7 +979,7 @@ namespace services::dispatcher {
         behavior()(current_message());
     }
 
-    // mr_delete(resource(), agent)
+    // core::pmr::deallocate_ptr(resource(), agent)
     void manager_dispatcher_t::create(const components::session::session_id_t& session) {
         trace(log_, "manager_dispatcher_t::create session: {} ", session.data());
         auto target = spawn_actor(

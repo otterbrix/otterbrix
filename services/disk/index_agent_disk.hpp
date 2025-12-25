@@ -1,12 +1,12 @@
 #pragma once
 
 #include "index_disk.hpp"
+#include <actor-zeta.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <core/btree/btree.hpp>
-#include <core/excutor.hpp>
 #include <filesystem>
 
 namespace services::collection {
@@ -32,7 +32,7 @@ namespace services::disk {
                            collection::context_collection_t*,
                            const index_name_t&,
                            log_t&);
-        ~index_agent_disk_t() final;
+        ~index_agent_disk_t() override;
 
         const collection_name_t& collection_name() const;
         collection::context_collection_t* collection() const;
@@ -45,7 +45,7 @@ namespace services::disk {
         void remove(const session_id_t& session, const value_t& key, const document_id_t& value);
         void find(const session_id_t& session, const value_t& value, components::expressions::compare_type compare);
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior();
 
     private:

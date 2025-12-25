@@ -41,7 +41,7 @@ namespace services::disk {
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
 
-    auto agent_disk_t::make_type() const noexcept -> const char* const { return "agent_disk"; }
+    auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }
 
     actor_zeta::behavior_t agent_disk_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {

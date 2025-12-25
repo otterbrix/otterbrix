@@ -1,7 +1,6 @@
 #pragma once
 #include <components/types/logical_value.hpp>
 #include <functional>
-#include <memory_resource>
 
 namespace components::table::sort {
 

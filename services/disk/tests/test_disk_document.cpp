@@ -9,7 +9,7 @@ const std::string collection_name = "test_collection";
 
 using namespace services::disk;
 
-TEST_CASE("sync documents from disk") {
+TEST_CASE("services::disk::sync_documents_from_disk") {
     auto resource = std::pmr::synchronized_pool_resource();
     core::filesystem::local_file_system_t fs = core::filesystem::local_file_system_t();
     if (directory_exists(fs, test_folder)) {

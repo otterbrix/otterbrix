@@ -48,7 +48,7 @@ namespace components::table {
 
         template<typename T>
         void store(const T& val, void* ptr) {
-            memcpy(ptr, (void*) &val, sizeof(val));
+            memcpy(ptr, &val, sizeof(val));
         }
 
         struct string_dictionary_container_t {
@@ -82,8 +82,9 @@ namespace components::table {
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
                                                 uint64_t block_size) {
-            assert(dict_offset + static_cast<int32_t>(block_size) >= 0 &&
-                   dict_offset <= static_cast<int32_t>(block_size));
+            if (dict_offset + static_cast<int32_t>(block_size) < 0 || dict_offset > static_cast<int32_t>(block_size)) {
+                throw std::runtime_error("fetch_string_location: incorrect pointer and size");
+            }
             if (dict_offset >= 0) {
                 return string_location_t(INVALID_BLOCK, dict_offset);
             }
@@ -97,7 +98,7 @@ namespace components::table {
 
         std::string_view read_string(std::byte* target, int32_t offset, uint32_t string_length) {
             auto ptr = target + offset;
-            return std::string(reinterpret_cast<char*>(ptr), string_length);
+            return std::string_view(reinterpret_cast<char*>(ptr), string_length);
         }
 
         std::string_view read_string_with_length(std::byte* target, int32_t offset) {
@@ -111,7 +112,7 @@ namespace components::table {
                                       string_location_t location,
                                       uint32_t string_length) {
             if (location.offset == 0) {
-                return std::string(nullptr, 0);
+                return std::string_view(nullptr, 0);
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }
@@ -128,7 +129,7 @@ namespace components::table {
 
         void write_string_memory(column_segment_t& segment,
                                  std::string_view string,
-                                 uint32_t& result_block,
+                                 uint64_t& result_block,
                                  int32_t& result_offset) {
             auto total_length = static_cast<uint32_t>(string.size() + sizeof(uint32_t));
             std::shared_ptr<storage::block_handle_t> block;
@@ -163,7 +164,7 @@ namespace components::table {
 
         void write_string(column_segment_t& segment,
                           std::string_view string,
-                          uint32_t& result_block,
+                          uint64_t& result_block,
                           int32_t& result_offset) {
             write_string_memory(segment, string, result_block, result_offset);
         }
@@ -178,37 +179,37 @@ namespace components::table {
 
         template<typename T>
         void fixed_size_fetch_row(column_segment_t& segment,
-                                  column_fetch_state& state,
-                                  uint64_t row_id,
+                                  column_fetch_state&,
+                                  int64_t row_id,
                                   vector::vector_t& result,
                                   uint64_t result_idx) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
 
-            auto data_ptr = handle.ptr() + segment.block_offset() + row_id * sizeof(T);
+            auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
 
             memcpy(result.data() + result_idx * sizeof(T), data_ptr, sizeof(T));
         }
 
         void validity_fetch_row(column_segment_t& segment,
-                                column_fetch_state& state,
-                                uint64_t row_id,
+                                column_fetch_state&,
+                                int64_t row_id,
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
-            assert(row_id >= 0 && row_id < uint64_t(segment.count.load()));
+            assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
             vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
-            if (!mask.row_is_valid(row_id)) {
+            if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
                 result_mask.set_invalid(result_idx);
             }
         }
 
         void string_fetch_row(column_segment_t& segment,
                               column_fetch_state& state,
-                              uint64_t row_id,
+                              int64_t row_id,
                               vector::vector_t& result,
                               uint64_t result_idx) {
             auto& handle = state.get_or_insert_handle(segment);
@@ -229,29 +230,29 @@ namespace components::table {
         }
 
         template<typename T>
-        bool fixed_size_check_row(column_segment_t& segment, uint64_t row_id, const table_filter_t* filter) {
+        bool fixed_size_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
 
-            auto data_ptr = handle.ptr() + segment.block_offset() + row_id * sizeof(T);
+            auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
             const auto& const_filter = filter->cast<constant_filter_t>();
             return const_filter.compare(*reinterpret_cast<T*>(data_ptr));
         }
 
-        bool validity_check_row(column_segment_t& segment, uint64_t row_id, const table_filter_t* filter) {
-            assert(row_id >= 0 && row_id < uint64_t(segment.count.load()));
+        bool validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
+            assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
             vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
 
             const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(mask.row_is_valid(row_id));
+            return const_filter.compare(mask.row_is_valid(static_cast<uint64_t>(row_id)));
         }
 
         bool string_check_row(column_segment_t& segment,
                               column_fetch_state& state,
-                              uint64_t row_id,
+                              int64_t row_id,
                               const table_filter_t* filter) {
             auto& handle = state.get_or_insert_handle(segment);
 
@@ -365,10 +366,10 @@ namespace components::table {
             return std::min((block_size / 4) / 8 * 8, DEFAULT_STRING_BLOCK_LIMIT);
         }
 
-        void write_string_marker(std::byte* target, uint32_t block_id, int32_t offset) {
-            memcpy(target, &block_id, sizeof(uint32_t));
-            target += sizeof(uint32_t);
-            memcpy(target, &offset, sizeof(int32_t));
+        void write_string_marker(std::byte* target, uint64_t block_id, int64_t offset) {
+            memcpy(target, &block_id, sizeof(uint64_t));
+            target += sizeof(uint64_t);
+            memcpy(target, &offset, sizeof(int64_t));
         }
 
         uint64_t
@@ -416,7 +417,7 @@ namespace components::table {
                 }
 
                 if (use_overflow_block) {
-                    uint32_t block;
+                    uint64_t block;
                     int32_t current_offset;
                     write_string(segment, source_data[source_idx], block, current_offset);
                     *dictionary_size += BIG_STRING_MARKER_BASE_SIZE;
@@ -429,7 +430,7 @@ namespace components::table {
                     result_data[target_idx] = -static_cast<int32_t>((*dictionary_size));
                 } else {
                     assert(string_length < std::numeric_limits<uint16_t>::max());
-                    *dictionary_size += required_space;
+                    *dictionary_size += static_cast<uint32_t>(required_space);
                     remaining -= required_space;
                     auto dict_pos = end - *dictionary_size;
                     memcpy(dict_pos, source_data[source_idx].data(), string_length);
@@ -452,21 +453,18 @@ namespace components::table {
             auto start = segment.relative_index(state.row_index);
 
             auto data = state.scan_state->ptr() + segment.block_offset();
-            auto source_data = data + start * sizeof(T);
+            auto source_data = data + static_cast<uint64_t>(start) * sizeof(T);
 
             result.set_vector_type(vector::vector_type::FLAT);
             memcpy(result.data() + result_offset * sizeof(T), source_data, scan_count * sizeof(T));
         }
 
         template<typename T>
-        void fixed_size_scan(column_segment_t& segment,
-                             column_scan_state& state,
-                             uint64_t scan_count,
-                             vector::vector_t& result) {
+        void fixed_size_scan(column_segment_t& segment, column_scan_state& state, uint64_t, vector::vector_t& result) {
             auto start = segment.relative_index(state.row_index);
 
             auto data = state.scan_state->ptr() + segment.block_offset();
-            auto source_data = data + start * sizeof(T);
+            auto source_data = data + static_cast<uint64_t>(start) * sizeof(T);
 
             result.set_vector_type(vector::vector_type::FLAT);
             result.set_data(source_data);
@@ -488,8 +486,8 @@ namespace components::table {
 
             uint64_t result_entry = result_offset / vector::validity_mask_t::BITS_PER_VALUE;
             uint64_t result_idx = result_offset - result_entry * vector::validity_mask_t::BITS_PER_VALUE;
-            uint64_t input_entry = start / vector::validity_mask_t::BITS_PER_VALUE;
-            uint64_t input_idx = start - input_entry * vector::validity_mask_t::BITS_PER_VALUE;
+            uint64_t input_entry = static_cast<uint64_t>(start) / vector::validity_mask_t::BITS_PER_VALUE;
+            uint64_t input_idx = static_cast<uint64_t>(start) - input_entry * vector::validity_mask_t::BITS_PER_VALUE;
 
             uint64_t pos = 0;
             while (pos < scan_count) {
@@ -548,12 +546,12 @@ namespace components::table {
             result.flatten(scan_count);
 
             auto start = segment.relative_index(state.row_index);
-            if (start % vector::validity_mask_t::BITS_PER_VALUE == 0) {
+            if (static_cast<uint64_t>(start) % vector::validity_mask_t::BITS_PER_VALUE == 0) {
                 auto& result_mask = result.validity();
                 auto buffer_ptr = state.scan_state->ptr() + segment.block_offset();
                 auto input_data = reinterpret_cast<uint64_t*>(buffer_ptr);
                 auto result_data = result_mask.data();
-                uint64_t start_offset = start / vector::validity_mask_t::BITS_PER_VALUE;
+                uint64_t start_offset = static_cast<uint64_t>(start) / vector::validity_mask_t::BITS_PER_VALUE;
                 uint64_t entry_scan_count = (scan_count + vector::validity_mask_t::BITS_PER_VALUE - 1) /
                                             vector::validity_mask_t::BITS_PER_VALUE;
                 for (uint64_t i = 0; i < entry_scan_count; i++) {
@@ -587,17 +585,21 @@ namespace components::table {
             int32_t previous_offset = start > 0 ? base_data[start - 1] : 0;
 
             for (uint64_t i = 0; i < scan_count; i++) {
-                auto string_length = static_cast<uint32_t>(std::abs(base_data[start + i]) - std::abs(previous_offset));
-                result_data[result_offset + i] =
-                    fetch_string_from_dict(segment, dict, baseptr, base_data[start + i], string_length);
-                previous_offset = base_data[start + i];
+                auto string_length = static_cast<uint32_t>(std::abs(base_data[static_cast<uint64_t>(start) + i]) -
+                                                           std::abs(previous_offset));
+                result_data[result_offset + i] = fetch_string_from_dict(segment,
+                                                                        dict,
+                                                                        baseptr,
+                                                                        base_data[static_cast<uint64_t>(start) + i],
+                                                                        string_length);
+                previous_offset = base_data[static_cast<uint64_t>(start) + i];
             }
         }
     } // namespace impl
 
     column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block,
                                        const types::complex_logical_type& type,
-                                       uint64_t start,
+                                       int64_t start,
                                        uint64_t count,
                                        uint32_t block_id,
                                        uint64_t offset,
@@ -647,7 +649,7 @@ namespace components::table {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
-    column_segment_t::column_segment_t(column_segment_t&& other, uint64_t start)
+    column_segment_t::column_segment_t(column_segment_t&& other, int64_t start)
         : segment_base_t(start, other.count.load())
         , type(std::move(other.type))
         , type_size(other.type_size)
@@ -663,7 +665,7 @@ namespace components::table {
 
     std::unique_ptr<column_segment_t> column_segment_t::create_segment(storage::buffer_manager_t& manager,
                                                                        const types::complex_logical_type& type,
-                                                                       uint64_t start,
+                                                                       int64_t start,
                                                                        uint64_t segment_size,
                                                                        uint64_t block_size) {
         auto block = manager.register_transient_memory(segment_size, block_size);
@@ -709,7 +711,7 @@ namespace components::table {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
         }
     }
-    bool column_segment_t::check_predicate(uint64_t row_id, const table_filter_t* filter) {
+    bool column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -984,7 +986,7 @@ namespace components::table {
                                                vector::vector_t& vector,
                                                vector::unified_vector_format& uvf,
                                                const table_filter_t& filter,
-                                               uint64_t scan_count,
+                                               uint64_t,
                                                uint64_t& approved_tuple_count) {
         assert(filter.filter_type != expressions::compare_type::invalid);
         assert(!is_union_compare_condition(filter.filter_type));
@@ -1195,7 +1197,7 @@ namespace components::table {
                 auto move_amount = segment_size_ - total_size;
                 auto dataptr = handle.ptr();
                 memmove(dataptr + offset_size, dataptr + dict.end - dict.size, dict.size);
-                dict.end -= move_amount;
+                dict.end -= static_cast<uint32_t>(move_amount);
                 assert(dict.end == total_size);
                 set_dictionary(*this, handle, dict);
                 return total_size;
@@ -1208,7 +1210,7 @@ namespace components::table {
     void column_segment_t::revert_append(uint64_t start_row) {
         assert(type.to_physical_type() == types::physical_type::BIT);
 
-        uint64_t start_bit = start_row - start;
+        uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
         auto& buffer_manager = block->block_manager.buffer_manager;
         auto handle = buffer_manager.pin(block);
@@ -1225,7 +1227,7 @@ namespace components::table {
             revert_start = start_bit / 8;
         }
         memset(handle.ptr() + revert_start, 0xFF, segment_size_ - revert_start);
-        count = start_row - start;
+        count = start_row - static_cast<uint64_t>(start);
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {

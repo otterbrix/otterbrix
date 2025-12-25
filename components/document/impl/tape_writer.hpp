@@ -1,7 +1,6 @@
 #pragma once
 
 #include <components/document/impl/document.hpp>
-#include <cstring>
 #include <vector>
 
 namespace components::document::impl {

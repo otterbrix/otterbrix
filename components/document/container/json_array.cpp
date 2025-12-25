@@ -41,7 +41,7 @@ namespace components::document::json {
             return nullptr;
         }
         auto copy = items_[index];
-        items_.erase(items_.begin() + index);
+        items_.erase(items_.begin() + static_cast<int64_t>(index));
         return copy;
     }
 

@@ -6,7 +6,7 @@
 
 using namespace components::document;
 
-TEST_CASE("native pack document") {
+TEST_CASE("components::document::native_pack_document") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(10, &resource);
     msgpack::sbuffer sbuf;
@@ -28,7 +28,7 @@ TEST_CASE("native pack document") {
     REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
 }
 
-TEST_CASE("native pack document and zone") {
+TEST_CASE("components::document::native_pack_document_and_zone") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(10, &resource);
     msgpack::sbuffer sbuf;

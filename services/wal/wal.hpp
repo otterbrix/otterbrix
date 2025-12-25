@@ -68,23 +68,10 @@ namespace services::wal {
                           components::logical_plan::node_create_index_ptr data);
         ~wal_replicate_t() override;
 
-        auto make_type() const noexcept -> const char* const;
+        auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior();
 
     private:
-        actor_zeta::behavior_t load_;
-        actor_zeta::behavior_t create_database_;
-        actor_zeta::behavior_t drop_database_;
-        actor_zeta::behavior_t create_collection_;
-        actor_zeta::behavior_t drop_collection_;
-        actor_zeta::behavior_t insert_one_;
-        actor_zeta::behavior_t insert_many_;
-        actor_zeta::behavior_t delete_one_;
-        actor_zeta::behavior_t delete_many_;
-        actor_zeta::behavior_t update_one_;
-        actor_zeta::behavior_t update_many_;
-        actor_zeta::behavior_t create_index_;
-
         void send_success(const session_id_t& session, address_t& sender);
 
         virtual void write_buffer(buffer_t& buffer);
@@ -102,10 +89,23 @@ namespace services::wal {
 
         log_t log_;
         configuration::config_wal config_;
+        core::filesystem::local_file_system_t fs_;
         atomic_id_t id_{0};
         crc32_t last_crc32_{0};
-        core::filesystem::local_file_system_t fs_;
         file_ptr file_;
+
+        actor_zeta::behavior_t load_;
+        actor_zeta::behavior_t create_database_;
+        actor_zeta::behavior_t drop_database_;
+        actor_zeta::behavior_t create_collection_;
+        actor_zeta::behavior_t drop_collection_;
+        actor_zeta::behavior_t insert_one_;
+        actor_zeta::behavior_t insert_many_;
+        actor_zeta::behavior_t delete_one_;
+        actor_zeta::behavior_t delete_many_;
+        actor_zeta::behavior_t update_one_;
+        actor_zeta::behavior_t update_many_;
+        actor_zeta::behavior_t create_index_;
 
 #ifdef DEV_MODE
     public:
@@ -127,8 +127,8 @@ namespace services::wal {
         void load(const session_id_t& session, address_t& sender, services::wal::id_t wal_id);
 
     private:
-        void write_buffer(buffer_t&) final;
-        void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const final;
+        void write_buffer(buffer_t&) override;
+        void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const override;
     };
 
     using wal_replicate_ptr = std::unique_ptr<wal_replicate_t, actor_zeta::pmr::deleter_t>;

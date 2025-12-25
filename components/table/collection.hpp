@@ -29,7 +29,7 @@ namespace components::table {
         collection_t(std::pmr::memory_resource* resource,
                      storage::block_manager_t& block_manager,
                      std::pmr::vector<types::complex_logical_type> types,
-                     uint64_t row_start,
+                     int64_t row_start,
                      uint64_t total_rows = 0,
                      uint64_t row_group_size = vector::DEFAULT_VECTOR_CAPACITY);
 
@@ -37,20 +37,20 @@ namespace components::table {
 
         bool is_empty() const;
 
-        void append_row_group(std::unique_lock<std::mutex>& l, uint64_t start_row);
+        void append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row);
         row_group_t* row_group(int64_t index);
 
         void initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>& column_ids);
         void initialize_create_index_scan(create_index_scan_state& state);
         void initialize_scan_with_offset(collection_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
-                                         uint64_t start_row,
-                                         uint64_t end_row);
+                                         int64_t start_row,
+                                         int64_t end_row);
         static bool initialize_scan_in_row_group(collection_scan_state& state,
                                                  collection_t& collection,
                                                  row_group_t& row_group,
                                                  uint64_t vector_index,
-                                                 uint64_t max_row);
+                                                 int64_t max_row);
 
         bool scan(const std::vector<storage_index_t>& column_ids,
                   const std::function<bool(vector::data_chunk_t& chunk)>& fun);
@@ -65,8 +65,8 @@ namespace components::table {
         void initialize_append(table_append_state& state);
         bool append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state);
-        void commit_append(uint64_t row_start, uint64_t count);
-        void cleanup_append(uint64_t start, uint64_t count);
+        void commit_append(int64_t row_start, uint64_t count);
+        void cleanup_append(int64_t start, uint64_t count);
 
         void merge_storage(collection_t& data);
 
@@ -103,7 +103,7 @@ namespace components::table {
         uint64_t row_group_size_;
         std::atomic<uint64_t> total_rows_;
         std::pmr::vector<types::complex_logical_type> types_;
-        uint64_t row_start_;
+        int64_t row_start_;
         std::shared_ptr<row_group_segment_tree_t> row_groups_;
         uint64_t allocation_size_;
     };

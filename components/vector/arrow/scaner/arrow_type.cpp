@@ -423,16 +423,16 @@ namespace components::vector::arrow {
     }
 
     void arrow_array_scan_state::add_dictionary(std::unique_ptr<vector_t> dictionary, ArrowArray* arrow_dict) {
-        dictionary = std::move(dictionary);
+        this->dictionary = std::move(dictionary);
         assert(owned_data);
-        arrow_dictionary = std::move(std::unique_ptr<ArrowArray>{arrow_dict});
+        arrow_dictionary = std::unique_ptr<ArrowArray>{arrow_dict};
         dictionary->get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(owned_data));
     }
 
     bool arrow_array_scan_state::has_dictionary() const { return dictionary != nullptr; }
 
     bool arrow_array_scan_state::cache_outdated(ArrowArray* dictionary) const {
-        if (!dictionary) {
+        if (!this->dictionary) {
             return true;
         }
         if (dictionary == arrow_dictionary.get()) {

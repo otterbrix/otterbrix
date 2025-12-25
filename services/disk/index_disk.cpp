@@ -10,16 +10,12 @@ namespace services::disk {
 
     auto item_key_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
         msgpack::unpacked msg;
-        msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
-            return true;
-        });
+        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
         return get_field(msg.get(), "/0");
     };
     auto id_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
         msgpack::unpacked msg;
-        msgpack::unpack(msg, (char*) item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) {
-            return true;
-        });
+        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
         return get_field(msg.get(), "/1");
     };
 
@@ -43,10 +39,11 @@ namespace services::disk {
                 return components::types::physical_value(value.value<uint64_t>());
             case logical_type::BIGINT:
                 return components::types::physical_value(value.value<int64_t>());
-            case logical_type::UHUGEINT:
-                return components::types::physical_value(value.value<components::types::uint128_t>());
-            case logical_type::HUGEINT:
-                return components::types::physical_value(value.value<components::types::int128_t>());
+            // TODO: physical_value does not support 128 bit integers for now
+            // case logical_type::UHUGEINT:
+            //     return components::types::physical_value(value.value<components::types::uint128_t>());
+            // case logical_type::HUGEINT:
+            //     return components::types::physical_value(value.value<components::types::int128_t>());
             case logical_type::FLOAT:
                 return components::types::physical_value(value.value<float>());
             case logical_type::DOUBLE:
@@ -65,7 +62,7 @@ namespace services::disk {
         : path_(path)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource, fs_, path, item_key_getter)) {
+        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
         db_->load();
     }
 
@@ -80,7 +77,7 @@ namespace services::disk {
             packer.pack_array(2);
             packer.pack(key);
             packer.pack(value.to_string());
-            db_->append(data_ptr_t(sbuf.data()), sbuf.size());
+            db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
             db_->flush();
         }
     }
@@ -99,7 +96,7 @@ namespace services::disk {
             packer.pack_array(2);
             packer.pack(key);
             packer.pack(doc.to_string());
-            db_->remove(data_ptr_t(sbuf.data()), sbuf.size());
+            db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
             db_->flush();
         }
     }
@@ -127,8 +124,9 @@ namespace services::disk {
             size_t(-1),
             &res,
             [](void* data, size_t size) {
-                return document_id_t(id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), size})
-                                         .value<components::types::physical_type::STRING>());
+                return document_id_t(
+                    id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
+                        .value<components::types::physical_type::STRING>());
             },
             [&max_index](const auto& index, const auto&) { return index != max_index; });
     }
@@ -147,8 +145,9 @@ namespace services::disk {
             size_t(-1),
             &res,
             [](void* data, size_t size) {
-                return document_id_t(id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), size})
-                                         .value<components::types::physical_type::STRING>());
+                return document_id_t(
+                    id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
+                        .value<components::types::physical_type::STRING>());
             },
             [&min_index](const auto& index, const auto&) { return index != min_index; });
     }

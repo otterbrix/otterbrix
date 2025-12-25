@@ -1,7 +1,6 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <components/document/document.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 

@@ -39,7 +39,7 @@ namespace components::table::operators {
             for (size_t i = 0; i < chunk_left.size(); i++) {
                 for (size_t j = 0; j < chunk_right.size(); j++) {
                     if (predicate->check(chunk_left, chunk_right, i, j)) {
-                        ids.data<int64_t>()[index++] = i;
+                        ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
                         if (index >= ids_capacity) {
                             ids.resize(ids_capacity, ids_capacity * 2);
                             ids_capacity *= 2;
@@ -50,7 +50,7 @@ namespace components::table::operators {
             auto state = context_->table_storage().table().initialize_delete({});
             context_->table_storage().table().delete_rows(*state, ids, index);
             for (size_t i = 0; i < index; i++) {
-                size_t id = ids.data<int64_t>()[i];
+                size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
                 modified_->append(id);
                 context_->index_engine()->delete_row(chunk_left, id, pipeline_context);
             }
@@ -75,7 +75,7 @@ namespace components::table::operators {
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (predicate->check(chunk, i)) {
                     if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        ids.data<int64_t>()[index++] = chunk.data.front().indexing().get_index(i);
+                        ids.data<int64_t>()[index++] = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
                     } else {
                         ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
                     }
@@ -85,7 +85,7 @@ namespace components::table::operators {
             auto state = context_->table_storage().table().initialize_delete({});
             context_->table_storage().table().delete_rows(*state, ids, index);
             for (size_t i = 0; i < index; i++) {
-                size_t id = ids.data<int64_t>()[i];
+                size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
                 modified_->append(id);
                 context_->index_engine()->delete_row(chunk, i, pipeline_context);
             }

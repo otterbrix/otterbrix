@@ -1,5 +1,6 @@
 #include "memory_storage.hpp"
 #include "route.hpp"
+#include <boost/polymorphic_pointer_cast.hpp>
 #include <cassert>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -59,7 +60,7 @@ namespace services {
             [this](services::collection::executor::executor_t* ptr) {
                 executor_ = collection::executor::executor_ptr(ptr, actor_zeta::pmr::deleter_t(resource()));
             },
-            std::move(log_.clone())));
+            log_.clone()));
     }
 
     memory_storage_t::~memory_storage_t() {
@@ -67,7 +68,7 @@ namespace services {
         trace(log_, "delete memory_storage");
     }
 
-    auto memory_storage_t::make_type() const noexcept -> const char* const { return "memory_storage"; }
+    auto memory_storage_t::make_type() const noexcept -> const char* { return "memory_storage"; }
 
     actor_zeta::scheduler::scheduler_abstract_t* memory_storage_t::make_scheduler() noexcept { return e_; }
 
@@ -239,7 +240,7 @@ namespace services {
                                               components::logical_plan::node_ptr logical_plan) {
         trace(log_, "memory_storage_t:create_collection {}", logical_plan->collection_full_name().to_string());
         auto create_collection_plan =
-            reinterpret_cast<const components::logical_plan::node_create_collection_ptr&>(logical_plan);
+            boost::polymorphic_pointer_downcast<components::logical_plan::node_create_collection_t>(logical_plan);
         if (create_collection_plan->schema().empty()) {
             collections_.emplace(logical_plan->collection_full_name(),
                                  new collection::context_collection_t(resource(),

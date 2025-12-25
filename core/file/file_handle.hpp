@@ -1,9 +1,6 @@
 #pragma once
 
-#include <cassert>
 #include <filesystem>
-#include <functional>
-#include <memory>
 #include <string>
 
 #if defined(_WIN32) || defined(_WIN64)

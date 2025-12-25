@@ -5,7 +5,7 @@
 
 namespace components::collection::operators::predicates {
 
-    class simple_predicate : public predicate {
+    class simple_predicate final : public predicate {
     public:
         using check_function_t = std::function<bool(const document::document_ptr&,
                                                     const document::document_ptr&,
@@ -16,7 +16,7 @@ namespace components::collection::operators::predicates {
     private:
         bool check_impl(const document::document_ptr& document_left,
                         const document::document_ptr& document_right,
-                        const logical_plan::storage_parameters* parameters) final;
+                        const logical_plan::storage_parameters* parameters) override;
 
         check_function_t func_;
         std::vector<predicate_ptr> nested_;

@@ -4,7 +4,7 @@
 
 using namespace components::document;
 
-TEST_CASE("document_t::value from json") {
+TEST_CASE("components::document::value_from_json") {
     auto json = R"(
 {
   "_id": "000000000000000000000001",
@@ -30,7 +30,7 @@ TEST_CASE("document_t::value from json") {
     REQUIRE(doc->get_long("/count") == 1);
 }
 
-TEST_CASE("document_t::json") {
+TEST_CASE("components::document::json") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(1, &allocator);
     auto json = doc1->to_json();
@@ -39,7 +39,7 @@ TEST_CASE("document_t::json") {
     REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
     REQUIRE(doc1->get_ulong("/count") == doc2->get_ulong("/count"));
     REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
-    REQUIRE(doc1->get_double("/countDouble") == doc2->get_double("/countDouble"));
+    REQUIRE(core::is_equals(doc1->get_double("/countDouble"), doc2->get_double("/countDouble")));
     REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
     REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
     REQUIRE(doc1->get_array("/countArray")->get_as<uint64_t>("1") ==
@@ -51,7 +51,7 @@ TEST_CASE("document_t::json") {
     REQUIRE(doc1->get_dict("/mixedDict")->count() == doc2->get_dict("/mixedDict")->count());
 }
 
-TEST_CASE("document_t::serialization") {
+TEST_CASE("components::document::serialization") {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc1 = gen_doc(1, &allocator);
     auto ser1 = serialize_document(doc1);

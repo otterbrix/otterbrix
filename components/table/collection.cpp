@@ -16,7 +16,7 @@ namespace components::table {
     collection_t::collection_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::pmr::vector<types::complex_logical_type> types,
-                               uint64_t row_start,
+                               int64_t row_start,
                                uint64_t total_rows,
                                uint64_t row_group_size)
         : resource_(resource)
@@ -33,7 +33,7 @@ namespace components::table {
 
     const std::pmr::vector<types::complex_logical_type>& collection_t::types() const { return types_; }
 
-    void collection_t::append_row_group(std::unique_lock<std::mutex>& l, uint64_t start_row) {
+    void collection_t::append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row) {
         assert(start_row >= row_start_);
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);
         new_row_group->initialize_empty(types_);
@@ -42,11 +42,11 @@ namespace components::table {
 
     row_group_t* collection_t::row_group(int64_t index) { return row_groups_->segment_at(index); }
 
-    void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>& column_ids) {
+    void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>&) {
         auto row_group = row_groups_->root_segment();
         assert(row_group);
         state.row_groups = row_groups_.get();
-        state.max_row = row_start_ + total_rows_;
+        state.max_row = row_start_ + static_cast<int64_t>(total_rows_.load());
         state.initialize(types_);
         while (row_group && !row_group->initialize_scan(state)) {
             row_group = row_groups_->next_segment(row_group);
@@ -58,15 +58,15 @@ namespace components::table {
     }
 
     void collection_t::initialize_scan_with_offset(collection_scan_state& state,
-                                                   const std::vector<storage_index_t>& column_ids,
-                                                   uint64_t start_row,
-                                                   uint64_t end_row) {
+                                                   const std::vector<storage_index_t>&,
+                                                   int64_t start_row,
+                                                   int64_t end_row) {
         auto row_group = row_groups_->get_segment(start_row);
         assert(row_group);
         state.row_groups = row_groups_.get();
         state.max_row = end_row;
         state.initialize(types_);
-        uint64_t start_vector = (start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t start_vector = static_cast<uint64_t>(start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
         if (!row_group->initialize_scan_with_offset(state, start_vector)) {
             throw std::logic_error("Failed to initialize row group scan with offset");
         }
@@ -76,7 +76,7 @@ namespace components::table {
                                                     collection_t& collection,
                                                     row_group_t& row_group,
                                                     uint64_t vector_index,
-                                                    uint64_t max_row) {
+                                                    int64_t max_row) {
         state.max_row = max_row;
         state.row_groups = collection.row_groups_.get();
         if (state.column_scans.empty()) {
@@ -131,7 +131,7 @@ namespace components::table {
             {
                 uint64_t segment_index;
                 auto l = row_groups_->lock();
-                if (!row_groups_->try_segment_index(l, static_cast<uint64_t>(row_id), segment_index)) {
+                if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
                     continue;
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
@@ -170,7 +170,8 @@ namespace components::table {
             append_row_group(l, row_start_);
         }
         state.start_row_group = row_groups_->last_segment(l);
-        assert(this->row_start_ + total_rows_ == state.start_row_group->start + state.start_row_group->count);
+        assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
+               state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
         state.start_row_group->initialize_append(state.append_state);
     }
 
@@ -200,7 +201,7 @@ namespace components::table {
                 chunk.slice(resource_, append_count, remaining);
             }
             new_row_group = true;
-            auto next_start = current_row_group->start + state.append_state.offset_in_row_group;
+            auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
             auto l = row_groups_->lock();
             append_row_group(l, next_start);
@@ -228,7 +229,7 @@ namespace components::table {
 
     void collection_t::merge_storage(collection_t& data) {
         assert(data.types() == types_);
-        auto start_index = row_start_ + total_rows_.load();
+        auto start_index = row_start_ + static_cast<int64_t>(total_rows_.load());
         auto index = start_index;
         auto segments = data.row_groups_->move_segments();
 
@@ -236,7 +237,7 @@ namespace components::table {
             auto& row_group = entry.node;
             row_group->move_to_collection(this, index);
 
-            index += row_group->count;
+            index += static_cast<int64_t>(row_group->count);
             row_groups_->append_segment(std::move(row_group));
         }
         total_rows_ += data.total_rows_.load();
@@ -247,13 +248,13 @@ namespace components::table {
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
-            auto row_group = row_groups_->get_segment(static_cast<uint64_t>(ids[start]));
+            auto row_group = row_groups_->get_segment(ids[start]);
             for (pos++; pos < count; pos++) {
                 assert(ids[pos] >= 0);
-                if (uint64_t(ids[pos]) < row_group->start) {
+                if (ids[pos] < row_group->start) {
                     break;
                 }
-                if (uint64_t(ids[pos]) >= row_group->start + row_group->count) {
+                if (ids[pos] >= row_group->start + static_cast<int64_t>(row_group->count)) {
                     break;
                 }
             }
@@ -266,12 +267,12 @@ namespace components::table {
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
-            auto row_group = row_groups_->get_segment(static_cast<uint64_t>(ids[pos]));
-            int64_t base_id = static_cast<int64_t>(
-                row_group->start + (static_cast<uint64_t>(ids[pos]) - row_group->start) /
-                                       vector::DEFAULT_VECTOR_CAPACITY * vector::DEFAULT_VECTOR_CAPACITY);
-            auto max_id = std::min<int64_t>(base_id + vector::DEFAULT_VECTOR_CAPACITY,
-                                            static_cast<int64_t>(row_group->start + row_group->count));
+            auto row_group = row_groups_->get_segment(ids[pos]);
+            int64_t base_id = row_group->start +
+                              (ids[pos] - row_group->start) / static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
+                                                                                   vector::DEFAULT_VECTOR_CAPACITY);
+            auto max_id = std::min(base_id + static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY),
+                                   row_group->start + static_cast<int64_t>(row_group->count));
             for (pos++; pos < updates.size(); pos++) {
                 assert(ids[pos] >= 0);
                 if (ids[pos] < base_id) {
@@ -292,11 +293,11 @@ namespace components::table {
         do {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(row_ids.data<int64_t>()[pos]);
-            int64_t base_id = static_cast<int64_t>(
-                row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY *
-                                       vector::DEFAULT_VECTOR_CAPACITY);
-            auto max_id = std::min<int64_t>(base_id + vector::DEFAULT_VECTOR_CAPACITY,
-                                            static_cast<int64_t>(row_group->start + row_group->count));
+            int64_t base_id = row_group->start + (row_ids.data<int64_t>()[pos] - row_group->start) /
+                                                     static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY *
+                                                                          vector::DEFAULT_VECTOR_CAPACITY);
+            auto max_id = std::min(base_id + static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY),
+                                   row_group->start + static_cast<int64_t>(row_group->count));
             for (pos++; pos < updates.size(); pos++) {
                 assert(row_ids.data<int64_t>()[pos] >= 0);
                 if (row_ids.data<int64_t>()[pos] < base_id) {
@@ -342,7 +343,7 @@ namespace components::table {
     std::shared_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
         auto new_types = types_;
-        new_types.erase(new_types.begin() + col_idx);
+        new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
         auto result = std::make_shared<collection_t>(resource_,
                                                      block_manager_,

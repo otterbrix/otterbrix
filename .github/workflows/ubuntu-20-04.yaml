@@ -26,7 +26,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https clang-format-11
+          sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https clang-format-11 flex bison
           pip3 install termcolor
 
       - name: conan installation and configuration

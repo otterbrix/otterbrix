@@ -17,9 +17,11 @@ namespace components::table {
     };
 
     struct commited_version_operator {
-        static bool use_inserted_version(uint64_t start_time, uint64_t transaction_id, uint64_t id) { return true; }
+        static bool use_inserted_version(uint64_t /* start_time */, uint64_t /* transaction_id */, uint64_t /* id */) {
+            return true;
+        }
 
-        static bool use_deleted_version(uint64_t min_start_time, uint64_t min_transaction_id, uint64_t id) {
+        static bool use_deleted_version(uint64_t min_start_time, uint64_t /* min_transaction_id */, uint64_t id) {
             return (id >= min_start_time && id < TRANSACTION_ID_START) || id == NOT_DELETED_ID;
         }
     };
@@ -30,9 +32,11 @@ namespace components::table {
                                                                   id);
     }
 
-    bool chunk_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const { return false; }
+    bool chunk_info::cleanup(uint64_t /* lowest_transaction */, std::unique_ptr<chunk_info>& /* result */) const {
+        return false;
+    }
 
-    chunk_constant_info::chunk_constant_info(uint64_t start)
+    chunk_constant_info::chunk_constant_info(int64_t start)
         : chunk_info(start, chunk_info_type::CONSTANT_INFO)
         , insert_id(0)
         , delete_id(NOT_DELETED_ID) {}
@@ -40,7 +44,7 @@ namespace components::table {
     template<class OP>
     uint64_t chunk_constant_info::templated_indexing_vector(uint64_t start_time,
                                                             uint64_t transaction_id,
-                                                            vector::indexing_vector_t& indexing_vector,
+                                                            vector::indexing_vector_t&,
                                                             uint64_t max_count) const {
         if (OP::use_inserted_version(start_time, transaction_id, insert_id) &&
             OP::use_deleted_version(start_time, transaction_id, delete_id)) {
@@ -68,12 +72,14 @@ namespace components::table {
                                                                     max_count);
     }
 
-    bool chunk_constant_info::fetch(transaction_data transaction, int64_t row) {
+    bool chunk_constant_info::fetch(transaction_data transaction, int64_t) {
         return use_version(transaction, insert_id) && !use_version(transaction, delete_id);
     }
 
     void chunk_constant_info::commit_append(uint64_t commit_id, uint64_t start, uint64_t end) {
-        assert(start == 0 && end == vector::DEFAULT_VECTOR_CAPACITY);
+        if (start != 0 || end != vector::DEFAULT_VECTOR_CAPACITY) {
+            throw std::runtime_error("chunk_constant_info::commit_append does not cover whole range");
+        }
         insert_id = commit_id;
     }
 
@@ -86,7 +92,7 @@ namespace components::table {
         return delete_id < TRANSACTION_ID_START ? max_count : 0;
     }
 
-    bool chunk_constant_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
+    bool chunk_constant_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>&) const {
         if (delete_id != NOT_DELETED_ID) {
             return false;
         }
@@ -96,7 +102,7 @@ namespace components::table {
         return true;
     }
 
-    chunk_vector_info::chunk_vector_info(uint64_t start)
+    chunk_vector_info::chunk_vector_info(int64_t start)
         : chunk_info(start, chunk_info_type::VECTOR_INFO)
         , insert_id(0)
         , same_inserted_id(true)
@@ -227,7 +233,7 @@ namespace components::table {
         }
     }
 
-    bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
+    bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>&) const {
         if (any_deleted) {
             return false;
         }
@@ -258,19 +264,19 @@ namespace components::table {
         return delete_count;
     }
 
-    row_version_manager_t::row_version_manager_t(uint64_t start) noexcept
+    row_version_manager_t::row_version_manager_t(int64_t start) noexcept
         : start_(start)
         , has_changes_(false) {}
 
-    void row_version_manager_t::set_start(uint64_t new_start) {
+    void row_version_manager_t::set_start(int64_t new_start) {
         std::lock_guard l(version_lock_);
         this->start_ = new_start;
-        uint64_t current_start = start_;
+        int64_t current_start = start_;
         for (auto& info : vector_info_) {
             if (info) {
                 info->start = current_start;
             }
-            current_start += vector::DEFAULT_VECTOR_CAPACITY;
+            current_start += static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
         }
     }
 
@@ -343,7 +349,7 @@ namespace components::table {
     }
 
     void row_version_manager_t::append_version_info(transaction_data transaction,
-                                                    uint64_t count,
+                                                    uint64_t,
                                                     uint64_t row_group_start,
                                                     uint64_t row_group_end) {
         std::lock_guard lock(version_lock_);
@@ -360,16 +366,16 @@ namespace components::table {
                                       ? row_group_end - end_vector_idx * vector::DEFAULT_VECTOR_CAPACITY
                                       : vector::DEFAULT_VECTOR_CAPACITY;
             if (vector_start == 0 && vector_end == vector::DEFAULT_VECTOR_CAPACITY) {
-                auto constant_info =
-                    std::make_unique<chunk_constant_info>(start_ + vector_idx * vector::DEFAULT_VECTOR_CAPACITY);
+                auto constant_info = std::make_unique<chunk_constant_info>(
+                    start_ + static_cast<int64_t>(vector_idx * vector::DEFAULT_VECTOR_CAPACITY));
                 constant_info->insert_id = transaction.transaction_id;
                 constant_info->delete_id = NOT_DELETED_ID;
                 vector_info_[vector_idx] = std::move(constant_info);
             } else {
                 chunk_vector_info* new_info;
                 if (!vector_info_[vector_idx]) {
-                    auto insert_info =
-                        std::make_unique<chunk_vector_info>(start_ + vector_idx * vector::DEFAULT_VECTOR_CAPACITY);
+                    auto insert_info = std::make_unique<chunk_vector_info>(
+                        start_ + static_cast<int64_t>(vector_idx * vector::DEFAULT_VECTOR_CAPACITY));
                     new_info = insert_info.get();
                     vector_info_[vector_idx] = std::move(insert_info);
                 } else if (vector_info_[vector_idx]->type == chunk_info_type::VECTOR_INFO) {
@@ -447,11 +453,12 @@ namespace components::table {
         fill_vector_info(vector_idx);
 
         if (!vector_info_[vector_idx]) {
-            vector_info_[vector_idx] =
-                std::make_unique<chunk_vector_info>(start_ + vector_idx * vector::DEFAULT_VECTOR_CAPACITY);
+            vector_info_[vector_idx] = std::make_unique<chunk_vector_info>(
+                start_ + static_cast<int64_t>(vector_idx * vector::DEFAULT_VECTOR_CAPACITY));
         } else if (vector_info_[vector_idx]->type == chunk_info_type::CONSTANT_INFO) {
             auto& constant = vector_info_[vector_idx]->cast<chunk_constant_info>();
-            auto new_info = std::make_unique<chunk_vector_info>(start_ + vector_idx * vector::DEFAULT_VECTOR_CAPACITY);
+            auto new_info = std::make_unique<chunk_vector_info>(
+                start_ + static_cast<int64_t>(vector_idx * vector::DEFAULT_VECTOR_CAPACITY));
             new_info->insert_id = constant.insert_id;
             for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
                 new_info->inserted[i] = constant.insert_id;

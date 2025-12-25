@@ -154,6 +154,8 @@ namespace components::catalog {
                     case diff_info_type::UPDATE_OPTIONAL:
                         new_desc.back().required = info.entry.desc.required;
                         break;
+                    default:
+                        break;
                 }
             }
 

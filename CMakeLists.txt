@@ -42,15 +42,21 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Emscripten")
 
-else()
+elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # stack track
+    # unused by clang and generates an error with [-Werror,-Wunused-command-line-argument]
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
 endif()
+
+# We do not use -Werror flag with sanitizers for the following reasons:
+# 1) Sanitizers force us to build absl locally, which does contains warnings
+# 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
 
-            #-Werror
+            $<${USE_Werror}:-Werror>
 
             -Wall
             -Wextra

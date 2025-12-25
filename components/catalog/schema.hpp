@@ -5,12 +5,9 @@
 
 #include <components/cursor/cursor.hpp>
 
-#include <algorithm>
 #include <memory_resource>
 #include <optional>
-#include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace components::catalog {
     class schema {

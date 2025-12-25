@@ -28,12 +28,12 @@ namespace components::logical_plan {
         index_type type() const noexcept;
         keys_base_storage_t& keys() noexcept;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static boost::intrusive_ptr<node_create_index_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
-        hash_t hash_impl() const final;
-        std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
+        hash_t hash_impl() const override;
+        std::string to_string_impl() const override;
+        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
 
         std::string name_;
         keys_base_storage_t keys_;

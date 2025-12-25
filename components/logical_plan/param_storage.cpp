@@ -13,8 +13,7 @@ namespace components::logical_plan {
         if (it != storage->parameters.end()) {
             return it->second;
         }
-        // TODO compile error
-        return expr_value_t{};
+        return types::NULL_LOGICAL_VALUE;
     }
 
     auto parameter_node_t::parameters() const -> const storage_parameters& { return values_; }

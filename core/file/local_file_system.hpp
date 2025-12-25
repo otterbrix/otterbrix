@@ -1,6 +1,8 @@
 #pragma once
 
 #include "file_handle.hpp"
+#include <functional>
+#include <vector>
 
 namespace core::filesystem {
 
@@ -24,7 +26,7 @@ namespace core::filesystem {
         virtual bool can_handle_files(const path_t&) { return true; }
         virtual bool can_seek() const { return true; }
 
-        const path_t& home_directory();
+        path_t home_directory();
         bool set_home_directory(path_t path);
         path_t normalize_path_absolute(const path_t& path);
         path_t extract_base_name(const path_t& path);

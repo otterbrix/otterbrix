@@ -1,5 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>

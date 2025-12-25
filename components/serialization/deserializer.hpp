@@ -1,6 +1,5 @@
 #pragma once
 #include "serializer.hpp"
-#include <components/logical_plan/param_storage.hpp>
 
 #include <msgpack.hpp>
 #include <stack>
@@ -48,11 +47,14 @@ namespace components::serializer {
     template<typename T>
     T msgpack_deserializer_t::deserialize_enum(size_t index) {
         static_assert(std::is_enum_v<T>);
+
+        std::underlying_type_t<T> enum_value;
         if constexpr (std::is_signed_v<std::underlying_type_t<T>>) {
-            return core::enums::from_underlying_type<T>(deserialize_int64(index));
+            std::memcpy(&enum_value, &working_tree_.top()->ptr[index].via.i64, sizeof(std::underlying_type_t<T>));
         } else {
-            return core::enums::from_underlying_type<T>(deserialize_uint64(index));
+            std::memcpy(&enum_value, &working_tree_.top()->ptr[index].via.u64, sizeof(std::underlying_type_t<T>));
         }
+        return core::enums::from_underlying_type<T>(enum_value);
     }
 
 } // namespace components::serializer

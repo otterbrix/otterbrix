@@ -116,13 +116,13 @@ BENCHMARK(unpack)->Arg(1000);
 static void insert_surface(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     std::vector<document_ptr> v;
-    v.reserve(state.range(0));
+    v.reserve(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < state.range(0); ++i) {
         v.emplace_back(gen_doc(i, &allocator));
     }
 
     for (auto _ : state) {
-        for (int i = 0; i < state.range(0); ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(state.range(0)); ++i) {
             v.at(i)->set("new_value", i);
         }
     }
@@ -132,13 +132,13 @@ BENCHMARK(insert_surface)->Arg(1000);
 static void insert_deep(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     std::vector<document_ptr> v;
-    v.reserve(state.range(0));
+    v.reserve(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < state.range(0); ++i) {
         v.emplace_back(gen_doc(i, &allocator));
     }
 
     for (auto _ : state) {
-        for (int i = 0; i < state.range(0); ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(state.range(0)); ++i) {
             v.at(i)->set_dict("new_value0");
             v.at(i)->set_dict("new_value0/new_value1");
             v.at(i)->set_dict("new_value0/new_value1/new_value2");
@@ -151,13 +151,13 @@ BENCHMARK(insert_deep)->Arg(1000);
 static void remove_surface(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     std::vector<document_ptr> v;
-    v.reserve(state.range(0));
+    v.reserve(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < state.range(0); ++i) {
         v.emplace_back(gen_doc(i, &allocator));
     }
 
     for (auto _ : state) {
-        for (int i = 0; i < state.range(0); ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(state.range(0)); ++i) {
             v.at(i)->remove("count");
         }
     }
@@ -167,13 +167,13 @@ BENCHMARK(remove_surface)->Arg(1000);
 static void remove_deep(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     std::vector<document_ptr> v;
-    v.reserve(state.range(0));
+    v.reserve(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < state.range(0); ++i) {
         v.emplace_back(gen_doc(i, &allocator));
     }
 
     for (auto _ : state) {
-        for (int i = 0; i < state.range(0); ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(state.range(0)); ++i) {
             v.at(i)->remove("dictArray/0/number");
         }
     }

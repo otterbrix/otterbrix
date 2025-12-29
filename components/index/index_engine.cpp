@@ -203,17 +203,12 @@ namespace components::index {
 
     auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
 
-    // Note: GCC pragma suppresses false positive -Wmaybe-uninitialized in actor-zeta futures
-    // See docs/gcc-maybe-uninitialized-false-positive.md for details and library fix
-
     void index_engine_t::insert_document(const document_ptr& document, pipeline::context_t* pipeline_context) {
         for (auto& index : storage_) {
             if (is_match_document(index, document)) {
                 auto key = get_value_by_index(index, document);
                 index->insert(key, document);
                 if (index->is_disk() && pipeline_context) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
                     auto future = actor_zeta::send(index->disk_agent(),
                                                    pipeline_context->address(),
                                                    &services::disk::index_agent_disk_t::insert,
@@ -221,7 +216,6 @@ namespace components::index {
                                                    key,
                                                    document::get_document_id(document));
                     pipeline_context->add_pending_disk_future(std::move(future));
-#pragma GCC diagnostic pop
                 }
             }
         }
@@ -233,8 +227,6 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->remove(key); //todo: bug
                 if (index->is_disk() && pipeline_context) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
                     auto future = actor_zeta::send(index->disk_agent(),
                                                    pipeline_context->address(),
                                                    &services::disk::index_agent_disk_t::remove,
@@ -242,7 +234,6 @@ namespace components::index {
                                                    key,
                                                    document::get_document_id(document));
                     pipeline_context->add_pending_disk_future(std::move(future));
-#pragma GCC diagnostic pop
                 }
             }
         }
@@ -255,8 +246,6 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->insert(key, static_cast<int64_t>(row));
                 if (index->is_disk() && pipeline_context) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
                     auto future = actor_zeta::send(index->disk_agent(),
                                                    pipeline_context->address(),
                                                    &services::disk::index_agent_disk_t::insert,
@@ -264,7 +253,6 @@ namespace components::index {
                                                    key,
                                                    components::document::document_id_t(row));
                     pipeline_context->add_pending_disk_future(std::move(future));
-#pragma GCC diagnostic pop
                 }
             }
         }
@@ -277,8 +265,6 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->remove(key);
                 if (index->is_disk() && pipeline_context) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
                     auto future = actor_zeta::send(index->disk_agent(),
                                                    pipeline_context->address(),
                                                    &services::disk::index_agent_disk_t::remove,
@@ -286,7 +272,6 @@ namespace components::index {
                                                    key,
                                                    components::document::document_id_t(row));
                     pipeline_context->add_pending_disk_future(std::move(future));
-#pragma GCC diagnostic pop
                 }
             }
         }

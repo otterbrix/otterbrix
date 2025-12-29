@@ -301,16 +301,11 @@ namespace services::collection::executor {
             if (cursor->is_error()) break;
 
             // Await all pending disk index operations (future pattern)
-            // Note: pragma suppresses GCC false positive for moved-from futures
-            // See docs/gcc-maybe-uninitialized-false-positive.md for details
             if (pipeline_context.has_pending_disk_futures()) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
                 auto disk_futures = pipeline_context.take_pending_disk_futures();
                 for (auto& fut : disk_futures) {
                     co_await std::move(fut);
                 }
-#pragma GCC diagnostic pop
             }
 
             plan_data.sub_plans.pop();

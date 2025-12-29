@@ -1,5 +1,10 @@
 #pragma once
 
+// Suppress GCC false positive -Wmaybe-uninitialized in actor-zeta future_state.hpp
+// See docs/gcc-maybe-uninitialized-false-positive.md for details
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+
 #include <actor-zeta/scheduler/sharing_scheduler.hpp>
 #include <actor-zeta/actor/address.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
@@ -7,6 +12,8 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/mailbox/make_message.hpp>
 #include <actor-zeta/mailbox/id.hpp>
+
+#pragma GCC diagnostic pop
 
 namespace actor_zeta {
 

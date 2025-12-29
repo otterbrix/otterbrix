@@ -37,8 +37,6 @@ namespace components::base::operators {
         }
 
         if (index_ptr->is_disk()) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
             auto future = actor_zeta::otterbrix::send(context_->disk(),
                              pipeline_context->address(),
                              &services::disk::manager_disk_t::drop_index_agent,
@@ -46,7 +44,6 @@ namespace components::base::operators {
                              node_->name(),
                              context_);
             pipeline_context->add_pending_disk_future(std::move(future));
-#pragma GCC diagnostic pop
         }
         index::drop_index(context_->index_engine(), index_ptr);
         // Success - executor will create success cursor

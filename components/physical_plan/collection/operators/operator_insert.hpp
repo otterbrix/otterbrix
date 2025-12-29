@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/document/document.hpp>
+#include <components/expressions/key.hpp>
 #include <components/physical_plan/base/operators/operator.hpp>
 
 namespace components::collection::operators {

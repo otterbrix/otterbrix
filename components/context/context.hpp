@@ -19,14 +19,7 @@ namespace components::pipeline {
                   actor_zeta::address_t sender,
                   logical_plan::storage_parameters init_parameters);
 
-        template<typename... Args>
-        bool send(const actor_zeta::address_t& address, uint64_t signal, Args... args) {
-            if (address_) {
-                actor_zeta::send(address, address_, signal, session, std::forward<Args>(args)...);
-                return true;
-            }
-            return false;
-        }
+        const actor_zeta::address_t& address() const noexcept { return address_; }
 
     private:
         actor_zeta::address_t address_{actor_zeta::address_t::empty_address()};

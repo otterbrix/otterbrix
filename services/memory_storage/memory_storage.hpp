@@ -13,15 +13,14 @@
 #include <services/collection/executor.hpp>
 #include <services/disk/result.hpp>
 
+#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/detail/future.hpp>
+
 namespace services {
 
-    class memory_storage_t final : public actor_zeta::cooperative_supervisor<memory_storage_t> {
-        struct session_t {
-            components::logical_plan::node_ptr logical_plan;
-            actor_zeta::address_t sender;
-            size_t count_answers;
-        };
-
+    class memory_storage_t final : public actor_zeta::actor::actor_mixin<memory_storage_t> {
         struct load_buffer_t {
             std::pmr::vector<collection_full_name_t> collections;
 
@@ -31,9 +30,11 @@ namespace services {
         using database_storage_t = std::pmr::set<database_name_t>;
         using collection_storage_t =
             core::pmr::btree::btree_t<collection_full_name_t, std::unique_ptr<collection::context_collection_t>>;
-        using session_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, session_t>;
 
     public:
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
+
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         enum class unpack_rules : uint64_t
         {
@@ -44,72 +45,75 @@ namespace services {
         memory_storage_t(std::pmr::memory_resource* resource, actor_zeta::scheduler_raw scheduler, log_t& log);
         ~memory_storage_t();
 
-        void sync(const address_pack& pack);
-        void execute_plan(const components::session::session_id_t& session,
-                          components::logical_plan::node_ptr logical_plan,
-                          components::logical_plan::storage_parameters parameters,
-                          components::catalog::used_format_t used_format);
-
-        void size(const components::session::session_id_t& session, collection_full_name_t&& name);
-        void close_cursor(const components::session::session_id_t& session,
-                          std::set<collection_full_name_t>&& collections);
-        void load(const components::session::session_id_t& session, const disk::result_load_t& result);
-
-        actor_zeta::scheduler_abstract_t* make_scheduler() noexcept;
+        std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
-        actor_zeta::behavior_t behavior();
+        void behavior(actor_zeta::mailbox::message* msg);
+
+        // Sync methods - called directly after constructor, before message processing
+        void sync(address_pack pack);
+
+        // execute_plan() returns cursor via future (NOT via callback!)
+        // Uses co_await on executor_t::execute_plan()
+        unique_future<collection::executor::execute_result_t> execute_plan(
+            components::session::session_id_t session,
+            components::logical_plan::node_ptr logical_plan,
+            components::logical_plan::storage_parameters parameters,
+            components::catalog::used_format_t used_format);
+
+        // size() returns size_t via future (not callback!)
+        unique_future<size_t> size(components::session::session_id_t session, collection_full_name_t name);
+        unique_future<void> close_cursor(components::session::session_id_t session,
+                                         std::set<collection_full_name_t> collections);
+        unique_future<void> load(components::session::session_id_t session, disk::result_load_t result);
+
+        // dispatch_traits must be defined AFTER all method declarations
+        // dispatch_traits - only methods called externally
+        // Note: sync is NOT in dispatch_traits - called directly
+        using dispatch_traits = actor_zeta::dispatch_traits<
+            &memory_storage_t::load,
+            &memory_storage_t::execute_plan,
+            &memory_storage_t::size,
+            &memory_storage_t::close_cursor
+        >;
 
     private:
-        actor_zeta::scheduler_raw e_;
+        std::pmr::memory_resource* resource_;
+        actor_zeta::scheduler_raw scheduler_;
         database_storage_t databases_;
         collection_storage_t collections_;
         log_t log_;
-
-        // Behaviors
-        actor_zeta::behavior_t sync_;
-        actor_zeta::behavior_t load_;
-        actor_zeta::behavior_t size_;
-        actor_zeta::behavior_t create_documents_finish_;
-        actor_zeta::behavior_t execute_plan_;
-        actor_zeta::behavior_t execute_plan_finish_;
-        actor_zeta::behavior_t execute_plan_delete_finish_;
 
         actor_zeta::address_t manager_dispatcher_{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t manager_disk_{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t executor_address_{actor_zeta::address_t::empty_address()};
 
-        session_storage_t sessions_;
         std::unique_ptr<load_buffer_t> load_buffer_;
         spin_lock lock_;
         collection::executor::executor_ptr executor_{nullptr,
                                                      actor_zeta::pmr::deleter_t(std::pmr::null_memory_resource())};
 
     private:
-        void enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit* unit) override;
+        // Helper methods return cursor directly (not via callback)
+        collection::executor::execute_result_t create_database_(components::logical_plan::node_ptr logical_plan);
+        collection::executor::execute_result_t drop_database_(components::logical_plan::node_ptr logical_plan);
+        collection::executor::execute_result_t create_collection_(components::logical_plan::node_ptr logical_plan);
+        collection::executor::execute_result_t drop_collection_(components::logical_plan::node_ptr logical_plan);
 
-        void create_database_(const components::session::session_id_t& session,
-                              components::logical_plan::node_ptr logical_plan);
-        void drop_database_(const components::session::session_id_t& session,
-                            components::logical_plan::node_ptr logical_plan);
-        void create_collection_(const components::session::session_id_t& session,
-                                components::logical_plan::node_ptr logical_plan);
-        void drop_collection_(const components::session::session_id_t& session,
-                              components::logical_plan::node_ptr logical_plan);
+        // execute_plan_impl - now coroutine with co_await on executor
+        unique_future<collection::executor::execute_result_t> execute_plan_impl(
+            components::session::session_id_t session,
+            components::logical_plan::node_ptr logical_plan,
+            components::logical_plan::storage_parameters parameters,
+            components::catalog::used_format_t used_format);
 
-        void execute_plan_impl(const components::session::session_id_t& session,
-                               components::logical_plan::node_ptr logical_plan,
-                               components::logical_plan::storage_parameters parameters,
-                               components::catalog::used_format_t used_format);
+        // Pending coroutines storage (CRITICAL per documentation!)
+        // Coroutines with co_await MUST be stored, otherwise refcount underflow
+        std::vector<unique_future<void>> pending_void_;
+        std::vector<unique_future<collection::executor::execute_result_t>> pending_execute_;
+        std::vector<unique_future<size_t>> pending_size_;
 
-        void execute_plan_finish(const components::session::session_id_t& session,
-                                 components::cursor::cursor_t_ptr cursor);
-
-        void
-        execute_plan_delete_finish(const components::session::session_id_t& session,
-                                   components::cursor::cursor_t_ptr cursor,
-                                   components::base::operators::operator_write_data_t::updated_types_map_t updates);
-
-        void create_documents_finish(const components::session::session_id_t& session);
+        // Poll and clean up completed coroutines
+        void poll_pending();
     };
 
 } // namespace services

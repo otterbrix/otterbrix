@@ -584,32 +584,8 @@ namespace components::types {
         uint8_t scale_;
     };
 
-    class enum_logical_type_extension : public logical_type_extension {
-    public:
-        explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
-
-        const std::string& type_name() { return type_name_; }
-        const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
-    private:
-        std::string type_name_;
-        std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
-    };
-
-    class user_logical_type_extension : public logical_type_extension {
-    public:
-        explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
-    private:
-        std::string catalog_;
-        std::vector<logical_value_t> user_type_modifiers_;
-    };
+    // enum_logical_type_extension and user_logical_type_extension moved to logical_value.hpp
+    // (C++20 requires complete type for std::vector<logical_value_t>)
 
     class function_logical_type_extension : public logical_type_extension {
     public:

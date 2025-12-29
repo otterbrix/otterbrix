@@ -14,6 +14,7 @@ target_link_libraries(
         otterbrix::log
         otterbrix::document
         otterbrix::index
+        otterbrix::disk
         otterbrix::test_generaty
         Boost::boost
         Catch2::Catch2

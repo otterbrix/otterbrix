@@ -2,6 +2,12 @@
 
 #include "command.hpp"
 #include "disk.hpp"
+#include "result.hpp"
+
+#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 #include <components/log/log.hpp>
 #include <core/excutor.hpp>
@@ -17,37 +23,43 @@ namespace services::disk {
 
     class agent_disk_t final : public actor_zeta::basic_actor<agent_disk_t> {
     public:
-        agent_disk_t(manager_disk_t*, const path_t& path_db, log_t& log);
-        ~agent_disk_t() override;
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
 
-        auto load(const session_id_t& session, actor_zeta::address_t dispatcher) -> void;
+        agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* manager, const path_t& path_db, log_t& log);
+        ~agent_disk_t();
 
-        auto append_database(const command_t& command) -> void;
-        auto remove_database(const command_t& command) -> void;
+        // Coroutine methods - parameters by value (no const& allowed in coroutines)
+        unique_future<result_load_t> load(session_id_t session);
 
-        auto append_collection(const command_t& command) -> void;
-        auto remove_collection(const command_t& command) -> void;
+        unique_future<void> append_database(command_t command);
+        unique_future<void> remove_database(command_t command);
 
-        auto write_documents(const command_t& command) -> void;
-        auto remove_documents(const command_t& command) -> void;
+        unique_future<void> append_collection(command_t command);
+        unique_future<void> remove_collection(command_t command);
 
-        auto fix_wal_id(wal::id_t wal_id) -> void;
+        unique_future<void> write_documents(command_t command);
+        unique_future<void> remove_documents(command_t command);
+
+        unique_future<void> fix_wal_id(wal::id_t wal_id);
+
+        // dispatch_traits must be defined AFTER all method declarations
+        using dispatch_traits = actor_zeta::dispatch_traits<
+            &agent_disk_t::load,
+            &agent_disk_t::append_database,
+            &agent_disk_t::remove_database,
+            &agent_disk_t::append_collection,
+            &agent_disk_t::remove_collection,
+            &agent_disk_t::write_documents,
+            &agent_disk_t::remove_documents,
+            &agent_disk_t::fix_wal_id
+        >;
 
         auto make_type() const noexcept -> const char*;
 
-        actor_zeta::behavior_t behavior();
+        void behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        // Behaviors
-        actor_zeta::behavior_t load_;
-        actor_zeta::behavior_t append_database_;
-        actor_zeta::behavior_t remove_database_;
-        actor_zeta::behavior_t append_collection_;
-        actor_zeta::behavior_t remove_collection_;
-        actor_zeta::behavior_t write_documents_;
-        actor_zeta::behavior_t remove_documents_;
-        actor_zeta::behavior_t fix_wal_id_;
-
         const name_t name_;
         log_t log_;
         disk_t disk_;

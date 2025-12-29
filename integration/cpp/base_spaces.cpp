@@ -1,7 +1,7 @@
 #include "base_spaces.hpp"
-#include "route.hpp"
 #include <actor-zeta.hpp>
-#include <core/system_command.hpp>
+#include <actor-zeta/spawn.hpp>
+#include <core/excutor.hpp>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -38,86 +38,89 @@ namespace otterbrix {
 
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
+        services::wal::manager_wal_replicate_t* wal_ptr = nullptr;
+        services::wal::manager_wal_replicate_empty_t* wal_empty_ptr = nullptr;
         if (config.wal.on) {
-            auto manager = actor_zeta::spawn_supervisor<services::wal::manager_wal_replicate_t>(&resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                                                 scheduler_.get(),
                                                                                                 config.wal,
                                                                                                 log_);
-
             manager_wal_address = manager->address();
+            wal_ptr = manager.get();
             manager_wal_ = std::move(manager);
         } else {
-            auto manager = actor_zeta::spawn_supervisor<services::wal::manager_wal_replicate_empty_t>(&resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource,
                                                                                                       scheduler_.get(),
                                                                                                       log_);
             manager_wal_address = manager->address();
+            wal_empty_ptr = manager.get();
             manager_wal_ = std::move(manager);
         }
         trace(log_, "spaces::manager_wal finish");
 
         trace(log_, "spaces::manager_disk start");
         auto manager_disk_address = actor_zeta::address_t::empty_address();
+        services::disk::manager_disk_t* disk_ptr = nullptr;
+        services::disk::manager_disk_empty_t* disk_empty_ptr = nullptr;
         if (config.disk.on) {
-            auto manager = actor_zeta::spawn_supervisor<services::disk::manager_disk_t>(&resource,
+            auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                                         scheduler_.get(),
                                                                                         config.disk,
                                                                                         log_);
             manager_disk_address = manager->address();
+            disk_ptr = manager.get();
             manager_disk_ = std::move(manager);
         } else {
             auto manager =
-                actor_zeta::spawn_supervisor<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
-
-            manager_disk_address = manager->address();
+                actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
+            // Don't set manager_disk_address - keep it as empty_address
+            // This allows executor to detect that disk is disabled and skip operations
+            // that would otherwise crash due to type mismatch in send()
+            disk_empty_ptr = manager.get();
             manager_disk_ = std::move(manager);
         }
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::memory_storage start");
-        memory_storage_ = actor_zeta::spawn_supervisor<services::memory_storage_t>(&resource, scheduler_.get(), log_);
+        memory_storage_ = actor_zeta::spawn<services::memory_storage_t>(&resource, scheduler_.get(), log_);
         trace(log_, "spaces::memory_storage finish");
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
-            actor_zeta::spawn_supervisor<services::dispatcher::manager_dispatcher_t>(&resource,
+            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
                                                                                      scheduler_dispatcher_.get(),
                                                                                      log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ =
-            actor_zeta::spawn_supervisor<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        actor_zeta::send(manager_dispatcher_->address(),
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(memory_storage_->address(),
-                                         actor_zeta::address_t(manager_wal_address),
-                                         actor_zeta::address_t(manager_disk_address)));
+        // Call sync methods directly (not through message passing)
+        // Create type-erased senders using make_sender() on the actual manager types
+        auto wal_sender = wal_ptr ? wal_ptr->make_sender() : wal_empty_ptr->make_sender();
+        auto disk_sender = disk_ptr ? disk_ptr->make_sender() : disk_empty_ptr->make_sender();
+        manager_dispatcher_->sync(std::make_tuple(memory_storage_->address(),
+                                                   std::move(wal_sender),
+                                                   std::move(disk_sender)));
 
-        actor_zeta::send(manager_wal_address,
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+        if (wal_ptr) {
+            wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+            wal_ptr->create_wal_worker();
+        } else {
+            wal_empty_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+            wal_empty_ptr->create_wal_worker();
+        }
 
-        actor_zeta::send(manager_disk_address,
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(manager_dispatcher_->address()));
+        if (disk_ptr) {
+            disk_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
+            disk_ptr->create_agent();
+        } else {
+            disk_empty_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
+            disk_empty_ptr->create_agent();
+        }
 
-        // TODO maybe an error
-        actor_zeta::send(memory_storage_,
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(manager_dispatcher_->address(), actor_zeta::address_t(manager_disk_address)));
-
-        actor_zeta::send(manager_wal_address,
-                         actor_zeta::address_t::empty_address(),
-                         wal::handler_id(wal::route::create));
-
-        actor_zeta::send(manager_disk_address,
-                         actor_zeta::address_t::empty_address(),
-                         disk::handler_id(disk::route::create_agent));
+        memory_storage_->sync(std::make_tuple(manager_dispatcher_->address(), actor_zeta::address_t(manager_disk_address)));
 
         manager_dispatcher_->create_dispatcher();
         scheduler_dispatcher_->start();

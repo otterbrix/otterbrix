@@ -43,9 +43,35 @@ namespace components::base::operators {
 
     void operator_t::set_as_root() noexcept { root = true; }
 
+    operator_t::ptr operator_t::find_waiting_operator() {
+        // Check if this operator is waiting
+        if (is_wait_sync_disk()) {
+            return ptr(this);
+        }
+        // Search left subtree
+        if (left_) {
+            auto found = left_->find_waiting_operator();
+            if (found) {
+                return found;
+            }
+        }
+        // Search right subtree
+        if (right_) {
+            auto found = right_->find_waiting_operator();
+            if (found) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
     const collection_full_name_t& operator_t::collection_name() const noexcept { return context_->name(); }
 
     services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
+
+    std::pmr::memory_resource* operator_t::resource() const noexcept {
+        return context_ ? context_->resource() : std::pmr::get_default_resource();
+    }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
 
@@ -78,6 +104,12 @@ namespace components::base::operators {
     void operator_t::on_resume_impl(pipeline::context_t*) {}
 
     void operator_t::on_prepare_impl() {}
+
+    eager_task operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
+        // Default: do nothing, let caller use fallback suspend logic
+        // Override in operators with disk futures to await and resume
+        co_return;
+    }
 
     read_only_operator_t::read_only_operator_t(services::collection::context_collection_t* collection,
                                                operator_type type)

@@ -3,18 +3,16 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 
-#include <core/system_command.hpp>
 #include <core/tracy/tracy.hpp>
+#include <core/excutor.hpp>
 
 #include <components/document/document.hpp>
 #include <components/planner/planner.hpp>
 
-#include <services/collection/route.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/disk/route.hpp>
+#include <services/memory_storage/memory_storage.hpp>
 #include <services/memory_storage/context_storage.hpp>
-#include <services/memory_storage/route.hpp>
-#include <services/wal/route.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
 
 #include <boost/polymorphic_pointer_cast.hpp>
 
@@ -25,60 +23,19 @@ using namespace components::types;
 
 namespace services::dispatcher {
 
-    dispatcher_t::dispatcher_t(manager_dispatcher_t* manager_dispatcher,
-                               actor_zeta::address_t& mstorage,
-                               actor_zeta::address_t& mwal,
-                               actor_zeta::address_t& mdisk,
+    dispatcher_t::dispatcher_t(std::pmr::memory_resource* resource,
+                               actor_zeta::address_t manager_dispatcher,
+                               actor_zeta::address_t memory_storage,
+                               wal_sender_t wal_sender,
+                               disk_sender_t disk_sender,
                                log_t& log)
-        : actor_zeta::basic_actor<dispatcher_t>(manager_dispatcher)
-        , load_(actor_zeta::make_behavior(resource(), core::handler_id(core::route::load), this, &dispatcher_t::load))
-        , load_from_disk_result_(actor_zeta::make_behavior(resource(),
-                                                           disk::handler_id(disk::route::load_finish),
-                                                           this,
-                                                           &dispatcher_t::load_from_disk_result))
-        , load_from_memory_storage_result_(
-              actor_zeta::make_behavior(resource(),
-                                        memory_storage::handler_id(memory_storage::route::load_finish),
-                                        this,
-                                        &dispatcher_t::load_from_memory_storage_result))
-        , load_from_wal_result_(actor_zeta::make_behavior(resource(),
-                                                          wal::handler_id(wal::route::load_finish),
-                                                          this,
-                                                          &dispatcher_t::load_from_wal_result))
-        , execute_plan_(
-              actor_zeta::make_behavior(resource(), handler_id(route::execute_plan), this, &dispatcher_t::execute_plan))
-        , execute_plan_finish_(
-              actor_zeta::make_behavior(resource(),
-                                        memory_storage::handler_id(memory_storage::route::execute_plan_finish),
-                                        this,
-                                        &dispatcher_t::execute_plan_finish))
-        , execute_plan_delete_finish_(
-              actor_zeta::make_behavior(resource(),
-                                        memory_storage::handler_id(memory_storage::route::execute_plan_delete_finish),
-                                        this,
-                                        &dispatcher_t::execute_plan_delete_finish))
-        , size_(actor_zeta::make_behavior(resource(),
-                                          collection::handler_id(collection::route::size),
-                                          this,
-                                          &dispatcher_t::size))
-        , size_finish_(actor_zeta::make_behavior(resource(),
-                                                 collection::handler_id(collection::route::size_finish),
-                                                 this,
-                                                 &dispatcher_t::size_finish))
-        , close_cursor_(actor_zeta::make_behavior(resource(),
-                                                  collection::handler_id(collection::route::close_cursor),
-                                                  this,
-                                                  &dispatcher_t::close_cursor))
-        , wal_success_(actor_zeta::make_behavior(resource(),
-                                                 wal::handler_id(wal::route::success),
-                                                 this,
-                                                 &dispatcher_t::wal_success))
+        : actor_zeta::basic_actor<dispatcher_t>(resource)
         , log_(log.clone())
-        , catalog_(resource())
-        , manager_dispatcher_(manager_dispatcher->address())
-        , memory_storage_(mstorage)
-        , manager_wal_(mwal)
-        , manager_disk_(mdisk) {
+        , catalog_(resource)
+        , manager_dispatcher_(std::move(manager_dispatcher))
+        , memory_storage_(std::move(memory_storage))
+        , wal_sender_(std::move(wal_sender))
+        , disk_sender_(std::move(disk_sender)) {
         trace(log_, "dispatcher_t::dispatcher_t start name:{}", make_type());
     }
 
@@ -86,175 +43,197 @@ namespace services::dispatcher {
 
     auto dispatcher_t::make_type() const noexcept -> const char* { return "dispatcher_t"; }
 
-    actor_zeta::behavior_t dispatcher_t::behavior() {
-        return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
-            switch (msg->command()) {
-                case core::handler_id(core::route::load): {
-                    load_(msg);
-                    break;
-                }
+    void dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
+        poll_pending();
 
-                case disk::handler_id(disk::route::load_finish): {
-                    load_from_disk_result_(msg);
-                    break;
+        switch (msg->command()) {
+            case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::load>: {
+                // CRITICAL: Store pending coroutine! (per documentation)
+                // If destroyed immediately, coroutine is destroyed → refcount underflow!
+                auto future = actor_zeta::dispatch(this, &dispatcher_t::load, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
                 }
-                case memory_storage::handler_id(memory_storage::route::load_finish): {
-                    load_from_memory_storage_result_(msg);
-                    break;
-                }
-                case wal::handler_id(wal::route::load_finish): {
-                    load_from_wal_result_(msg);
-                    break;
-                }
-                case handler_id(route::execute_plan): {
-                    execute_plan_(msg);
-                    break;
-                }
-                case memory_storage::handler_id(memory_storage::route::execute_plan_finish): {
-                    execute_plan_finish_(msg);
-                    break;
-                }
-                case memory_storage::handler_id(memory_storage::route::execute_plan_delete_finish): {
-                    execute_plan_delete_finish_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::size): {
-                    size_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::size_finish): {
-                    size_finish_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::close_cursor): {
-                    close_cursor_(msg);
-                    break;
-                }
-                case wal::handler_id(wal::route::success): {
-                    wal_success_(msg);
-                    break;
-                }
+                break;
             }
-        });
-    }
-
-    void dispatcher_t::load(const components::session::session_id_t& session, actor_zeta::address_t sender) {
-        trace(log_, "dispatcher_t::load, session: {}", session.data());
-        load_session_ = session;
-        make_session(session_to_address_, session, session_t(std::move(sender)));
-        actor_zeta::send(manager_disk_, dispatcher_t::address(), disk::handler_id(disk::route::load), session);
-    }
-
-    void dispatcher_t::load_from_disk_result(const components::session::session_id_t& session,
-                                             const disk::result_load_t& result) {
-        trace(log_, "dispatcher_t::load_from_disk_result, session: {}, wal_id: {}", session.data(), result.wal_id());
-        if ((*result).empty()) {
-            actor_zeta::send(find_session(session_to_address_, session).address(),
-                             dispatcher_t::address(),
-                             core::handler_id(core::route::load_finish),
-                             session);
-            remove_session(session_to_address_, session);
-            load_result_.clear();
-        } else {
-            load_result_ = result;
-            actor_zeta::send(memory_storage_,
-                             address(),
-                             memory_storage::handler_id(memory_storage::route::load),
-                             session,
-                             result);
+            case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::execute_plan>: {
+                // CRITICAL: Store pending coroutine!
+                // execute_plan now returns cursor_t_ptr through future
+                auto future = actor_zeta::dispatch(this, &dispatcher_t::execute_plan, msg);
+                if (!future.available()) {
+                    pending_cursor_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::size>: {
+                // size() now returns size_t via future
+                auto future = actor_zeta::dispatch(this, &dispatcher_t::size, msg);
+                if (!future.available()) {
+                    pending_size_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::close_cursor>: {
+                auto future = actor_zeta::dispatch(this, &dispatcher_t::close_cursor, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            // wal_success REMOVED - now using co_await on WAL methods in execute_plan()
+            default:
+                break;
         }
     }
 
-    void dispatcher_t::load_from_memory_storage_result(const components::session::session_id_t& session) {
-        trace(log_, "dispatcher_t::load_from_memory_storage_result, session: {}", session.data());
-        actor_zeta::send(manager_disk_, address(), disk::handler_id(disk::route::load_indexes), session);
-        actor_zeta::send(manager_wal_, address(), wal::handler_id(wal::route::load), session, load_result_.wal_id());
-        for (const auto& database : (*load_result_)) {
-            collection_full_name_t name;
-            name.database = database.name;
+    // Poll and clean up completed coroutines (per PROMISE_FUTURE_GUIDE.md)
+    void dispatcher_t::poll_pending() {
+        for (auto it = pending_void_.begin(); it != pending_void_.end();) {
+            if (it->available()) {
+                it = pending_void_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = pending_cursor_.begin(); it != pending_cursor_.end();) {
+            if (it->available()) {
+                it = pending_cursor_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = pending_size_.begin(); it != pending_size_.end();) {
+            if (it->available()) {
+                it = pending_size_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // ============================================================================
+    // load() - LINEAR COROUTINE (per actor-zeta migration docs)
+    // Combines former callback chains:
+    // load() -> load_from_disk_result() -> load_from_memory_storage_result() -> load_from_wal_result()
+    // All data obtained via co_await, callback methods REMOVED
+    // ============================================================================
+    dispatcher_t::unique_future<void> dispatcher_t::load(
+        components::session::session_id_t session
+    ) {
+        trace(log_, "dispatcher_t::load, session: {}", session.data());
+        load_session_ = session;
+
+        // Step 1: Load data from disk with co_await (via type-erased sender)
+        trace(log_, "dispatcher_t::load - step 1: loading from disk");
+        auto disk_result = co_await actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load, session);
+
+        // Step 2: Check result (former load_from_disk_result)
+        trace(log_, "dispatcher_t::load - step 2: disk result received, wal_id: {}", disk_result.wal_id());
+
+        if ((*disk_result).empty()) {
+            // Empty result - finish immediately
+            trace(log_, "dispatcher_t::load - empty result, finishing");
+            co_return;
+        }
+
+        // Step 3: Load to memory_storage with co_await
+        trace(log_, "dispatcher_t::load - step 3: loading to memory storage");
+        co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::load, session, disk_result);
+
+        // Step 4: Load indexes (via type-erased sender)
+        trace(log_, "dispatcher_t::load - step 4: loading indexes");
+        actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load_indexes, session, address());
+
+        // Step 5: Update catalog
+        for (const auto& database : (*disk_result)) {
             catalog_.create_namespace({database.name.c_str()});
             for (const auto& collection : database.collections) {
                 auto err = catalog_.create_computing_table({resource(), {database.name, collection.name}});
                 assert(!err);
             }
         }
-        load_result_.clear();
-    }
 
-    void dispatcher_t::load_from_wal_result(const components::session::session_id_t& session,
-                                            std::vector<services::wal::record_t>& in_records) {
-        // TODO think what to do with records
-        records_ = std::move(in_records);
-        load_count_answers_ = records_.size();
+        // Step 6: Load WAL records with co_await (via type-erased sender)
+        trace(log_, "dispatcher_t::load - step 6: loading WAL records via co_await");
+        auto records = co_await actor_zeta::otterbrix::send(wal_sender_, address(), &wal::manager_wal_replicate_t::load, session, disk_result.wal_id());
+
+        // Step 7: Process WAL records (former load_from_wal_result - now inline!)
+        load_count_answers_ = records.size();
         trace(log_,
-              "dispatcher_t::load_from_wal_result, session: {}, count commands: {}",
-              session.data(),
+              "dispatcher_t::load - step 7: processing WAL records, count: {}",
               load_count_answers_);
+
         if (load_count_answers_ == 0) {
-            trace(log_, "dispatcher_t::load_from_wal_result - empty records_");
-            actor_zeta::send(find_session(session_to_address_, session).address(),
-                             dispatcher_t::address(),
-                             core::handler_id(core::route::load_finish),
-                             session);
-            remove_session(session_to_address_, session);
-            return;
+            trace(log_, "dispatcher_t::load - empty WAL records, finishing");
+            co_return;
         }
-        last_wal_id_ = records_[load_count_answers_ - 1].id;
-        for (auto& record : records_) {
-            switch (record.data->type()) {
-                case node_type::create_database_t: {
-                    components::session::session_id_t session_database;
-                    execute_plan(session_database, record.data, record.params, manager_wal_);
+
+        last_wal_id_ = records[load_count_answers_ - 1].id;
+
+        // WAL replay: execute records without re-writing to WAL
+        // Use memory_storage directly
+        for (auto& record : records) {
+            trace(log_, "dispatcher_t::load - replaying WAL record id: {}", record.id);
+
+            // Order same as execute_plan: first create_logic_plan, then switch
+            auto logic_plan = create_logic_plan(record.data);
+
+            // Determine format for operation (similar to execute_plan)
+            used_format_t used_format = used_format_t::undefined;
+            switch (logic_plan->type()) {
+                case node_type::create_database_t:
+                case node_type::drop_database_t:
+                case node_type::create_collection_t:
+                case node_type::drop_collection_t:
+                    // These operations do not require format
+                    break;
+                default: {
+                    // insert/delete/update/create_index require format from catalog
+                    auto check_result = check_collections_format_(record.data);
+                    if (!check_result->is_error()) {
+                        used_format = check_result->uses_table_data() ? used_format_t::columns : used_format_t::documents;
+                    }
                     break;
                 }
-                case node_type::drop_database_t: {
-                    components::session::session_id_t session_database;
-                    execute_plan(session_database, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::create_collection_t: {
-                    components::session::session_id_t session_collection;
-                    execute_plan(session_collection, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::drop_collection_t: {
-                    components::session::session_id_t session_collection;
-                    execute_plan(session_collection, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::insert_t: {
-                    components::session::session_id_t session_insert;
-                    execute_plan(session_insert, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::delete_t: {
-                    components::session::session_id_t session_delete;
-                    execute_plan(session_delete, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::update_t: {
-                    components::session::session_id_t session_update;
-                    execute_plan(session_update, record.data, record.params, manager_wal_);
-                    break;
-                }
-                case node_type::create_index_t: {
-                    components::session::session_id_t session_create_index;
-                    execute_plan(session_create_index, record.data, record.params, manager_wal_);
-                    break;
-                }
-                // TODO no drop index?
-                default:
-                    break;
+            }
+
+            // co_await on memory_storage for replay
+            auto exec_result = co_await actor_zeta::otterbrix::send(memory_storage_, address(),
+                                                          &services::memory_storage_t::execute_plan,
+                                                          components::session::session_id_t{},
+                                                          std::move(logic_plan),
+                                                          record.params->take_parameters(),
+                                                          used_format);
+            // Update catalog after successful replay
+            if (exec_result.cursor->is_success()) {
+                update_catalog(record.data);
             }
         }
+
+        // WAL replay completed
+        trace(log_, "dispatcher_t::load - WAL replay completed");
+        co_return;
     }
 
-    void dispatcher_t::execute_plan(const components::session::session_id_t& session,
-                                    components::logical_plan::node_ptr plan,
-                                    parameter_node_ptr params,
-                                    actor_zeta::base::address_t address) {
+    // load_from_wal_result() - REMOVED! Now part of load() coroutine with co_await
+
+    // ============================================================================
+    // execute_plan() - LINEAR COROUTINE (per actor-zeta migration docs)
+    // Uses co_await on memory_storage_t::execute_plan() to get cursor
+    // Uses co_await on WAL methods for durability
+    // Returns cursor_t_ptr via future (not callback!)
+    // ============================================================================
+    dispatcher_t::unique_future<components::cursor::cursor_t_ptr> dispatcher_t::execute_plan(
+        components::session::session_id_t session,
+        components::logical_plan::node_ptr plan,
+        parameter_node_ptr params
+    ) {
         trace(log_, "dispatcher_t::execute_plan: session {}, {}", session.data(), plan->to_string());
-        make_session(session_to_address_, session, session_t(address, plan, params));
+
+        // Save session info for WAL operations
+        make_session(session_to_address_, session, session_t(actor_zeta::address_t::empty_address(), plan, params));
+
         auto logic_plan = create_logic_plan(plan);
         table_id id(resource(), logic_plan->collection_full_name());
         cursor_t_ptr error;
@@ -316,8 +295,9 @@ namespace services::dispatcher {
                         }
                     }
                     catalog_.create_type(n->type());
-                    execute_plan_finish(session, make_cursor(resource(), operation_status_t::success));
-                    return;
+                    // Local operation - return result directly
+                    remove_session(session_to_address_, session);
+                    co_return make_cursor(resource(), operation_status_t::success);
                 }
             }
             case node_type::drop_type_t: {
@@ -327,8 +307,9 @@ namespace services::dispatcher {
                     break;
                 } else {
                     catalog_.drop_type(n->type().alias());
-                    execute_plan_finish(session, make_cursor(resource(), operation_status_t::success));
-                    return;
+                    // Local operation - return result directly
+                    remove_session(session_to_address_, session);
+                    co_return make_cursor(resource(), operation_status_t::success);
                 }
             }
             default: {
@@ -341,282 +322,191 @@ namespace services::dispatcher {
             }
         }
 
+        // If validation error - return result directly via future
         if (error) {
-            execute_plan_finish(session, std::move(error));
-            return;
+            trace(log_, "dispatcher_t::execute_plan: validation error, returning directly");
+            remove_session(session_to_address_, session);
+            co_return std::move(error);
         }
 
-        actor_zeta::send(memory_storage_,
-                         dispatcher_t::address(),
-                         memory_storage::handler_id(memory_storage::route::execute_plan),
-                         session,
-                         std::move(logic_plan),
-                         params->take_parameters(),
-                         used_format);
-    }
+        // ========================================================================
+        // co_await on memory_storage_t::execute_plan() - get cursor via future!
+        // ========================================================================
+        trace(log_, "dispatcher_t::execute_plan: calling memory_storage with co_await");
+        auto exec_result = co_await actor_zeta::otterbrix::send(memory_storage_, address(),
+                                                      &services::memory_storage_t::execute_plan,
+                                                      session,
+                                                      std::move(logic_plan),
+                                                      params->take_parameters(),
+                                                      used_format);
 
-    void dispatcher_t::execute_plan_finish(const components::session::session_id_t& session, cursor_t_ptr result) {
-        result_storage_[session] = result;
+        // ========================================================================
+        // Process result
+        // ========================================================================
+        auto& result = exec_result.cursor;
         auto& s = find_session(session_to_address_, session);
-        auto plan = s.node();
-        auto params = s.params();
-        trace(log_,
-              "dispatcher_t::execute_plan_finish: session {}, {}, {}",
-              session.data(),
-              plan.get() ? plan->to_string() : "",
-              result->is_success());
-        if (result->is_success()) {
-            //todo: delete
+        auto session_plan = s.node();
 
-            switch (plan->type()) {
+        trace(log_,
+              "dispatcher_t::execute_plan: result received, session {}, {}, success: {}",
+              session.data(),
+              session_plan.get() ? session_plan->to_string() : "",
+              result->is_success());
+
+        // Save updates for delete operations
+        if (!exec_result.updates.empty()) {
+            update_result_ = exec_result.updates;
+        }
+
+        if (result->is_success()) {
+            switch (session_plan->type()) {
                 case node_type::create_database_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    actor_zeta::send(manager_disk_,
-                                     dispatcher_t::address(),
-                                     disk::handler_id(disk::route::append_database),
-                                     session,
-                                     plan->database_name());
-                    if (find_session(session_to_address_, session).address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::create_database),
-                                         session,
-                                         plan);
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::append_database,
+                                     session, session_plan->database_name());
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::create_database, session, session_plan);
+                    // Update catalog after successful WAL write
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
 
                 case node_type::drop_database_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    catalog_.drop_namespace(table_id(resource(), plan->collection_full_name()).get_namespace());
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    catalog_.drop_namespace(table_id(resource(), session_plan->collection_full_name()).get_namespace());
                     break;
                 }
 
                 case node_type::create_collection_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    actor_zeta::send(manager_disk_,
-                                     dispatcher_t::address(),
-                                     disk::handler_id(disk::route::append_collection),
-                                     session,
-                                     plan->database_name(),
-                                     plan->collection_name());
-                    if (find_session(session_to_address_, session).address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::create_collection),
-                                         session,
-                                         plan);
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::append_collection,
+                                     session, session_plan->database_name(), session_plan->collection_name());
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::create_collection, session, session_plan);
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
 
                 case node_type::insert_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    if (s.address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        assert(s.node() && "Doesn't holds logical_plan");
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::insert_many),
-                                         session,
-                                         std::move(plan));
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    assert(s.node() && "Doesn't holds logical_plan");
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::insert_many, session, session_plan);
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
 
                 case node_type::update_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    if (s.address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        assert(s.node() && "Doesn't holds correct plan*");
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::update_many),
-                                         session,
-                                         std::move(plan),
-                                         s.params());
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    assert(s.node() && "Doesn't holds correct plan*");
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::update_many, session, session_plan, s.params());
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
 
                 case node_type::delete_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    if (s.address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        assert(s.node() && "Doesn't holds correct plan*");
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::delete_many),
-                                         session,
-                                         std::move(plan),
-                                         s.params());
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    assert(s.node() && "Doesn't holds correct plan*");
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::delete_many, session, session_plan, s.params());
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
 
                 case node_type::drop_collection_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    collection_full_name_t name(plan->database_name(), plan->collection_name());
-                    actor_zeta::send(manager_disk_,
-                                     dispatcher_t::address(),
-                                     disk::handler_id(disk::route::remove_collection),
-                                     session,
-                                     plan->database_name(),
-                                     plan->collection_name());
-                    if (find_session(session_to_address_, session).address().get() == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    } else {
-                        actor_zeta::send(manager_wal_,
-                                         dispatcher_t::address(),
-                                         wal::handler_id(wal::route::drop_collection),
-                                         session,
-                                         std::move(plan));
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::remove_collection,
+                                     session, session_plan->database_name(), session_plan->collection_name());
+                    // co_await on WAL for durability
+                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
+                        &wal::manager_wal_replicate_t::drop_collection, session, session_plan);
+                    update_catalog(session_plan);
+                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
+
                 case node_type::create_index_t:
                 case node_type::drop_index_t: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: {}", to_string(plan->type()));
-                    const auto session_address = find_session(session_to_address_, session).address().get();
-                    if (session_address == manager_wal_.get()) {
-                        wal_success(session, last_wal_id_);
-                    }
-                    // We initiate session from this dispatcher,
-                    // for now it means: dispatcher was called from manager_disk after initiate loading from disk.
-                    if (session_address == dispatcher_t::address().get()) {
-                        remove_session(session_to_address_, session);
-                        return;
-                    }
-                    break;
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    // Index operations - currently without WAL
+                    remove_session(session_to_address_, session);
+                    co_return result;
                 }
+
                 default: {
-                    trace(log_, "dispatcher_t::execute_plan_finish: non processed type - {}", to_string(plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: non processed type - {}", to_string(session_plan->type()));
                 }
             }
         } else {
-            trace(log_, "dispatcher_t::execute_plan_finish: error: \"{}\"", result->get_error().what);
+            trace(log_, "dispatcher_t::execute_plan: error: \"{}\"", result->get_error().what);
         }
-        //end: delete
-        // TODO add verification for mutable types (they should be skipped too)
-        if (!load_from_wal_in_progress(session)) {
-            actor_zeta::send(s.address(),
-                             dispatcher_t::address(),
-                             handler_id(route::execute_plan_finish),
-                             session,
-                             std::move(result));
-            remove_session(session_to_address_, session);
-            result_storage_.erase(session);
-        }
+
+        // Return result (for read-only operations or errors)
+        remove_session(session_to_address_, session);
+        co_return std::move(result);
     }
 
-    void dispatcher_t::execute_plan_delete_finish(const components::session::session_id_t& session,
-                                                  cursor_t_ptr cursor,
-                                                  recomputed_types updates) {
-        update_result_ = updates;
-        execute_plan_finish(session, std::move(cursor));
-    }
+    // execute_plan_finish() and execute_plan_delete_finish() REMOVED!
+    // memory_storage_t now returns cursor via future (co_await)
+    // Result processing logic moved inline to execute_plan()
 
-    void dispatcher_t::size(const components::session::session_id_t& session,
-                            std::string& database_name,
-                            std::string& collection,
-                            actor_zeta::base::address_t sender) {
+    // ============================================================================
+    // size() - collection size query
+    // Returns size_t via future (no callback!)
+    // ============================================================================
+    dispatcher_t::unique_future<size_t> dispatcher_t::size(
+        components::session::session_id_t session,
+        std::string database_name,
+        std::string collection
+    ) {
         trace(log_,
               "dispatcher_t::size: session:{}, database: {}, collection: {}",
               session.data(),
               database_name,
               collection);
-        make_session(session_to_address_, session, session_t(std::move(sender)));
+
         auto error = check_collection_exists({resource(), {database_name, collection}});
         if (error) {
-            size_finish(session, std::move(error));
+            co_return size_t(0);
         }
-        actor_zeta::send(memory_storage_,
-                         dispatcher_t::address(),
-                         collection::handler_id(collection::route::size),
-                         session,
-                         collection_full_name_t{database_name, collection});
+
+        // co_await on memory_storage::size - get size via future
+        auto result = co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::size,
+                                                 session, collection_full_name_t{database_name, collection});
+        co_return result;
     }
 
-    void dispatcher_t::size_finish(const components::session::session_id_t& session, cursor_t_ptr&& result) {
-        trace(log_, "dispatcher_t::size_finish session: {}, size: {}", session.data(), result->size());
-        actor_zeta::send(find_session(session_to_address_, session).address(),
-                         dispatcher_t::address(),
-                         collection::handler_id(collection::route::size_finish),
-                         session,
-                         result->size());
-        remove_session(session_to_address_, session);
-    }
-
-    void dispatcher_t::close_cursor(const components::session::session_id_t& session) {
-        trace(log_, " dispatcher_t::close_cursor ");
-        trace(log_, "Session : {}", session.data());
+    dispatcher_t::unique_future<void> dispatcher_t::close_cursor(
+        components::session::session_id_t session
+    ) {
+        trace(log_, "dispatcher_t::close_cursor, session: {}", session.data());
         auto it = cursor_.find(session);
         if (it != cursor_.end()) {
             cursor_.erase(it);
         } else {
             error(log_, "Not find session : {}", session.data());
         }
+        co_return;
     }
 
-    void dispatcher_t::wal_success(const components::session::session_id_t& session, services::wal::id_t wal_id) {
-        trace(log_, "dispatcher_t::wal_success session : {}, wal id: {}", session.data(), wal_id);
-
-        if (!is_session_exist(session_to_address_, session)) {
-            actor_zeta::send(manager_disk_,
-                             dispatcher_t::address(),
-                             disk::handler_id(disk::route::flush),
-                             session,
-                             wal_id);
-            return;
-        }
-
-        auto session_obj = find_session(session_to_address_, session);
-        update_catalog(session_obj.node());
-        actor_zeta::send(manager_disk_, dispatcher_t::address(), disk::handler_id(disk::route::flush), session, wal_id);
-
-        const bool is_from_wal = session_obj.address().get() == manager_wal_.get();
-        if (is_from_wal) {
-            return;
-        }
-
-        trace(log_, "dispatcher_t::wal_success remove session : {}, wal id: {}", session.data(), wal_id);
-        auto result = result_storage_[session];
-        actor_zeta::send(session_obj.address(),
-                         dispatcher_t::address(),
-                         handler_id(route::execute_plan_finish),
-                         session,
-                         result);
-        remove_session(session_to_address_, session);
-        result_storage_.erase(session);
-    }
-
-    // TODO separate change logic and condition check
-    bool dispatcher_t::load_from_wal_in_progress(const components::session::session_id_t& session) {
-        if (find_session(session_to_address_, session).address().get() == manager_wal_.get()) {
-            if (--load_count_answers_ == 0) {
-                actor_zeta::send(find_session(session_to_address_, load_session_).address(),
-                                 dispatcher_t::address(),
-                                 core::handler_id(core::route::load_finish),
-                                 load_session_);
-                remove_session(session_to_address_, load_session_);
-            }
-            return true;
-        }
-        return false;
-    }
+    // wal_success() REMOVED - now using co_await on WAL methods in execute_plan()
 
     const components::catalog::catalog& dispatcher_t::current_catalog() { return catalog_; }
 
@@ -635,7 +525,6 @@ namespace services::dispatcher {
         if (!error) {
             bool exists = catalog_.table_exists(id);
             bool computes = catalog_.table_computes(id);
-            // table can either compute or exist with schema - not both
             if (exists == computes) {
                 error = make_cursor(resource(),
                                     error_code_t::collection_not_exists,
@@ -643,7 +532,6 @@ namespace services::dispatcher {
                                            : "collection does not exist");
             }
         }
-
         return error;
     }
 
@@ -661,11 +549,7 @@ namespace services::dispatcher {
         std::pmr::vector<complex_logical_type> encountered_types{resource()};
         cursor_t_ptr result = make_cursor(resource(), operation_status_t::success);
         auto check_format = [&](components::logical_plan::node_t* node) {
-            // incoming raw data might not know about type used and only have a field name
-            // which is different from the type
-            // so we have to collect all known fields that may be used
             used_format_t check = used_format_t::undefined;
-            // pull check format from collection referenced by logical_plan
             if (!node->collection_full_name().empty()) {
                 table_id id(resource(), node->collection_full_name());
                 if (auto res = check_collection_exists(id); !res) {
@@ -680,7 +564,6 @@ namespace services::dispatcher {
                     return false;
                 }
             }
-            // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == components::logical_plan::node_type::data_t) {
                 auto* data_node = reinterpret_cast<components::logical_plan::node_data_t*>(node);
                 if (check == used_format_t::undefined) {
@@ -693,7 +576,6 @@ namespace services::dispatcher {
                     return false;
                 }
 
-                // convert data_chunk to documents
                 if (used_format == used_format_t::documents && check == used_format_t::columns) {
                     data_node->convert_to_documents();
                     check = used_format_t::documents;
@@ -706,9 +588,7 @@ namespace services::dispatcher {
                                                [&column](const complex_logical_type& type) {
                                                    return type.alias() == column.type().alias();
                                                });
-                        // if this is a registered type, then conversion is required
                         if (it != encountered_types.end() && catalog_.type_exists(it->type_name())) {
-                            // try to cast to it
                             if (it->type() == logical_type::STRUCT) {
                                 components::vector::vector_t new_column(data_node->data_chunk().resource(),
                                                                         *it,
@@ -753,7 +633,6 @@ namespace services::dispatcher {
                 }
             }
 
-            // compare check to previously gathered
             if (used_format == check) {
                 return true;
             } else if (used_format == used_format_t::undefined) {
@@ -794,7 +673,6 @@ namespace services::dispatcher {
     }
 
     components::logical_plan::node_ptr dispatcher_t::create_logic_plan(components::logical_plan::node_ptr plan) {
-        //todo: cache logical plans
         components::planner::planner_t planner;
         return planner.create_plan(resource(), std::move(plan));
     }
@@ -840,16 +718,12 @@ namespace services::dispatcher {
                 break;
             case node_type::insert_t: {
                 if (!node->children().size() || node->children().back()->type() != node_type::data_t) {
-                    // only inserts with documents are supported for now
                     break;
                 }
 
                 std::optional<std::reference_wrapper<computed_schema>> comp_sch;
-                std::optional<std::reference_wrapper<const schema>> sch;
                 if (catalog_.table_computes(id)) {
                     comp_sch = catalog_.get_computing_table_schema(id);
-                } else {
-                    sch = catalog_.get_table_schema(id);
                 }
 
                 auto node_info = reinterpret_cast<node_data_ptr&>(node->children().back());
@@ -862,16 +736,6 @@ namespace services::dispatcher {
                             if (comp_sch.has_value()) {
                                 comp_sch.value().get().append(std::pmr::string(key_val), log_type);
                             }
-                            // else { // todo: type conversion tree
-                            //     auto asserted_type = sch.value().get().find_field(std::pmr::string(key_val));
-                            //     if (asserted_type != log_type) {
-                            //         error(log_,
-                            //               "Schema failure: inserted value of incorrect type into column {}",
-                            //               std::string(key_val));
-                            //         result_storage_[session] =
-                            //             make_cursor(resource(), error_code_t::other_error, "Schema failure");
-                            //     }
-                            // }
                         }
                     }
                 }
@@ -892,37 +756,17 @@ namespace services::dispatcher {
         }
     }
 
+    // ============================================================================
+    // manager_dispatcher_t
+    // ============================================================================
+
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
                                                log_t& log)
-        : actor_zeta::cooperative_supervisor<manager_dispatcher_t>(resource_ptr)
-        , create_(actor_zeta::make_behavior(resource(), handler_id(route::create), this, &manager_dispatcher_t::create))
-        , load_(actor_zeta::make_behavior(resource(),
-                                          core::handler_id(core::route::load),
-                                          this,
-                                          &manager_dispatcher_t::load))
-        , execute_plan_(actor_zeta::make_behavior(resource(),
-                                                  handler_id(route::execute_plan),
-                                                  this,
-                                                  &manager_dispatcher_t::execute_plan))
-        , size_(actor_zeta::make_behavior(resource(),
-                                          collection::handler_id(collection::route::size),
-                                          this,
-                                          &manager_dispatcher_t::size))
-        , schema_(actor_zeta::make_behavior(resource(),
-                                            collection::handler_id(collection::route::schema),
-                                            this,
-                                            &manager_dispatcher_t::get_schema))
-        , close_cursor_(actor_zeta::make_behavior(resource(),
-                                                  collection::handler_id(collection::route::close_cursor),
-                                                  this,
-                                                  &manager_dispatcher_t::close_cursor))
-        , sync_(actor_zeta::make_behavior(resource(),
-                                          core::handler_id(core::route::sync),
-                                          this,
-                                          &manager_dispatcher_t::sync))
-        , log_(log.clone())
-        , e_(scheduler) {
+        : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
+        , resource_(resource_ptr)
+        , scheduler_(scheduler)
+        , log_(log.clone()) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t ");
     }
@@ -934,105 +778,159 @@ namespace services::dispatcher {
 
     auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
-    auto manager_dispatcher_t::make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return e_; }
+    void manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
+        poll_pending();
 
-    actor_zeta::behavior_t manager_dispatcher_t::behavior() {
-        return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
-            switch (msg->command()) {
-                case handler_id(route::create): {
-                    create_(msg);
-                    break;
+        switch (msg->command()) {
+            // Note: sync is called directly, not through message passing
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::create>: {
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::create, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
                 }
-                case core::handler_id(core::route::load): {
-                    load_(msg);
-                    break;
-                }
-                case handler_id(route::execute_plan): {
-                    execute_plan_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::size): {
-                    size_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::schema): {
-                    schema_(msg);
-                    break;
-                }
-                case collection::handler_id(collection::route::close_cursor): {
-                    close_cursor_(msg);
-                    break;
-                }
-                case core::handler_id(core::route::sync): {
-                    sync_(msg);
-                    break;
-                }
+                break;
             }
-        });
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::load>: {
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::load, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>: {
+                // CRITICAL: Store pending coroutine! execute_plan returns cursor_t_ptr
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
+                if (!future.available()) {
+                    pending_cursor_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::size>: {
+                // size() returns size_t via future
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::size, msg);
+                if (!future.available()) {
+                    pending_size_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::get_schema>: {
+                // get_schema() returns cursor_t_ptr via future
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::get_schema, msg);
+                if (!future.available()) {
+                    pending_cursor_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::close_cursor>: {
+                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::close_cursor, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            default:
+                break;
+        }
     }
 
-    //NOTE: behold thread-safety!
-    auto manager_dispatcher_t::enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void {
-        ZoneScoped;
-        std::unique_lock<spin_lock> _(lock_);
-        set_current_message(std::move(msg));
-        behavior()(current_message());
+    // Poll and clean up completed coroutines
+    void manager_dispatcher_t::poll_pending() {
+        for (auto it = pending_void_.begin(); it != pending_void_.end();) {
+            if (it->available()) {
+                it = pending_void_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = pending_cursor_.begin(); it != pending_cursor_.end();) {
+            if (it->available()) {
+                it = pending_cursor_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = pending_size_.begin(); it != pending_size_.end();) {
+            if (it->available()) {
+                it = pending_size_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
-    // core::pmr::deallocate_ptr(resource(), agent)
-    void manager_dispatcher_t::create(const components::session::session_id_t& session) {
+    void manager_dispatcher_t::sync(sync_pack pack) {
+        constexpr static int memory_storage = 0;
+        constexpr static int wal_sender = 1;
+        constexpr static int disk_sender = 2;
+        memory_storage_ = std::get<memory_storage>(pack);
+        wal_sender_ = std::get<wal_sender>(pack);
+        disk_sender_ = std::get<disk_sender>(pack);
+    }
+
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::create(
+        components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::create session: {} ", session.data());
-        auto target = spawn_actor(
-            [this](dispatcher_t* ptr) {
-                dispatchers_.emplace_back(dispatcher_ptr(ptr, actor_zeta::pmr::deleter_t(resource())));
-            },
-            memory_storage_,
-            manager_wal_,
-            manager_disk_,
-            log_);
+        // Use actor_zeta::spawn<T>(resource, args...) - resource is passed as first constructor arg
+        auto ptr = actor_zeta::spawn<dispatcher_t>(resource(), address(), memory_storage_, wal_sender_, disk_sender_, log_);
+        dispatchers_.emplace_back(std::move(ptr));
+        co_return;
     }
 
-    void manager_dispatcher_t::load(const components::session::session_id_t& session) {
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::load(
+        components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::load session: {}", session.data());
-        return actor_zeta::send(dispatcher(),
-                                address(),
-                                core::handler_id(core::route::load),
-                                session,
-                                current_message()->sender());
+        // With futures, sender is not needed - caller gets notified via co_await
+        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::load, session);
+        // Schedule dispatcher_t for processing (cooperative_actor needs explicit scheduling)
+        if (future.needs_scheduling()) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
+        co_await std::move(future);
+        co_return;
     }
 
-    void manager_dispatcher_t::execute_plan(const components::session::session_id_t& session,
-                                            node_ptr plan,
-                                            parameter_node_ptr params) {
+    // execute_plan returns cursor_t_ptr via future (not callback!)
+    // co_await on dispatcher_t::execute_plan and return cursor to caller
+    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::execute_plan(
+        components::session::session_id_t session,
+        node_ptr plan,
+        parameter_node_ptr params) {
         trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
-        return actor_zeta::send(dispatcher(),
-                                address(),
-                                handler_id(route::execute_plan),
-                                session,
-                                std::move(plan),
-                                std::move(params),
-                                current_message()->sender());
+        // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
+        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::execute_plan,
+                                       session, std::move(plan), std::move(params));
+        if (future.needs_scheduling()) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
+        auto cursor = co_await std::move(future);
+        co_return cursor;
     }
 
-    void manager_dispatcher_t::size(const components::session::session_id_t& session,
-                                    std::string& database_name,
-                                    std::string& collection) {
+    // size returns size_t via future (no callback!)
+    manager_dispatcher_t::unique_future<size_t> manager_dispatcher_t::size(
+        components::session::session_id_t session,
+        std::string database_name,
+        std::string collection) {
         trace(log_,
               "manager_dispatcher_t::size session: {} , database: {}, collection name: {} ",
               session.data(),
               database_name,
               collection);
-        actor_zeta::send(dispatcher(),
-                         address(),
-                         collection::handler_id(collection::route::size),
-                         session,
-                         std::move(database_name),
-                         std::move(collection),
-                         current_message()->sender());
+        // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
+        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::size,
+                                       session, std::move(database_name), std::move(collection));
+        if (future.needs_scheduling()) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
+        auto result = co_await std::move(future);
+        co_return result;
     }
 
-    void manager_dispatcher_t::get_schema(const components::session::session_id_t& session,
-                                          const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids) {
+    // get_schema returns cursor via future (no callback!)
+    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::get_schema(
+        components::session::session_id_t session,
+        std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids) {
         auto& catalog = const_cast<components::catalog::catalog&>(current_catalog());
         std::pmr::vector<complex_logical_type> schemas;
         schemas.reserve(ids.size());
@@ -1052,14 +950,15 @@ namespace services::dispatcher {
             schemas.push_back(logical_type::INVALID);
         }
 
-        actor_zeta::send(current_message()->sender(),
-                         address(),
-                         collection::handler_id(collection::route::schema_finish),
-                         session,
-                         make_cursor(resource(), std::move(schemas)));
+        // Return cursor via future (not callback!)
+        co_return make_cursor(resource(), std::move(schemas));
     }
 
-    void manager_dispatcher_t::close_cursor(const components::session::session_id_t&) {}
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::close_cursor(
+        components::session::session_id_t session) {
+        (void)session;
+        co_return;
+    }
 
     const components::catalog::catalog& manager_dispatcher_t::current_catalog() {
         return dispatchers_[0]->current_catalog();

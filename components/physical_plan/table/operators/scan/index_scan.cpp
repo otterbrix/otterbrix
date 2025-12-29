@@ -1,5 +1,5 @@
 #include "index_scan.hpp"
-#include <components/index/disk/route.hpp>
+#include <services/disk/index_agent_disk.hpp>
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators {
@@ -83,10 +83,12 @@ namespace components::table::operators {
         if (index && index->is_disk()) {
             trace(context_->log(), "index_scan: send query into disk");
             auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            pipeline_context->send(index->disk_agent(),
-                                   services::index::handler_id(services::index::route::find),
-                                   value,
-                                   expr_->type());
+            actor_zeta::send(index->disk_agent(),
+                             pipeline_context->address(),
+                             &services::disk::index_agent_disk_t::find,
+                             pipeline_context->session,
+                             value,
+                             expr_->type());
             async_wait();
         } else {
             trace(context_->log(), "index_scan: prepare result");

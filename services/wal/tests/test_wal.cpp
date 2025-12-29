@@ -4,6 +4,7 @@
 
 #include <absl/crc/crc32c.h>
 #include <actor-zeta.hpp>
+#include <actor-zeta/spawn.hpp>
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/log/log.hpp>
 #include <string>
@@ -32,8 +33,7 @@ void test_insert_one_doc(wal_replicate_t* wal, std::pmr::memory_resource* resour
         auto document = gen_doc(num, resource);
         auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(document)});
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        wal->insert_one(session, address, data);
+        wal->insert_one(session, data);
     }
 }
 
@@ -42,8 +42,7 @@ void test_insert_one_row(wal_replicate_t* wal, std::pmr::memory_resource* resour
         auto chunk = gen_data_chunk(1, num, resource);
         auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(chunk)});
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        wal->insert_one(session, address, data);
+        wal->insert_one(session, data);
     }
 }
 
@@ -59,16 +58,8 @@ struct test_wal {
             config_wal.path = path;
             return config_wal;
         }())
-        , manager(actor_zeta::spawn_supervisor<manager_wal_replicate_t>(resource, scheduler, config, log))
-        , wal([this]() {
-            auto allocate_byte = sizeof(wal_replicate_t);
-            auto allocate_byte_alignof = alignof(wal_replicate_t);
-            void* buffer = manager->resource()->allocate(allocate_byte, allocate_byte_alignof);
-            auto* wal_ptr = new (buffer) wal_replicate_t(manager.get(), log, config);
-            return std::unique_ptr<wal_replicate_t, actor_zeta::pmr::deleter_t>(
-                wal_ptr,
-                actor_zeta::pmr::deleter_t(manager->resource()));
-        }()) {
+        , manager(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler, config, log))
+        , wal(actor_zeta::spawn<wal_replicate_t>(resource, manager.get(), log, config)) {
         log.set_level(log_t::level::trace);
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path);
@@ -167,8 +158,7 @@ TEST_CASE("services::wal::insert_many_empty_test") {
                                                                std::move(documents));
 
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->insert_many(session, address, data);
+        test_wal.wal->insert_many(session, data);
 
         wal_entry_t entry;
 
@@ -194,8 +184,7 @@ TEST_CASE("services::wal::insert_many_empty_test") {
             components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
 
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->insert_many(session, address, data);
+        test_wal.wal->insert_many(session, data);
 
         wal_entry_t entry;
 
@@ -229,8 +218,7 @@ TEST_CASE("services::wal::insert_many_test") {
                                                                    {database_name, collection_name},
                                                                    std::move(documents));
             auto session = components::session::session_id_t();
-            auto address = actor_zeta::base::address_t::address_t::empty_address();
-            test_wal.wal->insert_many(session, address, data);
+            test_wal.wal->insert_many(session, data);
         }
 
         std::size_t read_index = 0;
@@ -275,8 +263,7 @@ TEST_CASE("services::wal::insert_many_test") {
                                                                    {database_name, collection_name},
                                                                    std::move(chunk));
             auto session = components::session::session_id_t();
-            auto address = actor_zeta::base::address_t::address_t::empty_address();
-            test_wal.wal->insert_many(session, address, data);
+            test_wal.wal->insert_many(session, data);
         }
 
         std::size_t read_index = 0;
@@ -329,8 +316,7 @@ TEST_CASE("services::wal::delete_one_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_one(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->delete_one(session, address, data, params);
+        test_wal.wal->delete_one(session, data, params);
     }
 
     std::size_t index = 0;
@@ -368,8 +354,7 @@ TEST_CASE("services::wal::delete_many_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_many(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->delete_many(session, address, data, params);
+        test_wal.wal->delete_many(session, data, params);
     }
 
     std::size_t index = 0;
@@ -412,8 +397,7 @@ TEST_CASE("services::wal::update_one_test") {
 
         auto data = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->update_one(session, address, data, params);
+        test_wal.wal->update_one(session, data, params);
     }
 
     std::size_t index = 0;
@@ -464,8 +448,7 @@ TEST_CASE("services::wal::update_many_test") {
 
         auto data = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->update_many(session, address, data, params);
+        test_wal.wal->update_many(session, data, params);
     }
 
     std::size_t index = 0;

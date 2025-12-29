@@ -1,20 +1,20 @@
 #include "operator_add_index.hpp"
 #include <components/cursor/cursor.hpp>
-#include <components/index/disk/route.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <core/pmr.hpp>
+#include <core/excutor.hpp>
 #include <services/collection/collection.hpp>
-#include <services/collection/route.hpp>
 #include <services/collection/session/session.hpp>
-#include <services/disk/index_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 
 namespace components::base::operators {
 
     operator_add_index::operator_add_index(services::collection::context_collection_t* context,
                                            logical_plan::node_create_index_ptr node)
         : read_write_operator_t(context, operator_type::add_index)
-        , index_node_{std::move(node)} {}
+        , index_node_{std::move(node)}
+        , index_name_{index_node_->name()} {}
 
     void operator_add_index::on_execute_impl(pipeline::context_t* pipeline_context) {
         trace(context_->log(),
@@ -35,10 +35,14 @@ namespace components::base::operators {
                     pipeline_context->session,
                     index_node_->name(),
                     services::collection::sessions::create_index_t{pipeline_context->current_message_sender, id_index});
-                pipeline_context->send(context_->disk(),
-                                       services::index::handler_id(services::index::route::create),
-                                       std::move(index_node_),
-                                       context_);
+                auto future = actor_zeta::otterbrix::send(context_->disk(),
+                                 pipeline_context->address(),
+                                 &services::disk::manager_disk_t::create_index_agent,
+                                 pipeline_context->session,
+                                 std::move(index_node_),
+                                 context_);
+                disk_future_ready_ = future.available();
+                disk_future_ = std::make_unique<actor_zeta::unique_future<actor_zeta::address_t>>(std::move(future));
                 break;
             }
             case logical_plan::index_type::composite:

@@ -15,6 +15,8 @@ target_link_libraries(
         otterbrix::logical_plan
         otterbrix::collection
         otterbrix::memory_storage
+        otterbrix::dispatcher
+        otterbrix::wal
         otterbrix::physical_plan
         otterbrix::cursor
         otterbrix::session

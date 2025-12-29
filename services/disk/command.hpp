@@ -40,7 +40,7 @@ namespace services::disk {
 
     struct command_drop_index_t {
         std::string index_name;
-        actor_zeta::base::address_t address;
+        actor_zeta::address_t address;
     };
 
     class command_t {

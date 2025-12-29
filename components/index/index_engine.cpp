@@ -209,12 +209,14 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->insert(key, document);
                 if (index->is_disk() && pipeline_context) {
-                    actor_zeta::send(index->disk_agent(),
-                                     pipeline_context->address(),
-                                     &services::disk::index_agent_disk_t::insert,
-                                     pipeline_context->session,
-                                     key,
-                                     document::get_document_id(document));
+                    // Store future in context for later awaiting (future pattern)
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::insert,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   document::get_document_id(document));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -226,12 +228,14 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->remove(key); //todo: bug
                 if (index->is_disk() && pipeline_context) {
-                    actor_zeta::send(index->disk_agent(),
-                                     pipeline_context->address(),
-                                     &services::disk::index_agent_disk_t::remove,
-                                     pipeline_context->session,
-                                     key,
-                                     document::get_document_id(document));
+                    // Store future in context for later awaiting (future pattern)
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::remove,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   document::get_document_id(document));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -244,12 +248,14 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->insert(key, static_cast<int64_t>(row));
                 if (index->is_disk() && pipeline_context) {
-                    actor_zeta::send(index->disk_agent(),
-                                     pipeline_context->address(),
-                                     &services::disk::index_agent_disk_t::insert,
-                                     pipeline_context->session,
-                                     key,
-                                     components::document::document_id_t(row));
+                    // Store future in context for later awaiting (future pattern)
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::insert,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   components::document::document_id_t(row));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -262,12 +268,14 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->remove(key);
                 if (index->is_disk() && pipeline_context) {
-                    actor_zeta::send(index->disk_agent(),
-                                     pipeline_context->address(),
-                                     &services::disk::index_agent_disk_t::remove,
-                                     pipeline_context->session,
-                                     key,
-                                     components::document::document_id_t(row));
+                    // Store future in context for later awaiting (future pattern)
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::remove,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   components::document::document_id_t(row));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }

@@ -12,8 +12,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Coroutines support for GCC/Clang
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# Coroutines support for GCC (Clang enables coroutines by default in C++20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-fcoroutines)
 endif()
 

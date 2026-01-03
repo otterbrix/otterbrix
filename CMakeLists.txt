@@ -122,15 +122,6 @@ find_package(BZip2 1.0.8 REQUIRED)
 find_package(magic_enum 0.8.1 REQUIRED)
 find_package(actor-zeta REQUIRED)
 
-# Suppress GCC false positive -Wmaybe-uninitialized in actor-zeta future_state.hpp
-# See docs/gcc-maybe-uninitialized-false-positive.md for details
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    get_target_property(ACTOR_ZETA_INCLUDE_DIRS actor-zeta::actor-zeta INTERFACE_INCLUDE_DIRECTORIES)
-    set_target_properties(actor-zeta::actor-zeta PROPERTIES
-        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${ACTOR_ZETA_INCLUDE_DIRS}"
-    )
-endif()
-
 if (ENABLE_ASAN)
     # build abseil-cpp locally to avoid ABI issues
     include(FetchContent)

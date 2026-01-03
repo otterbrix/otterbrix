@@ -1,6 +1,6 @@
 #pragma once
 
-#include <actor-zeta.hpp>
+#include <actor-zeta/mailbox/id.hpp>
 
 #include <cstdint>
 #include <cstdlib>
@@ -20,5 +20,5 @@ enum class group_id_t : uint8_t
 
 template<class T>
 constexpr auto handler_id(group_id_t group, T type) {
-    return actor_zeta::make_message_id(100 * static_cast<uint64_t>(group) + static_cast<uint64_t>(type));
+    return actor_zeta::mailbox::make_message_id(100 * static_cast<uint64_t>(group) + static_cast<uint64_t>(type));
 }

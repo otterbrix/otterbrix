@@ -4,6 +4,7 @@
 #include <components/context/context.hpp>
 #include <components/physical_plan/base/operators/operator_data.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/base/operators/eager_task.hpp>
 
 namespace components::expressions {
     class key_t;
@@ -57,13 +58,23 @@ namespace components::base::operators {
         void on_resume(pipeline::context_t* pipeline_context);
         void async_wait();
 
+        // Virtual method for async operations - override in operators with disk futures
+        // Uses eager_task for immediate execution (vs unique_future which suspends at start)
+        virtual eager_task await_async_and_resume(pipeline::context_t* ctx);
+
         bool is_executed() const;
         bool is_wait_sync_disk() const;
         bool is_root() const noexcept;
         void set_as_root() noexcept;
 
+        // Find operator in waiting state (searches this node and children recursively)
+        ptr find_waiting_operator();
+
         const collection_full_name_t& collection_name() const noexcept;
         services::collection::context_collection_t* context() noexcept;
+
+        // Required for coroutine promise_type (used by await_async_and_resume)
+        std::pmr::memory_resource* resource() const noexcept;
 
         [[nodiscard]] ptr left() const noexcept;
         [[nodiscard]] ptr right() const noexcept;

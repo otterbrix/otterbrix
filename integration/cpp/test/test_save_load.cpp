@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
+#include <actor-zeta/spawn.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <services/disk/disk.hpp>
@@ -115,11 +116,11 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
         auto* dispatcher = space.dispatcher();
         auto log = initialization_logger("python", config.log.path.c_str());
         log.set_level(config.log.level);
-        auto manager = actor_zeta::spawn_supervisor<services::wal::manager_wal_replicate_t>(dispatcher->resource(),
-                                                                                            nullptr,
-                                                                                            config.wal,
-                                                                                            log);
-        services::wal::wal_replicate_t wal(manager.get(), log, config.wal);
+        auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(dispatcher->resource(),
+                                                                                  static_cast<actor_zeta::scheduler_raw>(nullptr),
+                                                                                  config.wal,
+                                                                                  log);
+        auto wal = actor_zeta::spawn<services::wal::wal_replicate_t>(dispatcher->resource(), manager.get(), log, config.wal);
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {
@@ -128,10 +129,9 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                 auto doc = gen_doc(int(n_doc), dispatcher->resource());
                 doc->set("number", gen_doc_number(n_db, n_col, n_doc));
                 auto session = otterbrix::session_id_t();
-                auto address = actor_zeta::address_t::empty_address();
                 auto insert_one =
                     components::logical_plan::make_node_insert(dispatcher->resource(), {db_name, col_name}, {doc});
-                wal.insert_one(session, address, insert_one);
+                wal->insert_one(session, insert_one);
 
                 {
                     auto match = components::logical_plan::make_node_match(
@@ -147,7 +147,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                     auto delete_one = components::logical_plan::make_node_delete_one(dispatcher->resource(),
                                                                                      {db_name, col_name},
                                                                                      match);
-                    wal.delete_one(session, address, delete_one, params);
+                    wal->delete_one(session, delete_one, params);
                 }
 
                 {
@@ -172,7 +172,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                     auto delete_many = components::logical_plan::make_node_delete_many(dispatcher->resource(),
                                                                                        {db_name, col_name},
                                                                                        match);
-                    wal.delete_many(session, address, delete_many, params);
+                    wal->delete_many(session, delete_many, params);
                 }
 
                 {
@@ -197,7 +197,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                                      match,
                                                                                      {update_expr},
                                                                                      false);
-                    wal.update_one(session, address, update_one, params);
+                    wal->update_one(session, update_one, params);
                 }
 
                 {
@@ -222,7 +222,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
                                                                                        match,
                                                                                        {update_expr},
                                                                                        false);
-                    wal.update_many(session, address, update_many, params);
+                    wal->update_many(session, update_many, params);
                 }
             }
         }

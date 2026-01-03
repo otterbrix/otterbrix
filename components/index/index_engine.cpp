@@ -6,7 +6,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/pmr.hpp>
 
-#include <components/index/disk/route.hpp>
+#include <services/disk/index_agent_disk.hpp>
 
 namespace components::index {
 
@@ -209,10 +209,13 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->insert(key, document);
                 if (index->is_disk() && pipeline_context) {
-                    pipeline_context->send(index->disk_agent(),
-                                           services::index::handler_id(services::index::route::insert),
-                                           key,
-                                           document::get_document_id(document));
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::insert,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   document::get_document_id(document));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -224,10 +227,13 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->remove(key); //todo: bug
                 if (index->is_disk() && pipeline_context) {
-                    pipeline_context->send(index->disk_agent(),
-                                           services::index::handler_id(services::index::route::remove),
-                                           key,
-                                           document::get_document_id(document));
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::remove,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   document::get_document_id(document));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -240,10 +246,13 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->insert(key, static_cast<int64_t>(row));
                 if (index->is_disk() && pipeline_context) {
-                    pipeline_context->send(index->disk_agent(),
-                                           services::index::handler_id(services::index::route::insert),
-                                           key,
-                                           row);
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::insert,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   components::document::document_id_t(row));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }
@@ -256,10 +265,13 @@ namespace components::index {
                 auto key = get_value_by_index(index, chunk, row);
                 index->remove(key);
                 if (index->is_disk() && pipeline_context) {
-                    pipeline_context->send(index->disk_agent(),
-                                           services::index::handler_id(services::index::route::remove),
-                                           key,
-                                           row);
+                    auto future = actor_zeta::send(index->disk_agent(),
+                                                   pipeline_context->address(),
+                                                   &services::disk::index_agent_disk_t::remove,
+                                                   pipeline_context->session,
+                                                   key,
+                                                   components::document::document_id_t(row));
+                    pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
         }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "forward.hpp"
+#include "key.hpp"
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
@@ -10,7 +11,6 @@ namespace components::serializer {
 } // namespace components::serializer
 
 namespace components::expressions {
-    class key_t;
 
     class expression_i : public boost::intrusive_ref_counter<expression_i> {
     public:

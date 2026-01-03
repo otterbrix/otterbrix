@@ -8,7 +8,6 @@ set(${PROJECT_NAME}_HEADERS
         index_agent_disk.hpp
         manager_disk.hpp
         metadata.hpp
-        route.hpp
         result.hpp
 )
 

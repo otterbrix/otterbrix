@@ -68,10 +68,11 @@ namespace services::disk {
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
         // TODO: Implement actual disk persistence for data_chunk (columnar storage)
+        // Note: unique_ptr used to avoid copy in actor-zeta RTT message passing
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
-                                             components::vector::data_chunk_t data);
+                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -222,10 +223,11 @@ namespace services::disk {
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
         // TODO: Implement actual disk persistence for data_chunk (columnar storage)
+        // Note: unique_ptr used to avoid copy in actor-zeta RTT message passing
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
-                                             components::vector::data_chunk_t data);
+                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,

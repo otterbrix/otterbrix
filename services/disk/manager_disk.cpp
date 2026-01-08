@@ -360,13 +360,13 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::write_data_chunk(session_id_t session,
                                                                           database_name_t database,
                                                                           collection_name_t collection,
-                                                                          components::vector::data_chunk_t data) {
+                                                                          std::unique_ptr<components::vector::data_chunk_t> data) {
         trace(log_,
               "manager_disk_t::write_data_chunk , session : {} , database : {} , collection : {} , rows : {}",
               session.data(),
               database,
               collection,
-              data.size());
+              data ? data->size() : 0);
         // TODO: Implement actual disk persistence for data_chunk (columnar storage)
         // For now, this is a no-op placeholder - data_chunk persistence is not yet implemented
         (void)data;
@@ -948,7 +948,7 @@ namespace services::disk {
 
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::write_data_chunk(
         session_id_t session, database_name_t database, collection_name_t collection,
-        components::vector::data_chunk_t data) {
+        std::unique_ptr<components::vector::data_chunk_t> data) {
         (void)session;
         (void)database;
         (void)collection;

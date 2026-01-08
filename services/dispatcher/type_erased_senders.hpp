@@ -166,7 +166,7 @@ namespace services::dispatcher {
             std::pmr::vector<components::document::document_ptr>);
         using write_data_chunk_fn = unique_future<void>(*)(
             address_t target, address_t sender, session_id_t, database_name_t, collection_name_t,
-            components::vector::data_chunk_t);
+            std::unique_ptr<components::vector::data_chunk_t>);
         using remove_documents_fn = unique_future<void>(*)(
             address_t target, address_t sender, session_id_t, database_name_t, collection_name_t,
             std::pmr::vector<components::document::document_id_t>);
@@ -234,7 +234,7 @@ namespace services::dispatcher {
                                                std::move(db), std::move(coll), std::move(docs));
         };
         sender.write_data_chunk = +[](address_t t, address_t s, session_id_t sess, database_name_t db,
-                                      collection_name_t coll, components::vector::data_chunk_t data)
+                                      collection_name_t coll, std::unique_ptr<components::vector::data_chunk_t> data)
             -> unique_future<void> {
             return actor_zeta::otterbrix::send(t, s, &DiskManager::write_data_chunk, sess,
                                                std::move(db), std::move(coll), std::move(data));

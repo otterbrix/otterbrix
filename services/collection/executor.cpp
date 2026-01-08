@@ -478,14 +478,17 @@ namespace services::collection::executor {
             }
             co_return make_cursor(resource(), std::move(documents));
         } else {
+            // Use unique_ptr to avoid copy in actor-zeta RTT message passing
+            auto data_ptr = plan->output()
+                ? std::make_unique<components::vector::data_chunk_t>(std::move(plan->output()->data_chunk()))
+                : std::make_unique<components::vector::data_chunk_t>(resource(), std::pmr::vector<components::types::complex_logical_type>{resource()});
             co_await actor_zeta::otterbrix::send(collection->disk(),
                              address(),
                              &services::disk::manager_disk_t::write_data_chunk,
                              session,
                              collection->name().database,
                              collection->name().collection,
-                             plan->output() ? std::move(plan->output()->data_chunk())
-                                            : components::vector::data_chunk_t{resource(), {}});
+                             std::move(data_ptr));
             size_t size = 0;
             if (plan->modified()) {
                 size = std::get<std::pmr::vector<size_t>>(plan->modified()->ids()).size();

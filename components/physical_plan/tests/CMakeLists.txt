@@ -26,6 +26,8 @@ target_link_libraries(
         absl::int128
         Boost::boost
         Catch2::Catch2
+        # Re-link disk at end to resolve circular dependency symbols (index uses disk symbols)
+        otterbrix::disk
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

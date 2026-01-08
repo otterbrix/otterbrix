@@ -5,6 +5,7 @@
 
 #include <core/tracy/tracy.hpp>
 #include <core/excutor.hpp>
+#include <thread>  // for std::this_thread::yield()
 
 #include <components/document/document.hpp>
 #include <components/planner/planner.hpp>
@@ -22,6 +23,19 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace services::dispatcher {
+
+    // Implementation of make_dispatcher_sender (declared in type_erased_senders.hpp)
+    dispatcher_sender_t make_dispatcher_sender(address_t target) {
+        dispatcher_sender_t sender;
+        sender.target = target;
+        sender.execute_plan = +[](address_t t, address_t s, session_id_t sess,
+            components::logical_plan::node_ptr plan, components::logical_plan::parameter_node_ptr params)
+            -> unique_future<components::cursor::cursor_t_ptr> {
+            return actor_zeta::otterbrix::send(t, s, &manager_dispatcher_t::execute_plan,
+                                               sess, std::move(plan), std::move(params));
+        };
+        return sender;
+    }
 
     dispatcher_t::dispatcher_t(std::pmr::memory_resource* resource,
                                actor_zeta::address_t manager_dispatcher,
@@ -141,9 +155,11 @@ namespace services::dispatcher {
         trace(log_, "dispatcher_t::load - step 3: loading to memory storage");
         co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::load, session, disk_result);
 
-        // Step 4: Load indexes (via type-erased sender)
-        trace(log_, "dispatcher_t::load - step 4: loading indexes");
-        actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load_indexes, session, address());
+        // Step 4: Load indexes with co_await (wait for all indexes to be created)
+        // Pass dispatcher_sender_t to avoid circular dependency
+        trace(log_, "dispatcher_t::load - step 4: loading indexes with co_await");
+        auto dispatcher_sender = make_dispatcher_sender(manager_dispatcher_);
+        co_await actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load_indexes, session, dispatcher_sender);
 
         // Step 5: Update catalog
         for (const auto& database : (*disk_result)) {
@@ -779,6 +795,10 @@ namespace services::dispatcher {
     auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
     void manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+        // Lock required: behavior() can be called concurrently from multiple threads
+        // (actor_mixin::enqueue_impl processes messages synchronously in caller's thread)
+        std::lock_guard<spin_lock> guard(lock_);
+
         // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
         poll_pending();
 
@@ -882,10 +902,9 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::load session: {}", session.data());
         // With futures, sender is not needed - caller gets notified via co_await
         auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::load, session);
-        // Schedule dispatcher_t for processing (cooperative_actor needs explicit scheduling)
-        if (future.needs_scheduling()) {
-            scheduler_->enqueue(dispatchers_[0].get());
-        }
+        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
+        // needs_scheduling() returns false when actor transitions from running to idle)
+        scheduler_->enqueue(dispatchers_[0].get());
         co_await std::move(future);
         co_return;
     }
@@ -900,9 +919,9 @@ namespace services::dispatcher {
         // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
         auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::execute_plan,
                                        session, std::move(plan), std::move(params));
-        if (future.needs_scheduling()) {
-            scheduler_->enqueue(dispatchers_[0].get());
-        }
+        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
+        // needs_scheduling() returns false when actor transitions from running to idle)
+        scheduler_->enqueue(dispatchers_[0].get());
         auto cursor = co_await std::move(future);
         co_return cursor;
     }
@@ -920,9 +939,9 @@ namespace services::dispatcher {
         // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
         auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::size,
                                        session, std::move(database_name), std::move(collection));
-        if (future.needs_scheduling()) {
-            scheduler_->enqueue(dispatchers_[0].get());
-        }
+        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
+        // needs_scheduling() returns false when actor transitions from running to idle)
+        scheduler_->enqueue(dispatchers_[0].get());
         auto result = co_await std::move(future);
         co_return result;
     }

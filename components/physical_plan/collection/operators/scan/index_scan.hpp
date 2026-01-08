@@ -25,8 +25,9 @@ namespace components::collection::operators {
         // For executor to access expr for sync_index_from_disk
         const expressions::compare_expression_ptr& expr() const { return expr_; }
 
-        // Override: await disk future and resume (uses eager_task for immediate execution)
-        base::operators::eager_task await_async_and_resume(pipeline::context_t* ctx) override;
+        // Override: await disk future and resume
+        // Uses unique_future<void> instead of eager_task - promise_type extracts resource() from this
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;

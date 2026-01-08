@@ -4,7 +4,7 @@
 #include <components/context/context.hpp>
 #include <components/physical_plan/base/operators/operator_data.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
-#include <components/physical_plan/base/operators/eager_task.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 namespace components::expressions {
     class key_t;
@@ -59,8 +59,8 @@ namespace components::base::operators {
         void async_wait();
 
         // Virtual method for async operations - override in operators with disk futures
-        // Uses eager_task for immediate execution (vs unique_future which suspends at start)
-        virtual eager_task await_async_and_resume(pipeline::context_t* ctx);
+        // Uses unique_future<void> - promise_type extracts resource() from this (first coroutine arg)
+        virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         bool is_executed() const;
         bool is_wait_sync_disk() const;

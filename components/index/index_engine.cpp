@@ -7,6 +7,7 @@
 #include <core/pmr.hpp>
 
 #include <services/disk/index_agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 
 namespace components::index {
 
@@ -208,12 +209,18 @@ namespace components::index {
             if (is_match_document(index, document)) {
                 auto key = get_value_by_index(index, document);
                 index->insert(key, document);
-                if (index->is_disk() && pipeline_context) {
-                    auto future = actor_zeta::send(index->disk_agent(),
+                if (index->is_disk() && pipeline_context && index->disk_manager()) {
+                    // Route through manager_disk_t which has scheduler access
+                    // Copy values for by-value args (actor-zeta 1.1.0 requirement)
+                    auto session_copy = pipeline_context->session;
+                    auto agent_copy = index->disk_agent();
+                    auto key_copy = key;
+                    auto future = actor_zeta::send(index->disk_manager(),
                                                    pipeline_context->address(),
-                                                   &services::disk::index_agent_disk_t::insert,
-                                                   pipeline_context->session,
-                                                   key,
+                                                   &services::disk::manager_disk_t::index_insert_by_agent,
+                                                   std::move(session_copy),
+                                                   std::move(agent_copy),
+                                                   std::move(key_copy),
                                                    document::get_document_id(document));
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
@@ -226,12 +233,17 @@ namespace components::index {
             if (is_match_document(index, document)) {
                 auto key = get_value_by_index(index, document);
                 index->remove(key); //todo: bug
-                if (index->is_disk() && pipeline_context) {
-                    auto future = actor_zeta::send(index->disk_agent(),
+                if (index->is_disk() && pipeline_context && index->disk_manager()) {
+                    // Route through manager_disk_t which has scheduler access
+                    auto session_copy = pipeline_context->session;
+                    auto agent_copy = index->disk_agent();
+                    auto key_copy = key;
+                    auto future = actor_zeta::send(index->disk_manager(),
                                                    pipeline_context->address(),
-                                                   &services::disk::index_agent_disk_t::remove,
-                                                   pipeline_context->session,
-                                                   key,
+                                                   &services::disk::manager_disk_t::index_remove_by_agent,
+                                                   std::move(session_copy),
+                                                   std::move(agent_copy),
+                                                   std::move(key_copy),
                                                    document::get_document_id(document));
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
@@ -245,12 +257,16 @@ namespace components::index {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);
                 index->insert(key, static_cast<int64_t>(row));
-                if (index->is_disk() && pipeline_context) {
-                    auto future = actor_zeta::send(index->disk_agent(),
+                if (index->is_disk() && pipeline_context && index->disk_manager()) {
+                    auto session_copy = pipeline_context->session;
+                    auto agent_copy = index->disk_agent();
+                    auto key_copy = key;
+                    auto future = actor_zeta::send(index->disk_manager(),
                                                    pipeline_context->address(),
-                                                   &services::disk::index_agent_disk_t::insert,
-                                                   pipeline_context->session,
-                                                   key,
+                                                   &services::disk::manager_disk_t::index_insert_by_agent,
+                                                   std::move(session_copy),
+                                                   std::move(agent_copy),
+                                                   std::move(key_copy),
                                                    components::document::document_id_t(row));
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
@@ -264,12 +280,16 @@ namespace components::index {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);
                 index->remove(key);
-                if (index->is_disk() && pipeline_context) {
-                    auto future = actor_zeta::send(index->disk_agent(),
+                if (index->is_disk() && pipeline_context && index->disk_manager()) {
+                    auto session_copy = pipeline_context->session;
+                    auto agent_copy = index->disk_agent();
+                    auto key_copy = key;
+                    auto future = actor_zeta::send(index->disk_manager(),
                                                    pipeline_context->address(),
-                                                   &services::disk::index_agent_disk_t::remove,
-                                                   pipeline_context->session,
-                                                   key,
+                                                   &services::disk::manager_disk_t::index_remove_by_agent,
+                                                   std::move(session_copy),
+                                                   std::move(agent_copy),
+                                                   std::move(key_copy),
                                                    components::document::document_id_t(row));
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
@@ -286,11 +306,13 @@ namespace components::index {
         return res;
     }
 
-    void set_disk_agent(const index_engine_ptr& ptr, id_index id, const actor_zeta::address_t& address) {
+    void set_disk_agent(const index_engine_ptr& ptr, id_index id,
+                        actor_zeta::address_t agent, actor_zeta::address_t manager) {
         auto* index = search_index(ptr, id);
         if (index) {
-            index->set_disk_agent(address);
-            ptr->add_disk_agent(id, address);
+            auto agent_copy = agent;  // copy for add_disk_agent
+            index->set_disk_agent(std::move(agent), std::move(manager));
+            ptr->add_disk_agent(id, std::move(agent_copy));
         }
     }
 

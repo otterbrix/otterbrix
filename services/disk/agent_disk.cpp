@@ -16,31 +16,67 @@ namespace services::disk {
     auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }
 
     void agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
+        // Clean up completed futures first
+        std::erase_if(pending_void_, [](const auto& f) { return f.available(); });
+        std::erase_if(pending_load_, [](const auto& f) { return f.available(); });
+
         switch (msg->command()) {
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::load>:
-                actor_zeta::dispatch(this, &agent_disk_t::load, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::load>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::load, msg);
+                if (!future.available()) {
+                    pending_load_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>:
-                actor_zeta::dispatch(this, &agent_disk_t::append_database, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::append_database, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_database>:
-                actor_zeta::dispatch(this, &agent_disk_t::remove_database, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_database>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::remove_database, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>:
-                actor_zeta::dispatch(this, &agent_disk_t::append_collection, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::append_collection, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_collection>:
-                actor_zeta::dispatch(this, &agent_disk_t::remove_collection, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_collection>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::remove_collection, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::write_documents>:
-                actor_zeta::dispatch(this, &agent_disk_t::write_documents, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::write_documents>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::write_documents, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>:
-                actor_zeta::dispatch(this, &agent_disk_t::remove_documents, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::remove_documents, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>:
-                actor_zeta::dispatch(this, &agent_disk_t::fix_wal_id, msg);
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>: {
+                auto future = actor_zeta::dispatch(this, &agent_disk_t::fix_wal_id, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
                 break;
+            }
             default:
                 break;
         }
@@ -104,12 +140,13 @@ namespace services::disk {
 
     agent_disk_t::unique_future<void> agent_disk_t::remove_documents(command_t command) {
         auto& remove_command = command.get<command_remove_documents_t>();
+        auto& ids = std::get<std::pmr::vector<components::document::document_id_t>>(remove_command.documents);
         trace(log_,
               "agent_disk::remove_documents , database : {} , collection : {} , {} documents",
               remove_command.database,
               remove_command.collection,
-              remove_command.documents.size());
-        for (const auto& id : remove_command.documents) {
+              ids.size());
+        for (const auto& id : ids) {
             disk_.remove_document(remove_command.database, remove_command.collection, id);
         }
         co_return;

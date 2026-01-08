@@ -1,5 +1,6 @@
 #include "index_scan.hpp"
 #include <services/disk/index_agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/collection/collection.hpp>
 #include <core/excutor.hpp>
 
@@ -60,14 +61,20 @@ namespace components::collection::operators {
     void index_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
         trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
-        if (index && index->is_disk()) {
+        if (index && index->is_disk() && index->disk_manager()) {
             trace(context_->log(), "index_scan: send query into disk (future-based)");
             auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            auto future = actor_zeta::otterbrix::send(index->disk_agent(),
+            // Route through manager_disk_t which has scheduler access
+            // Copy values for by-value args (actor-zeta 1.1.0 requirement)
+            auto session_copy = pipeline_context->session;
+            auto agent_copy = index->disk_agent();
+            auto value_copy = value;
+            auto future = actor_zeta::send(index->disk_manager(),
                              pipeline_context->address(),
-                             &services::disk::index_agent_disk_t::find,
-                             pipeline_context->session,
-                             value,
+                             &services::disk::manager_disk_t::index_find_by_agent,
+                             std::move(session_copy),
+                             std::move(agent_copy),
+                             std::move(value_copy),
                              expr_->type());
             disk_future_ready_ = future.available();
             disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
@@ -107,9 +114,12 @@ namespace components::collection::operators {
         }
     }
 
-    base::operators::eager_task index_scan::await_async_and_resume(pipeline::context_t* ctx) {
+    // Uses unique_future<void> instead of eager_task
+    // promise_type extracts resource() from this (first coroutine argument)
+    // This enables proper co_await support with continuation handling
+    actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
         if (disk_future_) {
-            trace(context_->log(), "index_scan: await disk future");
+            trace(context_->log(), "index_scan: await disk future (unique_future)");
             disk_result_ = co_await std::move(*disk_future_);
             trace(context_->log(), "index_scan: disk future resolved, result size: {}", disk_result_.size());
         }

@@ -3,6 +3,7 @@
 #include <actor-zeta/actor/address.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <components/cursor/cursor.hpp>
 #include <components/document/document.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/session/session.hpp>
@@ -27,6 +28,9 @@ namespace services::dispatcher {
 
     template<typename T>
     using unique_future = actor_zeta::unique_future<T>;
+
+    // Forward declaration
+    struct dispatcher_sender_t;
 
     // ============================================================================
     // WAL Sender - type-erased interface for WAL operations
@@ -117,6 +121,28 @@ namespace services::dispatcher {
     }
 
     // ============================================================================
+    // Dispatcher Sender - type-erased interface for Dispatcher operations
+    // Used for reverse calls from manager_disk_t back to manager_dispatcher_t
+    // Must be defined BEFORE disk_sender_t which uses it
+    // ============================================================================
+    struct dispatcher_sender_t {
+        // Function pointer types
+        using execute_plan_fn = unique_future<components::cursor::cursor_t_ptr>(*)(
+            address_t target, address_t sender, session_id_t,
+            components::logical_plan::node_ptr, components::logical_plan::parameter_node_ptr);
+
+        // Target address
+        address_t target = address_t::empty_address();
+
+        // Function pointers
+        execute_plan_fn execute_plan = nullptr;
+    };
+
+    // Forward declaration for factory function - implementation in dispatcher.cpp
+    // to avoid circular dependency
+    dispatcher_sender_t make_dispatcher_sender(address_t target);
+
+    // ============================================================================
     // Disk Sender - type-erased interface for Disk operations
     // ============================================================================
     struct disk_sender_t {
@@ -124,7 +150,7 @@ namespace services::dispatcher {
         using load_fn = unique_future<disk::result_load_t>(*)(
             address_t target, address_t sender, session_id_t);
         using load_indexes_fn = unique_future<void>(*)(
-            address_t target, address_t sender, session_id_t, address_t dispatcher);
+            address_t target, address_t sender, session_id_t, dispatcher_sender_t dispatcher_sender);
         using append_database_fn = unique_future<void>(*)(
             address_t target, address_t sender, session_id_t, database_name_t);
         using remove_database_fn = unique_future<void>(*)(
@@ -177,9 +203,9 @@ namespace services::dispatcher {
             -> unique_future<disk::result_load_t> {
             return actor_zeta::otterbrix::send(t, s, &DiskManager::load, sess);
         };
-        sender.load_indexes = +[](address_t t, address_t s, session_id_t sess, address_t dispatcher)
+        sender.load_indexes = +[](address_t t, address_t s, session_id_t sess, dispatcher_sender_t ds)
             -> unique_future<void> {
-            return actor_zeta::otterbrix::send(t, s, &DiskManager::load_indexes, sess, dispatcher);
+            return actor_zeta::otterbrix::send(t, s, &DiskManager::load_indexes, sess, ds);
         };
         sender.append_database = +[](address_t t, address_t s, session_id_t sess, database_name_t db)
             -> unique_future<void> {
@@ -311,9 +337,9 @@ namespace actor_zeta::otterbrix {
     template<typename Sender>
     inline auto send(const services::dispatcher::disk_sender_t& sender, Sender self,
                      services::dispatcher::unique_future<void>
-                         (services::disk::manager_disk_t::*)(services::dispatcher::session_id_t, actor_zeta::address_t),
-                     services::dispatcher::session_id_t session, actor_zeta::address_t dispatcher) {
-        return sender.load_indexes(sender.target, self, session, dispatcher);
+                         (services::disk::manager_disk_t::*)(services::dispatcher::session_id_t, services::dispatcher::dispatcher_sender_t),
+                     services::dispatcher::session_id_t session, services::dispatcher::dispatcher_sender_t ds) {
+        return sender.load_indexes(sender.target, self, session, ds);
     }
 
     template<typename Sender>

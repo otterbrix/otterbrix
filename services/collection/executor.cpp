@@ -190,11 +190,12 @@ namespace services::collection::executor {
                 if (waiting_op) {
                     trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
                     // Call await_async_and_resume on the WAITING operator (not the root)
-                    auto task = waiting_op->await_async_and_resume(&pipeline_context);
-                    trace(log_, "executor: after await_async_and_resume, task.done()={}", task.done());
+                    // Returns unique_future<void> - co_await it (executor is an actor, coroutines work!)
+                    co_await waiting_op->await_async_and_resume(&pipeline_context);
+                    trace(log_, "executor: after await_async_and_resume completed");
 
                     // After the waiting operator completes, re-execute the root plan to propagate results
-                    if (task.done() && waiting_op->is_executed()) {
+                    if (waiting_op->is_executed()) {
                         trace(log_, "executor: waiting op completed, re-executing root plan");
                         plan->on_execute(&pipeline_context);
                     }
@@ -232,11 +233,11 @@ namespace services::collection::executor {
                     }
 
                     components::index::set_disk_agent(collection->index_engine(),
-                        create_index_session.id_index, disk_address);
+                        create_index_session.id_index, disk_address, collection->disk());
                     components::index::insert(collection->index_engine(),
                         create_index_session.id_index, collection->document_storage());
 
-                    // Fill index_disk if disk is enabled
+                    // Fill index_disk if disk is enabled - route through manager_disk_t for proper scheduling
                     if (disk_address != actor_zeta::address_t::empty_address()) {
                         auto* index = components::index::search_index(collection->index_engine(), create_index_session.id_index);
                         auto range = index->keys();
@@ -249,11 +250,14 @@ namespace services::collection::executor {
                                 values.emplace_back(doc.second->get_value(key), doc.first);
                             }
                         }
-                        actor_zeta::send(disk_address,
+                        // Route through manager_disk_t which has scheduler access
+                        // Await result to ensure index is populated before returning success
+                        co_await actor_zeta::otterbrix::send(collection->disk(),
                                          address(),
-                                         &services::disk::index_agent_disk_t::insert_many,
+                                         &services::disk::manager_disk_t::index_insert_many,
                                          session,
-                                         values);
+                                         add_op->index_name(),
+                                         std::move(values));
                     }
                     sessions::remove(collection->sessions(), session, add_op->index_name());
                     cursor = make_cursor(resource(), operation_status_t::success);

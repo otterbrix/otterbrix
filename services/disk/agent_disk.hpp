@@ -4,7 +4,7 @@
 #include "disk.hpp"
 #include "result.hpp"
 
-#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
@@ -28,6 +28,8 @@ namespace services::disk {
 
         agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* manager, const path_t& path_db, log_t& log);
         ~agent_disk_t();
+
+        auto make_type() const noexcept -> const char*;
 
         // Coroutine methods - parameters by value (no const& allowed in coroutines)
         unique_future<result_load_t> load(session_id_t session);
@@ -55,14 +57,16 @@ namespace services::disk {
             &agent_disk_t::fix_wal_id
         >;
 
-        auto make_type() const noexcept -> const char*;
-
         void behavior(actor_zeta::mailbox::message* msg);
 
     private:
         const name_t name_;
         log_t log_;
         disk_t disk_;
+
+        // Pending coroutines storage (CRITICAL: coroutines must be stored!)
+        std::vector<unique_future<void>> pending_void_;
+        std::vector<unique_future<result_load_t>> pending_load_;
     };
 
     using agent_disk_ptr = std::unique_ptr<agent_disk_t, actor_zeta::pmr::deleter_t>;

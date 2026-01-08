@@ -3,6 +3,8 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <vector>
+#include <functional>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -115,20 +117,16 @@ namespace otterbrix {
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::address_t manager_dispatcher_;
-        components::sql::transform::transformer transformer_;
         log_t log_;
         std::atomic_int i = 0;
 
-        // Mutex + CV for blocking wait on future (event loop pattern)
-        std::mutex wait_mutex_;
-        std::condition_variable wait_cv_;
+        // Event loop state - shared CV, each thread polls only its own future
+        std::mutex event_loop_mutex_;
+        std::condition_variable event_loop_cv_;
 
-        // Event loop wait on future
-        // This is the main method for blocking wait on future from typed send
+        // Event loop methods
         template<typename T>
         T wait_future(unique_future<T>& future);
-
-        // Helper for void futures
         void wait_future_void(unique_future<void>& future);
 
         auto send_plan(const session_id_t& session,
@@ -136,14 +134,21 @@ namespace otterbrix {
                        components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
     };
 
-    // Template implementation
+    // Template implementation - each thread polls only its own future
+    // No cross-thread available() calls - avoids race condition in actor-zeta
     template<typename T>
     T wrapper_dispatcher_t::wait_future(unique_future<T>& future) {
-        // Event loop with mutex + cv on future
-        std::unique_lock<std::mutex> lock(wait_mutex_);
+        // Each thread checks only its own future
         while (!future.available()) {
-            wait_cv_.wait_for(lock, std::chrono::milliseconds(1));
+            std::unique_lock<std::mutex> lock(event_loop_mutex_);
+            if (!future.available()) {
+                event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
+            }
         }
+
+        // My future is ready - notify others (scheduler processed something)
+        event_loop_cv_.notify_all();
+
         return std::move(future).get();
     }
 

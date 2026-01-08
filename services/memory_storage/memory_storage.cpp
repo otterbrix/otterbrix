@@ -182,11 +182,15 @@ namespace services {
                 load_buffer_->collections.emplace_back(name);
                 debug(log_, "memory_storage_t:load:fill_documents: {}", collection.documents.size());
                 // co_await on each create_documents - wait for completion
-                co_await actor_zeta::otterbrix::send(executor_address_, address(),
+                auto future = actor_zeta::otterbrix::send(executor_address_, address(),
                                                      &collection::executor::executor_t::create_documents,
                                                      session,
                                                      context,
                                                      collection.documents);
+                if (future.needs_scheduling() && executor_) {
+                    scheduler_->enqueue(executor_.get());
+                }
+                co_await std::move(future);
             }
         }
 
@@ -281,13 +285,17 @@ namespace services {
 
         // Use co_await to get result from executor (NOT callback!)
         trace(log_, "memory_storage_t:execute_plan_impl: calling executor with co_await");
-        auto result = co_await actor_zeta::otterbrix::send(executor_address_, address(),
+        auto future = actor_zeta::otterbrix::send(executor_address_, address(),
                                                            &collection::executor::executor_t::execute_plan,
                                                            session,
                                                            logical_plan,
                                                            parameters,
                                                            std::move(collections_context_storage),
                                                            used_format);
+        if (future.needs_scheduling() && executor_) {
+            scheduler_->enqueue(executor_.get());
+        }
+        auto result = co_await std::move(future);
 
         trace(log_, "memory_storage_t:execute_plan_impl: executor returned, success: {}", result.cursor->is_success());
         co_return result;

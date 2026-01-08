@@ -5,6 +5,7 @@
 #include "result.hpp"
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/excutor.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -15,6 +16,7 @@
 
 namespace services::dispatcher {
     struct disk_sender_t;  // Forward declaration
+    struct dispatcher_sender_t;  // Forward declaration for reverse calls
 }
 
 namespace services::collection {
@@ -24,6 +26,7 @@ namespace services::collection {
 namespace services::disk {
 
     using session_id_t = ::components::session::session_id_t;
+    using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
 
     class manager_disk_t final : public actor_zeta::actor::actor_mixin<manager_disk_t> {
     public:
@@ -48,7 +51,7 @@ namespace services::disk {
         void create_agent();
 
         unique_future<result_load_t> load(session_id_t session);
-        unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher);
+        unique_future<void> load_indexes(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
 
         unique_future<void> append_database(session_id_t session, database_name_t database);
         unique_future<void> remove_database(session_id_t session, database_name_t database);
@@ -72,7 +75,7 @@ namespace services::disk {
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
-                                             std::pmr::vector<document_id_t> documents);
+                                             document_ids_t documents);
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
@@ -83,6 +86,31 @@ namespace services::disk {
                                              index_name_t index_name,
                                              services::collection::context_collection_t* collection);
         unique_future<void> drop_index_agent_success(session_id_t session);
+        unique_future<void> index_insert_many(session_id_t session,
+                                              index_name_t index_name,
+                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+        unique_future<void> index_insert(session_id_t session,
+                                         index_name_t index_name,
+                                         components::types::logical_value_t key,
+                                         components::document::document_id_t doc_id);
+        unique_future<void> index_remove(session_id_t session,
+                                         index_name_t index_name,
+                                         components::types::logical_value_t key,
+                                         components::document::document_id_t doc_id);
+
+        // New methods - route by agent address instead of index name
+        unique_future<void> index_insert_by_agent(session_id_t session,
+                                                  actor_zeta::address_t agent_address,
+                                                  components::types::logical_value_t key,
+                                                  components::document::document_id_t doc_id);
+        unique_future<void> index_remove_by_agent(session_id_t session,
+                                                  actor_zeta::address_t agent_address,
+                                                  components::types::logical_value_t key,
+                                                  components::document::document_id_t doc_id);
+        unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
+                                                                 actor_zeta::address_t agent_address,
+                                                                 components::types::logical_value_t key,
+                                                                 components::expressions::compare_type compare);
 
         // dispatch_traits must be defined AFTER all method declarations
         // Note: sync and create_agent are NOT in dispatch_traits - called directly
@@ -99,7 +127,13 @@ namespace services::disk {
             &manager_disk_t::flush,
             &manager_disk_t::create_index_agent,
             &manager_disk_t::drop_index_agent,
-            &manager_disk_t::drop_index_agent_success
+            &manager_disk_t::drop_index_agent_success,
+            &manager_disk_t::index_insert_many,
+            &manager_disk_t::index_insert,
+            &manager_disk_t::index_remove,
+            &manager_disk_t::index_insert_by_agent,
+            &manager_disk_t::index_remove_by_agent,
+            &manager_disk_t::index_find_by_agent
         >;
 
         // Factory method to create type-erased sender
@@ -129,7 +163,7 @@ namespace services::disk {
 
         auto agent() -> actor_zeta::address_t;
         void write_index_impl(const components::logical_plan::node_create_index_ptr& index);
-        void load_indexes_impl(session_id_t session, actor_zeta::address_t dispatcher);
+        unique_future<void> load_indexes_impl(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
         std::vector<components::logical_plan::node_create_index_ptr>
         read_indexes_impl(const collection_name_t& collection_name) const;
         std::vector<components::logical_plan::node_create_index_ptr> read_indexes_impl() const;
@@ -140,6 +174,7 @@ namespace services::disk {
         // Coroutines with co_await MUST be stored, otherwise refcount underflow
         std::vector<unique_future<void>> pending_void_;
         std::vector<unique_future<result_load_t>> pending_load_;
+        std::vector<unique_future<index_disk_t::result>> pending_find_;
 
         // Poll and clean up completed coroutines
         void poll_pending();
@@ -170,7 +205,7 @@ namespace services::disk {
         // Coroutine methods - must return unique_future<T>
         // All methods from manager_disk_t must be present (no-op implementations)
         unique_future<result_load_t> load(session_id_t session);
-        unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher);
+        unique_future<void> load_indexes(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
 
         unique_future<void> append_database(session_id_t session, database_name_t database);
         unique_future<void> remove_database(session_id_t session, database_name_t database);
@@ -194,7 +229,7 @@ namespace services::disk {
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
-                                             std::pmr::vector<document_id_t> documents);
+                                             document_ids_t documents);
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 

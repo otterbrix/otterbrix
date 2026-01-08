@@ -10,6 +10,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <core/excutor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <thread>
 
 using namespace components::cursor;
 
@@ -21,7 +22,6 @@ namespace otterbrix {
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
         , resource_(mr)
         , manager_dispatcher_(manager_dispatcher)
-        , transformer_(mr)
         , log_(log.clone()) {}
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
@@ -34,12 +34,19 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }
 
-    // Helper for void futures
+    // Helper for void futures - each thread polls only its own future
     void wrapper_dispatcher_t::wait_future_void(unique_future<void>& future) {
-        std::unique_lock<std::mutex> lock(wait_mutex_);
+        // Each thread checks only its own future
         while (!future.available()) {
-            wait_cv_.wait_for(lock, std::chrono::milliseconds(1));
+            std::unique_lock<std::mutex> lock(event_loop_mutex_);
+            if (!future.available()) {
+                event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
+            }
         }
+
+        // My future is ready - notify others (scheduler processed something)
+        event_loop_cv_.notify_all();
+
         std::move(future).get();
     }
 
@@ -230,7 +237,9 @@ namespace otterbrix {
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-        if (auto result = transformer_.transform(pg_cell_to_node_cast(parse_result)).finalize();
+        // Create local transformer for thread-safety (transformer uses std::move on internal state)
+        transformer local_transformer(resource());
+        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
             std::holds_alternative<bind_error>(result)) {
             return make_cursor(resource(),
                                components::cursor::error_code_t::sql_parse_error,

@@ -105,7 +105,7 @@ namespace components::base::operators {
 
     void operator_t::on_prepare_impl() {}
 
-    eager_task operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
+    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // Default: do nothing, let caller use fallback suspend logic
         // Override in operators with disk futures to await and resume
         co_return;

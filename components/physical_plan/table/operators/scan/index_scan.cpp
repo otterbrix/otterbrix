@@ -1,5 +1,6 @@
 #include "index_scan.hpp"
 #include <services/disk/index_agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/collection/collection.hpp>
 
 namespace components::table::operators {
@@ -80,14 +81,19 @@ namespace components::table::operators {
         trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
         context_->table_storage().table();
-        if (index && index->is_disk()) {
+        if (index && index->is_disk() && index->disk_manager()) {
             trace(context_->log(), "index_scan: send query into disk");
             auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            actor_zeta::send(index->disk_agent(),
+            // Route through manager_disk_t which has scheduler access
+            auto session_copy = pipeline_context->session;
+            auto agent_copy = index->disk_agent();
+            auto value_copy = value;
+            actor_zeta::send(index->disk_manager(),
                              pipeline_context->address(),
-                             &services::disk::index_agent_disk_t::find,
-                             pipeline_context->session,
-                             value,
+                             &services::disk::manager_disk_t::index_find_by_agent,
+                             std::move(session_copy),
+                             std::move(agent_copy),
+                             std::move(value_copy),
                              expr_->type());
             async_wait();
         } else {

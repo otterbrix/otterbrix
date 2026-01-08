@@ -142,7 +142,7 @@ namespace services {
     memory_storage_t::unique_future<size_t> memory_storage_t::size(
         components::session::session_id_t session,
         collection_full_name_t name) {
-        trace(log_, "collection {}::{}::size", name.database, name.collection);
+        trace(log_, "collection {}::{}::size, session: {}", name.database, name.collection, session.data());
         auto collection = collections_.at(name).get();
         if (collection->dropped()) {
             co_return size_t(0);

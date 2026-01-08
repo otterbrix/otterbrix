@@ -950,6 +950,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::get_schema(
         components::session::session_id_t session,
         std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids) {
+        trace(log_, "manager_dispatcher_t::get_schema session: {}, ids count: {}", session.data(), ids.size());
         auto& catalog = const_cast<components::catalog::catalog&>(current_catalog());
         std::pmr::vector<complex_logical_type> schemas;
         schemas.reserve(ids.size());

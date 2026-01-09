@@ -51,6 +51,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     }
 
     ~test_dispatcher() {
+        // Drain pending jobs before destruction to avoid memory leaks
+        scheduler_->stop();
         // Clean up temp directory
         std::filesystem::remove_all("/tmp/test_dispatcher_disk");
         delete scheduler_;

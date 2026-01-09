@@ -5,6 +5,7 @@
 #include <memory>
 #include <thread>
 #include <chrono>
+#include <sstream>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/memory_storage/memory_storage.hpp>
@@ -135,7 +136,9 @@ namespace otterbrix {
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return wrapper_dispatcher_.get(); }
 
     base_otterbrix_t::~base_otterbrix_t() {
-        trace(log_, "~base_otterbrix_t() START - thread_id: {}", std::this_thread::get_id());
+        std::ostringstream oss;
+        oss << std::this_thread::get_id();
+        trace(log_, "~base_otterbrix_t() START - thread_id: {}", oss.str());
 
         trace(log_, "~base_otterbrix_t() stopping scheduler_...");
         scheduler_->stop();

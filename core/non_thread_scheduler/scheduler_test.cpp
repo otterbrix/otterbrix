@@ -15,6 +15,12 @@ namespace core::non_thread_scheduler {
         while (run() > 0) {
             clock_.trigger_timeouts();
         }
+        // Clear remaining jobs in the queue to prevent memory leaks
+        auto& queue = data().queue;
+        std::unique_lock<std::mutex> guard(data().lock);
+        while (!queue.empty()) {
+            queue.pop_front(); // unique_ptr auto-deletes the job
+        }
     }
 
     bool scheduler_test_t::run_once() {

@@ -36,10 +36,10 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , memory_storage_(actor_zeta::spawn<memory_storage_t>(resource, scheduler_, log_))
         , transformer_(resource) {
         // Call sync methods directly (not through message passing)
-        // Create type-erased senders using make_sender() on the actual manager types
+        // Pass addresses directly - polymorphic dispatch via interface contracts
         manager_dispatcher_->sync(std::make_tuple(memory_storage_->address(),
-                                                   manager_wal_->make_sender(),
-                                                   manager_disk_->make_sender()));
+                                                   manager_wal_->address(),
+                                                   manager_disk_->address()));
         manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
                                            manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));

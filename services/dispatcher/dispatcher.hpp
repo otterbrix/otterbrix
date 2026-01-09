@@ -20,12 +20,13 @@
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <services/disk/result.hpp>
+#include <services/disk/disk_contract.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
+#include <services/wal/wal_contract.hpp>
 #include <services/collection/executor.hpp>
 
 #include "session.hpp"
-#include "type_erased_senders.hpp"
 
 namespace services::dispatcher {
 
@@ -37,14 +38,12 @@ namespace services::dispatcher {
         using unique_future = actor_zeta::unique_future<T>;
 
         using recomputed_types = components::base::operators::operator_write_data_t::updated_types_map_t;
-
-        // Constructor signature for spawn(): resource first, then other args
-        // Uses type-erased senders for WAL and Disk to support *_empty_t types
+        
         dispatcher_t(std::pmr::memory_resource* resource,
                      actor_zeta::address_t manager_dispatcher,
                      actor_zeta::address_t memory_storage,
-                     wal_sender_t wal_sender,
-                     disk_sender_t disk_sender,
+                     actor_zeta::address_t wal_address,
+                     actor_zeta::address_t disk_address,
                      log_t& log);
         ~dispatcher_t();
 
@@ -100,9 +99,9 @@ namespace services::dispatcher {
         components::catalog::catalog catalog_;
         actor_zeta::address_t manager_dispatcher_;
         actor_zeta::address_t memory_storage_;
-        // Type-erased senders for WAL and Disk (support *_empty_t types)
-        wal_sender_t wal_sender_;
-        disk_sender_t disk_sender_;
+        // Addresses for WAL and Disk - polymorphic dispatch via interface contracts
+        actor_zeta::address_t wal_address_;
+        actor_zeta::address_t disk_address_;
 
         // Session storage for operations requiring callbacks
         session_storage_t session_to_address_;
@@ -145,8 +144,8 @@ namespace services::dispatcher {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // New sync pack with type-erased senders
-        using sync_pack = std::tuple<actor_zeta::address_t, wal_sender_t, disk_sender_t>;
+        // Sync pack with addresses - polymorphic dispatch via interface contracts
+        using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
         manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
         ~manager_dispatcher_t();
@@ -156,20 +155,16 @@ namespace services::dispatcher {
         void behavior(actor_zeta::mailbox::message* msg);
 
         // Sync methods - called directly after constructor, before message processing
-        // Uses type-erased senders for WAL and Disk
         void sync(sync_pack pack);
         unique_future<void> create(components::session::session_id_t session);
         unique_future<void> load(components::session::session_id_t session);
-        // execute_plan returns cursor via future (not callback!)
         unique_future<components::cursor::cursor_t_ptr> execute_plan(
             components::session::session_id_t session,
             components::logical_plan::node_ptr plan,
             components::logical_plan::parameter_node_ptr params);
-        // size returns size_t via future (no callback!)
         unique_future<size_t> size(components::session::session_id_t session,
                                    std::string database_name,
                                    std::string collection);
-        // get_schema returns cursor via future (no callback!)
         unique_future<components::cursor::cursor_t_ptr> get_schema(
             components::session::session_id_t session,
             std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
@@ -189,8 +184,7 @@ namespace services::dispatcher {
         const components::catalog::catalog& current_catalog();
 
         void create_dispatcher() {
-            // Direct creation using type-erased senders
-            auto ptr = actor_zeta::spawn<dispatcher_t>(resource(), address(), memory_storage_, wal_sender_, disk_sender_, log_);
+            auto ptr = actor_zeta::spawn<dispatcher_t>(resource(), address(), memory_storage_, wal_address_, disk_address_, log_);
             dispatchers_.emplace_back(std::move(ptr));
         }
 
@@ -200,9 +194,9 @@ namespace services::dispatcher {
         log_t log_;
 
         actor_zeta::address_t memory_storage_ = actor_zeta::address_t::empty_address();
-        // Type-erased senders for WAL and Disk (support *_empty_t types)
-        wal_sender_t wal_sender_;
-        disk_sender_t disk_sender_;
+        // Addresses for WAL and Disk - polymorphic dispatch via interface contracts
+        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         std::vector<dispatcher_ptr> dispatchers_;
         spin_lock lock_;
 

@@ -3,6 +3,7 @@
 #include "agent_disk.hpp"
 #include "index_agent_disk.hpp"
 #include "result.hpp"
+#include "disk_contract.hpp"
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
@@ -10,14 +11,10 @@
 #include <core/excutor.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/implements.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/mailbox/message.hpp>
-
-namespace services::dispatcher {
-    struct disk_sender_t;  // Forward declaration
-    struct dispatcher_sender_t;  // Forward declaration for reverse calls
-}
 
 namespace services::collection {
     class context_collection_t;
@@ -51,7 +48,7 @@ namespace services::disk {
         void create_agent();
 
         unique_future<result_load_t> load(session_id_t session);
-        unique_future<void> load_indexes(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
+        unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
 
         unique_future<void> append_database(session_id_t session, database_name_t database);
         unique_future<void> remove_database(session_id_t session, database_name_t database);
@@ -67,8 +64,6 @@ namespace services::disk {
                                             database_name_t database,
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
-        // TODO: Implement actual disk persistence for data_chunk (columnar storage)
-        // Note: unique_ptr used to avoid copy in actor-zeta RTT message passing
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -99,7 +94,6 @@ namespace services::disk {
                                          components::types::logical_value_t key,
                                          components::document::document_id_t doc_id);
 
-        // New methods - route by agent address instead of index name
         unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
@@ -113,9 +107,10 @@ namespace services::disk {
                                                                  components::types::logical_value_t key,
                                                                  components::expressions::compare_type compare);
 
-        // dispatch_traits must be defined AFTER all method declarations
+        // dispatch_traits via implements<> - binds to disk_contract interface
         // Note: sync and create_agent are NOT in dispatch_traits - called directly
-        using dispatch_traits = actor_zeta::dispatch_traits<
+        using dispatch_traits = actor_zeta::implements<
+            disk_contract,
             &manager_disk_t::load,
             &manager_disk_t::load_indexes,
             &manager_disk_t::append_database,
@@ -136,9 +131,6 @@ namespace services::disk {
             &manager_disk_t::index_remove_by_agent,
             &manager_disk_t::index_find_by_agent
         >;
-
-        // Factory method to create type-erased sender
-        dispatcher::disk_sender_t make_sender();
 
     private:
         std::pmr::memory_resource* resource_;
@@ -164,7 +156,7 @@ namespace services::disk {
 
         auto agent() -> actor_zeta::address_t;
         void write_index_impl(const components::logical_plan::node_create_index_ptr& index);
-        unique_future<void> load_indexes_impl(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
+        unique_future<void> load_indexes_impl(session_id_t session, actor_zeta::address_t dispatcher_address);
         std::vector<components::logical_plan::node_create_index_ptr>
         read_indexes_impl(const collection_name_t& collection_name) const;
         std::vector<components::logical_plan::node_create_index_ptr> read_indexes_impl() const;
@@ -204,9 +196,9 @@ namespace services::disk {
         void create_agent();
 
         // Coroutine methods - must return unique_future<T>
-        // All methods from manager_disk_t must be present (no-op implementations)
+        // All methods from disk_contract must be present (no-op implementations)
         unique_future<result_load_t> load(session_id_t session);
-        unique_future<void> load_indexes(session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender);
+        unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
 
         unique_future<void> append_database(session_id_t session, database_name_t database);
         unique_future<void> remove_database(session_id_t session, database_name_t database);
@@ -222,8 +214,6 @@ namespace services::disk {
                                             database_name_t database,
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
-        // TODO: Implement actual disk persistence for data_chunk (columnar storage)
-        // Note: unique_ptr used to avoid copy in actor-zeta RTT message passing
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -243,9 +233,36 @@ namespace services::disk {
                                              services::collection::context_collection_t* collection);
         unique_future<void> drop_index_agent_success(session_id_t session);
 
-        // dispatch_traits must be defined AFTER all method declarations
+        // Index methods - no-op implementations for empty disk
+        unique_future<void> index_insert_many(session_id_t session,
+                                              index_name_t index_name,
+                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+        unique_future<void> index_insert(session_id_t session,
+                                         index_name_t index_name,
+                                         components::types::logical_value_t key,
+                                         components::document::document_id_t doc_id);
+        unique_future<void> index_remove(session_id_t session,
+                                         index_name_t index_name,
+                                         components::types::logical_value_t key,
+                                         components::document::document_id_t doc_id);
+
+        unique_future<void> index_insert_by_agent(session_id_t session,
+                                                  actor_zeta::address_t agent_address,
+                                                  components::types::logical_value_t key,
+                                                  components::document::document_id_t doc_id);
+        unique_future<void> index_remove_by_agent(session_id_t session,
+                                                  actor_zeta::address_t agent_address,
+                                                  components::types::logical_value_t key,
+                                                  components::document::document_id_t doc_id);
+        unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
+                                                                 actor_zeta::address_t agent_address,
+                                                                 components::types::logical_value_t key,
+                                                                 components::expressions::compare_type compare);
+
+        // dispatch_traits via implements<> - binds to disk_contract interface
         // Note: sync and create_agent are NOT in dispatch_traits - called directly
-        using dispatch_traits = actor_zeta::dispatch_traits<
+        using dispatch_traits = actor_zeta::implements<
+            disk_contract,
             &manager_disk_empty_t::load,
             &manager_disk_empty_t::load_indexes,
             &manager_disk_empty_t::append_database,
@@ -258,11 +275,14 @@ namespace services::disk {
             &manager_disk_empty_t::flush,
             &manager_disk_empty_t::create_index_agent,
             &manager_disk_empty_t::drop_index_agent,
-            &manager_disk_empty_t::drop_index_agent_success
+            &manager_disk_empty_t::drop_index_agent_success,
+            &manager_disk_empty_t::index_insert_many,
+            &manager_disk_empty_t::index_insert,
+            &manager_disk_empty_t::index_remove,
+            &manager_disk_empty_t::index_insert_by_agent,
+            &manager_disk_empty_t::index_remove_by_agent,
+            &manager_disk_empty_t::index_find_by_agent
         >;
-
-        // Factory method to create type-erased sender
-        dispatcher::disk_sender_t make_sender();
 
     private:
         std::pmr::memory_resource* resource_;
@@ -270,6 +290,7 @@ namespace services::disk {
         // Storage for pending coroutine futures (critical for coroutine lifetime!)
         std::vector<unique_future<void>> pending_void_;
         std::vector<unique_future<result_load_t>> pending_load_;
+        std::vector<unique_future<index_disk_t::result>> pending_find_;
     };
 
 } //namespace services::disk

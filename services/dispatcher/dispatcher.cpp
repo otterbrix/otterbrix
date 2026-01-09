@@ -24,32 +24,19 @@ using namespace components::types;
 
 namespace services::dispatcher {
 
-    // Implementation of make_dispatcher_sender (declared in type_erased_senders.hpp)
-    dispatcher_sender_t make_dispatcher_sender(address_t target) {
-        dispatcher_sender_t sender;
-        sender.target = target;
-        sender.execute_plan = +[](address_t t, address_t s, session_id_t sess,
-            components::logical_plan::node_ptr plan, components::logical_plan::parameter_node_ptr params)
-            -> unique_future<components::cursor::cursor_t_ptr> {
-            return actor_zeta::otterbrix::send(t, s, &manager_dispatcher_t::execute_plan,
-                                               sess, std::move(plan), std::move(params));
-        };
-        return sender;
-    }
-
     dispatcher_t::dispatcher_t(std::pmr::memory_resource* resource,
                                actor_zeta::address_t manager_dispatcher,
                                actor_zeta::address_t memory_storage,
-                               wal_sender_t wal_sender,
-                               disk_sender_t disk_sender,
+                               actor_zeta::address_t wal_address,
+                               actor_zeta::address_t disk_address,
                                log_t& log)
         : actor_zeta::basic_actor<dispatcher_t>(resource)
         , log_(log.clone())
         , catalog_(resource)
         , manager_dispatcher_(std::move(manager_dispatcher))
         , memory_storage_(std::move(memory_storage))
-        , wal_sender_(std::move(wal_sender))
-        , disk_sender_(std::move(disk_sender)) {
+        , wal_address_(std::move(wal_address))
+        , disk_address_(std::move(disk_address)) {
         trace(log_, "dispatcher_t::dispatcher_t start name:{}", make_type());
     }
 
@@ -137,10 +124,9 @@ namespace services::dispatcher {
     ) {
         trace(log_, "dispatcher_t::load, session: {}", session.data());
         load_session_ = session;
-
-        // Step 1: Load data from disk with co_await (via type-erased sender)
+        
         trace(log_, "dispatcher_t::load - step 1: loading from disk");
-        auto disk_result = co_await actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load, session);
+        auto disk_result = co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::load, session);
 
         // Step 2: Check result (former load_from_disk_result)
         trace(log_, "dispatcher_t::load - step 2: disk result received, wal_id: {}", disk_result.wal_id());
@@ -156,10 +142,9 @@ namespace services::dispatcher {
         co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::load, session, disk_result);
 
         // Step 4: Load indexes with co_await (wait for all indexes to be created)
-        // Pass dispatcher_sender_t to avoid circular dependency
+        // Pass manager_dispatcher address for execute_plan callbacks
         trace(log_, "dispatcher_t::load - step 4: loading indexes with co_await");
-        auto dispatcher_sender = make_dispatcher_sender(manager_dispatcher_);
-        co_await actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::load_indexes, session, dispatcher_sender);
+        co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::load_indexes, session, manager_dispatcher_);
 
         // Step 5: Update catalog
         for (const auto& database : (*disk_result)) {
@@ -170,9 +155,9 @@ namespace services::dispatcher {
             }
         }
 
-        // Step 6: Load WAL records with co_await (via type-erased sender)
+        // Step 6: Load WAL records with co_await (via interface contract)
         trace(log_, "dispatcher_t::load - step 6: loading WAL records via co_await");
-        auto records = co_await actor_zeta::otterbrix::send(wal_sender_, address(), &wal::manager_wal_replicate_t::load, session, disk_result.wal_id());
+        auto records = co_await actor_zeta::send(wal_address_, address(), &wal::manager_wal_replicate_t::load, session, disk_result.wal_id());
 
         // Step 7: Process WAL records (former load_from_wal_result - now inline!)
         load_count_answers_ = records.size();
@@ -378,14 +363,16 @@ namespace services::dispatcher {
             switch (session_plan->type()) {
                 case node_type::create_database_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::append_database,
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_database,
                                      session, session_plan->database_name());
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::create_database, session, session_plan);
+                    // co_await on WAL for durability - cast to specific type for type safety
+                    auto create_database = boost::static_pointer_cast<node_create_database_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::create_database, session,
+                        create_database);
                     // Update catalog after successful WAL write
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -398,13 +385,14 @@ namespace services::dispatcher {
 
                 case node_type::create_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::append_collection,
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_collection,
                                      session, session_plan->database_name(), session_plan->collection_name());
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::create_collection, session, session_plan);
+                    // co_await on WAL for durability - cast to specific type
+                    auto create_collection = boost::static_pointer_cast<node_create_collection_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::create_collection, session,create_collection);
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -412,11 +400,12 @@ namespace services::dispatcher {
                 case node_type::insert_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
                     assert(s.node() && "Doesn't holds logical_plan");
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::insert_many, session, session_plan);
+                    // co_await on WAL for durability - cast to specific type
+                    auto insert = boost::static_pointer_cast<node_insert_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::insert_many, session,insert);
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -424,11 +413,12 @@ namespace services::dispatcher {
                 case node_type::update_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
                     assert(s.node() && "Doesn't holds correct plan*");
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::update_many, session, session_plan, s.params());
+                    // co_await on WAL for durability - cast to specific type
+                    auto update = boost::static_pointer_cast<node_update_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::update_many, session, update, s.params());
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -436,24 +426,26 @@ namespace services::dispatcher {
                 case node_type::delete_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
                     assert(s.node() && "Doesn't holds correct plan*");
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::delete_many, session, session_plan, s.params());
+                    // co_await on WAL for durability - cast to specific type
+                    auto delete_i =  boost::static_pointer_cast<node_delete_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::delete_many, session,delete_i, s.params());
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::drop_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::remove_collection,
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::remove_collection,
                                      session, session_plan->database_name(), session_plan->collection_name());
-                    // co_await on WAL for durability
-                    auto wal_id = co_await actor_zeta::otterbrix::send(wal_sender_, address(),
-                        &wal::manager_wal_replicate_t::drop_collection, session, session_plan);
+                    // co_await on WAL for durability - cast to specific type
+                    auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(session_plan);
+                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                        &wal::manager_wal_replicate_t::drop_collection, session,drop_collection);
                     update_catalog(session_plan);
-                    actor_zeta::otterbrix::send(disk_sender_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -881,18 +873,18 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::sync(sync_pack pack) {
         constexpr static int memory_storage = 0;
-        constexpr static int wal_sender = 1;
-        constexpr static int disk_sender = 2;
+        constexpr static int wal_address = 1;
+        constexpr static int disk_address = 2;
         memory_storage_ = std::get<memory_storage>(pack);
-        wal_sender_ = std::get<wal_sender>(pack);
-        disk_sender_ = std::get<disk_sender>(pack);
+        wal_address_ = std::get<wal_address>(pack);
+        disk_address_ = std::get<disk_address>(pack);
     }
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::create(
         components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::create session: {} ", session.data());
         // Use actor_zeta::spawn<T>(resource, args...) - resource is passed as first constructor arg
-        auto ptr = actor_zeta::spawn<dispatcher_t>(resource(), address(), memory_storage_, wal_sender_, disk_sender_, log_);
+        auto ptr = actor_zeta::spawn<dispatcher_t>(resource(), address(), memory_storage_, wal_address_, disk_address_, log_);
         dispatchers_.emplace_back(std::move(ptr));
         co_return;
     }

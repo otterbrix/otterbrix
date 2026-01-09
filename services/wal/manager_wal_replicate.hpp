@@ -3,6 +3,7 @@
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/implements.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/scheduler/sharing_scheduler.hpp>
@@ -17,12 +18,9 @@
 
 #include "base.hpp"
 #include "wal.hpp"
+#include "wal_contract.hpp"
 
 #include <components/logical_plan/param_storage.hpp>
-
-namespace services::dispatcher {
-    struct wal_sender_t;  // Forward declaration
-}
 
 namespace services::wal {
 
@@ -78,9 +76,10 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
 
-        // dispatch_traits must be defined AFTER all method declarations
+        // dispatch_traits via implements<> - binds to wal_contract interface
         // Note: sync and create_wal_worker are NOT in dispatch_traits - called directly
-        using dispatch_traits = actor_zeta::dispatch_traits<
+        using dispatch_traits = actor_zeta::implements<
+            wal_contract,
             &manager_wal_replicate_t::load,
             &manager_wal_replicate_t::create_database,
             &manager_wal_replicate_t::drop_database,
@@ -94,9 +93,6 @@ namespace services::wal {
             &manager_wal_replicate_t::update_many,
             &manager_wal_replicate_t::create_index
         >;
-
-        // Factory method to create type-erased sender
-        dispatcher::wal_sender_t make_sender();
 
     private:
         std::pmr::memory_resource* resource_;
@@ -163,9 +159,10 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
 
-        // dispatch_traits must be defined AFTER all method declarations
+        // dispatch_traits via implements<> - binds to wal_contract interface
         // Note: sync and create_wal_worker are NOT in dispatch_traits - called directly
-        using dispatch_traits = actor_zeta::dispatch_traits<
+        using dispatch_traits = actor_zeta::implements<
+            wal_contract,
             &manager_wal_replicate_empty_t::load,
             &manager_wal_replicate_empty_t::create_database,
             &manager_wal_replicate_empty_t::drop_database,
@@ -179,9 +176,6 @@ namespace services::wal {
             &manager_wal_replicate_empty_t::update_many,
             &manager_wal_replicate_empty_t::create_index
         >;
-
-        // Factory method to create type-erased sender
-        dispatcher::wal_sender_t make_sender();
 
     private:
         std::pmr::memory_resource* resource_;

@@ -1,6 +1,5 @@
 #include "manager_wal_replicate.hpp"
 #include <actor-zeta/spawn.hpp>
-#include <services/dispatcher/type_erased_senders.hpp>
 
 namespace services::wal {
 
@@ -498,15 +497,6 @@ namespace services::wal {
         (void)session; (void)data;
         trace(log_, "manager_wal_replicate_empty_t::create_index - return success");
         co_return services::wal::id_t{0};
-    }
-
-    // Factory methods to create type-erased senders
-    dispatcher::wal_sender_t manager_wal_replicate_t::make_sender() {
-        return dispatcher::make_wal_sender<manager_wal_replicate_t>(address());
-    }
-
-    dispatcher::wal_sender_t manager_wal_replicate_empty_t::make_sender() {
-        return dispatcher::make_wal_sender<manager_wal_replicate_empty_t>(address());
     }
 
 } //namespace services::wal

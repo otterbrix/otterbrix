@@ -97,12 +97,12 @@ namespace otterbrix {
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
         // Call sync methods directly (not through message passing)
-        // Create type-erased senders using make_sender() on the actual manager types
-        auto wal_sender = wal_ptr ? wal_ptr->make_sender() : wal_empty_ptr->make_sender();
-        auto disk_sender = disk_ptr ? disk_ptr->make_sender() : disk_empty_ptr->make_sender();
+        // Pass addresses directly - polymorphic dispatch via interface contracts
+        auto wal_address = wal_ptr ? wal_ptr->address() : wal_empty_ptr->address();
+        auto disk_address = disk_ptr ? disk_ptr->address() : disk_empty_ptr->address();
         manager_dispatcher_->sync(std::make_tuple(memory_storage_->address(),
-                                                   std::move(wal_sender),
-                                                   std::move(disk_sender)));
+                                                   wal_address,
+                                                   disk_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));

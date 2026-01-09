@@ -7,7 +7,6 @@
 #include <core/excutor.hpp>
 #include <services/collection/collection.hpp>
 #include <services/dispatcher/dispatcher.hpp>
-#include <services/dispatcher/type_erased_senders.hpp>
 
 #include <boost/polymorphic_pointer_cast.hpp>
 
@@ -280,10 +279,10 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::load_indexes(session_id_t session,
-                                                                      dispatcher::dispatcher_sender_t dispatcher_sender) {
+                                                                      actor_zeta::address_t dispatcher_address) {
         trace(log_, "manager_disk_t::load_indexes , session : {}", session.data());
         load_session_ = session;
-        co_await load_indexes_impl(session, dispatcher_sender);
+        co_await load_indexes_impl(session, dispatcher_address);
         co_return;
     }
 
@@ -671,7 +670,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::load_indexes_impl(
-        session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender) {
+        session_id_t session, actor_zeta::address_t dispatcher_address) {
         (void)session;  // unused - each index gets unique session
         auto indexes = make_unique(read_indexes_impl());
         metafile_indexes_->seek(metafile_indexes_->file_size());
@@ -680,10 +679,11 @@ namespace services::disk {
             trace(log_, "manager_disk: load_indexes_impl : {}", index->name());
 
             // co_await on each index - wait for creation!
-            // Use type-erased dispatcher_sender to avoid circular dependency
-            auto cursor = co_await dispatcher_sender.execute_plan(
-                dispatcher_sender.target,
+            // Use interface-based dispatch via dispatcher_contract
+            auto cursor = co_await actor_zeta::send(
+                dispatcher_address,
                 address(),
+                &dispatcher::dispatcher_t::execute_plan,
                 session_id_t::generate_uid(),
                 boost::static_pointer_cast<components::logical_plan::node_t>(index),
                 components::logical_plan::make_parameter_node(resource()));
@@ -889,6 +889,48 @@ namespace services::disk {
                 }
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_insert_many>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_insert_many, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_insert>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_insert, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_remove>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_remove, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_insert_by_agent>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_insert_by_agent, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_remove_by_agent>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_remove_by_agent, msg);
+                if (!future.available()) {
+                    pending_void_.push_back(std::move(future));
+                }
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::index_find_by_agent>: {
+                auto future = actor_zeta::dispatch(this, &manager_disk_empty_t::index_find_by_agent, msg);
+                if (!future.available()) {
+                    pending_find_.push_back(std::move(future));
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -900,9 +942,9 @@ namespace services::disk {
     }
 
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::load_indexes(
-        session_id_t session, dispatcher::dispatcher_sender_t dispatcher_sender) {
+        session_id_t session, actor_zeta::address_t dispatcher_address) {
         (void)session;
-        (void)dispatcher_sender;
+        (void)dispatcher_address;
         co_return;
     }
 
@@ -999,13 +1041,74 @@ namespace services::disk {
         co_return;
     }
 
-    // Factory methods to create type-erased senders
-    dispatcher::disk_sender_t manager_disk_t::make_sender() {
-        return dispatcher::make_disk_sender<manager_disk_t>(address());
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert_many(
+        session_id_t session,
+        index_name_t index_name,
+        std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values) {
+        (void)session;
+        (void)index_name;
+        (void)values;
+        co_return;
     }
 
-    dispatcher::disk_sender_t manager_disk_empty_t::make_sender() {
-        return dispatcher::make_disk_sender<manager_disk_empty_t>(address());
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert(
+        session_id_t session,
+        index_name_t index_name,
+        components::types::logical_value_t key,
+        components::document::document_id_t doc_id) {
+        (void)session;
+        (void)index_name;
+        (void)key;
+        (void)doc_id;
+        co_return;
+    }
+
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_remove(
+        session_id_t session,
+        index_name_t index_name,
+        components::types::logical_value_t key,
+        components::document::document_id_t doc_id) {
+        (void)session;
+        (void)index_name;
+        (void)key;
+        (void)doc_id;
+        co_return;
+    }
+
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert_by_agent(
+        session_id_t session,
+        actor_zeta::address_t agent_address,
+        components::types::logical_value_t key,
+        components::document::document_id_t doc_id) {
+        (void)session;
+        (void)agent_address;
+        (void)key;
+        (void)doc_id;
+        co_return;
+    }
+
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_remove_by_agent(
+        session_id_t session,
+        actor_zeta::address_t agent_address,
+        components::types::logical_value_t key,
+        components::document::document_id_t doc_id) {
+        (void)session;
+        (void)agent_address;
+        (void)key;
+        (void)doc_id;
+        co_return;
+    }
+
+    manager_disk_empty_t::unique_future<index_disk_t::result> manager_disk_empty_t::index_find_by_agent(
+        session_id_t session,
+        actor_zeta::address_t agent_address,
+        components::types::logical_value_t key,
+        components::expressions::compare_type compare) {
+        (void)session;
+        (void)agent_address;
+        (void)key;
+        (void)compare;
+        co_return index_disk_t::result{resource()};
     }
 
 } //namespace services::disk

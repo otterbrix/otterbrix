@@ -17,14 +17,15 @@ namespace otterbrix {
 
     base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
         : main_path_(config.main_path)
-        , resource(std::pmr::synchronized_pool_resource())
+        // EXPERIMENT: Use new_delete_resource instead of synchronized_pool_resource
+        , resource(std::pmr::new_delete_resource())
         , scheduler_(new actor_zeta::shared_work(1, 1000))
         , scheduler_dispatcher_(new actor_zeta::shared_work(1, 1000))
-        , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
+        , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(resource))
         , manager_disk_()
         , manager_wal_()
-        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
-        , memory_storage_(nullptr, actor_zeta::pmr::deleter_t(&resource)) {
+        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(resource))
+        , memory_storage_(nullptr, actor_zeta::pmr::deleter_t(resource)) {
         log_ = initialization_logger("python", config.log.path.c_str());
         log_.set_level(config.log.level);
         trace(log_, "spaces::spaces()");
@@ -44,7 +45,7 @@ namespace otterbrix {
         services::wal::manager_wal_replicate_t* wal_ptr = nullptr;
         services::wal::manager_wal_replicate_empty_t* wal_empty_ptr = nullptr;
         if (config.wal.on) {
-            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(resource,
                                                                                                 scheduler_.get(),
                                                                                                 config.wal,
                                                                                                 log_);
@@ -52,7 +53,7 @@ namespace otterbrix {
             wal_ptr = manager.get();
             manager_wal_ = std::move(manager);
         } else {
-            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(resource,
                                                                                                       scheduler_.get(),
                                                                                                       log_);
             manager_wal_address = manager->address();
@@ -66,7 +67,7 @@ namespace otterbrix {
         services::disk::manager_disk_t* disk_ptr = nullptr;
         services::disk::manager_disk_empty_t* disk_empty_ptr = nullptr;
         if (config.disk.on) {
-            auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
+            auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(resource,
                                                                                         scheduler_.get(),
                                                                                         config.disk,
                                                                                         log_);
@@ -75,7 +76,7 @@ namespace otterbrix {
             manager_disk_ = std::move(manager);
         } else {
             auto manager =
-                actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
+                actor_zeta::spawn<services::disk::manager_disk_empty_t>(resource, scheduler_.get());
             // Don't set manager_disk_address - keep it as empty_address
             // This allows executor to detect that disk is disabled and skip operations
             // that would otherwise crash due to type mismatch in send()
@@ -85,18 +86,18 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::memory_storage start");
-        memory_storage_ = actor_zeta::spawn<services::memory_storage_t>(&resource, scheduler_.get(), log_);
+        memory_storage_ = actor_zeta::spawn<services::memory_storage_t>(resource, scheduler_.get(), log_);
         trace(log_, "spaces::memory_storage finish");
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
+            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(resource,
                                                                                      scheduler_dispatcher_.get(),
                                                                                      log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ =
-            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+            actor_zeta::spawn<wrapper_dispatcher_t>(resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
         // Call sync methods directly (not through message passing)

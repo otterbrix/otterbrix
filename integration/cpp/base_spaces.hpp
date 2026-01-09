@@ -50,7 +50,9 @@ namespace otterbrix {
     protected:
         explicit base_otterbrix_t(const configuration::config& config);
         std::filesystem::path main_path_;
-        std::pmr::synchronized_pool_resource resource;
+        // EXPERIMENT: Use new_delete_resource instead of synchronized_pool_resource
+        // to prove the heap-use-after-free is caused by pool resource internal cleanup
+        std::pmr::memory_resource* resource;
         log_t log_;
         actor_zeta::scheduler_ptr scheduler_;
         actor_zeta::scheduler_ptr scheduler_dispatcher_;

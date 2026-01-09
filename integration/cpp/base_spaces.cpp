@@ -3,6 +3,8 @@
 #include <actor-zeta/spawn.hpp>
 #include <core/excutor.hpp>
 #include <memory>
+#include <thread>
+#include <chrono>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/memory_storage/memory_storage.hpp>
@@ -133,11 +135,36 @@ namespace otterbrix {
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return wrapper_dispatcher_.get(); }
 
     base_otterbrix_t::~base_otterbrix_t() {
-        trace(log_, "delete spaces");
+        trace(log_, "~base_otterbrix_t() START - thread_id: {}", std::this_thread::get_id());
+
+        trace(log_, "~base_otterbrix_t() stopping scheduler_...");
         scheduler_->stop();
+        trace(log_, "~base_otterbrix_t() scheduler_ stopped");
+
+        trace(log_, "~base_otterbrix_t() stopping scheduler_dispatcher_...");
         scheduler_dispatcher_->stop();
-        std::lock_guard lock(m_);
-        paths_.erase(main_path_);
+        trace(log_, "~base_otterbrix_t() scheduler_dispatcher_ stopped");
+
+        // EXPERIMENT: Add sleep to see if race condition with worker threads
+        trace(log_, "~base_otterbrix_t() sleeping 100ms for worker threads to finish...");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        trace(log_, "~base_otterbrix_t() sleep finished");
+
+        {
+            std::lock_guard lock(m_);
+            paths_.erase(main_path_);
+        }
+
+        // Log destruction order (members will be destroyed after this in reverse declaration order)
+        trace(log_, "~base_otterbrix_t() explicit destructor body done - implicit member destruction starting");
+        trace(log_, "~base_otterbrix_t() memory_storage_ will be destroyed (has documents)");
+        trace(log_, "~base_otterbrix_t() wrapper_dispatcher_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() manager_wal_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() manager_disk_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() manager_dispatcher_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() scheduler_dispatcher_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() scheduler_ will be destroyed");
+        trace(log_, "~base_otterbrix_t() resource (PMR) will be destroyed LAST");
     }
 
 } // namespace otterbrix

@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
 #include <integration/cpp/connection.hpp>
+#include <iostream>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
@@ -71,21 +72,32 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     }
 
     INFO("find") {
+        std::cerr << "[EXPERIMENT] test_multithread: find section START" << std::endl;
         {
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT * query START" << std::endl;
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT * query DONE" << std::endl;
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == doc_num);
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT * cursor going out of scope..." << std::endl;
         }
+        std::cerr << "[EXPERIMENT] test_multithread: SELECT * cursor DESTROYED" << std::endl;
         {
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT WHERE query START" << std::endl;
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "SELECT * FROM TestDatabase.TestCollection "
                                                "WHERE count > 90;");
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT WHERE query DONE" << std::endl;
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == doc_num - 90 - 1);
+            std::cerr << "[EXPERIMENT] test_multithread: SELECT WHERE cursor going out of scope..." << std::endl;
         }
+        std::cerr << "[EXPERIMENT] test_multithread: SELECT WHERE cursor DESTROYED" << std::endl;
+        std::cerr << "[EXPERIMENT] test_multithread: find section END" << std::endl;
     }
+    std::cerr << "[EXPERIMENT] test_multithread: TEST END - space going out of scope..." << std::endl;
 }
 
 TEST_CASE("integration::cpp::test_connectors") {
@@ -155,19 +167,30 @@ TEST_CASE("integration::cpp::test_connectors") {
     }
 
     INFO("find") {
+        std::cerr << "[EXPERIMENT] test_connectors: find section START" << std::endl;
         {
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT * query START" << std::endl;
             auto session = otterbrix::session_id_t();
             auto cur = otterbrix->dispatcher()->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT * query DONE, checking results" << std::endl;
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == doc_num);
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT * cursor going out of scope..." << std::endl;
         }
+        std::cerr << "[EXPERIMENT] test_connectors: SELECT * cursor DESTROYED" << std::endl;
         {
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT WHERE query START" << std::endl;
             auto session = otterbrix::session_id_t();
             auto cur = otterbrix->dispatcher()->execute_sql(session,
                                                             "SELECT * FROM TestDatabase.TestCollection "
                                                             "WHERE count > 90;");
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT WHERE query DONE, checking results" << std::endl;
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == doc_num - 90 - 1);
+            std::cerr << "[EXPERIMENT] test_connectors: SELECT WHERE cursor going out of scope..." << std::endl;
         }
+        std::cerr << "[EXPERIMENT] test_connectors: SELECT WHERE cursor DESTROYED" << std::endl;
+        std::cerr << "[EXPERIMENT] test_connectors: find section END" << std::endl;
     }
+    std::cerr << "[EXPERIMENT] test_connectors: TEST END - otterbrix going out of scope..." << std::endl;
 }

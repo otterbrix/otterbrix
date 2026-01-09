@@ -3,9 +3,6 @@
 #include <actor-zeta/spawn.hpp>
 #include <core/excutor.hpp>
 #include <memory>
-#include <thread>
-#include <chrono>
-#include <sstream>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/memory_storage/memory_storage.hpp>
@@ -17,15 +14,14 @@ namespace otterbrix {
 
     base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
         : main_path_(config.main_path)
-        // EXPERIMENT: Use new_delete_resource instead of synchronized_pool_resource
-        , resource(std::pmr::new_delete_resource())
+        , resource(std::pmr::synchronized_pool_resource())
         , scheduler_(new actor_zeta::shared_work(1, 1000))
         , scheduler_dispatcher_(new actor_zeta::shared_work(1, 1000))
-        , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(resource))
+        , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_disk_()
         , manager_wal_()
-        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(resource))
-        , memory_storage_(nullptr, actor_zeta::pmr::deleter_t(resource)) {
+        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
+        , memory_storage_(nullptr, actor_zeta::pmr::deleter_t(&resource)) {
         log_ = initialization_logger("python", config.log.path.c_str());
         log_.set_level(config.log.level);
         trace(log_, "spaces::spaces()");
@@ -45,7 +41,7 @@ namespace otterbrix {
         services::wal::manager_wal_replicate_t* wal_ptr = nullptr;
         services::wal::manager_wal_replicate_empty_t* wal_empty_ptr = nullptr;
         if (config.wal.on) {
-            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                                                 scheduler_.get(),
                                                                                                 config.wal,
                                                                                                 log_);
@@ -53,7 +49,7 @@ namespace otterbrix {
             wal_ptr = manager.get();
             manager_wal_ = std::move(manager);
         } else {
-            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(resource,
+            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource,
                                                                                                       scheduler_.get(),
                                                                                                       log_);
             manager_wal_address = manager->address();
@@ -67,7 +63,7 @@ namespace otterbrix {
         services::disk::manager_disk_t* disk_ptr = nullptr;
         services::disk::manager_disk_empty_t* disk_empty_ptr = nullptr;
         if (config.disk.on) {
-            auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(resource,
+            auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                                         scheduler_.get(),
                                                                                         config.disk,
                                                                                         log_);
@@ -76,7 +72,7 @@ namespace otterbrix {
             manager_disk_ = std::move(manager);
         } else {
             auto manager =
-                actor_zeta::spawn<services::disk::manager_disk_empty_t>(resource, scheduler_.get());
+                actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
             // Don't set manager_disk_address - keep it as empty_address
             // This allows executor to detect that disk is disabled and skip operations
             // that would otherwise crash due to type mismatch in send()
@@ -86,18 +82,18 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::memory_storage start");
-        memory_storage_ = actor_zeta::spawn<services::memory_storage_t>(resource, scheduler_.get(), log_);
+        memory_storage_ = actor_zeta::spawn<services::memory_storage_t>(&resource, scheduler_.get(), log_);
         trace(log_, "spaces::memory_storage finish");
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(resource,
+            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
                                                                                      scheduler_dispatcher_.get(),
                                                                                      log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ =
-            actor_zeta::spawn<wrapper_dispatcher_t>(resource, manager_dispatcher_->address(), log_);
+            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
         // Call sync methods directly (not through message passing)
@@ -137,38 +133,11 @@ namespace otterbrix {
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return wrapper_dispatcher_.get(); }
 
     base_otterbrix_t::~base_otterbrix_t() {
-        std::ostringstream oss;
-        oss << std::this_thread::get_id();
-        trace(log_, "~base_otterbrix_t() START - thread_id: {}", oss.str());
-
-        trace(log_, "~base_otterbrix_t() stopping scheduler_...");
+        trace(log_, "delete spaces");
         scheduler_->stop();
-        trace(log_, "~base_otterbrix_t() scheduler_ stopped");
-
-        trace(log_, "~base_otterbrix_t() stopping scheduler_dispatcher_...");
         scheduler_dispatcher_->stop();
-        trace(log_, "~base_otterbrix_t() scheduler_dispatcher_ stopped");
-
-        // EXPERIMENT: Add sleep to see if race condition with worker threads
-        trace(log_, "~base_otterbrix_t() sleeping 100ms for worker threads to finish...");
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        trace(log_, "~base_otterbrix_t() sleep finished");
-
-        {
-            std::lock_guard lock(m_);
-            paths_.erase(main_path_);
-        }
-
-        // Log destruction order (members will be destroyed after this in reverse declaration order)
-        trace(log_, "~base_otterbrix_t() explicit destructor body done - implicit member destruction starting");
-        trace(log_, "~base_otterbrix_t() memory_storage_ will be destroyed (has documents)");
-        trace(log_, "~base_otterbrix_t() wrapper_dispatcher_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() manager_wal_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() manager_disk_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() manager_dispatcher_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() scheduler_dispatcher_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() scheduler_ will be destroyed");
-        trace(log_, "~base_otterbrix_t() resource (PMR) will be destroyed LAST");
+        std::lock_guard lock(m_);
+        paths_.erase(main_path_);
     }
 
 } // namespace otterbrix

@@ -338,8 +338,8 @@ namespace services::disk {
               session.data(),
               database,
               collection);
-        command_write_documents_t command{std::move(database), std::move(collection), documents};
-        append_command(commands_, session, command_t(command));
+        command_write_documents_t command{std::move(database), std::move(collection), std::move(documents)};
+        append_command(commands_, session, command_t(std::move(command)));
         co_return;
     }
 

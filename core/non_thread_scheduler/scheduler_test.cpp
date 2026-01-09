@@ -37,8 +37,11 @@ namespace core::non_thread_scheduler {
         auto result = job->resume(max_throughput());
         switch (result.result) {
             case actor_zeta::scheduler::resume_result::resume:
-                // Re-enqueue for continued execution
-                enqueue(job.release());
+                // Re-enqueue the same job directly to avoid creating a new job_ptr wrapper
+                {
+                    std::unique_lock<std::mutex> re_guard(data().lock);
+                    data().queue.push_back(job.release());
+                }
                 break;
             case actor_zeta::scheduler::resume_result::done:
             case actor_zeta::scheduler::resume_result::awaiting:

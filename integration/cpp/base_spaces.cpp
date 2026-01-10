@@ -73,9 +73,7 @@ namespace otterbrix {
         } else {
             auto manager =
                 actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
-            // Don't set manager_disk_address - keep it as empty_address
-            // This allows executor to detect that disk is disabled and skip operations
-            // that would otherwise crash due to type mismatch in send()
+            manager_disk_address = manager->address();
             disk_empty_ptr = manager.get();
             manager_disk_ = std::move(manager);
         }
@@ -98,11 +96,9 @@ namespace otterbrix {
 
         // Call sync methods directly (not through message passing)
         // Pass addresses directly - polymorphic dispatch via interface contracts
-        auto wal_address = wal_ptr ? wal_ptr->address() : wal_empty_ptr->address();
-        auto disk_address = disk_ptr ? disk_ptr->address() : disk_empty_ptr->address();
         manager_dispatcher_->sync(std::make_tuple(memory_storage_->address(),
-                                                   wal_address,
-                                                   disk_address));
+                                                   manager_wal_address,
+                                                   manager_disk_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));

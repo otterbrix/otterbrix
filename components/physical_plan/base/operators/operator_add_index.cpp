@@ -35,7 +35,7 @@ namespace components::base::operators {
                     pipeline_context->session,
                     index_node_->name(),
                     services::collection::sessions::create_index_t{pipeline_context->current_message_sender, id_index});
-                auto future = actor_zeta::otterbrix::send(context_->disk(),
+                auto future = actor_zeta::send(context_->disk(),
                                  pipeline_context->address(),
                                  &services::disk::manager_disk_t::create_index_agent,
                                  pipeline_context->session,

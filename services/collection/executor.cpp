@@ -253,7 +253,7 @@ namespace services::collection::executor {
                         }
                         // Route through manager_disk_t which has scheduler access
                         // Await result to ensure index is populated before returning success
-                        co_await actor_zeta::otterbrix::send(collection->disk(),
+                        co_await actor_zeta::send(collection->disk(),
                                          address(),
                                          &services::disk::manager_disk_t::index_insert_many,
                                          session,
@@ -374,7 +374,7 @@ namespace services::collection::executor {
             if (output) {
                 auto ids_to_remove = modified->ids();
                 auto data_chunk = std::move(output->data_chunk());
-                co_await actor_zeta::otterbrix::send(collection->disk(),
+                co_await actor_zeta::send(collection->disk(),
                                  address(),
                                  &services::disk::manager_disk_t::remove_documents,
                                  session,
@@ -386,7 +386,7 @@ namespace services::collection::executor {
                 if (modified) {
                     auto ids_to_remove = modified->ids();
                     size_t cardinality = std::get<std::pmr::vector<size_t>>(ids_to_remove).size();
-                    co_await actor_zeta::otterbrix::send(collection->disk(),
+                    co_await actor_zeta::send(collection->disk(),
                                      address(),
                                      &services::disk::manager_disk_t::remove_documents,
                                      session,
@@ -399,7 +399,7 @@ namespace services::collection::executor {
                     // TODO: fill chunk with modified rows
                     co_return make_cursor(resource(), std::move(chunk));
                 } else {
-                    co_await actor_zeta::otterbrix::send(collection->disk(),
+                    co_await actor_zeta::send(collection->disk(),
                                      address(),
                                      &services::disk::manager_disk_t::remove_documents,
                                      session,
@@ -415,7 +415,7 @@ namespace services::collection::executor {
                 std::pmr::vector<document_id_t> ids{resource()};
                 std::pmr::vector<document_ptr> documents{resource()};
                 ids.emplace_back(new_id);
-                co_await actor_zeta::otterbrix::send(collection->disk(),
+                co_await actor_zeta::send(collection->disk(),
                                  address(),
                                  &services::disk::manager_disk_t::remove_documents,
                                  session,
@@ -434,7 +434,7 @@ namespace services::collection::executor {
                          std::get<std::pmr::vector<components::document::document_id_t>>(ids_to_remove)) {
                         documents.emplace_back(collection->document_storage().at(id));
                     }
-                    co_await actor_zeta::otterbrix::send(collection->disk(),
+                    co_await actor_zeta::send(collection->disk(),
                                      address(),
                                      &services::disk::manager_disk_t::remove_documents,
                                      session,
@@ -443,7 +443,7 @@ namespace services::collection::executor {
                                      std::move(ids_to_remove));
                     co_return make_cursor(resource(), std::move(documents));
                 } else {
-                    co_await actor_zeta::otterbrix::send(collection->disk(),
+                    co_await actor_zeta::send(collection->disk(),
                                      address(),
                                      &services::disk::manager_disk_t::remove_documents,
                                      session,
@@ -472,7 +472,7 @@ namespace services::collection::executor {
         if (!output || output->uses_documents()) {
             auto docs_to_write = output ? std::move(output->documents())
                                         : std::pmr::vector<document_ptr>{resource()};
-            co_await actor_zeta::otterbrix::send(collection->disk(),
+            co_await actor_zeta::send(collection->disk(),
                              address(),
                              &services::disk::manager_disk_t::write_documents,
                              session,
@@ -503,7 +503,7 @@ namespace services::collection::executor {
             } else {
                 size = collection->table_storage().table().calculate_size();
             }
-            co_await actor_zeta::otterbrix::send(collection->disk(),
+            co_await actor_zeta::send(collection->disk(),
                              address(),
                              &services::disk::manager_disk_t::write_data_chunk,
                              session,
@@ -529,7 +529,7 @@ namespace services::collection::executor {
 
         if (collection->uses_datatable()) {
             auto ids_to_remove = modified_data ? modified_data->ids() : std::pmr::vector<size_t>{resource()};
-            co_await actor_zeta::otterbrix::send(collection->disk(),
+            co_await actor_zeta::send(collection->disk(),
                              address(),
                              &services::disk::manager_disk_t::remove_documents,
                              session,
@@ -542,7 +542,7 @@ namespace services::collection::executor {
             co_return make_cursor(resource(), std::move(chunk));
         } else {
             auto ids_to_remove = modified_data ? modified_data->ids() : std::pmr::vector<document_id_t>{resource()};
-            co_await actor_zeta::otterbrix::send(collection->disk(),
+            co_await actor_zeta::send(collection->disk(),
                              address(),
                              &services::disk::manager_disk_t::remove_documents,
                              session,

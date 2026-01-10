@@ -37,6 +37,7 @@ target_link_libraries(
     otterbrix::document
     otterbrix::collection
     otterbrix::b_plus_tree
+    otterbrix::locks
     spdlog::spdlog
     Boost::boost
     actor-zeta::actor-zeta

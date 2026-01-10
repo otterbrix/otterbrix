@@ -35,12 +35,18 @@ if(UNIX AND NOT APPLE)
         otterbrix::collection
         otterbrix::disk
         otterbrix::index
+        otterbrix::dispatcher
+        otterbrix::wal
         -Wl,--end-group
     )
 else()
     # macOS/other: link twice to resolve circular deps
     target_link_libraries(${PROJECT_NAME} PRIVATE
         otterbrix::collection
+        otterbrix::disk
+        otterbrix::dispatcher
+        otterbrix::wal
+        otterbrix::dispatcher
         otterbrix::disk
     )
 endif()

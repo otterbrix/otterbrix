@@ -61,7 +61,7 @@ namespace services::disk {
                                              collection_name_t collection,
                                              document_ids_t documents);
 
-        // Flush to disk
+        // Flush to disk (waits for all operations to complete - strict durability)
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
         // Index agent operations

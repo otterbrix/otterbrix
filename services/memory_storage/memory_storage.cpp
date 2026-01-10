@@ -43,6 +43,8 @@ namespace services {
     auto memory_storage_t::make_type() const noexcept -> const char* { return "memory_storage"; }
 
     void memory_storage_t::behavior(actor_zeta::mailbox::message* msg) {
+        std::lock_guard<spin_lock> guard(lock_);
+
         // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
         poll_pending();
 

@@ -363,7 +363,8 @@ namespace services::dispatcher {
             switch (session_plan->type()) {
                 case node_type::create_database_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_database,
+                    // Queue disk command (strict durability)
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_database,
                                      session, session_plan->database_name());
                     // co_await on WAL for durability - cast to specific type for type safety
                     auto create_database = boost::static_pointer_cast<node_create_database_t>(session_plan);
@@ -372,7 +373,8 @@ namespace services::dispatcher {
                         create_database);
                     // Update catalog after successful WAL write
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    // Flush and wait for disk I/O completion (strict durability)
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -385,14 +387,16 @@ namespace services::dispatcher {
 
                 case node_type::create_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_collection,
+                    // Queue disk command (strict durability)
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_collection,
                                      session, session_plan->database_name(), session_plan->collection_name());
                     // co_await on WAL for durability - cast to specific type
                     auto create_collection = boost::static_pointer_cast<node_create_collection_t>(session_plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::create_collection, session,create_collection);
+                        &wal::manager_wal_replicate_t::create_collection, session, create_collection);
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    // Flush and wait for disk I/O completion (strict durability)
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -403,9 +407,9 @@ namespace services::dispatcher {
                     // co_await on WAL for durability - cast to specific type
                     auto insert = boost::static_pointer_cast<node_insert_t>(session_plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::insert_many, session,insert);
+                        &wal::manager_wal_replicate_t::insert_many, session, insert);
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -418,7 +422,7 @@ namespace services::dispatcher {
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
                         &wal::manager_wal_replicate_t::update_many, session, update, s.params());
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
@@ -427,25 +431,25 @@ namespace services::dispatcher {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
                     assert(s.node() && "Doesn't holds correct plan*");
                     // co_await on WAL for durability - cast to specific type
-                    auto delete_i =  boost::static_pointer_cast<node_delete_t>(session_plan);
+                    auto delete_i = boost::static_pointer_cast<node_delete_t>(session_plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::delete_many, session,delete_i, s.params());
+                        &wal::manager_wal_replicate_t::delete_many, session, delete_i, s.params());
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::drop_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::remove_collection,
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::remove_collection,
                                      session, session_plan->database_name(), session_plan->collection_name());
                     // co_await on WAL for durability - cast to specific type
                     auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(session_plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::drop_collection, session,drop_collection);
+                        &wal::manager_wal_replicate_t::drop_collection, session, drop_collection);
                     update_catalog(session_plan);
-                    actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
                     remove_session(session_to_address_, session);
                     co_return result;
                 }

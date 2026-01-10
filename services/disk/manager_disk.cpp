@@ -112,6 +112,8 @@ namespace services::disk {
     }
 
     void manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
+        std::lock_guard<spin_lock> guard(lock_);
+
         // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
         poll_pending();
 
@@ -375,7 +377,6 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::flush(session_id_t session, wal::id_t wal_id) {
         trace(log_, "manager_disk_t::flush , session : {} , wal_id : {}", session.data(), wal_id);
         auto it = commands_.find(session);
-        bool need_schedule_agent = false;
         if (it != commands_.end()) {
             for (const auto& command : it->second) {
                 if (command.name() == actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_collection>) {
@@ -387,11 +388,12 @@ namespace services::disk {
                         }
                     }
                     if (indexes.empty()) {
-                        // Forward command to agent using new send pattern
+                        // Forward command to agent and wait for completion (strict durability)
                         auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::remove_collection, command);
-                        if (future.needs_scheduling()) {
-                            need_schedule_agent = true;
+                        if (future.needs_scheduling() && !agents_.empty()) {
+                            scheduler_->enqueue(agents_[0].get());
                         }
+                        co_await std::move(future);
                     } else {
                         removed_indexes_.emplace(session,
                                                  removed_index_t{indexes.size(), command, actor_zeta::address_t::empty_address()});
@@ -400,34 +402,50 @@ namespace services::disk {
                             if (future.needs_scheduling()) {
                                 scheduler_->enqueue(index);
                             }
+                            co_await std::move(future);
                         }
                     }
                 } else {
-                    // Forward command to agent based on command type
+                    // Forward command to agent based on command type and wait for completion
                     switch (command.name()) {
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>: {
                             auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::append_database, command);
-                            if (future.needs_scheduling()) need_schedule_agent = true;
+                            if (future.needs_scheduling() && !agents_.empty()) {
+                                scheduler_->enqueue(agents_[0].get());
+                            }
+                            co_await std::move(future);
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_database>: {
                             auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::remove_database, command);
-                            if (future.needs_scheduling()) need_schedule_agent = true;
+                            if (future.needs_scheduling() && !agents_.empty()) {
+                                scheduler_->enqueue(agents_[0].get());
+                            }
+                            co_await std::move(future);
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>: {
                             auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::append_collection, command);
-                            if (future.needs_scheduling()) need_schedule_agent = true;
+                            if (future.needs_scheduling() && !agents_.empty()) {
+                                scheduler_->enqueue(agents_[0].get());
+                            }
+                            co_await std::move(future);
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::write_documents>: {
                             auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::write_documents, command);
-                            if (future.needs_scheduling()) need_schedule_agent = true;
+                            if (future.needs_scheduling() && !agents_.empty()) {
+                                scheduler_->enqueue(agents_[0].get());
+                            }
+                            co_await std::move(future);
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>: {
                             auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::remove_documents, command);
-                            if (future.needs_scheduling()) need_schedule_agent = true;
+                            if (future.needs_scheduling() && !agents_.empty()) {
+                                scheduler_->enqueue(agents_[0].get());
+                            }
+                            co_await std::move(future);
                             break;
                         }
                         default:
@@ -437,15 +455,12 @@ namespace services::disk {
             }
             commands_.erase(session);
         }
-        // Forward fix_wal_id to agent
+        // Forward fix_wal_id to agent and wait for completion
         auto future = actor_zeta::otterbrix::send(agent(), address(), &agent_disk_t::fix_wal_id, wal_id);
-        if (future.needs_scheduling()) {
-            need_schedule_agent = true;
-        }
-        // Schedule agent once after all commands sent
-        if (need_schedule_agent && !agents_.empty()) {
+        if (future.needs_scheduling() && !agents_.empty()) {
             scheduler_->enqueue(agents_[0].get());
         }
+        co_await std::move(future);
         co_return;
     }
 
@@ -679,11 +694,10 @@ namespace services::disk {
             trace(log_, "manager_disk: load_indexes_impl : {}", index->name());
 
             // co_await on each index - wait for creation!
-            // Use interface-based dispatch via dispatcher_contract
             auto cursor = co_await actor_zeta::send(
                 dispatcher_address,
                 address(),
-                &dispatcher::dispatcher_t::execute_plan,
+                &dispatcher::manager_dispatcher_t::execute_plan,
                 session_id_t::generate_uid(),
                 boost::static_pointer_cast<components::logical_plan::node_t>(index),
                 components::logical_plan::make_parameter_node(resource()));

@@ -38,6 +38,8 @@ namespace services::wal {
     }
 
     void manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
+        std::lock_guard<spin_lock> guard(lock_);
+
         // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
         poll_pending();
 

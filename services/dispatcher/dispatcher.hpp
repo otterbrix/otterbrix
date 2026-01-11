@@ -26,8 +26,6 @@
 #include <services/wal/wal_contract.hpp>
 #include <services/collection/executor.hpp>
 
-#include "session.hpp"
-
 namespace services::dispatcher {
 
     class manager_dispatcher_t;
@@ -81,9 +79,6 @@ namespace services::dispatcher {
         // Addresses for WAL and Disk - polymorphic dispatch via interface contracts
         actor_zeta::address_t wal_address_;
         actor_zeta::address_t disk_address_;
-
-        // Session storage for operations requiring callbacks
-        session_storage_t session_to_address_;
 
         // Cursor storage
         std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;

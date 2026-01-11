@@ -217,8 +217,10 @@ namespace services::dispatcher {
     ) {
         trace(log_, "dispatcher_t::execute_plan: session {}, {}", session.data(), plan->to_string());
 
-        // Save session info for WAL operations
-        make_session(session_to_address_, session, session_t(actor_zeta::address_t::empty_address(), plan, params));
+        // Create a copy of params for WAL operations (before take_parameters() consumes them)
+        // This avoids shared state (session_to_address_) which caused race conditions
+        auto params_for_wal = components::logical_plan::make_parameter_node(resource());
+        params_for_wal->set_parameters(params->parameters());
 
         auto logic_plan = create_logic_plan(plan);
         table_id id(resource(), logic_plan->collection_full_name());
@@ -282,7 +284,6 @@ namespace services::dispatcher {
                     }
                     catalog_.create_type(n->type());
                     // Local operation - return result directly
-                    remove_session(session_to_address_, session);
                     co_return make_cursor(resource(), operation_status_t::success);
                 }
             }
@@ -294,7 +295,6 @@ namespace services::dispatcher {
                 } else {
                     catalog_.drop_type(n->type().alias());
                     // Local operation - return result directly
-                    remove_session(session_to_address_, session);
                     co_return make_cursor(resource(), operation_status_t::success);
                 }
             }
@@ -311,7 +311,6 @@ namespace services::dispatcher {
         // If validation error - return result directly via future
         if (error) {
             trace(log_, "dispatcher_t::execute_plan: validation error, returning directly");
-            remove_session(session_to_address_, session);
             co_return std::move(error);
         }
 
@@ -330,13 +329,11 @@ namespace services::dispatcher {
         // Process result
         // ========================================================================
         auto& result = exec_result.cursor;
-        auto& s = find_session(session_to_address_, session);
-        auto session_plan = s.node();
 
         trace(log_,
               "dispatcher_t::execute_plan: result received, session {}, {}, success: {}",
               session.data(),
-              session_plan.get() ? session_plan->to_string() : "",
+              plan.get() ? plan->to_string() : "",
               result->is_success());
 
         // Save updates for delete operations
@@ -345,110 +342,100 @@ namespace services::dispatcher {
         }
 
         if (result->is_success()) {
-            switch (session_plan->type()) {
+            switch (plan->type()) {
                 case node_type::create_database_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // Queue disk command (strict durability)
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_database,
-                                     session, session_plan->database_name());
+                                     session, plan->database_name());
                     // co_await on WAL for durability - cast to specific type for type safety
-                    auto create_database = boost::static_pointer_cast<node_create_database_t>(session_plan);
+                    auto create_database = boost::static_pointer_cast<node_create_database_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
                         &wal::manager_wal_replicate_t::create_database, session,
                         create_database);
                     // Update catalog after successful WAL write
-                    update_catalog(session_plan);
+                    update_catalog(plan);
                     // Flush and wait for disk I/O completion (strict durability)
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::drop_database_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    catalog_.drop_namespace(table_id(resource(), session_plan->collection_full_name()).get_namespace());
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                    catalog_.drop_namespace(table_id(resource(), plan->collection_full_name()).get_namespace());
                     break;
                 }
 
                 case node_type::create_collection_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // Queue disk command (strict durability)
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_collection,
-                                     session, session_plan->database_name(), session_plan->collection_name());
+                                     session, plan->database_name(), plan->collection_name());
                     // co_await on WAL for durability - cast to specific type
-                    auto create_collection = boost::static_pointer_cast<node_create_collection_t>(session_plan);
+                    auto create_collection = boost::static_pointer_cast<node_create_collection_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
                         &wal::manager_wal_replicate_t::create_collection, session, create_collection);
-                    update_catalog(session_plan);
+                    update_catalog(plan);
                     // Flush and wait for disk I/O completion (strict durability)
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::insert_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    assert(s.node() && "Doesn't holds logical_plan");
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
-                    auto insert = boost::static_pointer_cast<node_insert_t>(session_plan);
+                    auto insert = boost::static_pointer_cast<node_insert_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
                         &wal::manager_wal_replicate_t::insert_many, session, insert);
-                    update_catalog(session_plan);
+                    update_catalog(plan);
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::update_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    assert(s.node() && "Doesn't holds correct plan*");
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
-                    auto update = boost::static_pointer_cast<node_update_t>(session_plan);
+                    auto update = boost::static_pointer_cast<node_update_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::update_many, session, update, s.params());
-                    update_catalog(session_plan);
+                        &wal::manager_wal_replicate_t::update_many, session, update, params_for_wal);
+                    update_catalog(plan);
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::delete_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
-                    assert(s.node() && "Doesn't holds correct plan*");
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
-                    auto delete_i = boost::static_pointer_cast<node_delete_t>(session_plan);
+                    auto delete_i = boost::static_pointer_cast<node_delete_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
-                        &wal::manager_wal_replicate_t::delete_many, session, delete_i, s.params());
-                    update_catalog(session_plan);
+                        &wal::manager_wal_replicate_t::delete_many, session, delete_i, params_for_wal);
+                    update_catalog(plan);
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::drop_collection_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::remove_collection,
-                                     session, session_plan->database_name(), session_plan->collection_name());
+                                     session, plan->database_name(), plan->collection_name());
                     // co_await on WAL for durability - cast to specific type
-                    auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(session_plan);
+                    auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(plan);
                     auto wal_id = co_await actor_zeta::send(wal_address_, address(),
                         &wal::manager_wal_replicate_t::drop_collection, session, drop_collection);
-                    update_catalog(session_plan);
+                    update_catalog(plan);
                     co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 case node_type::create_index_t:
                 case node_type::drop_index_t: {
-                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(session_plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // Index operations - currently without WAL
-                    remove_session(session_to_address_, session);
                     co_return result;
                 }
 
                 default: {
-                    trace(log_, "dispatcher_t::execute_plan: non processed type - {}", to_string(session_plan->type()));
+                    trace(log_, "dispatcher_t::execute_plan: non processed type - {}", to_string(plan->type()));
                 }
             }
         } else {
@@ -456,7 +443,6 @@ namespace services::dispatcher {
         }
 
         // Return result (for read-only operations or errors)
-        remove_session(session_to_address_, session);
         co_return std::move(result);
     }
 

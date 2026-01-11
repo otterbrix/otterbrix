@@ -20,7 +20,10 @@ namespace services::wal {
     }
 
     void append_size(buffer_t& storage, size_tt size) {
-        storage.push_back((buffer_element_t((size >> 8 & 0xff))));
+        // Write 4 bytes (32-bit) instead of 2 bytes (16-bit)
+        storage.push_back(buffer_element_t((size >> 24) & 0xff));
+        storage.push_back(buffer_element_t((size >> 16) & 0xff));
+        storage.push_back(buffer_element_t((size >> 8) & 0xff));
         storage.push_back(buffer_element_t(size & 0xff));
     }
 
@@ -44,9 +47,12 @@ namespace services::wal {
     }
 
     size_tt read_size_impl(char* input, int index_start) {
+        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
         size_tt size_tmp = 0;
-        size_tmp = 0xff00 & (size_tt(input[index_start] << 8));
-        size_tmp |= 0x00ff & (size_tt(input[index_start + 1]));
+        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
+        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
+        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
+        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
         return size_tmp;
     }
 

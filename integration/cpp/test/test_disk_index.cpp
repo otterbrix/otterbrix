@@ -325,7 +325,154 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
 }
 
 // ============================================================
-// TEST 5: Disk I/O error handling (mock)
+// TEST 5: Large dataset after restart
+// Verifies: WAL size_tt fix (uint16_t -> uint32_t) allows > 65KB records
+// This test previously crashed with msgpack::insufficient_bytes
+// ============================================================
+TEST_CASE("integration::cpp::test_disk_index::large_dataset") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/large_dataset");
+    test_clear_directory(config);
+
+    // 500 documents creates ~200KB WAL record (exceeds old 65KB limit)
+    constexpr int kDocuments = 500;
+
+    INFO("phase 1: create collection with 500 documents and index") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        INIT_COLLECTION();
+        CREATE_INDEX("idx_count", "count");
+        FILL_COLLECTION(kDocuments);
+
+        // Verify index works before restart
+        CHECK_FIND("count", compare_type::eq, logical_value_t(250), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
+    }
+
+    INFO("phase 2: restart and verify - this previously crashed with msgpack::insufficient_bytes") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        dispatcher->load();  // <-- This previously crashed with msgpack::insufficient_bytes
+
+        // Verify all documents loaded correctly
+        CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(250), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(490), 10);
+        CHECK_FIND("count", compare_type::lt, logical_value_t(11), 10);
+    }
+}
+
+// ============================================================
+// TEST 6: Very large dataset (1000 documents)
+// Verifies: WAL handles ~500KB records correctly
+// ============================================================
+TEST_CASE("integration::cpp::test_disk_index::very_large_dataset") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/very_large_dataset");
+    test_clear_directory(config);
+
+    // 1000 documents creates ~500KB WAL record
+    constexpr int kDocuments = 1000;
+
+    INFO("phase 1: create collection with 1000 documents") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        INIT_COLLECTION();
+        CREATE_INDEX("idx_count", "count");
+        FILL_COLLECTION(kDocuments);
+
+        // Verify index works before restart
+        CHECK_FIND("count", compare_type::eq, logical_value_t(500), 1);
+    }
+
+    INFO("phase 2: restart and verify very large dataset") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        dispatcher->load();
+
+        // Verify all documents loaded correctly
+        CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(500), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(990), 10);
+    }
+}
+
+// ============================================================
+// TEST 7: Concurrent queries with large dataset
+// Verifies: thread safety with large datasets (previously crashed)
+// ============================================================
+TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/concurrent_large_dataset");
+    test_clear_directory(config);
+
+    constexpr int kDocuments = 500;  // Large dataset that previously caused issues
+    constexpr int kThreads = 10;
+    constexpr int kQueriesPerThread = 10;
+
+    INFO("phase 1: create collection with large dataset") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        INIT_COLLECTION();
+        CREATE_INDEX("idx_count", "count");
+        FILL_COLLECTION(kDocuments);
+    }
+
+    INFO("phase 2: concurrent queries on large dataset after restart") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        dispatcher->load();
+
+        std::atomic<int> success_count{0};
+        std::atomic<int> error_count{0};
+        std::vector<std::thread> threads;
+
+        for (int t = 0; t < kThreads; ++t) {
+            threads.emplace_back([&, t]() {
+                for (int q = 0; q < kQueriesPerThread; ++q) {
+                    try {
+                        int search_value = (t * kQueriesPerThread + q) % kDocuments + 1;
+                        auto session = otterbrix::session_id_t();
+                        auto plan = components::logical_plan::make_node_aggregate(
+                            dispatcher->resource(), {database_name, collection_name});
+                        auto expr = components::expressions::make_compare_expression(
+                            dispatcher->resource(),
+                            compare_type::eq,
+                            key{dispatcher->resource(), "count", side_t::left},
+                            id_par{1});
+                        plan->append_child(components::logical_plan::make_node_match(
+                            dispatcher->resource(),
+                            {database_name, collection_name},
+                            std::move(expr)));
+                        auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+                        params->add_parameter(id_par{1}, logical_value_t(search_value));
+                        auto c = dispatcher->find(session, plan, params);
+
+                        if (c->size() == 1) {
+                            ++success_count;
+                        } else {
+                            ++error_count;
+                        }
+                    } catch (...) {
+                        ++error_count;
+                    }
+                }
+            });
+        }
+
+        for (auto& t : threads) {
+            t.join();
+        }
+
+        REQUIRE(success_count == kThreads * kQueriesPerThread);
+        REQUIRE(error_count == 0);
+    }
+}
+
+// ============================================================
+// TEST 8: Disk I/O error handling (mock)
 // Verifies: error handling in await_async_and_resume
 // ============================================================
 TEST_CASE("integration::cpp::test_disk_index::io_error_handling") {

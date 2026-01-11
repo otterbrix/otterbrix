@@ -11,7 +11,9 @@ namespace services::wal {
     using buffer_t = std::pmr::string;
     using components::logical_plan::node_type;
 
-    using size_tt = std::uint16_t;
+    // Changed from uint16_t to uint32_t to support WAL records > 65KB
+    // This fixes msgpack::insufficient_bytes crash with large insert_many operations
+    using size_tt = std::uint32_t;
     using crc32_t = std::uint32_t;
 
     struct wal_entry_t final {

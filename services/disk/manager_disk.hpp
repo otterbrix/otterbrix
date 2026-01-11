@@ -150,7 +150,6 @@ namespace services::disk {
         struct removed_index_t {
             std::size_t size;
             command_t command;
-            actor_zeta::address_t sender;
         };
         std::pmr::unordered_map<session_id_t, removed_index_t> removed_indexes_;
 

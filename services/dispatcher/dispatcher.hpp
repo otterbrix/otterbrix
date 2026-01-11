@@ -51,40 +51,19 @@ namespace services::dispatcher {
 
         void behavior(actor_zeta::mailbox::message* msg);
 
-        // === Main methods (linear coroutines with co_await) ===
-
-        // load() - LINEAR COROUTINE, combines former callback chain methods:
-        // load() -> load_from_disk_result() -> load_from_memory_storage_result() -> load_from_wal_result()
-        // Uses co_await to get data from disk, memory_storage and WAL
         unique_future<void> load(components::session::session_id_t session);
 
-        // execute_plan() - LINEAR COROUTINE with co_await on memory_storage AND on WAL
-        // Returns result via future (not callback!)
-        // address parameter removed - result returned via future
         unique_future<components::cursor::cursor_t_ptr> execute_plan(
             components::session::session_id_t session,
             components::logical_plan::node_ptr plan,
             components::logical_plan::parameter_node_ptr params);
 
-        // execute_plan_finish(), execute_plan_delete_finish(), wal_success() REMOVED!
-        // memory_storage_t and WAL return results via future (co_await)
-        // Result processing logic moved inline to execute_plan()
-
-        // size() - returns size_t via future (no callback!)
         unique_future<size_t> size(components::session::session_id_t session,
                                    std::string database_name,
                                    std::string collection);
 
         unique_future<void> close_cursor(components::session::session_id_t session);
 
-        // wal_success() REMOVED - now using co_await on WAL directly in execute_plan()
-
-        // dispatch_traits must be defined AFTER all method declarations
-        // dispatch_traits - only methods called externally
-        // Callback methods REMOVED:
-        // - load_from_disk_result, load_from_memory_storage_result, load_from_wal_result (now part of load() coroutine)
-        // - execute_plan_finish, execute_plan_delete_finish (now part of execute_plan() coroutine)
-        // - wal_success (now using co_await on WAL directly)
         using dispatch_traits = actor_zeta::dispatch_traits<
             &dispatcher_t::load,
             &dispatcher_t::execute_plan,

@@ -395,8 +395,7 @@ namespace services::disk {
                         }
                         co_await std::move(future);
                     } else {
-                        removed_indexes_.emplace(session,
-                                                 removed_index_t{indexes.size(), command, actor_zeta::address_t::empty_address()});
+                        removed_indexes_.emplace(session, removed_index_t{indexes.size(), command});
                         for (auto* index : indexes) {
                             auto future = actor_zeta::otterbrix::send(index->address(), address(), &index_agent_disk_t::drop, session);
                             if (future.needs_scheduling()) {

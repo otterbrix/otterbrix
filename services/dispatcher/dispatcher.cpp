@@ -82,7 +82,6 @@ namespace services::dispatcher {
                 }
                 break;
             }
-            // wal_success REMOVED - now using co_await on WAL methods in execute_plan()
             default:
                 break;
         }
@@ -113,12 +112,6 @@ namespace services::dispatcher {
         }
     }
 
-    // ============================================================================
-    // load() - LINEAR COROUTINE (per actor-zeta migration docs)
-    // Combines former callback chains:
-    // load() -> load_from_disk_result() -> load_from_memory_storage_result() -> load_from_wal_result()
-    // All data obtained via co_await, callback methods REMOVED
-    // ============================================================================
     dispatcher_t::unique_future<void> dispatcher_t::load(
         components::session::session_id_t session
     ) {
@@ -217,14 +210,6 @@ namespace services::dispatcher {
         co_return;
     }
 
-    // load_from_wal_result() - REMOVED! Now part of load() coroutine with co_await
-
-    // ============================================================================
-    // execute_plan() - LINEAR COROUTINE (per actor-zeta migration docs)
-    // Uses co_await on memory_storage_t::execute_plan() to get cursor
-    // Uses co_await on WAL methods for durability
-    // Returns cursor_t_ptr via future (not callback!)
-    // ============================================================================
     dispatcher_t::unique_future<components::cursor::cursor_t_ptr> dispatcher_t::execute_plan(
         components::session::session_id_t session,
         components::logical_plan::node_ptr plan,
@@ -475,14 +460,6 @@ namespace services::dispatcher {
         co_return std::move(result);
     }
 
-    // execute_plan_finish() and execute_plan_delete_finish() REMOVED!
-    // memory_storage_t now returns cursor via future (co_await)
-    // Result processing logic moved inline to execute_plan()
-
-    // ============================================================================
-    // size() - collection size query
-    // Returns size_t via future (no callback!)
-    // ============================================================================
     dispatcher_t::unique_future<size_t> dispatcher_t::size(
         components::session::session_id_t session,
         std::string database_name,

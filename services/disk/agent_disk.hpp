@@ -10,7 +10,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/log/log.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace services::disk {

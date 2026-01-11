@@ -4,7 +4,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
 #include <services/collection/collection.hpp>
 #include <utility>

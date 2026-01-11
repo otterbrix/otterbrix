@@ -8,7 +8,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/utils.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <thread>
 

@@ -8,7 +8,7 @@
 #include <components/physical_plan/collection/operators/operator_update.hpp>
 #include <components/physical_plan/collection/operators/scan/primary_key_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <services/disk/index_agent_disk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/memory_storage/memory_storage.hpp>

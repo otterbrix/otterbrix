@@ -8,7 +8,7 @@
 #include <components/log/log.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/implements.hpp>

@@ -7,7 +7,7 @@
 #include <components/physical_plan/base/operators/operator.hpp>
 #include <components/session/session.hpp>
 #include <core/btree/btree.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/spinlock/spinlock.hpp>
 #include <memory_resource>
 #include <services/collection/executor.hpp>

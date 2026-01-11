@@ -13,7 +13,7 @@
 
 #include <components/configuration/configuration.hpp>
 #include <components/session/session.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/spinlock/spinlock.hpp>
 
 #include "base.hpp"

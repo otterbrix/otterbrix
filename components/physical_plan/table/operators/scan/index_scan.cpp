@@ -2,7 +2,7 @@
 #include <services/disk/index_agent_disk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/collection/collection.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 
 namespace components::table::operators {
 

@@ -10,7 +10,7 @@
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/catalog/catalog.hpp>

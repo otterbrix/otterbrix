@@ -3,7 +3,7 @@
 #include <components/index/single_field_index.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <core/pmr.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <services/collection/collection.hpp>
 #include <services/collection/session/session.hpp>
 #include <services/disk/manager_disk.hpp>

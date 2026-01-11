@@ -4,7 +4,7 @@
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <services/collection/collection.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 

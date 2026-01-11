@@ -4,7 +4,7 @@
 #include <components/logical_plan/node_data.hpp>
 
 #include <core/tracy/tracy.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <thread>  // for std::this_thread::yield()
 
 #include <components/document/document.hpp>

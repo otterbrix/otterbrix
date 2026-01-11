@@ -9,7 +9,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/memory_storage/memory_storage.hpp>

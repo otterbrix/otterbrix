@@ -3,7 +3,7 @@
 #include "wrapper_dispatcher.hpp"
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <actor-zeta/detail/memory.hpp>
 
 #include <core/file/file_system.hpp>

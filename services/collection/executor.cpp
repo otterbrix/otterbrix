@@ -202,13 +202,11 @@ namespace services::collection::executor {
                     }
                 }
 
-                // If still not executed, fall through to old mechanism
+                // After coroutine migration, all async operators must complete via co_await
+                // If we reach here, it's a bug in the operator implementation
                 if (!plan->is_executed()) {
-                    sessions::make_session(
-                        collection->sessions(),
-                        session,
-                        sessions::suspend_plan_t{memory_storage_, std::move(plan), std::move(pipeline_context)});
-                    cursor = make_cursor(resource(), operation_status_t::success);
+                    error(log_, "Plan not executed after co_await! session: {}, plan type: {}",session.data(), static_cast<int>(plan->type()));
+                    cursor = make_cursor(resource(), error_code_t::create_physical_plan_error,"operator failed to complete execution");
                     break;
                 }
             }
@@ -220,27 +218,25 @@ namespace services::collection::executor {
                     // co_await on disk future to get index agent address
                     auto disk_address = co_await std::move(add_op->disk_future());
 
-                    // Inline create_index_finish logic:
-                    auto& create_index_session = sessions::find(collection->sessions(), session, add_op->index_name())
-                        .get<sessions::create_index_t>();
+                    // Get id_index from operator (stored on coroutine frame)
+                    auto id_index = add_op->id_index();
 
                     // Check if index already existed (id_index == INDEX_ID_UNDEFINED means index wasn't created)
-                    if (create_index_session.id_index == components::index::INDEX_ID_UNDEFINED) {
+                    if (id_index == components::index::INDEX_ID_UNDEFINED) {
                         // Index already exists - return error
                         trace(log_, "executor: index {} already exists, returning error", add_op->index_name());
-                        sessions::remove(collection->sessions(), session, add_op->index_name());
                         cursor = make_cursor(resource(), error_code_t::index_create_fail, "index already exists");
                         break;
                     }
 
                     components::index::set_disk_agent(collection->index_engine(),
-                        create_index_session.id_index, disk_address, collection->disk());
+                        id_index, disk_address, collection->disk());
                     components::index::insert(collection->index_engine(),
-                        create_index_session.id_index, collection->document_storage());
+                        id_index, collection->document_storage());
 
                     // Fill index_disk if disk is enabled - route through manager_disk_t for proper scheduling
                     if (disk_address != actor_zeta::address_t::empty_address()) {
-                        auto* index = components::index::search_index(collection->index_engine(), create_index_session.id_index);
+                        auto* index = components::index::search_index(collection->index_engine(), id_index);
                         auto range = index->keys();
                         std::vector<std::pair<components::document::value_t, document_id_t>> values;
                         values.reserve(collection->document_storage().size());
@@ -260,7 +256,6 @@ namespace services::collection::executor {
                                          add_op->index_name(),
                                          std::move(values));
                     }
-                    sessions::remove(collection->sessions(), session, add_op->index_name());
                     cursor = make_cursor(resource(), operation_status_t::success);
                     break;
                 }

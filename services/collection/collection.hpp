@@ -19,7 +19,6 @@
 #include <utility>
 
 #include "forward.hpp"
-#include "session/session.hpp"
 
 namespace services {
     class memory_storage_t;
@@ -110,8 +109,6 @@ namespace services::collection {
 
         const collection_full_name_t& name() const noexcept { return name_; }
 
-        sessions::sessions_storage_t& sessions() noexcept { return sessions_; }
-
         bool drop() noexcept {
             if (dropped_) {
                 return false;
@@ -133,10 +130,6 @@ namespace services::collection {
         components::index::index_engine_ptr index_engine_;
 
         collection_full_name_t name_;
-        /**
-         * @brief Index create/drop context
-         */
-        sessions::sessions_storage_t sessions_;
         actor_zeta::address_t mdisk_;
         log_t log_;
 

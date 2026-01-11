@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/table_metadata.hpp>
+#include <components/physical_plan/base/operators/operator.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>

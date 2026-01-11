@@ -6,7 +6,6 @@
 #include <core/pmr.hpp>
 #include <core/executor.hpp>
 #include <services/collection/collection.hpp>
-#include <services/collection/session/session.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::base::operators {

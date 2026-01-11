@@ -5,7 +5,6 @@
 #include <core/pmr.hpp>
 #include <core/executor.hpp>
 #include <services/collection/collection.hpp>
-#include <services/collection/session/session.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::base::operators {
@@ -24,17 +23,12 @@ namespace components::base::operators {
         switch (index_node_->type()) {
             case logical_plan::index_type::single: {
                 const bool index_exist = context_->index_engine()->has_index(index_node_->name());
-                const auto id_index = index_exist
-                                          ? index::INDEX_ID_UNDEFINED
-                                          : index::make_index<index::single_field_index_t>(context_->index_engine(),
-                                                                                           index_node_->name(),
-                                                                                           index_node_->keys());
+                id_index_ = index_exist
+                            ? index::INDEX_ID_UNDEFINED
+                            : index::make_index<index::single_field_index_t>(context_->index_engine(),
+                                                                             index_node_->name(),
+                                                                             index_node_->keys());
 
-                services::collection::sessions::make_session(
-                    context_->sessions(),
-                    pipeline_context->session,
-                    index_node_->name(),
-                    services::collection::sessions::create_index_t{pipeline_context->current_message_sender, id_index});
                 auto future = actor_zeta::send(context_->disk(),
                                  pipeline_context->address(),
                                  &services::disk::manager_disk_t::create_index_agent,

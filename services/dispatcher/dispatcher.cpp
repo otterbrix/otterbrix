@@ -45,8 +45,10 @@ namespace services::dispatcher {
     auto dispatcher_t::make_type() const noexcept -> const char* { return "dispatcher_t"; }
 
     void dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
-        poll_pending();
+        // DISABLED: poll_pending() causes use-after-free race condition
+        // Race between available() (true after set_value) and final_suspend()
+        // See: docs/actor-zeta-race-condition.md
+        // poll_pending();
 
         switch (msg->command()) {
             case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::load>: {
@@ -758,8 +760,10 @@ namespace services::dispatcher {
         // (actor_mixin::enqueue_impl processes messages synchronously in caller's thread)
         std::lock_guard<spin_lock> guard(lock_);
 
-        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
-        poll_pending();
+        // DISABLED: poll_pending() causes use-after-free race condition
+        // Race between available() (true after set_value) and final_suspend()
+        // See: docs/actor-zeta-race-condition.md
+        // poll_pending();
 
         switch (msg->command()) {
             // Note: sync is called directly, not through message passing

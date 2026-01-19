@@ -31,7 +31,7 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 sub_query_names.right_name = rangevar_to_collection(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource, names.right_name));
+                node_join->append_child(logical_plan::make_node_aggregate(resource, sub_query_names.right_name));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, sub_query_names, params));

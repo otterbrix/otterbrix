@@ -28,7 +28,7 @@ TEST_CASE("components::sql::join") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    INFO("join types") {
+    SECTION("join types") {
         TEST_JOIN(R"_(select * from col1 join col2 on col1.id = col2.id_col1;)_",
                   R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
                   vec());
@@ -54,7 +54,7 @@ TEST_CASE("components::sql::join") {
                   vec());
     }
 
-    INFO("join specifics") {
+    SECTION("join specifics") {
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from db.col as col1 JOIN col2 on col1.id = col2.id_col1;)_",
             R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $group: {id, id_col1}})_",
@@ -81,5 +81,21 @@ TEST_CASE("components::sql::join") {
             R"_(select * from col1 join col2 on col1.array_type[1] = col2.array_type[2];)_",
             R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "array_type/1": {$eq: "array_type/2"}}})_",
             vec());
+    }
+
+    SECTION("join names") {
+        auto select = linitial(raw_parser(&arena_resource,
+                                          "SELECT * from uid1.db1.sch1.test1 inner join uid2.db2.sch2.test2 on x = y "
+                                          "full outer join uid3.db3.sch3.test3 on y = z;"));
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto join = result.node->children().front();
+        REQUIRE(join->children().back()->collection_full_name() ==
+                collection_full_name_t("uid3", "db3", "sch3", "test3"));
+
+        auto nested_join = join->children().front();
+        REQUIRE(nested_join->children().front()->collection_full_name() ==
+                collection_full_name_t("uid1", "db1", "sch1", "test1"));
+        REQUIRE(nested_join->children().back()->collection_full_name() ==
+                collection_full_name_t("uid2", "db2", "sch2", "test2"));
     }
 }

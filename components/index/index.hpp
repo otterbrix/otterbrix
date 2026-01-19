@@ -78,7 +78,8 @@ namespace components::index {
 
         bool is_disk() const noexcept;
         const actor_zeta::address_t& disk_agent() const noexcept;
-        void set_disk_agent(actor_zeta::address_t address) noexcept;
+        const actor_zeta::address_t& disk_manager() const noexcept;
+        void set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept;
 
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 
@@ -110,6 +111,7 @@ namespace components::index {
         std::string name_;
         keys_base_storage_t keys_;
         actor_zeta::address_t disk_agent_{actor_zeta::address_t::empty_address()};
+        actor_zeta::address_t disk_manager_{actor_zeta::address_t::empty_address()};
 
         friend struct index_engine_t;
     };

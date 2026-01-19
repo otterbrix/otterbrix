@@ -28,7 +28,7 @@ TEST_CASE("services::wal::pack_unpack") {
 
     auto start = sizeof(size_tt);
     auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-    auto storage = read_payload(buffer, int(start), int(finish));
+    auto storage = read_payload(buffer, size_tt(start), size_tt(finish));
 
     unpack(storage, entry);
     entry.crc32_ = read_crc32(storage, entry.size_);

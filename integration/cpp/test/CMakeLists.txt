@@ -9,6 +9,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection_sql.cpp
         test_save_load.cpp
         test_index.cpp
+        test_disk_index.cpp
         test_join.cpp
         test_connections.cpp
 )

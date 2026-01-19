@@ -91,7 +91,8 @@ namespace components::index {
     void find(const index_engine_ptr& index, id_index id, result_set_t*);
     void find(const index_engine_ptr& index, query_t query, result_set_t*);
 
-    void set_disk_agent(const index_engine_ptr& ptr, id_index id, const actor_zeta::address_t& address);
+    void set_disk_agent(const index_engine_ptr& ptr, id_index id,
+                        actor_zeta::address_t agent, actor_zeta::address_t manager);
     void sync_index_from_disk(const index_engine_ptr& ptr,
                               const actor_zeta::address_t& index_address,
                               const std::pmr::vector<document::document_id_t>& ids,

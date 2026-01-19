@@ -38,7 +38,7 @@ jobs:
             ls
             cd build
             cp ../conanfile.txt .
-            conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu17
+            conan install . --build missing -s build_type=Release -s compiler.cppstd=20
             
             cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON ..
             cmake --build .

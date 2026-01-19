@@ -1,7 +1,5 @@
 project(vector)
 
-set(CMAKE_CXX_STANDARD 17)
-
 set(SOURCE_${PROJECT_NAME}
         vector.cpp
         vector_buffer.cpp

@@ -1,6 +1,8 @@
 #include "index_scan.hpp"
-#include <components/index/disk/route.hpp>
+#include <services/disk/index_agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/collection/collection.hpp>
+#include <core/executor.hpp>
 
 namespace components::collection::operators {
 
@@ -59,13 +61,23 @@ namespace components::collection::operators {
     void index_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
         trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
-        if (index && index->is_disk()) {
-            trace(context_->log(), "index_scan: send query into disk");
+        if (index && index->is_disk() && index->disk_manager()) {
+            trace(context_->log(), "index_scan: send query into disk (future-based)");
             auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            pipeline_context->send(index->disk_agent(),
-                                   services::index::handler_id(services::index::route::find),
-                                   value,
-                                   expr_->type());
+            // Route through manager_disk_t which has scheduler access
+            // Copy values for by-value args (actor-zeta 1.1.0 requirement)
+            auto session_copy = pipeline_context->session;
+            auto agent_copy = index->disk_agent();
+            auto value_copy = value;
+            auto future = actor_zeta::send(index->disk_manager(),
+                             pipeline_context->address(),
+                             &services::disk::manager_disk_t::index_find_by_agent,
+                             std::move(session_copy),
+                             std::move(agent_copy),
+                             std::move(value_copy),
+                             expr_->type());
+            disk_future_ready_ = future.available();
+            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
             async_wait();
         } else {
             trace(context_->log(), "index_scan: prepare result");
@@ -82,6 +94,16 @@ namespace components::collection::operators {
     void index_scan::on_resume_impl(pipeline::context_t* pipeline_context) {
         trace(context_->log(), "resume index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
+
+        // Sync from disk using stored result (set via await_async_and_resume)
+        if (index && index->is_disk() && !disk_result_.empty()) {
+            trace(context_->log(), "index_scan: sync_index_from_disk, result size: {}", disk_result_.size());
+            components::index::sync_index_from_disk(context_->index_engine(),
+                                                    index->disk_agent(),
+                                                    disk_result_,
+                                                    context_->document_storage());
+        }
+
         trace(context_->log(), "index_scan: prepare result");
         if (!limit_.check(0)) {
             return; //limit = 0
@@ -90,6 +112,19 @@ namespace components::collection::operators {
         if (index) {
             search_by_index(index, expr_, limit_, &pipeline_context->parameters, output_);
         }
+    }
+
+    // Uses unique_future<void> instead of eager_task
+    // promise_type extracts resource() from this (first coroutine argument)
+    // This enables proper co_await support with continuation handling
+    actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
+        if (disk_future_) {
+            trace(context_->log(), "index_scan: await disk future (unique_future)");
+            disk_result_ = co_await std::move(*disk_future_);
+            trace(context_->log(), "index_scan: disk future resolved, result size: {}", disk_result_.size());
+        }
+        on_resume(ctx);
+        co_return;
     }
 
 } // namespace components::collection::operators

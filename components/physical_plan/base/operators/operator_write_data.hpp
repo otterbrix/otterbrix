@@ -15,9 +15,9 @@ namespace components::base::operators {
         : public boost::intrusive_ref_counter<operator_write_data_t>
         , public boost::intrusive::list_base_hook<> {
         struct pair_comparator;
-        using ids_t = std::variant<std::pmr::vector<document::document_id_t>, std::pmr::vector<size_t>>;
 
     public:
+        using ids_t = std::variant<std::pmr::vector<document::document_id_t>, std::pmr::vector<size_t>>;
         // we need to count (name, type) entries to correctly update computed schema
         using updated_types_map_t = std::pmr::
             map<std::pair<std::pmr::string, components::types::complex_logical_type>, size_t, pair_comparator>;

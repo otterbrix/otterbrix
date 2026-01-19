@@ -7,6 +7,10 @@ namespace components::expressions {
 
     template<class OStream>
     OStream& operator<<(OStream& stream, const scalar_expression_t* expr) {
+        if (expr->type() == scalar_type::group_field) {
+            stream << "group_by: ";
+        }
+
         if (expr->params().empty()) {
             stream << expr->key();
         } else {

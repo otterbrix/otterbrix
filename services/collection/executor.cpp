@@ -90,16 +90,19 @@ namespace services::collection::executor {
                                   components::catalog::used_format_t data_format) {
         trace(log_, "executor::execute_plan, session: {}", session.data());
 
+        auto limit = components::logical_plan::limit_t::unlimit();
+        for (const auto& child : logical_plan->children()) {
+            if (child->type() == components::logical_plan::node_type::limit_t) {
+                limit = static_cast<components::logical_plan::node_limit_t*>(child.get())->limit();
+            }
+        }
+
         // TODO: this does not handle cross documents/columns operations
         components::base::operators::operator_ptr plan;
         if (data_format == components::catalog::used_format_t::documents) {
-            plan = collection::planner::create_plan(context_storage,
-                                                    logical_plan,
-                                                    components::logical_plan::limit_t::unlimit());
+            plan = collection::planner::create_plan(context_storage, logical_plan, limit);
         } else if (data_format == components::catalog::used_format_t::columns) {
-            plan = table::planner::create_plan(context_storage,
-                                               logical_plan,
-                                               components::logical_plan::limit_t::unlimit());
+            plan = table::planner::create_plan(context_storage, logical_plan, limit);
         }
 
         if (!plan) {

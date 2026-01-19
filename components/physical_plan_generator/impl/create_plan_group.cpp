@@ -36,6 +36,9 @@ namespace services::collection::planner::impl {
                                    components::collection::operators::get::simple_value_t::create(field));
                     break;
                 }
+                case scalar_type::group_field:
+                    // TODO: no plan for now, as every SELECT field is included in GROUP BY implicitly, implement
+                    break;
                 default:
                     assert(false && "not implemented create plan to scalar exression");
                     break;

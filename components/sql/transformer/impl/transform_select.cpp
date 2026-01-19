@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/sql/parser/pg_functions.h>
@@ -30,7 +31,7 @@ namespace components::sql::transform {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
                 sub_query_names.right_name = rangevar_to_collection(table_r);
                 sub_query_names.right_alias = construct_alias(table_r->alias);
-                node_join->append_child(logical_plan::make_node_aggregate(resource, names.right_name));
+                node_join->append_child(logical_plan::make_node_aggregate(resource, sub_query_names.right_name));
             } else if (nodeTag(join->rarg) == T_RangeFunction) {
                 auto func = pg_ptr_cast<RangeFunction>(join->rarg);
                 node_join->append_child(transform_function(*func, sub_query_names, params));
@@ -96,7 +97,7 @@ namespace components::sql::transform {
         logical_plan::node_join_ptr join = nullptr;
         name_collection_t names;
 
-        if (node.fromClause && node.fromClause->lst.front().data) {
+        if (node.fromClause && !node.fromClause->lst.empty()) {
             // has from
             auto from_first = node.fromClause->lst.front().data;
             if (nodeTag(from_first) == T_RangeVar) {
@@ -130,9 +131,10 @@ namespace components::sql::transform {
                         // group
                         auto func = pg_ptr_cast<FuncCall>(res->val);
 
-                        auto funcname = std::string{strVal(func->funcname->lst.front().data)};
+                        auto funcname = std::string{strVal(linitial(func->funcname))};
                         std::pmr::vector<param_storage> args;
                         args.reserve(func->args->lst.size());
+                        // Note: AGGREGATE(*) invoke parameterless aggregate (also agg_star is set to true)
                         for (const auto& arg : func->args->lst) {
                             auto arg_value = pg_ptr_cast<Node>(arg.data);
                             if (nodeTag(arg_value) == T_ColumnRef) {
@@ -235,7 +237,8 @@ namespace components::sql::transform {
                         break;
                     }
                     default:
-                        throw std::runtime_error("Unknown node type: " + node_tag_to_string(nodeTag(res->val)));
+                        throw std::runtime_error("Unknown node type in field clause: " +
+                                                 node_tag_to_string(nodeTag(res->val)));
                 }
             }
         }
@@ -253,10 +256,20 @@ namespace components::sql::transform {
             }
         }
 
-        // group by
-        if (node.groupClause) {
-            // commented: current parser does not translate this clause to any logical plan
-            // todo: add groupClause correctness check
+        if (node.groupClause && !node.groupClause->lst.empty()) {
+            // TODO: check GROUP BY & SELECT field correctness: every non-agg & non-const field MUST BE in GROUP BY!
+            // Note: right now execution implicitly assumes that every SELECT field is in GROUP BY
+            for (auto field : node.groupClause->lst) {
+                if (nodeTag(field.data) != T_ColumnRef) {
+                    throw std::runtime_error("Unknown node type in group by clause: " +
+                                             node_tag_to_string(nodeTag(field.data)));
+                }
+
+                group->append_expression(make_scalar_expression(
+                    resource_,
+                    scalar_type::group_field,
+                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(field.data), names).field));
+            }
         }
 
         if (!group->expressions().empty()) {
@@ -264,7 +277,7 @@ namespace components::sql::transform {
         }
 
         // order by
-        if (node.sortClause) {
+        if (node.sortClause && !node.sortClause->lst.empty()) {
             std::vector<expression_ptr> expressions;
             expressions.reserve(node.sortClause->lst.size());
             for (auto sort_it : node.sortClause->lst) {
@@ -281,6 +294,30 @@ namespace components::sql::transform {
                                          sortby->sortby_dir == SORTBY_DESC ? sort_order::desc : sort_order::asc));
             }
             agg->append_child(logical_plan::make_node_sort(resource_, agg->collection_full_name(), expressions));
+        }
+
+        // limit
+        if (node.limitCount) {
+            if (nodeTag(node.limitCount) != T_A_Const) {
+                throw std::runtime_error("Unknown node type in limit clause: " +
+                                         node_tag_to_string(nodeTag(node.limitCount)));
+            }
+
+            auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+            logical_plan::limit_t limit;
+            switch (nodeTag(value)) {
+                case T_Null: {
+                    limit = logical_plan::limit_t::unlimit();
+                    break;
+                }
+                case T_Integer:
+                    limit = logical_plan::limit_t(intVal(value));
+                    break;
+                default:
+                    throw std::runtime_error("Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL");
+            }
+
+            agg->append_child(logical_plan::make_node_limit(resource_, agg->collection_full_name(), limit));
         }
 
         return agg;

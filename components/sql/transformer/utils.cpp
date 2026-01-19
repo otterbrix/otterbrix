@@ -298,7 +298,7 @@ namespace components::sql::transform {
                 return types::logical_value_t(is_true);
             }
             case T_A_Const: {
-                auto value = &(pg_ptr_cast<A_Const>(node)->val);
+                auto* value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
                     case T_String: {
                         std::string str = strVal(value);

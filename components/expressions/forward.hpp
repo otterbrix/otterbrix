@@ -53,6 +53,7 @@ namespace components::expressions {
     {
         invalid,
         get_field,
+        group_field,
         add,
         subtract,
         multiply,

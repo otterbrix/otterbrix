@@ -26,19 +26,19 @@ def gen_collection(request):
         obj = {}
         obj['_id'] = gen_id(num)
         obj['count'] = num
-        obj['countStr'] = str(num)
+        obj['count_str'] = str(num)
         obj['countFloat'] = float(num) + 0.1
-        obj['countBool'] = True if num & 1 else False
-        obj['countArray'] = [num + i for i in range(5)]
-        obj['countDict'] = {
+        obj['count_bool'] = True if num & 1 else False
+        obj['count_array'] = [num + i for i in range(5)]
+        obj['count_dict'] = {
             'odd': bool(num & 1),
             'even': not(num & 1),
             'three': not(num % 3),
             'five': not(num % 5),
         }
-        obj['nestedArray'] = [[num + i] for i in range(5)]
-        obj['dictArray'] = [{'number': num + i} for i in range(5)]
-        obj['mixedDict'] = copy.deepcopy(obj)
+        obj['nested_array'] = [[num + i] for i in range(5)]
+        obj['dict_array'] = [{'number': num + i} for i in range(5)]
+        obj['mixed_dict'] = copy.deepcopy(obj)
         docs.append(obj)
     collection.insert_many(docs)
 
@@ -103,27 +103,27 @@ def test_greater_than(gen_collection):
 
 
 def test_find_in_subdocument(gen_collection):
-    c = gen_collection['collection'].find({'mixedDict/count': 0})
+    c = gen_collection['collection'].find({'mixed_dict/count': 0})
     assert c.count() == 1
-    assert gen_collection['collection'].find({'mixedDict/count': 0}).count() == 1
+    assert gen_collection['collection'].find({'mixed_dict/count': 0}).count() == 1
 
 
 def test_find_in_subdocument_with_operator(gen_collection):
-    c = gen_collection['collection'].find({'mixedDict/count': {'$gte': 50}})
+    c = gen_collection['collection'].find({'mixed_dict/count': {'$gte': 50}})
     assert c.count() == 50
-    assert gen_collection['collection'].find({'mixedDict/count': {'$gte': 50}}).count() == 50
+    assert gen_collection['collection'].find({'mixed_dict/count': {'$gte': 50}}).count() == 50
 
 
 def test_find_in_subdocument_3_levels(gen_collection):
-    c = gen_collection['collection'].find({'mixedDict/countDict/even': True})
+    c = gen_collection['collection'].find({'mixed_dict/count_dict/even': True})
     assert c.count() == 50
-    assert gen_collection['collection'].find({'mixedDict/countDict/even': True}).count() == 50
+    assert gen_collection['collection'].find({'mixed_dict/count_dict/even': True}).count() == 50
 
 
 def test_find_in_subdocument_with_array(gen_collection):
-    c = gen_collection['collection'].find({'mixedDict/countArray/3': {'$gt': 50}})
+    c = gen_collection['collection'].find({'mixed_dict/count_array/3': {'$gt': 50}})
     assert c.count() == 52
-    assert gen_collection['collection'].find({'mixedDict/countArray/3': {"$gt": 50}}).count() == 52
+    assert gen_collection['collection'].find({'mixed_dict/count_array/3': {"$gt": 50}}).count() == 52
 
 
 def test_sort_positive(gen_collection):
@@ -161,40 +161,40 @@ def test_empty_find(gen_collection):
 
 def test_find_one(gen_collection):
     c = gen_collection['collection'].find_one({'count': 3})
-    assert c['countStr'] == '3'
+    assert c['count_str'] == '3'
 
 
 def test_find_one_with_filter_named_parameter(gen_collection):
     c = gen_collection['collection'].find_one(filter={'count': 3})
-    assert c['countStr'] == '3'
+    assert c['count_str'] == '3'
 
 def test_gte_lt(gen_collection):
     c = gen_collection['collection'].find({'count': {'$gte': 50, '$lt': 51}})
     assert c.count() == 1
-    assert c[0]['countStr'] == '50'
+    assert c[0]['count_str'] == '50'
 
 
 def test_gt_lte(gen_collection):
     c = gen_collection['collection'].find({'count': {'$gt': 50, '$lte': 51}})
     assert c.count() == 1
-    assert c[0]['countStr'] == '51'
+    assert c[0]['count_str'] == '51'
 
 
 def test_ne(gen_collection):
     c = gen_collection['collection'].find({'count': {'$ne': 50}})
     assert c.count() == 99
     for item in c:
-        assert item['countStr'] != '50'
+        assert item['count_str'] != '50'
 
 def test_regex(gen_collection):
-    c = gen_collection['collection'].find({'countStr': {'$regex': r'^[5]{1,2}'}}).sort('count', 1)
+    c = gen_collection['collection'].find({'count_str': {'$regex': r'^[5]{1,2}'}}).sort('count', 1)
     assert c.count() == 11
     assert c[0]['count'] == 5
     assert c[1]['count'] == 50
     assert c[2]['count'] == 51
     assert c[10]['count'] == 59
 
-    c = gen_collection['collection'].find({'countStr': {'$regex': r'[^5][5]{1}'}}).sort('count', 1)
+    c = gen_collection['collection'].find({'count_str': {'$regex': r'[^5][5]{1}'}}).sort('count', 1)
     assert c.count() == 8
     assert c[0]['count'] == 15
     assert c[1]['count'] == 25
@@ -210,7 +210,7 @@ def test_regex(gen_collection):
     #assert c[2]['count'] == 66
     #assert c[3]['count'] == 88
 
-    #c = gen_collection['collection'].find({'countStr': {'$in': ['11','33','55','77','99']}}).sort('count', 1)
+    #c = gen_collection['collection'].find({'count_str': {'$in': ['11','33','55','77','99']}}).sort('count', 1)
     #assert c.count() == 5
     #assert c[0]['count'] == 11
     #assert c[1]['count'] == 33
@@ -218,21 +218,21 @@ def test_regex(gen_collection):
     #assert c[3]['count'] == 77
     #assert c[4]['count'] == 99
 
-    #c = gen_collection['collection'].find({'countArray': {'$in': [22, 50]}}).sort('count', 1)
+    #c = gen_collection['collection'].find({'count_array': {'$in': [22, 50]}}).sort('count', 1)
     #assert c.count() == 10
     #for doc in c:
         #if doc['count'] <= 22:
-            #assert 22 in doc['countArray']
+            #assert 22 in doc['count_array']
         #elif doc['count'] <= 50:
-            #assert 50 in doc['countArray']
+            #assert 50 in doc['count_array']
 
 
 def test_update_one_set(gen_collection):
-    c = gen_collection['collection'].update_one({'count': 3}, {'$set': {'countStr': 'three'}})
+    c = gen_collection['collection'].update_one({'count': 3}, {'$set': {'count_str': 'three'}})
     assert len(c) == 1
     c.close()
     c = gen_collection['collection'].find_one({'count': 3})
-    assert c['countStr'] == 'three'
+    assert c['count_str'] == 'three'
 
 
 def test_delete_one(gen_collection):
@@ -264,7 +264,7 @@ def test_insert_many(gen_collection):
     items = []
     for i in range(10):
         value = 1000 + i
-        items.append({'count': value, 'countStr': str(value)})
+        items.append({'count': value, 'count_str': str(value)})
     gen_collection['collection'].insert_many(items)
     c = gen_collection['collection'].find({})
     assert c.count() == 110
@@ -286,13 +286,13 @@ def test_or(gen_collection):
 
 
 def test_delete_one(gen_collection):
-    c = gen_collection['collection'].delete_one({'countBool': True})
+    c = gen_collection['collection'].delete_one({'count_bool': True})
     assert c.count() == 1
     c.close()
     c = gen_collection['collection'].find({})
     assert c.count() == 99
     c.close()
-    c = gen_collection['collection'].delete_one({'countBool': True})
+    c = gen_collection['collection'].delete_one({'count_bool': True})
     assert c.count() == 1
     c.close()
     c = gen_collection['collection'].find({})
@@ -319,12 +319,12 @@ def test_delete_many(gen_collection):
 
 
 def test_update_one(gen_collection):
-    c = gen_collection['collection'].update_one({'count': {'$eq': 50}}, {'$set': {'countStr': '500'}})
+    c = gen_collection['collection'].update_one({'count': {'$eq': 50}}, {'$set': {'count_str': '500'}})
     assert c.count() == 1
     c.close()
     c = gen_collection['collection'].find({'count': {'$eq': 50}})
     c.next()
-    assert c['countStr'] == '500'
+    assert c['count_str'] == '500'
     c.close()
 
 
@@ -336,20 +336,20 @@ def test_update_many(gen_collection):
 
 
 def test_update_with_add_new_field(gen_collection):
-    assert gen_collection['collection'].find({'countStr2': {'$eq': '500'}}).count() == 0
-    c = gen_collection['collection'].update_one({'count': {'$eq': 50}}, {'$set': {'countStr2': '500'}})
+    assert gen_collection['collection'].find({'count_str2': {'$eq': '500'}}).count() == 0
+    c = gen_collection['collection'].update_one({'count': {'$eq': 50}}, {'$set': {'count_str2': '500'}})
     assert c.count() == 1
     c.close()
-    assert gen_collection['collection'].find({'countStr2': {'$eq': '500'}}).count() == 1
+    assert gen_collection['collection'].find({'count_str2': {'$eq': '500'}}).count() == 1
 
 
 def test_update_with_upsert(gen_collection):
-    c = gen_collection['collection'].update_one({'count': {'$eq': 100}}, {'$set': {'countStr': '500'}})
+    c = gen_collection['collection'].update_one({'count': {'$eq': 100}}, {'$set': {'count_str': '500'}})
     assert c.count() == 0
     c.close()
-    assert gen_collection['collection'].find({'countStr': {'$eq': '500'}}).count() == 0
+    assert gen_collection['collection'].find({'count_str': {'$eq': '500'}}).count() == 0
 
-    c = gen_collection['collection'].update_one({'count': {'$eq': 100}}, {'$set': {'countStr': '500'}}, True)
+    c = gen_collection['collection'].update_one({'count': {'$eq': 100}}, {'$set': {'count_str': '500'}}, True)
     assert c.count() == 1
     c.close()
-    assert gen_collection['collection'].find({'countStr': {'$eq': '500'}}).count() == 1
+    assert gen_collection['collection'].find({'count_str': {'$eq': '500'}}).count() == 1

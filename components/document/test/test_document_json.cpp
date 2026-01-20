@@ -9,11 +9,11 @@ TEST_CASE("components::document::value_from_json") {
 {
   "_id": "000000000000000000000001",
   "count": 1,
-  "countBool": true,
-  "countDouble": 1.1,
-  "countStr": "1",
-  "countArray": [1, 2, 3, 4, 5],
-  "countDict": {
+  "count_bool": true,
+  "count_double": 1.1,
+  "count_str": "1",
+  "count_array": [1, 2, 3, 4, 5],
+  "count_dict": {
     "even": false,
     "five": false,
     "odd": true,
@@ -38,17 +38,17 @@ TEST_CASE("components::document::json") {
 
     REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
     REQUIRE(doc1->get_ulong("/count") == doc2->get_ulong("/count"));
-    REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
-    REQUIRE(core::is_equals(doc1->get_double("/countDouble"), doc2->get_double("/countDouble")));
-    REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
-    REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
-    REQUIRE(doc1->get_array("/countArray")->get_as<uint64_t>("1") ==
-            doc2->get_array("/countArray")->get_as<uint64_t>("1"));
-    REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
-    REQUIRE(doc1->get_dict("/countDict")->get_bool("/odd") == doc2->get_dict("/countDict")->get_bool("/odd"));
-    REQUIRE(doc1->get_array("/nestedArray")->count() == doc2->get_array("/nestedArray")->count());
-    REQUIRE(doc1->get_array("/dictArray")->count() == doc2->get_array("/dictArray")->count());
-    REQUIRE(doc1->get_dict("/mixedDict")->count() == doc2->get_dict("/mixedDict")->count());
+    REQUIRE(doc1->get_string("/count_str") == doc2->get_string("/count_str"));
+    REQUIRE(core::is_equals(doc1->get_double("/count_double"), doc2->get_double("/count_double")));
+    REQUIRE(doc1->get_bool("/count_bool") == doc2->get_bool("/count_bool"));
+    REQUIRE(doc1->get_array("/count_array")->count() == doc2->get_array("/count_array")->count());
+    REQUIRE(doc1->get_array("/count_array")->get_as<uint64_t>("1") ==
+            doc2->get_array("/count_array")->get_as<uint64_t>("1"));
+    REQUIRE(doc1->get_dict("/count_dict")->count() == doc2->get_dict("/count_dict")->count());
+    REQUIRE(doc1->get_dict("/count_dict")->get_bool("/odd") == doc2->get_dict("/count_dict")->get_bool("/odd"));
+    REQUIRE(doc1->get_array("/nested_array")->count() == doc2->get_array("/nested_array")->count());
+    REQUIRE(doc1->get_array("/dict_array")->count() == doc2->get_array("/dict_array")->count());
+    REQUIRE(doc1->get_dict("/mixed_dict")->count() == doc2->get_dict("/mixed_dict")->count());
 }
 
 TEST_CASE("components::document::serialization") {
@@ -58,9 +58,9 @@ TEST_CASE("components::document::serialization") {
     auto doc2 = deserialize_document(std::string(ser1), &allocator);
     REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
     REQUIRE(doc1->get_ulong("/count") == doc2->get_ulong("/count"));
-    REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
-    REQUIRE(doc1->get_array("/countArray")->get_as<uint64_t>("1") ==
-            doc2->get_array("/countArray")->get_as<uint64_t>("1"));
-    REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
-    REQUIRE(doc1->get_dict("/countDict")->get_bool("/odd") == doc2->get_dict("/countDict")->get_bool("/odd"));
+    REQUIRE(doc1->get_array("/count_array")->count() == doc2->get_array("/count_array")->count());
+    REQUIRE(doc1->get_array("/count_array")->get_as<uint64_t>("1") ==
+            doc2->get_array("/count_array")->get_as<uint64_t>("1"));
+    REQUIRE(doc1->get_dict("/count_dict")->count() == doc2->get_dict("/count_dict")->count());
+    REQUIRE(doc1->get_dict("/count_dict")->get_bool("/odd") == doc2->get_dict("/count_dict")->get_bool("/odd"));
 }

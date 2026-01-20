@@ -15,24 +15,24 @@ TEST_CASE("components::physical_plan::get::get_value") {
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_int() == 1);
 
-    getter = get::simple_value_t::create(key(&resource, "countStr"));
+    getter = get::simple_value_t::create(key(&resource, "count_str"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_string() == "1");
 
-    getter = get::simple_value_t::create(key(&resource, "countArray/0"));
+    getter = get::simple_value_t::create(key(&resource, "count_array/0"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_int() == 1);
 
-    getter = get::simple_value_t::create(key(&resource, "countDict/even"));
+    getter = get::simple_value_t::create(key(&resource, "count_dict/even"));
     REQUIRE(getter->value(doc));
     REQUIRE(getter->value(doc).as_bool() == false);
 
     getter = get::simple_value_t::create(key(&resource, "invalid"));
     REQUIRE_FALSE(getter->value(doc));
 
-    getter = get::simple_value_t::create(key(&resource, "countArray/10"));
+    getter = get::simple_value_t::create(key(&resource, "count_array/10"));
     REQUIRE_FALSE(getter->value(doc));
 
-    getter = get::simple_value_t::create(key(&resource, "countDict/invalid"));
+    getter = get::simple_value_t::create(key(&resource, "count_dict/invalid"));
     REQUIRE_FALSE(getter->value(doc));
 }

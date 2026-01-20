@@ -33,11 +33,11 @@ TEST_CASE("components::serialization::document") {
         REQUIRE(doc1->count() == doc2->count());
         REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
         REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));
-        REQUIRE(doc1->get_string("/countStr") == doc2->get_string("/countStr"));
-        REQUIRE(doc1->get_double("/countDouble") == Approx(doc2->get_double("/countDouble")));
-        REQUIRE(doc1->get_bool("/countBool") == doc2->get_bool("/countBool"));
-        REQUIRE(doc1->get_array("/countArray")->count() == doc2->get_array("/countArray")->count());
-        REQUIRE(doc1->get_dict("/countDict")->count() == doc2->get_dict("/countDict")->count());
+        REQUIRE(doc1->get_string("/count_str") == doc2->get_string("/count_str"));
+        REQUIRE(doc1->get_double("/count_double") == Approx(doc2->get_double("/count_double")));
+        REQUIRE(doc1->get_bool("/count_bool") == doc2->get_bool("/count_bool"));
+        REQUIRE(doc1->get_array("/count_array")->count() == doc2->get_array("/count_array")->count());
+        REQUIRE(doc1->get_dict("/count_dict")->count() == doc2->get_dict("/count_dict")->count());
         REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
     }
 }

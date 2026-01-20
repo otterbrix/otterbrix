@@ -21,7 +21,7 @@ TEST_CASE("single_field_index:base") {
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(find_range.first->doc->get_long("count") == 10);
-        REQUIRE(find_range.first->doc->get_string("countStr") == "10");
+        REQUIRE(find_range.first->doc->get_string("count_str") == "10");
         REQUIRE(++find_range.first == find_range.second);
     }
     {
@@ -75,10 +75,10 @@ TEST_CASE("single_field_index:base") {
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 2);
         REQUIRE(find_range.first->doc->get_long("count") == 10);
-        REQUIRE(find_range.first->doc->get_string("countStr") == "10");
+        REQUIRE(find_range.first->doc->get_string("count_str") == "10");
         ++find_range.first;
         REQUIRE(find_range.first->doc->get_long("count") == 10);
-        REQUIRE(find_range.first->doc->get_string("countStr") == "10");
+        REQUIRE(find_range.first->doc->get_string("count_str") == "10");
         REQUIRE(++find_range.first == find_range.second);
     }
 }

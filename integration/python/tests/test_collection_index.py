@@ -21,8 +21,8 @@ def insert(collection, num):
     new_obj = {
         '_id': gen_id(num),
         'count': num,
-        'countStr': str(num),
-        'countBool': True if num & 1 else False
+        'count_str': str(num),
+        'count_bool': True if num & 1 else False
     }
     collection.insert(new_obj)
 
@@ -31,7 +31,7 @@ def insert(collection, num):
 def gen_collection(request):
     collection = database[collection_name]
     collection.create_index(['count'], TypeIndex.SINGLE)
-    collection.create_index(['countStr'], TypeIndex.SINGLE)
+    collection.create_index(['count_str'], TypeIndex.SINGLE)
     for num in range(1000):
         insert(collection, num)
 
@@ -74,7 +74,7 @@ def gen_collection(request):
 #     col = gen_collection['collection']
 #     c = col.find({'$and': [
 #         {'count': {'$eq': 100}},
-#         {'countStr': {'$eq': '100'}}
+#         {'count_str': {'$eq': '100'}}
 #     ]})
 #     assert len(c) == 1
 #     c.next()
@@ -83,14 +83,14 @@ def gen_collection(request):
 #
 #     c = col.find({'$and': [
 #         {'count': {'$eq': 100}},
-#         {'countStr': {'$eq': '101'}}
+#         {'count_str': {'$eq': '101'}}
 #     ]})
 #     assert len(c) == 0
 #     c.close()
 #
 #     c = col.find({'$or': [
 #         {'count': {'$eq': 100}},
-#         {'countStr': {'$eq': '101'}}
+#         {'count_str': {'$eq': '101'}}
 #     ]})
 #     assert len(c) == 2
 #     c.close()

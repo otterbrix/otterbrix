@@ -20,6 +20,10 @@ namespace services::collection {
         schema_finish,
         create_index_finish,
         drop_collection_finish,
+        register_udf,
+        register_udf_finish,
+        unregister_udf,
+        unregister_udf_finish
     };
 
     constexpr uint64_t handler_id(route type) { return handler_id(group_id_t::collection, type); }

@@ -29,6 +29,8 @@ namespace services::collection::executor {
         , log_(log)
         , execute_plan_(
               actor_zeta::make_behavior(resource(), handler_id(route::execute_plan), this, &executor_t::execute_plan))
+        , register_udf_(
+              actor_zeta::make_behavior(resource(), handler_id(route::register_udf), this, &executor_t::register_udf))
         , create_documents_(actor_zeta::make_behavior(resource(),
                                                       handler_id(route::create_documents),
                                                       this,
@@ -48,13 +50,19 @@ namespace services::collection::executor {
         , index_find_finish_(actor_zeta::make_behavior(resource(),
                                                        handler_id(index::route::success_find),
                                                        this,
-                                                       &executor_t::index_find_finish)) {}
+                                                       &executor_t::index_find_finish)) {
+        components::compute::register_default_functions(function_registry_);
+    }
 
     actor_zeta::behavior_t executor_t::behavior() {
         return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
             switch (msg->command()) {
                 case handler_id(route::execute_plan): {
                     execute_plan_(msg);
+                    break;
+                }
+                case handler_id(route::register_udf): {
+                    register_udf_(msg);
                     break;
                 }
                 case handler_id(route::create_documents): {
@@ -102,7 +110,7 @@ namespace services::collection::executor {
         if (data_format == components::catalog::used_format_t::documents) {
             plan = collection::planner::create_plan(context_storage, logical_plan, limit);
         } else if (data_format == components::catalog::used_format_t::columns) {
-            plan = table::planner::create_plan(context_storage, logical_plan, limit);
+            plan = table::planner::create_plan(context_storage, function_registry_, logical_plan, limit);
         }
 
         if (!plan) {
@@ -115,6 +123,25 @@ namespace services::collection::executor {
         }
         plan->set_as_root();
         traverse_plan_(session, std::move(plan), std::move(parameters), std::move(context_storage));
+    }
+
+    void executor_t::register_udf(const components::session::session_id_t& session,
+                                  components::compute::function_ptr&& function) {
+        trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
+        std::string name = function->name();
+        auto res = function_registry_.add_function(std::move(function));
+        register_udf_finish(session, name, res.value());
+    }
+
+    void executor_t::register_udf_finish(const components::session::session_id_t& session,
+                                         const std::string& function_name,
+                                         components::compute::function_uid uid) {
+        actor_zeta::send(memory_storage_,
+                         address(),
+                         handler_id(route::register_udf_finish),
+                         session,
+                         function_name,
+                         uid);
     }
 
     void executor_t::create_documents(const components::session::session_id_t& session,

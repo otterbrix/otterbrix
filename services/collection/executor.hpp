@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/table_metadata.hpp>
+#include <components/compute/function.hpp>
 
 #include <services/collection/collection.hpp>
 #include <services/memory_storage/context_storage.hpp>
@@ -29,6 +30,12 @@ namespace services::collection::executor {
                           components::logical_plan::storage_parameters parameters,
                           services::context_storage_t&& context_storage,
                           components::catalog::used_format_t data_format);
+
+        void register_udf(const components::session::session_id_t& session,
+                          components::compute::function_ptr&& function);
+        void register_udf_finish(const components::session::session_id_t& session,
+                                 const std::string& function_name,
+                                 components::compute::function_uid uid);
 
         void create_documents(const session_id_t& session,
                               context_collection_t* collection,
@@ -85,9 +92,11 @@ namespace services::collection::executor {
         actor_zeta::address_t memory_storage_ = actor_zeta::address_t::empty_address();
         plan_storage_t plans_;
         log_t log_;
+        components::compute::function_registry_t function_registry_;
 
         // Behaviors
         actor_zeta::behavior_t execute_plan_;
+        actor_zeta::behavior_t register_udf_;
         actor_zeta::behavior_t create_documents_;
         actor_zeta::behavior_t create_index_finish_;
         actor_zeta::behavior_t create_index_finish_index_exist_;

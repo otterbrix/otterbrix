@@ -51,6 +51,14 @@ namespace services {
                                                                 handler_id(route::execute_plan_delete_finish),
                                                                 this,
                                                                 &memory_storage_t::execute_plan_delete_finish))
+        , register_udf_(actor_zeta::make_behavior(resource(),
+                                                  handler_id(collection::route::register_udf),
+                                                  this,
+                                                  &memory_storage_t::register_udf))
+        , register_udf_finish_(actor_zeta::make_behavior(resource(),
+                                                         handler_id(collection::route::register_udf_finish),
+                                                         this,
+                                                         &memory_storage_t::register_udf_finish))
 
     {
         ZoneScoped;
@@ -103,6 +111,14 @@ namespace services {
                     execute_plan_delete_finish_(msg);
                     break;
                 }
+                case handler_id(collection::route::register_udf): {
+                    register_udf_(msg);
+                    break;
+                }
+                case handler_id(collection::route::register_udf_finish): {
+                    register_udf_finish_(msg);
+                    break;
+                }
             }
         });
     }
@@ -135,6 +151,31 @@ namespace services {
                 execute_plan_impl(session, std::move(logical_plan), std::move(parameters), used_format);
                 break;
         }
+    }
+
+    void memory_storage_t::register_udf(const components::session::session_id_t& session,
+                                        components::compute::function_ptr&& function) {
+        trace(log_, "memory_storage_t::register_udf: session {}, {}", session.data(), function->name());
+        sessions_.emplace(session, session_t{nullptr, current_message()->sender(), 1});
+        actor_zeta::send(executor_address_,
+                         address(),
+                         collection::handler_id(collection::route::register_udf),
+                         session,
+                         std::move(function));
+    }
+
+    void memory_storage_t::register_udf_finish(const components::session::session_id_t& session,
+                                               const std::string& function_name,
+                                               components::compute::function_uid uid) {
+        auto& s = sessions_.at(session);
+        debug(log_, "memory_storage_t:register_udf_finish: session: {}, {}", session.data(), function_name);
+        actor_zeta::send(s.sender,
+                         address(),
+                         handler_id(collection::route::register_udf_finish),
+                         session,
+                         function_name,
+                         uid);
+        sessions_.erase(session);
     }
 
     void memory_storage_t::size(const components::session::session_id_t& session, collection_full_name_t&& name) {

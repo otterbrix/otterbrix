@@ -9,6 +9,7 @@
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/catalog/table_id.hpp>
+#include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/document/document.hpp>
 #include <components/expressions/update_expression.hpp>
@@ -76,6 +77,8 @@ namespace otterbrix {
                          bool upsert) -> components::cursor::cursor_t_ptr;
         auto size(const session_id_t& session, const database_name_t& database, const collection_name_t& collection)
             -> size_t;
+        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
+        auto unregister_udf(const session_id_t& session, const std::string& function_name) -> bool;
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)
@@ -101,11 +104,15 @@ namespace otterbrix {
         // Behaviors
         actor_zeta::behavior_t load_finish_;
         actor_zeta::behavior_t execute_plan_finish_;
+        actor_zeta::behavior_t register_udf_finish_;
+        actor_zeta::behavior_t unregister_udf_finish_;
         actor_zeta::behavior_t size_finish_;
         actor_zeta::behavior_t schema_finish_;
         /// async method
         auto load_finish(const session_id_t& session) -> void;
         auto execute_plan_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
+        auto register_udf_finish(const session_id_t& session, bool success) -> void;
+        auto unregister_udf_finish(const session_id_t& session, bool success) -> void;
         auto size_finish(const session_id_t& session, size_t size) -> void;
         auto schema_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
 

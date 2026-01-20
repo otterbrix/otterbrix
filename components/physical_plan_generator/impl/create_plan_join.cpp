@@ -35,9 +35,11 @@ namespace services::collection::planner::impl {
 
 namespace services::table::planner::impl {
 
-    components::base::operators::operator_ptr create_plan_join(const context_storage_t& context,
-                                                               const components::logical_plan::node_ptr& node,
-                                                               components::logical_plan::limit_t limit) {
+    components::base::operators::operator_ptr
+    create_plan_join(const context_storage_t& context,
+                     const components::compute::function_registry_t& function_registry,
+                     const components::logical_plan::node_ptr& node,
+                     components::logical_plan::limit_t limit) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
         auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
@@ -47,10 +49,10 @@ namespace services::table::planner::impl {
         components::base::operators::operator_ptr left;
         components::base::operators::operator_ptr right;
         if (node->children().front()) {
-            left = create_plan(context, node->children().front(), limit);
+            left = create_plan(context, function_registry, node->children().front(), limit);
         }
         if (node->children().back()) {
-            right = create_plan(context, node->children().back(), limit);
+            right = create_plan(context, function_registry, node->children().back(), limit);
         }
         join->set_children(std::move(left), std::move(right));
         return join;

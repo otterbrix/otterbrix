@@ -50,6 +50,12 @@ namespace services {
                           components::logical_plan::storage_parameters parameters,
                           components::catalog::used_format_t used_format);
 
+        void register_udf(const components::session::session_id_t& session,
+                          components::compute::function_ptr&& function);
+        void register_udf_finish(const components::session::session_id_t& session,
+                                 const std::string& function_name,
+                                 components::compute::function_uid uid);
+
         void size(const components::session::session_id_t& session, collection_full_name_t&& name);
         void close_cursor(const components::session::session_id_t& session,
                           std::set<collection_full_name_t>&& collections);
@@ -73,6 +79,8 @@ namespace services {
         actor_zeta::behavior_t execute_plan_;
         actor_zeta::behavior_t execute_plan_finish_;
         actor_zeta::behavior_t execute_plan_delete_finish_;
+        actor_zeta::behavior_t register_udf_;
+        actor_zeta::behavior_t register_udf_finish_;
 
         actor_zeta::address_t manager_dispatcher_{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t manager_disk_{actor_zeta::address_t::empty_address()};

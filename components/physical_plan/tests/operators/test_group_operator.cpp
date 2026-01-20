@@ -9,9 +9,6 @@
 #include <components/physical_plan/collection/operators/operator_group.hpp>
 #include <components/physical_plan/collection/operators/operator_sort.hpp>
 #include <components/physical_plan/collection/operators/scan/transfer_scan.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_avg.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_count.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_sum.hpp>
 #include <components/physical_plan/table/operators/get/simple_value.hpp>
 #include <components/physical_plan/table/operators/operator_group.hpp>
 #include <components/physical_plan/table/operators/operator_sort.hpp>

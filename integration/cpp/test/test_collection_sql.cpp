@@ -294,6 +294,17 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             --number;
         }
     }
+
+    INFO("unknown function") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT name, UNREGISTERED_FUNCTION(count) AS result )_"
+                                           R"_(FROM TestDatabase.TestCollection )_"
+                                           R"_(GROUP BY name )_"
+                                           R"_(ORDER BY name DESC;)_");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == cursor::error_code_t::unrecognized_function);
+    }
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {

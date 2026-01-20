@@ -1,5 +1,7 @@
 #pragma once
 
+#include "compute/compute_kernel.hpp"
+#include "compute/function.hpp"
 #include "computed_schema.hpp"
 #include "table_id.hpp"
 #include "table_metadata.hpp"
@@ -44,6 +46,10 @@ namespace components::catalog {
         void drop_type(const std::string& type_name);
         [[nodiscard]] bool type_exists(const std::string& type_name) const;
 
+        void create_function(const std::string& function_name, compute::function_uid uid);
+        void drop_function(const std::string& function_name);
+        [[nodiscard]] bool function_exists(const std::string& function_name) const;
+
         [[nodiscard]] std::pmr::vector<table_namespace_t> list_root_namespaces() const;
         [[nodiscard]] std::pmr::vector<table_namespace_t> list_child_namespaces(const table_namespace_t& parent) const;
         [[nodiscard]] std::pmr::vector<table_namespace_t> list_all_namespaces() const;
@@ -54,6 +60,7 @@ namespace components::catalog {
 
         [[nodiscard]] namespace_info& get_namespace_info(const table_namespace_t& namespace_name);
         [[nodiscard]] const types::complex_logical_type& get_type(const std::string& type_name) const;
+        [[nodiscard]] compute::function_uid get_function(const std::string& function_name) const;
 
         void clear();
         size_t size() const;
@@ -61,6 +68,7 @@ namespace components::catalog {
     private:
         using trie_type = versioned_trie<table_namespace_t, namespace_info>;
         using type_set = std::pmr::unordered_map<std::string, types::complex_logical_type>;
+        using functions_set = std::pmr::unordered_map<std::string, compute::function_uid>;
 
         struct namespace_info {
             namespace_info(std::pmr::memory_resource* resource)
@@ -75,6 +83,7 @@ namespace components::catalog {
 
         trie_type namespaces_;
         type_set registered_types_;
+        functions_set registered_functions_;
         std::pmr::memory_resource* resource_;
     };
 } // namespace components::catalog

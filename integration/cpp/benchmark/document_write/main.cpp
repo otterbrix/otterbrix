@@ -8,8 +8,8 @@ void document_write(benchmark::State& state) {
     auto doc = make_document(wr_dispatcher()->resource());
 
     std::string key_simple{"count"};
-    std::string key_array{"countArray.1"};
-    std::string key_dict{"countDict.odd"};
+    std::string key_array{"count_array.1"};
+    std::string key_dict{"count_dict.odd"};
 
     bool value_bool{true};
     int64_t value_int{100};

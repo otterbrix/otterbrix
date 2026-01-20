@@ -175,8 +175,8 @@ TEST_CASE("integration::cpp::test_index::save_load") {
 
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "countStr");
-        CREATE_INDEX("dcount", "countDouble");
+        CREATE_INDEX("scount", "count_str");
+        CREATE_INDEX("dcount", "count_double");
         FILL_COLLECTION();
     }
 
@@ -204,8 +204,8 @@ TEST_CASE("integration::cpp::test_index::drop") {
     INFO("initialization") {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "countStr");
-        CREATE_INDEX("dcount", "countDouble");
+        CREATE_INDEX("scount", "count_str");
+        CREATE_INDEX("dcount", "count_double");
         FILL_COLLECTION();
         usleep(1000000); //todo: wait
     }
@@ -254,8 +254,8 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
     INFO("initialization") {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "countStr");
-        CREATE_INDEX("dcount", "countDouble");
+        CREATE_INDEX("scount", "count_str");
+        CREATE_INDEX("dcount", "count_double");
         FILL_COLLECTION();
     }
 
@@ -265,13 +265,13 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
     }
 
     INFO("add existed scount index") {
-        CREATE_INDEX("scount", "countStr");
-        CREATE_INDEX("scount", "countStr");
+        CREATE_INDEX("scount", "count_str");
+        CREATE_INDEX("scount", "count_str");
     }
 
     INFO("add existed dcount index") {
-        CREATE_INDEX("dcount", "countDouble");
-        CREATE_INDEX("dcount", "countDouble");
+        CREATE_INDEX("dcount", "count_double");
+        CREATE_INDEX("dcount", "count_double");
     }
 
     INFO("find") {
@@ -291,8 +291,8 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
     INFO("initialization") {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("dcount", "countDouble");
-        CREATE_INDEX("scount", "countStr");
+        CREATE_INDEX("dcount", "count_double");
+        CREATE_INDEX("scount", "count_str");
         FILL_COLLECTION();
     }
 
@@ -322,8 +322,8 @@ TEST_CASE("integration::cpp::test_index::no_type save_load") {
 
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "countStr");
-        CREATE_INDEX("dcount", "countDouble");
+        CREATE_INDEX("scount", "count_str");
+        CREATE_INDEX("dcount", "count_double");
         FILL_COLLECTION();
     }
 

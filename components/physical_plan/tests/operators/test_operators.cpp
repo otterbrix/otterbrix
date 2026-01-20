@@ -318,7 +318,7 @@ TEST_CASE("components::physical_plan::update") {
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
         update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
-            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
+            {std::pmr::string{"count_array", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -342,7 +342,7 @@ TEST_CASE("components::physical_plan::update") {
                                                       logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 10);
-                REQUIRE(scan.output()->documents().front()->get_value("countArray/0").as_logical_value() ==
+                REQUIRE(scan.output()->documents().front()->get_value("count_array/0").as_logical_value() ==
                         pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }
@@ -387,7 +387,7 @@ TEST_CASE("components::physical_plan::update") {
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
         update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
-            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
+            {std::pmr::string{"count_array", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -411,7 +411,7 @@ TEST_CASE("components::physical_plan::update") {
                                                       logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 1);
-                REQUIRE(scan.output()->documents().front()->get_value("countArray/0").as_logical_value() ==
+                REQUIRE(scan.output()->documents().front()->get_value("count_array/0").as_logical_value() ==
                         pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }
@@ -454,7 +454,7 @@ TEST_CASE("components::physical_plan::update") {
         update_expr_ptr script_update_1 = new update_expr_set_t(expressions::key_t{&resource, "count"});
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
         update_expr_ptr script_update_2 = new update_expr_set_t(expressions::key_t{std::pmr::vector<std::pmr::string>{
-            {std::pmr::string{"countArray", &resource}, std::pmr::string{"0", &resource}}}});
+            {std::pmr::string{"count_array", &resource}, std::pmr::string{"0", &resource}}}});
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         SECTION("documents") {
@@ -478,7 +478,7 @@ TEST_CASE("components::physical_plan::update") {
                                                       logical_plan::limit_t::unlimit());
                 scan.on_execute(&pipeline_context);
                 REQUIRE(scan.output()->size() == 5);
-                REQUIRE(scan.output()->documents().front()->get_value("countArray/0").as_logical_value() ==
+                REQUIRE(scan.output()->documents().front()->get_value("count_array/0").as_logical_value() ==
                         pipeline_context.parameters.parameters.at(core::parameter_id_t(3)));
             }
         }

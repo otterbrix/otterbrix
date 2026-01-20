@@ -9,7 +9,7 @@ using components::document::document_t;
 static void read_wrong(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = gen_doc(1000, &allocator);
-    std::string_view key_bool{"/countBool"};
+    std::string_view key_bool{"/count_bool"};
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
@@ -32,11 +32,11 @@ static void read(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = gen_doc(1000, &allocator);
     std::string_view key_int{"/count"};
-    std::string_view key_str{"/countStr"};
-    std::string_view key_double{"/countDouble"};
-    std::string_view key_bool{"/countBool"};
-    std::string_view key_array{"/countArray"};
-    std::string_view key_dict{"/countDict"};
+    std::string_view key_str{"/count_str"};
+    std::string_view key_double{"/count_double"};
+    std::string_view key_bool{"/count_bool"};
+    std::string_view key_array{"/count_array"};
+    std::string_view key_dict{"/count_dict"};
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
@@ -60,13 +60,13 @@ BENCHMARK(read)->Arg(1000);
 static void deep_read(benchmark::State& state) {
     auto allocator = std::pmr::synchronized_pool_resource();
     auto doc = gen_doc(1000, &allocator);
-    std::string_view array_int_key{"/countArray/3"};
-    std::string_view array_array_key{"/nestedArray/2"};
-    std::string_view dict_dict_key{"/mixedDict/1001"};
-    std::string_view array_dict_key{"/dictArray/3"};
-    std::string_view array_array_int_key{"/nestedArray/2/2"};
-    std::string_view array_dict_int_key{"/dictArray/3/number"};
-    std::string_view dict_dict_bool_key{"/mixedDict/1001/odd"};
+    std::string_view array_int_key{"/count_array/3"};
+    std::string_view array_array_key{"/nested_array/2"};
+    std::string_view dict_dict_key{"/mixed_dict/1001"};
+    std::string_view array_dict_key{"/dict_array/3"};
+    std::string_view array_array_int_key{"/nested_array/2/2"};
+    std::string_view array_dict_int_key{"/dict_array/3/number"};
+    std::string_view dict_dict_bool_key{"/mixed_dict/1001/odd"};
 
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
@@ -174,7 +174,7 @@ static void remove_deep(benchmark::State& state) {
 
     for (auto _ : state) {
         for (size_t i = 0; i < static_cast<size_t>(state.range(0)); ++i) {
-            v.at(i)->remove("dictArray/0/number");
+            v.at(i)->remove("dict_array/0/number");
         }
     }
 }

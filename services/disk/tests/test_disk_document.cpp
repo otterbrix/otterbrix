@@ -32,13 +32,13 @@ TEST_CASE("services::disk::sync_documents_from_disk") {
             REQUIRE(doc != nullptr);
             REQUIRE(doc->get_string("_id") == gen_id(num, &resource));
             REQUIRE(doc->get_long("count") == num);
-            auto str1 = doc->get_string("countStr");
+            auto str1 = doc->get_string("count_str");
             auto str2 = core::pmr::to_pmr_string(&resource, num);
             REQUIRE(str1 == str2);
-            REQUIRE(doc->get_double("countDouble") == Approx(float(num) + 0.1));
-            REQUIRE(doc->get_bool("countBool") == (num % 2 != 0));
-            REQUIRE(doc->get_array("countArray")->count() == 5);
-            REQUIRE(doc->get_dict("countDict")->count() == 4);
+            REQUIRE(doc->get_double("count_double") == Approx(float(num) + 0.1));
+            REQUIRE(doc->get_bool("count_bool") == (num % 2 != 0));
+            REQUIRE(doc->get_array("count_array")->count() == 5);
+            REQUIRE(doc->get_dict("count_dict")->count() == 4);
         }
     }
 
@@ -53,11 +53,11 @@ TEST_CASE("services::disk::sync_documents_from_disk") {
                 REQUIRE(doc != nullptr);
                 REQUIRE(doc->get_string("_id") == gen_id(num, &resource));
                 REQUIRE(doc->get_long("count") == num);
-                REQUIRE(doc->get_string("countStr") == core::pmr::to_pmr_string(&resource, num));
-                REQUIRE(doc->get_double("countDouble") == Approx(float(num) + 0.1));
-                REQUIRE(doc->get_bool("countBool") == (num % 2 != 0));
-                REQUIRE(doc->get_array("countArray")->count() == 5);
-                REQUIRE(doc->get_dict("countDict")->count() == 4);
+                REQUIRE(doc->get_string("count_str") == core::pmr::to_pmr_string(&resource, num));
+                REQUIRE(doc->get_double("count_double") == Approx(float(num) + 0.1));
+                REQUIRE(doc->get_bool("count_bool") == (num % 2 != 0));
+                REQUIRE(doc->get_array("count_array")->count() == 5);
+                REQUIRE(doc->get_dict("count_dict")->count() == 4);
             } else {
                 REQUIRE(doc == nullptr);
             }

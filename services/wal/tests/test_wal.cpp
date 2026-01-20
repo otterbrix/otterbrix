@@ -117,7 +117,7 @@ TEST_CASE("services::wal::insert_one_test") {
             auto doc = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().front();
             REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
             REQUIRE(doc->get_long("/count") == num);
-            REQUIRE(doc->get_string("/countStr") == std::pmr::string(std::to_string(num), &resource));
+            REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
 
             read_index = finish;
         }
@@ -260,7 +260,7 @@ TEST_CASE("services::wal::insert_many_test") {
                 ++num;
                 REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
                 REQUIRE(doc->get_long("/count") == num);
-                REQUIRE(doc->get_string("/countStr") == std::pmr::string(std::to_string(num), &resource));
+                REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
             }
 
             read_index = finish;
@@ -561,7 +561,7 @@ TEST_CASE("services::wal::read_record") {
             auto doc = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->documents().front();
             REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
             REQUIRE(doc->get_long("/count") == num);
-            REQUIRE(doc->get_string("/countStr") == std::pmr::string(std::to_string(num), &resource));
+            REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
             index = test_wal.wal->test_next_record(index);
         }
         REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);

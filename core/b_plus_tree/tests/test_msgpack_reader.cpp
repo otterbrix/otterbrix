@@ -27,17 +27,17 @@ TEST_CASE("core::b_plus_tree::msgpack_reader") {
         REQUIRE(doc1->get_string("/_id") == get_field(msg.get(), "/_id").value<physical_type::STRING>());
         REQUIRE(doc1->get_long("/count") ==
                 static_cast<int64_t>(get_field(msg.get(), "/count").value<physical_type::UINT64>()));
-        REQUIRE(doc1->get_string("/countStr") == get_field(msg.get(), "/countStr").value<physical_type::STRING>());
-        REQUIRE(core::is_equals(doc1->get_double("/countDouble"),
-                                get_field(msg.get(), "/countDouble").value<physical_type::DOUBLE>()));
-        REQUIRE(doc1->get_bool("/countBool") == get_field(msg.get(), "/countBool"));
+        REQUIRE(doc1->get_string("/count_str") == get_field(msg.get(), "/count_str").value<physical_type::STRING>());
+        REQUIRE(core::is_equals(doc1->get_double("/count_double"),
+                                get_field(msg.get(), "/count_double").value<physical_type::DOUBLE>()));
+        REQUIRE(doc1->get_bool("/count_bool") == get_field(msg.get(), "/count_bool"));
         REQUIRE(doc1->get_dict("/null") == get_field(msg.get(), "/null").value<physical_type::NA>());
-        for (size_t i = 0; i < doc1->get_array("/countArray")->count(); i++) {
-            std::string json_ptr = "/countArray/" + std::to_string(i);
+        for (size_t i = 0; i < doc1->get_array("/count_array")->count(); i++) {
+            std::string json_ptr = "/count_array/" + std::to_string(i);
             REQUIRE(doc1->get_long(json_ptr) ==
                     static_cast<int64_t>(get_field(msg.get(), json_ptr).value<physical_type::UINT64>()));
         }
-        REQUIRE(doc1->get_bool("/countDict/odd") == get_field(msg.get(), "/countDict/odd"));
-        REQUIRE(doc1->get_bool("/countDict/even") == get_field(msg.get(), "/countDict/even"));
+        REQUIRE(doc1->get_bool("/count_dict/odd") == get_field(msg.get(), "/count_dict/odd"));
+        REQUIRE(doc1->get_bool("/count_dict/even") == get_field(msg.get(), "/count_dict/even"));
     }
 }

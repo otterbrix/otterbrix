@@ -66,6 +66,31 @@ namespace components::catalog {
         return it != registered_types_.end();
     }
 
+    void namespace_storage::create_function(const std::string& function_name, compute::function_uid uid) {
+        if (function_exists(function_name)) {
+            return;
+        }
+
+        registered_functions_.emplace(function_name, uid);
+    }
+
+    void namespace_storage::drop_function(const std::string& function_name) {
+        if (!function_exists(function_name)) {
+            return;
+        }
+
+        registered_functions_.erase(function_name);
+    }
+
+    bool namespace_storage::function_exists(const std::string& function_name) const {
+        if (registered_functions_.empty()) {
+            return false;
+        }
+
+        auto it = registered_functions_.find(function_name);
+        return it != registered_functions_.end();
+    }
+
     // todo: reuse list_child
     std::pmr::vector<table_namespace_t> namespace_storage::list_root_namespaces() const {
         std::pmr::vector<table_namespace_t> result(resource_);
@@ -156,10 +181,18 @@ namespace components::catalog {
 
     const types::complex_logical_type& namespace_storage::get_type(const std::string& type_name) const {
         if (!type_exists(type_name)) {
-            throw std::logic_error("type does not registered: " + type_name);
+            throw std::logic_error("type is not registered: " + type_name);
         }
 
         return registered_types_.find(type_name)->second;
+    }
+
+    compute::function_uid namespace_storage::get_function(const std::string& function_name) const {
+        if (!function_exists(function_name)) {
+            throw std::logic_error("function is not registered: " + function_name);
+        }
+
+        return registered_functions_.find(function_name)->second;
     }
 
     void namespace_storage::clear() { namespaces_.clear(); }

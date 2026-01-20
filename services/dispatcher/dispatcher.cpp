@@ -1,5 +1,8 @@
 #include "dispatcher.hpp"
 
+#include "expressions/aggregate_expression.hpp"
+#include "logical_plan/node_group.hpp"
+
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 
@@ -57,6 +60,18 @@ namespace services::dispatcher {
                                         memory_storage::handler_id(memory_storage::route::execute_plan_delete_finish),
                                         this,
                                         &dispatcher_t::execute_plan_delete_finish))
+        , register_udf_(actor_zeta::make_behavior(resource(),
+                                                  handler_id(collection::route::register_udf),
+                                                  this,
+                                                  &dispatcher_t::register_udf))
+        , register_udf_finish_(actor_zeta::make_behavior(resource(),
+                                                         handler_id(collection::route::register_udf_finish),
+                                                         this,
+                                                         &dispatcher_t::register_udf_finish))
+        , unregister_udf_(actor_zeta::make_behavior(resource(),
+                                                    handler_id(collection::route::unregister_udf),
+                                                    this,
+                                                    &dispatcher_t::unregister_udf))
         , size_(actor_zeta::make_behavior(resource(),
                                           collection::handler_id(collection::route::size),
                                           this,
@@ -116,6 +131,18 @@ namespace services::dispatcher {
                 }
                 case memory_storage::handler_id(memory_storage::route::execute_plan_delete_finish): {
                     execute_plan_delete_finish_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::register_udf): {
+                    register_udf_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::register_udf_finish): {
+                    register_udf_finish_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::unregister_udf): {
+                    unregister_udf_(msg);
                     break;
                 }
                 case collection::handler_id(collection::route::size): {
@@ -247,6 +274,55 @@ namespace services::dispatcher {
                     break;
             }
         }
+    }
+
+    void dispatcher_t::register_udf(const components::session::session_id_t& session,
+                                    components::compute::function_ptr&& function,
+                                    actor_zeta::base::address_t sender) {
+        trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
+        make_session(session_to_address_, session, session_t(std::move(sender)));
+
+        if (catalog_.function_exists(function->name())) {
+            register_udf_finish(session, function->name(), components::compute::invalid_function_uid);
+        } else {
+            actor_zeta::send(memory_storage_,
+                             dispatcher_t::address(),
+                             collection::handler_id(collection::route::register_udf),
+                             session,
+                             std::move(function));
+        }
+    }
+
+    void dispatcher_t::register_udf_finish(const components::session::session_id_t& session,
+                                           const std::string& function_name,
+                                           components::compute::function_uid uid) {
+        trace(log_, "dispatcher_t::register_udf_finish session: {}, function name: {}", session.data(), function_name);
+        bool result = uid != components::compute::invalid_function_uid;
+        if (result) {
+            catalog_.create_function(function_name, uid);
+        }
+        actor_zeta::send(find_session(session_to_address_, session).address(),
+                         dispatcher_t::address(),
+                         collection::handler_id(collection::route::register_udf_finish),
+                         session,
+                         result);
+        remove_session(session_to_address_, session);
+    }
+
+    void dispatcher_t::unregister_udf(const components::session::session_id_t& session,
+                                      const std::string& function_name,
+                                      actor_zeta::base::address_t sender) {
+        trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
+        bool result = false;
+        if (catalog_.function_exists(function_name)) {
+            catalog_.drop_function(function_name);
+            result = true;
+        }
+        actor_zeta::send(sender,
+                         dispatcher_t::address(),
+                         collection::handler_id(collection::route::unregister_udf_finish),
+                         session,
+                         result);
     }
 
     void dispatcher_t::execute_plan(const components::session::session_id_t& session,
@@ -680,6 +756,23 @@ namespace services::dispatcher {
                     return false;
                 }
             }
+            if (node->type() == components::logical_plan::node_type::group_t) {
+                auto* group_node = reinterpret_cast<components::logical_plan::node_group_t*>(node);
+                for (auto& expr : group_node->expressions()) {
+                    if (expr->group() == components::expressions::expression_group::aggregate) {
+                        auto* agg_expr = reinterpret_cast<components::expressions::aggregate_expression_t*>(expr.get());
+                        if (catalog_.function_exists(agg_expr->function_name())) {
+                            // TODO: check function arguments
+                            agg_expr->add_function_uid(catalog_.get_function_uid(agg_expr->function_name()));
+                        } else {
+                            result = make_cursor(resource(),
+                                                 error_code_t::unrecognized_function,
+                                                 "logical plan group expr has an unrecognized function call");
+                            return false;
+                        }
+                    }
+                }
+            }
             // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == components::logical_plan::node_type::data_t) {
                 auto* data_node = reinterpret_cast<components::logical_plan::node_data_t*>(node);
@@ -905,6 +998,14 @@ namespace services::dispatcher {
                                                   handler_id(route::execute_plan),
                                                   this,
                                                   &manager_dispatcher_t::execute_plan))
+        , register_udf_(actor_zeta::make_behavior(resource(),
+                                                  collection::handler_id(collection::route::register_udf),
+                                                  this,
+                                                  &manager_dispatcher_t::register_udf))
+        , unregister_udf_(actor_zeta::make_behavior(resource(),
+                                                    collection::handler_id(collection::route::unregister_udf),
+                                                    this,
+                                                    &manager_dispatcher_t::unregister_udf))
         , size_(actor_zeta::make_behavior(resource(),
                                           collection::handler_id(collection::route::size),
                                           this,
@@ -949,6 +1050,14 @@ namespace services::dispatcher {
                 }
                 case handler_id(route::execute_plan): {
                     execute_plan_(msg);
+                    break;
+                }
+                case handler_id(collection::route::register_udf): {
+                    register_udf_(msg);
+                    break;
+                }
+                case handler_id(collection::route::unregister_udf): {
+                    unregister_udf_(msg);
                     break;
                 }
                 case collection::handler_id(collection::route::size): {
@@ -1012,6 +1121,34 @@ namespace services::dispatcher {
                                 std::move(plan),
                                 std::move(params),
                                 current_message()->sender());
+    }
+
+    void manager_dispatcher_t::register_udf(const components::session::session_id_t& session,
+                                            components::compute::function_ptr&& function) {
+        trace(log_,
+              "manager_dispatcher_t::register_udf session: {}, function name: {}",
+              session.data(),
+              function->name());
+        actor_zeta::send(dispatcher(),
+                         address(),
+                         collection::handler_id(collection::route::register_udf),
+                         session,
+                         std::move(function),
+                         current_message()->sender());
+    }
+
+    void manager_dispatcher_t::unregister_udf(const components::session::session_id_t& session,
+                                              const std::string& function_name) {
+        trace(log_,
+              "manager_dispatcher_t::unregister_udf session: {}, function name: {}",
+              session.data(),
+              function_name);
+        actor_zeta::send(dispatcher(),
+                         address(),
+                         collection::handler_id(collection::route::unregister_udf),
+                         session,
+                         function_name,
+                         current_message()->sender());
     }
 
     void manager_dispatcher_t::size(const components::session::session_id_t& session,

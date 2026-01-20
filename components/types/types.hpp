@@ -182,6 +182,11 @@ namespace components::types {
             case logical_type::HUGEINT:
             case logical_type::FLOAT:
             case logical_type::DOUBLE:
+            case logical_type::TIMESTAMP_SEC:
+            case logical_type::TIMESTAMP_MS:
+            case logical_type::TIMESTAMP_US:
+            case logical_type::TIMESTAMP_NS:
+            case logical_type::DECIMAL:
                 return true;
             default:
                 return false;

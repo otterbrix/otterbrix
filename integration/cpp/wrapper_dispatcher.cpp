@@ -27,6 +27,15 @@ namespace otterbrix {
                                                          dispatcher::handler_id(dispatcher::route::execute_plan_finish),
                                                          this,
                                                          &wrapper_dispatcher_t::execute_plan_finish))
+        , register_udf_finish_(actor_zeta::make_behavior(resource(),
+                                                         collection::handler_id(collection::route::register_udf_finish),
+                                                         this,
+                                                         &wrapper_dispatcher_t::register_udf_finish))
+        , unregister_udf_finish_(
+              actor_zeta::make_behavior(resource(),
+                                        collection::handler_id(collection::route::unregister_udf_finish),
+                                        this,
+                                        &wrapper_dispatcher_t::unregister_udf_finish))
         , size_finish_(actor_zeta::make_behavior(resource(),
                                                  collection::handler_id(collection::route::size_finish),
                                                  this,
@@ -51,6 +60,14 @@ namespace otterbrix {
                 }
                 case dispatcher::handler_id(dispatcher::route::execute_plan_finish): {
                     execute_plan_finish_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::register_udf_finish): {
+                    register_udf_finish_(msg);
+                    break;
+                }
+                case collection::handler_id(collection::route::unregister_udf_finish): {
+                    unregister_udf_finish_(msg);
                     break;
                 }
                 case collection::handler_id(collection::route::size_finish): {
@@ -278,6 +295,39 @@ namespace otterbrix {
         return result_store_;
     }
 
+    auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
+        -> bool {
+        trace(log_,
+              "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
+              session.data(),
+              function->name());
+        bool result_store_;
+        session_id_t approved_session = init(session, &result_store_);
+        actor_zeta::send(manager_dispatcher_,
+                         address(),
+                         collection::handler_id(collection::route::register_udf),
+                         approved_session,
+                         std::move(function));
+        wait(approved_session);
+        return result_store_;
+    }
+
+    auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session, const std::string& function_name) -> bool {
+        trace(log_,
+              "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
+              session.data(),
+              function_name);
+        bool result_store_;
+        session_id_t approved_session = init(session, &result_store_);
+        actor_zeta::send(manager_dispatcher_,
+                         address(),
+                         collection::handler_id(collection::route::unregister_udf),
+                         approved_session,
+                         function_name);
+        wait(approved_session);
+        return result_store_;
+    }
+
     auto wrapper_dispatcher_t::create_index(const session_id_t& session,
                                             components::logical_plan::node_create_index_ptr node)
         -> components::cursor::cursor_t_ptr {
@@ -359,6 +409,18 @@ namespace otterbrix {
         notify(session, std::move(cursor));
     }
 
+    auto wrapper_dispatcher_t::register_udf_finish(const session_id_t& session, bool success) -> void {
+        trace(log_, "wrapper_dispatcher_t::register_udf_finish session: {} {}", session.data(), success);
+        std::unique_lock<std::mutex> lk(output_mtx_);
+        notify(session, success);
+    }
+
+    auto wrapper_dispatcher_t::unregister_udf_finish(const session_id_t& session, bool success) -> void {
+        trace(log_, "wrapper_dispatcher_t::unregister_udf_finish session: {} {}", session.data(), success);
+        std::unique_lock<std::mutex> lk(output_mtx_);
+        notify(session, success);
+    }
+
     auto wrapper_dispatcher_t::size_finish(const session_id_t& session, size_t size) -> void {
         trace(log_, "wrapper_dispatcher_t::size_finish session: {} {}", session.data(), size);
         std::unique_lock<std::mutex> lk(output_mtx_);
@@ -389,6 +451,12 @@ namespace otterbrix {
 
     void wrapper_dispatcher_t::notify(const session_id_t& session) {
         blocker_.set_value_flag(session, true);
+        // multiple threads can be waiting
+        cv_.notify_all();
+    }
+
+    void wrapper_dispatcher_t::notify(const session_id_t& session, bool success) {
+        blocker_.set_value<bool>(session, success);
         // multiple threads can be waiting
         cv_.notify_all();
     }

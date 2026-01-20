@@ -18,6 +18,7 @@
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 
+#include "compute/function.hpp"
 #include "route.hpp"
 #include "session.hpp"
 
@@ -55,6 +56,15 @@ namespace services::dispatcher {
         void execute_plan_delete_finish(const components::session::session_id_t& session,
                                         components::cursor::cursor_t_ptr cursor,
                                         recomputed_types updates);
+        void register_udf(const components::session::session_id_t& session,
+                          components::compute::function_ptr&& function,
+                          actor_zeta::base::address_t sender);
+        void register_udf_finish(const components::session::session_id_t& session,
+                                 const std::string& function_name,
+                                 components::compute::function_uid uid);
+        void unregister_udf(const components::session::session_id_t& session,
+                            const std::string& function_name,
+                            actor_zeta::base::address_t sender);
         void size(const components::session::session_id_t& session,
                   std::string& database_name,
                   std::string& collection,
@@ -75,6 +85,9 @@ namespace services::dispatcher {
         actor_zeta::behavior_t execute_plan_;
         actor_zeta::behavior_t execute_plan_finish_;
         actor_zeta::behavior_t execute_plan_delete_finish_;
+        actor_zeta::behavior_t register_udf_;
+        actor_zeta::behavior_t register_udf_finish_;
+        actor_zeta::behavior_t unregister_udf_;
         actor_zeta::behavior_t size_;
         actor_zeta::behavior_t size_finish_;
         actor_zeta::behavior_t close_cursor_;
@@ -147,6 +160,9 @@ namespace services::dispatcher {
         void execute_plan(const components::session::session_id_t& session,
                           components::logical_plan::node_ptr plan,
                           components::logical_plan::parameter_node_ptr params);
+        void register_udf(const components::session::session_id_t& session,
+                          components::compute::function_ptr&& function);
+        void unregister_udf(const components::session::session_id_t& session, const std::string& function_name);
         void
         size(const components::session::session_id_t& session, std::string& database_name, std::string& collection);
         void close_cursor(const components::session::session_id_t& session);
@@ -164,6 +180,8 @@ namespace services::dispatcher {
         actor_zeta::behavior_t create_;
         actor_zeta::behavior_t load_;
         actor_zeta::behavior_t execute_plan_;
+        actor_zeta::behavior_t register_udf_;
+        actor_zeta::behavior_t unregister_udf_;
         actor_zeta::behavior_t size_;
         actor_zeta::behavior_t schema_;
         actor_zeta::behavior_t close_cursor_;

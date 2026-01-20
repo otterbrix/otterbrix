@@ -154,7 +154,7 @@ namespace components::sql::transform {
                         }
 
                         auto expr = make_aggregate_expression(resource_,
-                                                              get_aggregate_type(funcname),
+                                                              funcname,
                                                               expressions::key_t{resource_, std::move(expr_name)});
                         for (const auto& arg : args) {
                             expr->append_param(arg);

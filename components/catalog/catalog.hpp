@@ -47,6 +47,13 @@ namespace components::catalog {
 
         [[nodiscard]] const types::complex_logical_type& get_type(const std::string& alias) const;
 
+        // function operations
+        void create_function(const std::string& alias, compute::function_uid uid);
+        void drop_function(const std::string& alias);
+        [[nodiscard]] bool function_exists(const std::string& alias) const;
+
+        [[nodiscard]] compute::function_uid get_function_uid(const std::string& alias) const;
+
         transaction_scope begin_transaction(const table_id& id);
 
     private:

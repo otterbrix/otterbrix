@@ -4,7 +4,11 @@ namespace components::catalog {
     catalog::catalog(std::pmr::memory_resource* resource)
         : namespaces_(resource)
         , transactions_(std::make_shared<transaction_list>(resource))
-        , resource_(resource) {}
+        , resource_(resource) {
+        for (const auto& [func_name, uid] : compute::DEFAULT_FUNCTIONS) {
+            create_function(func_name, uid);
+        }
+    }
 
     std::pmr::vector<table_namespace_t> catalog::list_namespaces() const { return namespaces_.list_root_namespaces(); }
 
@@ -126,6 +130,18 @@ namespace components::catalog {
 
     const types::complex_logical_type& catalog::get_type(const std::string& alias) const {
         return namespaces_.get_type(alias);
+    }
+
+    void catalog::create_function(const std::string& alias, compute::function_uid uid) {
+        namespaces_.create_function(alias, uid);
+    }
+
+    void catalog::drop_function(const std::string& alias) { namespaces_.drop_function(alias); }
+
+    bool catalog::function_exists(const std::string& alias) const { return namespaces_.function_exists(alias); }
+
+    compute::function_uid catalog::get_function_uid(const std::string& alias) const {
+        return namespaces_.get_function(alias);
     }
 
     template<catalog::schema_type type>

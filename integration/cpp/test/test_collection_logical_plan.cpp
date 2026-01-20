@@ -887,31 +887,31 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         group->append_expression(std::move(scalar_expr));
 
                         auto count_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                                 expressions::aggregate_type::count,
+                                                                                 "count",
                                                                                  key(dispatcher->resource(), "count"));
                         count_expr->append_param(key(dispatcher->resource(), "name"));
                         group->append_expression(std::move(count_expr));
 
                         auto sum_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::sum,
+                                                                               "sum",
                                                                                key(dispatcher->resource(), "sum"));
                         sum_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(sum_expr));
 
                         auto avg_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::avg,
+                                                                               "avg",
                                                                                key(dispatcher->resource(), "avg"));
                         avg_expr->append_param(key(dispatcher->resource(), "key"));
                         group->append_expression(std::move(avg_expr));
 
                         auto min_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::min,
+                                                                               "min",
                                                                                key(dispatcher->resource(), "min"));
                         min_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(min_expr));
 
                         auto max_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::max,
+                                                                               "max",
                                                                                key(dispatcher->resource(), "max"));
                         max_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(max_expr));
@@ -1144,31 +1144,31 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         group->append_expression(std::move(scalar_expr));
 
                         auto count_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                                 expressions::aggregate_type::count,
+                                                                                 "count",
                                                                                  key(dispatcher->resource(), "count"));
                         count_expr->append_param(key(dispatcher->resource(), "name"));
                         group->append_expression(std::move(count_expr));
 
                         auto sum_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::sum,
+                                                                               "sum",
                                                                                key(dispatcher->resource(), "sum"));
                         sum_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(sum_expr));
 
                         auto avg_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::avg,
+                                                                               "avg",
                                                                                key(dispatcher->resource(), "avg"));
                         avg_expr->append_param(key(dispatcher->resource(), "key"));
                         group->append_expression(std::move(avg_expr));
 
                         auto min_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::min,
+                                                                               "min",
                                                                                key(dispatcher->resource(), "min"));
                         min_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(min_expr));
 
                         auto max_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               expressions::aggregate_type::max,
+                                                                               "max",
                                                                                key(dispatcher->resource(), "max"));
                         max_expr->append_param(key(dispatcher->resource(), "value"));
                         group->append_expression(std::move(max_expr));
@@ -1208,23 +1208,23 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
                 REQUIRE(cur->chunk_data().data[2].type().type() == types::logical_type::BIGINT);
                 REQUIRE(cur->chunk_data().data[2].type().alias() == "sum");
-                REQUIRE(cur->chunk_data().data[3].type().type() == types::logical_type::DOUBLE);
+                REQUIRE(cur->chunk_data().data[3].type().type() == types::logical_type::BIGINT);
                 REQUIRE(cur->chunk_data().data[3].type().alias() == "avg");
                 REQUIRE(cur->chunk_data().data[4].type().type() == types::logical_type::BIGINT);
                 REQUIRE(cur->chunk_data().data[4].type().alias() == "min");
                 REQUIRE(cur->chunk_data().data[5].type().type() == types::logical_type::BIGINT);
                 REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
 
-                for (int num = 12; num >= 0; --num) {
+                for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
                     REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                     REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==
-                            (num + 25) * 2 * 10);
-                    REQUIRE(core::is_equals(cur->chunk_data().value(3, static_cast<size_t>(num)).value<double>(),
-                                            static_cast<double>((num + 25) * 2)));
+                            (reversed + 25) * 2 * 10);
+                    REQUIRE(cur->chunk_data().value(3, static_cast<size_t>(num)).value<int64_t>() ==
+                            static_cast<int64_t>((reversed + 25) * 2));
                     REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
-                            (num + 25) * 2 * 10);
+                            (reversed + 25) * 2 * 10);
                     REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                            (num + 25) * 2 * 10);
+                            (reversed + 25) * 2 * 10);
                 }
             }
             INFO("just raw data") {

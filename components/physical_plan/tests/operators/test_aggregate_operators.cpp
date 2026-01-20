@@ -8,11 +8,7 @@
 #include <components/physical_plan/collection/operators/aggregate/operator_min.hpp>
 #include <components/physical_plan/collection/operators/aggregate/operator_sum.hpp>
 #include <components/physical_plan/collection/operators/scan/full_scan.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_avg.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_count.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_max.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_min.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_sum.hpp>
+#include <components/physical_plan/table/operators/aggregate/operator_func.hpp>
 #include <components/physical_plan/table/operators/scan/full_scan.hpp>
 #include <components/types/operations_helper.hpp>
 
@@ -21,6 +17,18 @@ using namespace components::types;
 using namespace components::expressions;
 using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
+
+compute::function* get_function_by_name(const std::string& name) {
+    auto it =
+        std::find_if(compute::DEFAULT_FUNCTIONS.begin(),
+                     compute::DEFAULT_FUNCTIONS.end(),
+                     [&name](const std::pair<std::string, compute::function_uid>& pair) { return pair.first == name; });
+    if (it != compute::DEFAULT_FUNCTIONS.end()) {
+        return compute::function_registry_t::get_default()->get_function(it->second);
+    } else {
+        return compute::function_registry_t::get_default()->get_function(compute::invalid_function_uid);
+    }
+}
 
 TEST_CASE("components::physical_plan::aggregate::count") {
     auto resource = std::pmr::synchronized_pool_resource();
@@ -40,7 +48,9 @@ TEST_CASE("components::physical_plan::aggregate::count") {
             REQUIRE(count.value().as_unsigned() == 100);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_count_t count(d(table));
+            table::operators::aggregate::operator_func_t count(d(table),
+                                                               get_function_by_name("count"),
+                                                               key(&resource, "count"));
             count.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             count.on_execute(nullptr);
@@ -67,7 +77,9 @@ TEST_CASE("components::physical_plan::aggregate::count") {
             REQUIRE(count.value().as_unsigned() == 10);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_count_t count(d(table));
+            table::operators::aggregate::operator_func_t count(d(table),
+                                                               get_function_by_name("count"),
+                                                               key(&resource, "count"));
             count.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             count.on_execute(&pipeline_context);
@@ -94,7 +106,9 @@ TEST_CASE("components::physical_plan::aggregate::min") {
             REQUIRE(min_.value().as_unsigned() == 1);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_min_t min_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t min_(d(table),
+                                                              get_function_by_name("min"),
+                                                              key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(nullptr);
@@ -121,7 +135,9 @@ TEST_CASE("components::physical_plan::aggregate::min") {
             REQUIRE(min_.value().as_unsigned() == 81);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_min_t min_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t min_(d(table),
+                                                              get_function_by_name("min"),
+                                                              key(&resource, "count"));
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(&pipeline_context);
@@ -148,7 +164,9 @@ TEST_CASE("components::physical_plan::aggregate::max") {
             REQUIRE(max_.value().as_unsigned() == 100);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_max_t max_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t max_(d(table),
+                                                              get_function_by_name("max"),
+                                                              key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(nullptr);
@@ -175,7 +193,9 @@ TEST_CASE("components::physical_plan::aggregate::max") {
             REQUIRE(max_.value().as_unsigned() == 19);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_max_t max_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t max_(d(table),
+                                                              get_function_by_name("max"),
+                                                              key(&resource, "count"));
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(&pipeline_context);
@@ -202,7 +222,9 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
             REQUIRE(sum_.value().as_unsigned() == 5050);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_sum_t sum_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t sum_(d(table),
+                                                              get_function_by_name("sum"),
+                                                              key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(nullptr);
@@ -229,7 +251,9 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
             REQUIRE(sum_.value().as_unsigned() == 45);
         }
         SECTION("table") {
-            table::operators::aggregate::operator_sum_t sum_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t sum_(d(table),
+                                                              get_function_by_name("sum"),
+                                                              key(&resource, "count"));
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(&pipeline_context);
@@ -256,11 +280,13 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
             REQUIRE(core::is_equals(avg_.value().as_double(), 50.5));
         }
         SECTION("table") {
-            table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t avg_(d(table),
+                                                              get_function_by_name("avg"),
+                                                              key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
-            REQUIRE(core::is_equals(avg_.value().value<double>(), 50.5));
+            REQUIRE(core::is_equals(avg_.value().value<int64_t>(), 50));
         }
     }
 
@@ -282,11 +308,13 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
             REQUIRE(core::is_equals(avg_.value().as_double(), 5.0));
         }
         SECTION("table") {
-            table::operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));
+            table::operators::aggregate::operator_func_t avg_(d(table),
+                                                              get_function_by_name("avg"),
+                                                              key(&resource, "count"));
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);
-            REQUIRE(core::is_equals(avg_.value().value<double>(), 5.0));
+            REQUIRE(core::is_equals(avg_.value().value<int64_t>(), 5));
         }
     }
 }

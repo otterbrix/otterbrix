@@ -223,9 +223,6 @@ using components::expressions::make_compare_union_expression;
 using components::expressions::side_t;
 
 using components::expressions::aggregate_expression_t;
-using components::expressions::aggregate_type;
-using components::expressions::get_aggregate_type;
-using components::expressions::is_aggregate_type;
 using components::expressions::make_aggregate_expression;
 
 using components::expressions::get_scalar_type;
@@ -368,11 +365,10 @@ expression_ptr parse_group_expr(std::pmr::memory_resource* resource,
     if (py::isinstance<py::dict>(condition)) {
         for (const auto& it : condition) {
             auto key_type = py::str(it).cast<std::string>().substr(1);
-            if (is_aggregate_type(key_type)) {
-                auto type = get_aggregate_type(key_type);
-                auto expr = make_aggregate_expression(resource,
-                                                      type,
-                                                      key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
+            if (is_scalar_type(key_type)) {
+                auto type = get_scalar_type(key_type);
+                auto expr =
+                    make_scalar_expression(resource, type, key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
                 if (py::isinstance<py::dict>(condition[it])) {
                     expr->append_param(parse_group_expr(resource, {}, condition[it], aggregate, params));
                 } else if (py::isinstance<py::list>(condition[it]) || py::isinstance<py::tuple>(condition[it])) {
@@ -383,10 +379,10 @@ expression_ptr parse_group_expr(std::pmr::memory_resource* resource,
                     expr->append_param(parse_param(resource, condition[it], params));
                 }
                 return expr;
-            } else if (is_scalar_type(key_type)) {
-                auto type = get_scalar_type(key_type);
-                auto expr =
-                    make_scalar_expression(resource, type, key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
+            } else {
+                auto expr = make_aggregate_expression(resource,
+                                                      key_type,
+                                                      key.empty() ? ex_key_t(resource) : ex_key_t(resource, key));
                 if (py::isinstance<py::dict>(condition[it])) {
                     expr->append_param(parse_group_expr(resource, {}, condition[it], aggregate, params));
                 } else if (py::isinstance<py::list>(condition[it]) || py::isinstance<py::tuple>(condition[it])) {

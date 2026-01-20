@@ -120,6 +120,7 @@ namespace otterbrix {
         session_id_t init(const session_id_t& session, void* local_storage);
         void wait(const session_id_t& session);
         void notify(const session_id_t& session);
+        void notify(const session_id_t& session, bool success);
         void notify(const session_id_t& session, size_t size);
         void notify(const session_id_t& session, components::cursor::cursor_t_ptr cursor);
 

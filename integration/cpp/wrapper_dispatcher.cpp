@@ -455,6 +455,12 @@ namespace otterbrix {
         cv_.notify_all();
     }
 
+    void wrapper_dispatcher_t::notify(const session_id_t& session, bool success) {
+        blocker_.set_value<bool>(session, success);
+        // multiple threads can be waiting
+        cv_.notify_all();
+    }
+
     void wrapper_dispatcher_t::notify(const session_id_t& session, size_t size) {
         blocker_.set_value<size_t>(session, size);
         // multiple threads can be waiting

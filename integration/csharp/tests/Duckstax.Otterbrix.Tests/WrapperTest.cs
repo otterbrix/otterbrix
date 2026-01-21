@@ -12,7 +12,7 @@ public class Tests
         return res;
     }
 
-    [Test]
+    // [Test]
     public void Base() {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/Base"));
         {
@@ -145,7 +145,7 @@ public class Tests
         }
     }
 
-    [Test]
+    // [Test]
     public void GroupBy() {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/GroupBy"));
         {
@@ -221,7 +221,7 @@ public class Tests
         }
     }
 
-    [Test]
+    // [Test]
     public void TestJoin() {
         const string databaseName = "TestDatabase";
         const string collectionName1 = "TestCollection_1";

@@ -764,7 +764,7 @@ namespace components::types {
                 union_values->emplace_back(nullptr);
             }
         }
-        (*union_values)[tag + 1] = std::move(value);
+        (*union_values)[static_cast<size_t>(tag) + 1] = std::move(value);
         result.value_ = std::move(union_values);
         result.type_ = complex_logical_type::create_union(std::move(types));
         return result;

@@ -13,10 +13,10 @@ namespace components::table::operators::aggregate {
     public:
         explicit operator_func_t(services::collection::context_collection_t* collection,
                                  compute::function*,
-                                 expressions::key_t key);
+                                 std::pmr::vector<expressions::key_t> keys);
 
     private:
-        expressions::key_t key_;
+        std::pmr::vector<expressions::key_t> keys_;
         compute::function* func_;
 
         types::logical_value_t aggregate_impl() override;

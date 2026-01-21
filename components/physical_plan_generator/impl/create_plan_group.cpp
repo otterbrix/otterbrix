@@ -1,5 +1,7 @@
 #include "create_plan_group.hpp"
 
+#include "services/collection/collection.hpp"
+
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 
@@ -137,16 +139,20 @@ namespace services::table::planner::impl {
             }
         }
 
-        void add_group_aggregate(collection::context_collection_t* context,
+        void add_group_aggregate(std::pmr::memory_resource* resource,
+                                 collection::context_collection_t* context,
                                  const components::compute::function_registry_t& function_registry,
                                  boost::intrusive_ptr<components::table::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
-            auto field = std::get<components::expressions::key_t>(expr->params().front());
+            std::pmr::vector<components::expressions::key_t> fields{resource};
+            for (const auto& param : expr->params()) {
+                fields.emplace_back(std::get<components::expressions::key_t>(param));
+            }
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::table::operators::aggregate::operator_func_t(
                                  context,
                                  function_registry.get_function(expr->function_uid()),
-                                 field)));
+                                 std::move(fields))));
         }
 
     } // namespace
@@ -171,6 +177,7 @@ namespace services::table::planner::impl {
                                   static_cast<const components::expressions::scalar_expression_t*>(expr.get()));
                           } else if (expr->group() == components::expressions::expression_group::aggregate) {
                               add_group_aggregate(
+                                  context.get_allocator().resource(),
                                   context.at(node->collection_full_name()),
                                   function_registry,
                                   group,

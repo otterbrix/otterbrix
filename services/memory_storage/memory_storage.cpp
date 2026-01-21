@@ -335,7 +335,7 @@ namespace services {
               session.data());
         if (used_format != components::catalog::used_format_t::undefined) {
             auto dependency_tree_collections_names = logical_plan->collection_dependencies();
-            context_storage_t collections_context_storage;
+            context_storage_t collections_context_storage(resource());
             while (!dependency_tree_collections_names.empty()) {
                 collection_full_name_t name =
                     dependency_tree_collections_names.extract(dependency_tree_collections_names.begin()).value();

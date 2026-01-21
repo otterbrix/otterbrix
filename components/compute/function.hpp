@@ -201,9 +201,9 @@ namespace components::compute {
         function* get_function(function_uid uid) const;
         std::vector<std::pair<std::string, function_uid>> get_functions() const;
 
+    private:
         void register_builtin_functions();
 
-    private:
         static std::once_flag init_flag_;
         static std::unique_ptr<function_registry_t> default_registry_;
         std::unordered_map<function_uid, function_ptr> functions_;

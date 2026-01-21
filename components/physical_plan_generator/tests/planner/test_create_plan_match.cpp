@@ -20,7 +20,7 @@ TEST_CASE("components::physical_plan_generator::match") {
     auto collection = init_collection(&resource);
     {
         auto node_match = make_node_match(&resource, get_name(), nullptr);
-        services::context_storage_t context;
+        services::context_storage_t context(&resource);
         context.emplace(get_name(), d(collection));
         auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
         plan->on_execute(nullptr);
@@ -33,7 +33,7 @@ TEST_CASE("components::physical_plan_generator::match") {
                                                                   compare_type::eq,
                                                                   key(&resource, "key", side_t::left),
                                                                   core::parameter_id_t(1)));
-        services::context_storage_t context;
+        services::context_storage_t context(&resource);
         context.emplace(get_name(), d(collection));
         auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
         REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");

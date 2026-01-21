@@ -122,7 +122,7 @@ TEST_CASE("integration::cpp::test_collection") {
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::regex,
-                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::test_collection") {
             expr->append_child(
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::regex,
-                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
@@ -177,7 +177,7 @@ TEST_CASE("integration::cpp::test_collection") {
             expr_or->append_child(
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::regex,
-                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{2}));
             expr_and->append_child(expr_or);
             expr_and->append_child(
@@ -263,7 +263,7 @@ TEST_CASE("integration::cpp::test_collection") {
             expr->append_child(
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::regex,
-                                                                 key{dispatcher->resource(), "countStr", side_t::left},
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{2}));
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},

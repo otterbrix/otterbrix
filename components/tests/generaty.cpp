@@ -1,5 +1,4 @@
 #include "generaty.hpp"
-#include <cassert>
 
 void gen_array(int num, const document_ptr& array) {
     for (int i = 0; i < 5; ++i) {
@@ -34,30 +33,30 @@ document_ptr gen_doc(int num, std::pmr::memory_resource* resource) {
     document_ptr doc = make_document(resource);
     doc->set("/_id", gen_id(num, resource));
     doc->set("/count", num);
-    doc->set("/countStr", std::to_string(num));
-    doc->set("/countDouble", float(num) + 0.1);
-    doc->set("/countBool", num % 2 != 0);
-    doc->set_array("/countArray");
-    gen_array(num, doc->get_array("/countArray"));
-    doc->set_dict("/countDict");
-    gen_dict(num, doc->get_dict("/countDict"));
-    doc->set_array("/nestedArray");
-    auto array = doc->get_array("/nestedArray");
+    doc->set("/count_str", std::to_string(num));
+    doc->set("/count_double", float(num) + 0.1);
+    doc->set("/count_bool", num % 2 != 0);
+    doc->set_array("/count_array");
+    gen_array(num, doc->get_array("/count_array"));
+    doc->set_dict("/count_dict");
+    gen_dict(num, doc->get_dict("/count_dict"));
+    doc->set_array("/nested_array");
+    auto array = doc->get_array("/nested_array");
     for (int i = 0; i < 5; ++i) {
         auto json_pointer = "/" + std::to_string(i);
         array->set_array(json_pointer);
         gen_array(num + i, array->get_array(json_pointer));
     }
-    doc->set_array("/dictArray");
-    array = doc->get_array("/dictArray");
+    doc->set_array("/dict_array");
+    array = doc->get_array("/dict_array");
     for (int i = 0; i < 5; ++i) {
         auto json_pointer = "/" + std::to_string(i);
         array->set_dict(json_pointer);
         auto dict = array->get_dict(json_pointer);
         dict->set("/number", num + i);
     }
-    doc->set_dict("/mixedDict");
-    auto dict = doc->get_dict("/mixedDict");
+    doc->set_dict("/mixed_dict");
+    auto dict = doc->get_dict("/mixed_dict");
     for (int i = 0; i < 5; ++i) {
         auto json_pointer = "/" + std::to_string(num + i);
         dict->set_dict(json_pointer);
@@ -79,10 +78,10 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
 
     types.emplace_back(logical_type::BIGINT, "count");
     types.emplace_back(logical_type::STRING_LITERAL, "_id");
-    types.emplace_back(logical_type::STRING_LITERAL, "countStr");
-    types.emplace_back(logical_type::DOUBLE, "countDouble");
-    types.emplace_back(logical_type::BOOLEAN, "countBool");
-    types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "countArray"));
+    types.emplace_back(logical_type::STRING_LITERAL, "count_str");
+    types.emplace_back(logical_type::DOUBLE, "count_double");
+    types.emplace_back(logical_type::BOOLEAN, "count_bool");
+    types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "count_array"));
 
     components::vector::data_chunk_t chunk(resource, types, size);
     chunk.set_cardinality(size);

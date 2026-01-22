@@ -13,7 +13,7 @@ namespace components::catalog {
     schema_diff::diff_info::diff_info(schema_diff::diff_info_type info_type,
                                       types::field_description desc,
                                       types::complex_logical_type type)
-        : info(1 << info_type)
+        : info(1ULL << info_type)
         , entry{type, desc} {}
 
     void schema_diff::add_column(const std::string& name,

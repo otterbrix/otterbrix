@@ -1,4 +1,4 @@
-FROM ubuntu:20.04 as builder
+FROM ubuntu:20.04 AS builder
 
 ENV TZ=America/US
 ENV DEBIAN_FRONTEND=noninteractive
@@ -43,12 +43,12 @@ RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_to
     -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON && \
     cmake --build . --target all -- -j $(nproc)
 
-RUN ctest -C -V --output-on-failure --timeout 60
+RUN ctest -C Release -V --output-on-failure --timeout 60
 
 RUN cd integration/python/ && pytest -v -s
 
 # Multistage build is faster and resulting image will be smaller
-FROM mcr.microsoft.com/dotnet/sdk:7.0
+FROM mcr.microsoft.com/dotnet/sdk:7.0-jammy
 WORKDIR /app
 COPY --from=builder /app ./
 
@@ -58,6 +58,8 @@ RUN cd integration/csharp && \
 
 RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
     mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
+    mkdir -p integration/csharp/build && \
+    cp ./build/integration/c/libotterbrix.so ./integration/csharp/build/libotterbrix.so && \
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so
 

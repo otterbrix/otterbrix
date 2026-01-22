@@ -699,7 +699,7 @@ namespace components::vector {
             case types::logical_type::UNION: {
                 uint8_t tag;
                 if (try_get_union_tag(*vector, index_p, tag)) {
-                    auto value = vector->entries()[tag + 1]->value(index_p);
+                    auto value = vector->entries()[static_cast<size_t>(tag) + 1]->value(index_p);
                     auto members = type().child_types();
                     // remove tag
                     members.erase(members.begin());
@@ -836,9 +836,8 @@ namespace components::vector {
     }
 
     template<typename T>
-    static void templated_flatten_constant_vector(std::byte* data, std::byte* old_data, uint64_t count) {
-        T constant;
-        std::memcpy(&constant, old_data, sizeof(T));
+    static void templated_flatten_constant_vector(std::byte* data, std::byte* constant_raw, uint64_t count) {
+        const T constant = *reinterpret_cast<const T*>(constant_raw);
         auto output = reinterpret_cast<T*>(data);
         for (uint64_t i = 0; i < count; i++) {
             output[i] = constant;

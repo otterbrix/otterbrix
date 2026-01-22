@@ -295,11 +295,11 @@ namespace components::table::storage {
             if (handle_buffer_type == queue_buffer_type) {
                 break;
             }
-            const auto& type_queue_size = eviction_queue_sizes[type_idx];
+        const auto& type_queue_size = eviction_queue_sizes[type_idx];
             queue_index += type_queue_size;
         }
 
-        const auto& queue_size = eviction_queue_sizes[static_cast<uint8_t>(handle_buffer_type) - 1];
+        const auto& queue_size = eviction_queue_sizes[static_cast<size_t>(static_cast<uint8_t>(handle_buffer_type) - 1)];
         auto eviction_queue_idx = handle.eviction_queue_index();
         if (eviction_queue_idx < queue_size) {
             queue_index += queue_size - eviction_queue_idx - 1;

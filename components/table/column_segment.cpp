@@ -420,7 +420,7 @@ namespace components::table {
                     uint64_t block;
                     int32_t current_offset;
                     write_string(segment, source_data[source_idx], block, current_offset);
-                    *dictionary_size += BIG_STRING_MARKER_BASE_SIZE;
+                    *dictionary_size += static_cast<uint32_t>(BIG_STRING_MARKER_BASE_SIZE);
                     remaining -= BIG_STRING_MARKER_BASE_SIZE;
                     auto dict_pos = end - *dictionary_size;
 

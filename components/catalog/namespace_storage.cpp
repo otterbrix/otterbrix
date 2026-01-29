@@ -83,10 +83,6 @@ namespace components::catalog {
         }
 
         const auto& overloads = it->second;
-        if (overloads.size() == 1) {
-            registered_functions_.erase(function_name);
-        }
-
         for (const auto& overload : overloads) {
             for (const auto& signature : overload.signatures) {
                 if (signature.matches_inputs(inputs)) {

@@ -20,7 +20,7 @@ namespace components::vector::arrow::appender {
     }
 
     static void unset_bit(uint8_t* data, uint64_t current_byte, uint8_t current_bit) {
-        data[current_byte] &= static_cast<uint8_t>(~(uint64_t{1} << current_bit));
+        data[current_byte] = static_cast<uint8_t>(data[current_byte] & ~(uint8_t{1} << current_bit));
     }
 
     static void next_bit(uint64_t& current_byte, uint8_t& current_bit) {

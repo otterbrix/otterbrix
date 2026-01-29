@@ -58,7 +58,6 @@ RUN cd integration/csharp && \
 
 RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
     mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
-    mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
     mkdir -p integration/csharp/build && \    
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so

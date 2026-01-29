@@ -61,7 +61,7 @@ namespace components::expressions {
         switch (type) {
             case update_expr_type::set:
                 return update_expr_set_t::deserialize(deserializer);
-            case update_expr_type::get_value_doc:
+            case update_expr_type::get_value:
                 return update_expr_get_value_t::deserialize(deserializer);
             case update_expr_type::get_value_params:
                 return update_expr_get_const_value_t::deserialize(deserializer);
@@ -106,7 +106,7 @@ namespace components::expressions {
             case update_expr_type::set:
                 return *reinterpret_cast<const update_expr_set_ptr&>(lhs) ==
                        *reinterpret_cast<const update_expr_set_ptr&>(rhs);
-            case update_expr_type::get_value_doc:
+            case update_expr_type::get_value:
                 return *reinterpret_cast<const update_expr_get_value_ptr&>(lhs) ==
                        *reinterpret_cast<const update_expr_get_value_ptr&>(rhs);
             case update_expr_type::get_value_params:
@@ -139,6 +139,8 @@ namespace components::expressions {
     update_expr_set_t::update_expr_set_t(key_t key)
         : update_expr_t(update_expr_type::set)
         , key_(std::move(key)) {}
+
+    key_t& update_expr_set_t::key() noexcept { return key_; }
 
     const key_t& update_expr_set_t::key() const noexcept { return key_; }
 
@@ -189,8 +191,10 @@ namespace components::expressions {
     }
 
     update_expr_get_value_t::update_expr_get_value_t(key_t key)
-        : update_expr_t(update_expr_type::get_value_doc)
+        : update_expr_t(update_expr_type::get_value)
         , key_(std::move(key)) {}
+
+    key_t& update_expr_get_value_t::key() noexcept { return key_; }
 
     const key_t& update_expr_get_value_t::key() const noexcept { return key_; }
 

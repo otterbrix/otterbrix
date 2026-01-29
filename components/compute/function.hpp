@@ -22,6 +22,7 @@ namespace components::compute {
         static arity unary();
         static arity binary();
         static arity ternary();
+        static arity fixed_num(size_t num);
         static arity var_args(size_t min = 0);
 
     private:
@@ -97,6 +98,8 @@ namespace components::compute {
         virtual compute_result<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::vector<types::complex_logical_type> types) const;
 
+        [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
+
     protected:
         function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options = nullptr);
 
@@ -109,6 +112,10 @@ namespace components::compute {
     using function_ptr = std::unique_ptr<function>;
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
+    struct registered_func_id {
+        compute::function_uid uid;
+        std::vector<compute::kernel_signature_t> signatures;
+    };
 
     namespace detail {
         // function_impl is responsive for lifetime of function & all of its kernels
@@ -151,10 +158,22 @@ namespace components::compute {
                 return compute_status::ok();
             }
 
+            [[nodiscard]] std::vector<kernel_signature_t> get_signatures() const override;
+
         protected:
             size_t kernel_slots_;
             std::vector<KernelType> kernels_;
         };
+
+        template<typename KernelType>
+        std::vector<kernel_signature_t> function_impl<KernelType>::get_signatures() const {
+            std::vector<kernel_signature_t> result;
+            result.reserve(kernels_.size());
+            for (const auto& kernel : kernels_) {
+                result.emplace_back(kernel.signature());
+            }
+            return result;
+        }
 
         class kernel_nth_visitor : public function_visitor_with_result<const compute_kernel*> {
         public:
@@ -210,14 +229,25 @@ namespace components::compute {
         function_uid current_uid_{0};
     };
 
-    // WARNING: array size, names order and uid has to be the same as in register_default_functions()
+    // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
-    static const std::array<std::pair<std::string, function_uid>, 5> DEFAULT_FUNCTIONS{
-        std::pair<std::string, function_uid>{"sum", 0},
-        std::pair<std::string, function_uid>{"min", 1},
-        std::pair<std::string, function_uid>{"max", 2},
-        std::pair<std::string, function_uid>{"count", 3},
-        std::pair<std::string, function_uid>{"avg", 4}};
+    // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
+    static const std::array<std::pair<std::string, registered_func_id>, 5> DEFAULT_FUNCTIONS{
+        std::pair<std::string, registered_func_id>{
+            "sum",
+            {0, {kernel_signature_t{{numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+        std::pair<std::string, registered_func_id>{
+            "min",
+            {1, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+        std::pair<std::string, registered_func_id>{
+            "max",
+            {2, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+        std::pair<std::string, registered_func_id>{
+            "count",
+            {3, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+        std::pair<std::string, registered_func_id>{
+            "avg",
+            {4, {kernel_signature_t{{numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))}}}}}};
 
     void register_default_functions(function_registry_t& registry);
 

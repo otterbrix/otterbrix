@@ -19,12 +19,11 @@ using key = components::expressions::key_t;
 using components::logical_plan::add_parameter;
 
 compute::function* get_function_by_name(const std::string& name) {
-    auto it =
-        std::find_if(compute::DEFAULT_FUNCTIONS.begin(),
-                     compute::DEFAULT_FUNCTIONS.end(),
-                     [&name](const std::pair<std::string, compute::function_uid>& pair) { return pair.first == name; });
+    auto it = std::find_if(compute::DEFAULT_FUNCTIONS.begin(),
+                           compute::DEFAULT_FUNCTIONS.end(),
+                           [&name](const auto& pair) { return pair.first == name; });
     if (it != compute::DEFAULT_FUNCTIONS.end()) {
-        return compute::function_registry_t::get_default()->get_function(it->second);
+        return compute::function_registry_t::get_default()->get_function(it->second.uid);
     } else {
         return compute::function_registry_t::get_default()->get_function(compute::invalid_function_uid);
     }

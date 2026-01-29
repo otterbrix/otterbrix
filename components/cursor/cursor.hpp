@@ -36,6 +36,9 @@ namespace components::cursor {
         schema_error = 9,
         incompatible_storage_types = 10,
         unrecognized_function = 11,
+        incorrect_function_argument = 12,
+        ambiguous_name = 13,
+        field_not_exists = 14
     };
 
     struct error_t {

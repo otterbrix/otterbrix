@@ -312,7 +312,10 @@ namespace otterbrix {
         return result_store_;
     }
 
-    auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session, const std::string& function_name) -> bool {
+    auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
+                                              const std::string& function_name,
+                                              const std::pmr::vector<components::types::complex_logical_type>& inputs)
+        -> bool {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -323,7 +326,8 @@ namespace otterbrix {
                          address(),
                          collection::handler_id(collection::route::unregister_udf),
                          approved_session,
-                         function_name);
+                         function_name,
+                         inputs);
         wait(approved_session);
         return result_store_;
     }

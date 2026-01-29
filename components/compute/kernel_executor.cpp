@@ -14,7 +14,8 @@ namespace components::compute::detail {
             kernel_ctx_ = &kernel_ctx;
             kernel_ = static_cast<const KernelType*>(&args.kernel);
 
-            auto out = kernel_->signature().output_type.resolve(args.inputs);
+            // TODO: support multiple output types
+            auto out = kernel_->signature().output_types.front().resolve(args.inputs);
             if (!out) {
                 return compute_status::execution_error("Failed to resolve function type");
             }

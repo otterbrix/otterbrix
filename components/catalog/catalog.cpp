@@ -132,16 +132,31 @@ namespace components::catalog {
         return namespaces_.get_type(alias);
     }
 
-    void catalog::create_function(const std::string& alias, compute::function_uid uid) {
-        namespaces_.create_function(alias, uid);
+    void catalog::create_function(const std::string& alias, compute::registered_func_id uid) {
+        namespaces_.create_function(alias, std::move(uid));
     }
 
-    void catalog::drop_function(const std::string& alias) { namespaces_.drop_function(alias); }
+    void catalog::drop_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) {
+        namespaces_.drop_function(alias, inputs);
+    }
 
-    bool catalog::function_exists(const std::string& alias) const { return namespaces_.function_exists(alias); }
+    bool catalog::check_function_conflicts(const std::string& alias,
+                                           const std::vector<compute::kernel_signature_t>& signatures) const {
+        return namespaces_.check_function_conflicts(alias, signatures);
+    }
 
-    compute::function_uid catalog::get_function_uid(const std::string& alias) const {
-        return namespaces_.get_function(alias);
+    bool catalog::function_name_exists(const std::string& alias) const {
+        return namespaces_.function_name_exists(alias);
+    }
+
+    bool catalog::function_exists(const std::string& alias,
+                                  const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        return namespaces_.function_exists(alias, inputs);
+    }
+
+    std::pair<compute::function_uid, compute::kernel_signature_t>
+    catalog::get_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        return namespaces_.get_function(alias, inputs);
     }
 
     template<catalog::schema_type type>

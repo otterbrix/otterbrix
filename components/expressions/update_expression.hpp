@@ -22,7 +22,7 @@ namespace components::expressions {
     enum class update_expr_type : uint8_t
     {
         set,
-        get_value_doc,
+        get_value,
         get_value_params,
         add,
         sub,
@@ -106,6 +106,7 @@ namespace components::expressions {
     public:
         explicit update_expr_set_t(key_t key);
 
+        key_t& key() noexcept;
         const key_t& key() const noexcept;
 
         bool operator==(const update_expr_set_t& rhs) const;
@@ -133,6 +134,7 @@ namespace components::expressions {
     public:
         explicit update_expr_get_value_t(key_t key);
 
+        key_t& key() noexcept;
         const key_t& key() const noexcept;
 
         bool operator==(const update_expr_get_value_t& rhs) const;

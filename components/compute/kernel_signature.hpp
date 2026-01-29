@@ -26,7 +26,7 @@ namespace components::compute {
         static output_type fixed(fixed_t type);
         static output_type computed(type_resolver_fn resolver);
 
-        compute_result<fixed_t> resolve(const std::pmr::vector<fixed_t>& input_types) const;
+        [[nodiscard]] compute_result<fixed_t> resolve(const std::pmr::vector<fixed_t>& input_types) const;
 
     private:
         output_type() = default;
@@ -36,12 +36,12 @@ namespace components::compute {
 
     struct kernel_signature_t {
         kernel_signature_t() = delete;
-        kernel_signature_t(std::pmr::vector<input_type> input_types, output_type output_type);
+        kernel_signature_t(std::pmr::vector<input_type> input_types, std::pmr::vector<struct output_type> output_types);
 
         std::pmr::vector<input_type> input_types;
-        struct output_type output_type;
+        std::pmr::vector<output_type> output_types;
 
-        bool matches_inputs(const std::pmr::vector<types::complex_logical_type>& types) const;
+        [[nodiscard]] bool matches_inputs(const std::pmr::vector<types::complex_logical_type>& types) const;
     };
 
     type_matcher_fn exact_type_matcher(types::logical_type type);
@@ -51,5 +51,16 @@ namespace components::compute {
     type_matcher_fn any_type_matcher(std::pmr::vector<types::logical_type> type_list);
     type_matcher_fn always_true_type_matcher();
 
-    type_resolver_fn same_type_resolver();
+    type_resolver_fn same_type_resolver(size_t input_index);
+
+    // Returns true if there are no conflicts
+    bool check_signature_conflicts(
+        const kernel_signature_t& lhs,
+        const kernel_signature_t& rhs,
+        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types);
+    bool check_signature_conflicts(
+        const std::vector<kernel_signature_t>& lhs,
+        const std::vector<kernel_signature_t>& rhs,
+        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types);
+
 } // namespace components::compute

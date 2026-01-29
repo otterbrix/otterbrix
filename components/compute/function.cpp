@@ -11,6 +11,7 @@ namespace components::compute {
     arity arity::unary() { return {1, false}; }
     arity arity::binary() { return {2, false}; }
     arity arity::ternary() { return {3, false}; }
+    arity arity::fixed_num(size_t num) { return {num, false}; }
     arity arity::var_args(size_t min) { return {min, true}; }
 
     function::function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options)
@@ -168,6 +169,7 @@ namespace components::compute {
 
         return std::move(vis.result);
     }
+    std::vector<kernel_signature_t> function::get_signatures() const { return {}; }
 
     compute_result<datum_t> function::execute(const data_chunk_t& args,
                                               size_t exec_length,

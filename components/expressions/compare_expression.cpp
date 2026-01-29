@@ -32,7 +32,11 @@ namespace components::expressions {
 
     compare_type compare_expression_t::type() const { return type_; }
 
+    key_t& compare_expression_t::primary_key() { return primary_key_; }
+
     const key_t& compare_expression_t::primary_key() const { return primary_key_; }
+
+    key_t& compare_expression_t::secondary_key() { return secondary_key_; }
 
     const key_t& compare_expression_t::secondary_key() const { return secondary_key_; }
 

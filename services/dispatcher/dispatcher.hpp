@@ -61,9 +61,11 @@ namespace services::dispatcher {
                           actor_zeta::base::address_t sender);
         void register_udf_finish(const components::session::session_id_t& session,
                                  const std::string& function_name,
-                                 components::compute::function_uid uid);
+                                 components::compute::function_uid function_uid,
+                                 std::vector<components::compute::kernel_signature_t>&& function_signatures);
         void unregister_udf(const components::session::session_id_t& session,
                             const std::string& function_name,
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs,
                             actor_zeta::base::address_t sender);
         void size(const components::session::session_id_t& session,
                   std::string& database_name,
@@ -108,12 +110,6 @@ namespace services::dispatcher {
         components::session::session_id_t load_session_;
         services::wal::id_t last_wal_id_{0};
         std::size_t load_count_answers_{0};
-
-        components::cursor::cursor_t_ptr check_namespace_exists(const components::catalog::table_id id) const;
-        components::cursor::cursor_t_ptr check_collection_exists(const components::catalog::table_id id) const;
-        components::cursor::cursor_t_ptr check_type_exists(const std::string& alias) const;
-        components::cursor::cursor_t_ptr
-        check_collections_format_(components::logical_plan::node_ptr& logical_plan) const;
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
         void update_catalog(components::logical_plan::node_ptr node);
@@ -162,7 +158,9 @@ namespace services::dispatcher {
                           components::logical_plan::parameter_node_ptr params);
         void register_udf(const components::session::session_id_t& session,
                           components::compute::function_ptr&& function);
-        void unregister_udf(const components::session::session_id_t& session, const std::string& function_name);
+        void unregister_udf(const components::session::session_id_t& session,
+                            const std::string& function_name,
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs);
         void
         size(const components::session::session_id_t& session, std::string& database_name, std::string& collection);
         void close_cursor(const components::session::session_id_t& session);

@@ -2,11 +2,14 @@ project(dispatcher)
 
 set(${PROJECT_NAME}_HEADERS
         dispatcher.hpp
+        session.hpp
+        validate_logical_plan.hpp
 )
 
 set(${PROJECT_NAME}_SOURCES
         dispatcher.cpp
         session.cpp
+        validate_logical_plan.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

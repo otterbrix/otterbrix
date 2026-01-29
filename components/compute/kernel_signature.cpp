@@ -31,9 +31,10 @@ namespace components::compute {
         return resolver(input_types);
     }
 
-    kernel_signature_t::kernel_signature_t(std::pmr::vector<input_type> input_types, struct output_type output_type)
+    kernel_signature_t::kernel_signature_t(std::pmr::vector<input_type> input_types,
+                                           std::pmr::vector<struct output_type> output_types)
         : input_types(std::move(input_types))
-        , output_type(std::move(output_type)) {}
+        , output_types(std::move(output_types)) {}
 
     bool kernel_signature_t::matches_inputs(const std::pmr::vector<types::complex_logical_type>& types) const {
         if (types.size() != input_types.size()) {
@@ -83,12 +84,87 @@ namespace components::compute {
         return [](const types::complex_logical_type&) { return true; };
     }
 
-    type_resolver_fn same_type_resolver() {
-        return [](const std::pmr::vector<fixed_t>& in) -> compute_result<fixed_t> {
-            if (in.empty())
+    type_resolver_fn same_type_resolver(size_t input_index) {
+        return [input_index](const std::pmr::vector<fixed_t>& in) -> compute_result<fixed_t> {
+            if (in.size() <= input_index)
                 return compute_status::invalid("No inputs");
-            return in[0];
+            return in[input_index];
         };
+    }
+
+    /*
+    * Deducing conflicts and ambiguity
+    * In case we have a conflict, we move to the next check, which can resolve it
+    * Only explicit type matters, ignoring any possible implicit casts
+    * 1) if number of arguments is different - no conflicts
+    * 2) loop over corresponding arguments
+    *   2.1) if there is conflict over types, move to the next
+    *   2.2) if we have any pair of arguments that does not have any overlaps, than we can call signatures distinct
+    *   2.3) if all pairs have conflicts, than signatures have a conflict
+      3) include outputs?
+    */
+
+    bool check_signature_conflicts(
+        const std::pmr::vector<input_type>& lhs,
+        const std::pmr::vector<input_type>& rhs,
+        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
+        if (lhs.size() != rhs.size()) {
+            return true;
+        }
+
+        bool result = true;
+
+        for (size_t i = 0; i < lhs.size(); i++) {
+            result = true;
+            // check default types
+            for (size_t j = 0; j < types::DEFAULT_LOGICAL_TYPES.size(); j++) {
+                if (lhs[i].matches(types::DEFAULT_LOGICAL_TYPES[j]) &&
+                    rhs[i].matches(types::DEFAULT_LOGICAL_TYPES[j])) {
+                    result = false;
+                    break;
+                }
+            }
+
+            // If there are any overlaps, then we have a conflict, and we have to check next set of arguments
+            if (!result) {
+                continue;
+            }
+
+            // check registered udt`s
+            for (const auto& pair : registered_types) {
+                if (lhs[i].matches(pair.second) && rhs[i].matches(pair.second)) {
+                    result = false;
+                    break;
+                }
+            }
+            if (result) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    bool check_signature_conflicts(
+        const kernel_signature_t& lhs,
+        const kernel_signature_t& rhs,
+        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
+        return check_signature_conflicts(lhs.input_types, rhs.input_types, registered_types);
+    }
+
+    // Returns true if any signature permutation results in conflict
+    bool check_signature_conflicts(
+        const std::vector<kernel_signature_t>& lhs,
+        const std::vector<kernel_signature_t>& rhs,
+        const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types) {
+        for (size_t i = 0; i < lhs.size(); i++) {
+            for (size_t j = 0; j < lhs.size(); j++) {
+                if (!check_signature_conflicts(lhs[i], rhs[i], registered_types)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
 } // namespace components::compute

@@ -25,7 +25,9 @@ namespace components::expressions {
                              const key_t& secondary_key);
 
         compare_type type() const;
+        key_t& primary_key();
         const key_t& primary_key() const;
+        key_t& secondary_key();
         const key_t& secondary_key() const;
         core::parameter_id_t value() const;
         const std::pmr::vector<expression_ptr>& children() const;

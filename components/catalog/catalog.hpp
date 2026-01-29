@@ -48,11 +48,16 @@ namespace components::catalog {
         [[nodiscard]] const types::complex_logical_type& get_type(const std::string& alias) const;
 
         // function operations
-        void create_function(const std::string& alias, compute::function_uid uid);
-        void drop_function(const std::string& alias);
-        [[nodiscard]] bool function_exists(const std::string& alias) const;
+        void create_function(const std::string& alias, compute::registered_func_id uid);
+        void drop_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs);
+        [[nodiscard]] bool check_function_conflicts(const std::string& alias,
+                                                    const std::vector<compute::kernel_signature_t>& signatures) const;
+        [[nodiscard]] bool function_name_exists(const std::string& alias) const;
+        [[nodiscard]] bool function_exists(const std::string& alias,
+                                           const std::pmr::vector<types::complex_logical_type>& inputs) const;
 
-        [[nodiscard]] compute::function_uid get_function_uid(const std::string& alias) const;
+        [[nodiscard]] std::pair<compute::function_uid, compute::kernel_signature_t>
+        get_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) const;
 
         transaction_scope begin_transaction(const table_id& id);
 

@@ -1,7 +1,5 @@
 #include "dispatcher.hpp"
-
-#include "expressions/aggregate_expression.hpp"
-#include "logical_plan/node_group.hpp"
+#include "validate_logical_plan.hpp"
 
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -282,8 +280,9 @@ namespace services::dispatcher {
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
         make_session(session_to_address_, session, session_t(std::move(sender)));
 
-        if (catalog_.function_exists(function->name())) {
-            register_udf_finish(session, function->name(), components::compute::invalid_function_uid);
+        // TODO: return error code of why there is conflict
+        if (!catalog_.check_function_conflicts(function->name(), function->get_signatures())) {
+            register_udf_finish(session, function->name(), components::compute::invalid_function_uid, {});
         } else {
             actor_zeta::send(memory_storage_,
                              dispatcher_t::address(),
@@ -295,11 +294,12 @@ namespace services::dispatcher {
 
     void dispatcher_t::register_udf_finish(const components::session::session_id_t& session,
                                            const std::string& function_name,
-                                           components::compute::function_uid uid) {
+                                           components::compute::function_uid function_uid,
+                                           std::vector<components::compute::kernel_signature_t>&& function_signatures) {
         trace(log_, "dispatcher_t::register_udf_finish session: {}, function name: {}", session.data(), function_name);
-        bool result = uid != components::compute::invalid_function_uid;
+        bool result = function_uid != components::compute::invalid_function_uid;
         if (result) {
-            catalog_.create_function(function_name, uid);
+            catalog_.create_function(function_name, {function_uid, std::move(function_signatures)});
         }
         actor_zeta::send(find_session(session_to_address_, session).address(),
                          dispatcher_t::address(),
@@ -311,11 +311,12 @@ namespace services::dispatcher {
 
     void dispatcher_t::unregister_udf(const components::session::session_id_t& session,
                                       const std::string& function_name,
+                                      const std::pmr::vector<complex_logical_type>& inputs,
                                       actor_zeta::base::address_t sender) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
         bool result = false;
-        if (catalog_.function_exists(function_name)) {
-            catalog_.drop_function(function_name);
+        if (catalog_.function_exists(function_name, inputs)) {
+            catalog_.drop_function(function_name, inputs);
             result = true;
         }
         actor_zeta::send(sender,
@@ -338,22 +339,22 @@ namespace services::dispatcher {
 
         switch (logic_plan->type()) {
             case node_type::create_database_t:
-                if (!check_namespace_exists(id)) {
+                if (!check_namespace_exists(resource(), catalog_, id)) {
                     error = make_cursor(resource(), error_code_t::database_already_exists, "database already exists");
                 }
                 break;
             case node_type::drop_database_t:
-                error = check_namespace_exists(id);
+                error = check_namespace_exists(resource(), catalog_, id);
                 break;
             case node_type::create_collection_t:
-                if (!check_collection_exists(id)) {
+                if (!check_collection_exists(resource(), catalog_, id)) {
                     error =
                         make_cursor(resource(), error_code_t::collection_already_exists, "collection already exists");
                 } else {
                     const auto& n = reinterpret_cast<const node_create_collection_ptr&>(logic_plan);
                     for (auto& column_type : n->schema()) {
                         if (column_type.type() == logical_type::UNKNOWN) {
-                            if (error = check_type_exists(column_type.type_name()); !error) {
+                            if (error = check_type_exists(resource(), catalog_, column_type.type_name()); !error) {
                                 auto proper_type = catalog_.get_type(column_type.type_name());
                                 std::string alias = column_type.alias();
                                 column_type = std::move(proper_type);
@@ -364,11 +365,11 @@ namespace services::dispatcher {
                 }
                 break;
             case node_type::drop_collection_t:
-                error = check_collection_exists(id);
+                error = check_collection_exists(resource(), catalog_, id);
                 break;
             case node_type::create_type_t: {
                 auto& n = reinterpret_cast<node_create_type_ptr&>(logic_plan);
-                if (!check_type_exists(n->type().type_name())) {
+                if (!check_type_exists(resource(), catalog_, n->type().type_name())) {
                     error = make_cursor(resource(),
                                         error_code_t::schema_error,
                                         "type: \'" + n->type().alias() + "\' already exists");
@@ -377,7 +378,7 @@ namespace services::dispatcher {
                     if (n->type().type() == logical_type::STRUCT) {
                         for (auto& field : n->type().child_types()) {
                             if (field.type() == logical_type::UNKNOWN) {
-                                error = check_type_exists(field.type_name());
+                                error = check_type_exists(resource(), catalog_, field.type_name());
                                 if (error) {
                                     break;
                                 } else {
@@ -398,7 +399,7 @@ namespace services::dispatcher {
             }
             case node_type::drop_type_t: {
                 const auto& n = boost::polymorphic_pointer_downcast<node_create_type_t>(logic_plan);
-                error = check_type_exists(n->type().alias());
+                error = check_type_exists(resource(), catalog_, n->type().alias());
                 if (error) {
                     break;
                 } else {
@@ -408,11 +409,17 @@ namespace services::dispatcher {
                 }
             }
             default: {
-                auto check_result = check_collections_format_(plan);
+                auto check_result = validate_format_and_types(resource(), catalog_, plan.get());
                 if (check_result->is_error()) {
                     error = std::move(check_result);
                 } else {
                     used_format = check_result->uses_table_data() ? used_format_t::columns : used_format_t::documents;
+                    if (used_format == used_format_t::columns) {
+                        auto schema_res = validate_schema(resource(), catalog_, plan.get());
+                        if (schema_res.is_error()) {
+                            error = make_cursor(resource(), schema_res.error().type, schema_res.error().what);
+                        }
+                    }
                 }
             }
         }
@@ -615,7 +622,7 @@ namespace services::dispatcher {
               database_name,
               collection);
         make_session(session_to_address_, session, session_t(std::move(sender)));
-        auto error = check_collection_exists({resource(), {database_name, collection}});
+        auto error = check_collection_exists(resource(), catalog_, {resource(), {database_name, collection}});
         if (error) {
             size_finish(session, std::move(error));
         }
@@ -695,196 +702,6 @@ namespace services::dispatcher {
     }
 
     const components::catalog::catalog& dispatcher_t::current_catalog() { return catalog_; }
-
-    components::cursor::cursor_t_ptr
-    dispatcher_t::check_namespace_exists(const components::catalog::table_id id) const {
-        cursor_t_ptr error;
-        if (!catalog_.namespace_exists(id.get_namespace())) {
-            error = make_cursor(resource(), error_code_t::database_not_exists, "database does not exist");
-        }
-        return error;
-    }
-
-    components::cursor::cursor_t_ptr
-    dispatcher_t::check_collection_exists(const components::catalog::table_id id) const {
-        cursor_t_ptr error = check_namespace_exists(id);
-        if (!error) {
-            bool exists = catalog_.table_exists(id);
-            bool computes = catalog_.table_computes(id);
-            // table can either compute or exist with schema - not both
-            if (exists == computes) {
-                error = make_cursor(resource(),
-                                    error_code_t::collection_not_exists,
-                                    exists ? "collection exists and computes schema at the same time"
-                                           : "collection does not exist");
-            }
-        }
-
-        return error;
-    }
-
-    components::cursor::cursor_t_ptr dispatcher_t::check_type_exists(const std::string& alias) const {
-        cursor_t_ptr error;
-        if (!catalog_.type_exists(alias)) {
-            error = make_cursor(resource(), error_code_t::schema_error, "type: \'" + alias + "\' does not exists");
-        }
-        return error;
-    }
-
-    components::cursor::cursor_t_ptr
-    dispatcher_t::check_collections_format_(components::logical_plan::node_ptr& logical_plan) const {
-        used_format_t used_format = used_format_t::undefined;
-        std::pmr::vector<complex_logical_type> encountered_types{resource()};
-        cursor_t_ptr result = make_cursor(resource(), operation_status_t::success);
-        auto check_format = [&](components::logical_plan::node_t* node) {
-            // incoming raw data might not know about type used and only have a field name
-            // which is different from the type
-            // so we have to collect all known fields that may be used
-            used_format_t check = used_format_t::undefined;
-            // pull check format from collection referenced by logical_plan
-            if (!node->collection_full_name().empty()) {
-                table_id id(resource(), node->collection_full_name());
-                if (auto res = check_collection_exists(id); !res) {
-                    check = catalog_.get_table_format(id);
-                    if (!catalog_.table_computes(id)) {
-                        for (const auto& type : catalog_.get_table_schema(id).columns()) {
-                            encountered_types.emplace_back(type);
-                        }
-                    }
-                } else {
-                    result = res;
-                    return false;
-                }
-            }
-            if (node->type() == components::logical_plan::node_type::group_t) {
-                auto* group_node = reinterpret_cast<components::logical_plan::node_group_t*>(node);
-                for (auto& expr : group_node->expressions()) {
-                    if (expr->group() == components::expressions::expression_group::aggregate) {
-                        auto* agg_expr = reinterpret_cast<components::expressions::aggregate_expression_t*>(expr.get());
-                        if (catalog_.function_exists(agg_expr->function_name())) {
-                            // TODO: check function arguments
-                            agg_expr->add_function_uid(catalog_.get_function_uid(agg_expr->function_name()));
-                        } else {
-                            result = make_cursor(resource(),
-                                                 error_code_t::unrecognized_function,
-                                                 "logical plan group expr has an unrecognized function call");
-                            return false;
-                        }
-                    }
-                }
-            }
-            // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
-            if (node->type() == components::logical_plan::node_type::data_t) {
-                auto* data_node = reinterpret_cast<components::logical_plan::node_data_t*>(node);
-                if (check == used_format_t::undefined) {
-                    check = static_cast<used_format_t>(data_node->uses_data_chunk());
-                } else if (check != static_cast<used_format_t>(data_node->uses_data_chunk())) {
-                    result =
-                        make_cursor(resource(),
-                                    error_code_t::incompatible_storage_types,
-                                    "logical plan data format is not the same as referenced collection data format");
-                    return false;
-                }
-
-                // convert data_chunk to documents
-                if (used_format == used_format_t::documents && check == used_format_t::columns) {
-                    data_node->convert_to_documents();
-                    check = used_format_t::documents;
-                }
-
-                if (data_node->uses_data_chunk()) {
-                    for (auto& column : data_node->data_chunk().data) {
-                        auto it = std::find_if(encountered_types.begin(),
-                                               encountered_types.end(),
-                                               [&column](const complex_logical_type& type) {
-                                                   return type.alias() == column.type().alias();
-                                               });
-                        // if this is a registered type, then conversion is required
-                        if (it != encountered_types.end() && catalog_.type_exists(it->type_name())) {
-                            // try to cast to it
-                            if (it->type() == logical_type::STRUCT) {
-                                components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        *it,
-                                                                        data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(*it);
-                                    if (val.type().type() == logical_type::NA) {
-                                        result =
-                                            make_cursor(resource(),
-                                                        error_code_t::schema_error,
-                                                        "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, val);
-                                    }
-                                }
-                                column = std::move(new_column);
-                            } else if (it->type() == logical_type::ENUM) {
-                                components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        *it,
-                                                                        data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.data<std::string_view>()[i];
-                                    auto enum_val = logical_value_t::create_enum(*it, val);
-                                    if (enum_val.type().type() == logical_type::NA) {
-                                        result =
-                                            make_cursor(resource(),
-                                                        error_code_t::schema_error,
-                                                        "enum: \'" + it->alias() + "\' does not contain value: \'" +
-                                                            std::string(val) + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, enum_val);
-                                    }
-                                }
-                                column = std::move(new_column);
-                            } else {
-                                assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
-                            }
-                        }
-                    }
-                }
-            }
-
-            // compare check to previously gathered
-            if (used_format == check) {
-                return true;
-            } else if (used_format == used_format_t::undefined) {
-                used_format = check;
-                return true;
-            } else if (check == used_format_t::undefined) {
-                return true;
-            }
-            result = make_cursor(resource(),
-                                 error_code_t::incompatible_storage_types,
-                                 "logical plan data format is not the same as referenced collection data format");
-            return false;
-        };
-
-        std::queue<components::logical_plan::node_t*> look_up;
-        look_up.emplace(logical_plan.get());
-        while (!look_up.empty()) {
-            auto plan_node = look_up.front();
-
-            if (check_format(plan_node)) {
-                for (const auto& child : plan_node->children()) {
-                    look_up.emplace(child.get());
-                }
-                look_up.pop();
-            } else {
-                return result;
-            }
-        }
-
-        switch (used_format) {
-            case used_format_t::documents:
-                return make_cursor(resource(), std::pmr::vector<components::document::document_ptr>{resource()});
-            case used_format_t::columns:
-                return make_cursor(resource(), components::vector::data_chunk_t{resource(), {}, 0});
-            default:
-                return make_cursor(resource(), error_code_t::incompatible_storage_types, "undefined storage format");
-        }
-    }
 
     components::logical_plan::node_ptr dispatcher_t::create_logic_plan(components::logical_plan::node_ptr plan) {
         //todo: cache logical plans
@@ -1138,7 +955,8 @@ namespace services::dispatcher {
     }
 
     void manager_dispatcher_t::unregister_udf(const components::session::session_id_t& session,
-                                              const std::string& function_name) {
+                                              const std::string& function_name,
+                                              const std::pmr::vector<components::types::complex_logical_type>& inputs) {
         trace(log_,
               "manager_dispatcher_t::unregister_udf session: {}, function name: {}",
               session.data(),
@@ -1148,6 +966,7 @@ namespace services::dispatcher {
                          collection::handler_id(collection::route::unregister_udf),
                          session,
                          function_name,
+                         inputs,
                          current_message()->sender());
     }
 

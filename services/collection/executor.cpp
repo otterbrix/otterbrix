@@ -129,19 +129,22 @@ namespace services::collection::executor {
                                   components::compute::function_ptr&& function) {
         trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
         std::string name = function->name();
+        auto signatures = function->get_signatures();
         auto res = function_registry_.add_function(std::move(function));
-        register_udf_finish(session, name, res.value());
+        register_udf_finish(session, name, res.value(), std::move(signatures));
     }
 
     void executor_t::register_udf_finish(const components::session::session_id_t& session,
                                          const std::string& function_name,
-                                         components::compute::function_uid uid) {
+                                         components::compute::function_uid function_uid,
+                                         std::vector<components::compute::kernel_signature_t>&& function_signatures) {
         actor_zeta::send(memory_storage_,
                          address(),
                          handler_id(route::register_udf_finish),
                          session,
                          function_name,
-                         uid);
+                         function_uid,
+                         std::move(function_signatures));
     }
 
     void executor_t::create_documents(const components::session::session_id_t& session,

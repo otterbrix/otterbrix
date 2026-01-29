@@ -54,7 +54,7 @@ std::unique_ptr<aggregate_function> make_concat_func() {
     auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
 
     kernel_signature_t sig({exact_type_matcher(types::logical_type::STRING_LITERAL)},
-                           output_type::computed(same_type_resolver()));
+                           {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_init, concat_consume, concat_merge, concat_finalize};
 
     fn->add_kernel(std::move(k));
@@ -99,7 +99,7 @@ std::unique_ptr<aggregate_function> make_mult_func() {
 
     kernel_signature_t sig(
         {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
-        output_type::fixed(types::logical_type::DOUBLE));
+        {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
 
     fn->add_kernel(std::move(k));
@@ -210,21 +210,23 @@ TEST_CASE("integration::cpp::test_udfs::aggregate") {
                                                R"_(FROM TestDatabase.TestCollection )_"
                                                R"_(GROUP BY count )_"
                                                R"_(ORDER BY count ASC;)_");
-            // TODO: add check and corresponding error
-            // REQUIRE(cur->is_error());
+            REQUIRE(cur->is_error());
+            REQUIRE(cur->get_error().type == error_code_t::incorrect_function_argument);
         }
     }
 
     INFO("unregister udf") {
         {
             auto session = otterbrix::session_id_t();
-            bool result = dispatcher->unregister_udf(session, udf1_name);
+            bool result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
             REQUIRE(result);
         }
-        // Trying to create same function will result in error
+        // Trying to delete function with non-existent signature
         {
             auto session = otterbrix::session_id_t();
-            bool result = dispatcher->unregister_udf(session, udf1_name);
+            bool result = dispatcher->unregister_udf(session,
+                                                     udf2_name,
+                                                     {types::logical_type::BIGINT, types::logical_type::SMALLINT});
             REQUIRE_FALSE(result);
         }
     }

@@ -128,6 +128,32 @@ namespace components::types {
         INVALID = 255
     };
 
+    static constexpr std::array<physical_type, 16> DEFAULT_PHYSICAL_TYPES{physical_type::BOOL,
+                                                                          physical_type::UINT8,
+                                                                          physical_type::INT8,
+                                                                          physical_type::UINT16,
+                                                                          physical_type::INT16,
+                                                                          physical_type::UINT32,
+                                                                          physical_type::INT32,
+                                                                          physical_type::UINT64,
+                                                                          physical_type::INT64,
+                                                                          physical_type::UINT128,
+                                                                          physical_type::INT128,
+                                                                          physical_type::FLOAT,
+                                                                          physical_type::DOUBLE,
+                                                                          physical_type::STRING,
+                                                                          physical_type::LIST,
+                                                                          physical_type::ARRAY};
+
+    static constexpr std::array<logical_type, 21> DEFAULT_LOGICAL_TYPES{
+        logical_type::BOOLEAN,      logical_type::UTINYINT,       logical_type::TINYINT,
+        logical_type::USMALLINT,    logical_type::SMALLINT,       logical_type::UINTEGER,
+        logical_type::INTEGER,      logical_type::UBIGINT,        logical_type::BIGINT,
+        logical_type::UHUGEINT,     logical_type::HUGEINT,        logical_type::FLOAT,
+        logical_type::DOUBLE,       logical_type::STRING_LITERAL, logical_type::TIMESTAMP_SEC,
+        logical_type::TIMESTAMP_MS, logical_type::TIMESTAMP_US,   logical_type::TIMESTAMP_NS,
+        logical_type::DECIMAL,      logical_type::LIST,           logical_type::ARRAY};
+
     constexpr logical_type to_logical(physical_type type) {
         switch (type) {
             case physical_type::BOOL:

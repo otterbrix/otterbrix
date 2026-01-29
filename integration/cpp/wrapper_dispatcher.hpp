@@ -78,7 +78,9 @@ namespace otterbrix {
         auto size(const session_id_t& session, const database_name_t& database, const collection_name_t& collection)
             -> size_t;
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
-        auto unregister_udf(const session_id_t& session, const std::string& function_name) -> bool;
+        auto unregister_udf(const session_id_t& session,
+                            const std::string& function_name,
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)

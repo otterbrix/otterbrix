@@ -66,29 +66,83 @@ namespace components::catalog {
         return it != registered_types_.end();
     }
 
-    void namespace_storage::create_function(const std::string& function_name, compute::function_uid uid) {
-        if (function_exists(function_name)) {
+    void namespace_storage::create_function(const std::string& function_name, compute::registered_func_id uid) {
+        auto it = registered_functions_.find(function_name);
+        if (it == registered_functions_.end()) {
+            registered_functions_.emplace(function_name, std::vector{std::move(uid)});
+        } else {
+            it->second.emplace_back(std::move(uid));
+        }
+    }
+
+    void namespace_storage::drop_function(const std::string& function_name,
+                                          const std::pmr::vector<types::complex_logical_type>& inputs) {
+        auto it = registered_functions_.find(function_name);
+        if (it == registered_functions_.end()) {
             return;
         }
 
-        registered_functions_.emplace(function_name, uid);
-    }
-
-    void namespace_storage::drop_function(const std::string& function_name) {
-        if (!function_exists(function_name)) {
-            return;
+        const auto& overloads = it->second;
+        if (overloads.size() == 1) {
+            registered_functions_.erase(function_name);
         }
 
-        registered_functions_.erase(function_name);
+        for (const auto& overload : overloads) {
+            for (const auto& signature : overload.signatures) {
+                if (signature.matches_inputs(inputs)) {
+                    registered_functions_.erase(function_name);
+                    return;
+                }
+            }
+        }
     }
 
-    bool namespace_storage::function_exists(const std::string& function_name) const {
+    bool namespace_storage::check_function_conflicts(const std::string& function_name,
+                                                     const std::vector<compute::kernel_signature_t>& signatures) const {
+        auto it = registered_functions_.find(function_name);
+        if (it == registered_functions_.end()) {
+            return true;
+        }
+
+        for (const auto& overload : it->second) {
+            if (!components::compute::check_signature_conflicts(overload.signatures, signatures, registered_types_)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool namespace_storage::function_name_exists(const std::string& function_name) const {
         if (registered_functions_.empty()) {
             return false;
         }
 
         auto it = registered_functions_.find(function_name);
         return it != registered_functions_.end();
+    }
+
+    bool namespace_storage::function_exists(const std::string& function_name,
+                                            const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        if (registered_functions_.empty()) {
+            return false;
+        }
+
+        auto it = registered_functions_.find(function_name);
+        if (it == registered_functions_.end()) {
+            return false;
+        }
+
+        const auto& overloads = it->second;
+        for (const auto& [uid, signatures] : overloads) {
+            for (const auto& signature : signatures) {
+                if (signature.matches_inputs(inputs)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     // todo: reuse list_child
@@ -187,12 +241,28 @@ namespace components::catalog {
         return registered_types_.find(type_name)->second;
     }
 
-    compute::function_uid namespace_storage::get_function(const std::string& function_name) const {
-        if (!function_exists(function_name)) {
+    std::pair<compute::function_uid, compute::kernel_signature_t>
+    namespace_storage::get_function(const std::string& function_name,
+                                    const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        if (registered_functions_.empty()) {
             throw std::logic_error("function is not registered: " + function_name);
         }
 
-        return registered_functions_.find(function_name)->second;
+        auto it = registered_functions_.find(function_name);
+        if (it == registered_functions_.end()) {
+            throw std::logic_error("function is not registered: " + function_name);
+        }
+
+        const auto& overloads = it->second;
+        for (const auto& [uid, signatures] : overloads) {
+            for (const auto& signature : signatures) {
+                if (signature.matches_inputs(inputs)) {
+                    return {uid, signature};
+                }
+            }
+        }
+
+        throw std::logic_error("function is not registered: " + function_name);
     }
 
     void namespace_storage::clear() { namespaces_.clear(); }

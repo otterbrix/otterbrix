@@ -39,10 +39,14 @@ namespace components::logical_plan {
 
     const collection_name_t& node_t::collection_name() const { return collection_.collection; }
 
+    const std::string& node_t::result_alias() const { return result_alias_; }
+
     const std::pmr::vector<node_ptr>& node_t::children() const { return children_; }
     std::pmr::vector<node_ptr>& node_t::children() { return children_; }
 
     const std::pmr::vector<expression_ptr>& node_t::expressions() const { return expressions_; }
+
+    void node_t::set_result_alias(const std::string& alias) { result_alias_ = alias; }
 
     void node_t::reserve_child(std::size_t count) { children_.reserve(count); }
 

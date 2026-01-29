@@ -164,9 +164,11 @@ namespace services {
                          std::move(function));
     }
 
-    void memory_storage_t::register_udf_finish(const components::session::session_id_t& session,
-                                               const std::string& function_name,
-                                               components::compute::function_uid uid) {
+    void
+    memory_storage_t::register_udf_finish(const components::session::session_id_t& session,
+                                          const std::string& function_name,
+                                          components::compute::function_uid function_uid,
+                                          std::vector<components::compute::kernel_signature_t>&& function_signatures) {
         auto& s = sessions_.at(session);
         debug(log_, "memory_storage_t:register_udf_finish: session: {}, {}", session.data(), function_name);
         actor_zeta::send(s.sender,
@@ -174,7 +176,8 @@ namespace services {
                          handler_id(collection::route::register_udf_finish),
                          session,
                          function_name,
-                         uid);
+                         function_uid,
+                         std::move(function_signatures));
         sessions_.erase(session);
     }
 

@@ -86,7 +86,7 @@ TEST_CASE("components::compute::vector::single") {
 
     auto fn = std::make_unique<vector_function>("vec_test", arity::unary(), function_doc_with_options(), 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -104,7 +104,7 @@ TEST_CASE("components::compute::vector::batch") {
 
     auto fn = std::make_unique<vector_function>("vec_batch", arity::unary(), function_doc_with_options(), 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -128,7 +128,7 @@ TEST_CASE("components::compute::vector::batch") {
 TEST_CASE("components::compute::aggregate::single") {
     auto fn = std::make_unique<aggregate_function>("agg_single", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
     aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_merge, agg_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -144,7 +144,7 @@ TEST_CASE("components::compute::aggregate::single") {
 TEST_CASE("components::compute::aggregate::batch") {
     auto fn = std::make_unique<aggregate_function>("agg_batch", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
     aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_merge, agg_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -168,7 +168,7 @@ TEST_CASE("components::compute::aggregate::batch") {
 TEST_CASE("components::compute::options_required") {
     auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -187,7 +187,7 @@ TEST_CASE("components::compute::errors") {
         auto fn = std::make_unique<vector_function>("vec", arity::unary(), function_doc{}, 1);
 
         kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER), exact_type_matcher(logical_type::NA)},
-                               output_type::fixed(logical_type::INTEGER));
+                               {output_type::fixed(logical_type::INTEGER)});
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
         REQUIRE(fn->add_kernel(std::move(k)).code() == compute_status_code_t::INVALID);
     }
@@ -195,7 +195,8 @@ TEST_CASE("components::compute::errors") {
     SECTION("type mismatch") {
         auto fn = std::make_unique<vector_function>("bad_types", arity::unary(), function_doc{}, 1);
 
-        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)},
+                               {output_type::fixed(logical_type::INTEGER)});
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
         REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -211,7 +212,8 @@ TEST_CASE("components::compute::errors") {
         test_options opts;
         auto fn = std::make_unique<vector_function>("vec", arity::unary(), function_doc{}, 1);
 
-        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)},
+                               {output_type::fixed(logical_type::INTEGER)});
         vector_kernel k(std::move(sig), vector_exec_fail, vector_init, vector_finalize);
         REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -222,7 +224,8 @@ TEST_CASE("components::compute::errors") {
     SECTION("faulty consume") {
         auto fn = std::make_unique<aggregate_function>("agg", arity::unary(), function_doc{}, 1);
 
-        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, output_type::fixed(logical_type::INTEGER));
+        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)},
+                               {output_type::fixed(logical_type::INTEGER)});
         aggregate_kernel k(std::move(sig), agg_init, agg_consume_fail, agg_merge, agg_finalize);
         REQUIRE(fn->add_kernel(std::move(k)));
 

@@ -25,6 +25,9 @@ namespace components::expressions {
         bool operator==(const expression_i& rhs) const;
         bool operator!=(const expression_i& rhs) const;
 
+        const std::string& result_alias() const;
+        void set_result_alias(const std::string& alias);
+
         void serialize(serializer::msgpack_serializer_t*) const;
         static boost::intrusive_ptr<expression_i> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
@@ -33,6 +36,7 @@ namespace components::expressions {
 
     private:
         const expression_group group_;
+        std::string result_alias_;
 
         virtual hash_t hash_impl() const = 0;
 

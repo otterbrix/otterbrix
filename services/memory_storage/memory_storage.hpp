@@ -54,7 +54,8 @@ namespace services {
                           components::compute::function_ptr&& function);
         void register_udf_finish(const components::session::session_id_t& session,
                                  const std::string& function_name,
-                                 components::compute::function_uid uid);
+                                 components::compute::function_uid function_uid,
+                                 std::vector<components::compute::kernel_signature_t>&& function_signatures);
 
         void size(const components::session::session_id_t& session, collection_full_name_t&& name);
         void close_cursor(const components::session::session_id_t& session,

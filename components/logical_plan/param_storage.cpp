@@ -24,7 +24,7 @@ namespace components::logical_plan {
 
     auto parameter_node_t::next_id() -> core::parameter_id_t {
         auto tmp = counter_;
-        counter_ += 1;
+        ++counter_;
         return core::parameter_id_t(tmp);
     }
 

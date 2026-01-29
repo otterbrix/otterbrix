@@ -16,7 +16,7 @@ namespace components::vector::arrow {
             inlined.length = length;
             std::memcpy(inlined.data, data, static_cast<size_t>(length));
             if (length < MAX_INLINED_BYTES) {
-                uint8_t remaining_bytes = MAX_INLINED_BYTES - static_cast<uint8_t>(length);
+                auto remaining_bytes = static_cast<uint8_t>(MAX_INLINED_BYTES - length);
 
                 std::memset(&inlined.data[length], '\0', remaining_bytes);
             }

@@ -17,7 +17,7 @@ namespace components::table::operators::aggregate::impl {
         auto operator()(const vector::vector_t& v, size_t count) const {
             auto raw_sum = T();
             for (size_t i = 0; i < count; i++) {
-                raw_sum += v.data<T>()[i];
+                raw_sum = raw_sum + v.data<T>()[i];
             }
             return types::logical_value_t{raw_sum};
         }

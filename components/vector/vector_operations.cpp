@@ -14,7 +14,7 @@ namespace components::vector::vector_ops {
             auto value = T(start);
             for (uint64_t i = 0; i < count; i++) {
                 if (i > 0) {
-                    value += static_cast<T>(increment);
+                    value = static_cast<T>(value + static_cast<T>(increment));
                 }
                 result_data[i] = value;
             }

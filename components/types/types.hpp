@@ -353,10 +353,10 @@ namespace components::types {
             return static_cast<logical_type>(std::max(static_cast<uint8_t>(type1), static_cast<uint8_t>(type2)));
         } else if (is_signed(type1)) {
             return static_cast<logical_type>(
-                std::max<uint8_t>(static_cast<uint8_t>(type1), static_cast<uint8_t>(type2) - signage_difference));
+                std::max<uint8_t>(static_cast<uint8_t>(type1), static_cast<uint8_t>(static_cast<uint8_t>(type2) - signage_difference)));
         } else {
             return static_cast<logical_type>(
-                std::max<uint8_t>(static_cast<uint8_t>(type1) - signage_difference, static_cast<uint8_t>(type2)));
+                std::max<uint8_t>(static_cast<uint8_t>(static_cast<uint8_t>(type1) - signage_difference), static_cast<uint8_t>(type2)));
         }
     }
 

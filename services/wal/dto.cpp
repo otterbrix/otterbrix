@@ -44,9 +44,9 @@ namespace services::wal {
     }
 
     size_tt read_size_impl(char* input, int index_start) {
-        size_tt size_tmp = 0;
-        size_tmp = 0xff00 & (size_tt(input[index_start] << 8));
-        size_tmp |= 0x00ff & (size_tt(input[index_start + 1]));
+        const size_tt byte0 = static_cast<uint8_t>(input[index_start]);
+        const size_tt byte1 = static_cast<uint8_t>(input[index_start + 1]);
+        const size_tt size_tmp = static_cast<size_tt>((byte0 << 8) | byte1);
         return size_tmp;
     }
 

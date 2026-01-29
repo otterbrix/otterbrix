@@ -1,5 +1,6 @@
 #pragma once
 #include <absl/numeric/int128.h>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <string>

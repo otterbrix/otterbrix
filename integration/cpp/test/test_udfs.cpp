@@ -16,6 +16,8 @@ using id_par = core::parameter_id_t;
 static constexpr int kNumInserts = 100;
 static const std::string udf1_name = "concat";
 static const std::string udf2_name = "mult";
+//static const std::string udf3_name = "is_even";
+//static const std::string udf4_name = "modulo";
 
 struct concat_kernel_state : kernel_state {
     std::string value;
@@ -106,8 +108,8 @@ std::unique_ptr<aggregate_function> make_mult_func() {
     return fn;
 }
 
-TEST_CASE("integration::cpp::test_udfs::aggregate") {
-    auto config = test_create_config("/tmp/test_udfs/aggregate");
+TEST_CASE("integration::cpp::test_udfs") {
+    auto config = test_create_config("/tmp/test_udfs");
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -203,6 +205,23 @@ TEST_CASE("integration::cpp::test_udfs::aggregate") {
                 REQUIRE(core::is_equals(chunk.data[1].data<double>()[i], ((d + 0.1) * d) * 2));
             }
         }
+        INFO("multiple arguments with parameter") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count, mult(count_double, 42) AS result )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(GROUP BY count )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kNumInserts);
+            auto& chunk = cur->chunk_data();
+            REQUIRE(chunk.column_count() == 2);
+            for (size_t i = 0; i < chunk.size(); i++) {
+                REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+                REQUIRE(
+                    core::is_equals(chunk.data[1].data<double>()[i], ((static_cast<double>(i + 1) + 0.1) * 42) * 2));
+            }
+        }
         INFO("incorrect argument types") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -213,6 +232,27 @@ TEST_CASE("integration::cpp::test_udfs::aggregate") {
             REQUIRE(cur->is_error());
             REQUIRE(cur->get_error().type == error_code_t::incorrect_function_argument);
         }
+        // TODO:
+        /*
+        INFO("bool function in WHERE clause") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(WHERE is_even(count) )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+        }
+        INFO("int function in WHERE clause with parameter") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(WHERE modulo(count, 7) <= 2 )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+        }
+        */
     }
 
     INFO("unregister udf") {

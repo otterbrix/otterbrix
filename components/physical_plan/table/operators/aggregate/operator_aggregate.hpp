@@ -17,7 +17,7 @@ namespace components::table::operators::aggregate {
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) final;
 
-        virtual types::logical_value_t aggregate_impl() = 0;
+        virtual types::logical_value_t aggregate_impl(pipeline::context_t* pipeline_context) = 0;
         virtual std::string key_impl() const = 0;
     };
 

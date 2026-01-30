@@ -4,6 +4,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
+#include <components/logical_plan/param_storage.hpp>
 
 namespace services::dispatcher {
 
@@ -56,6 +57,7 @@ namespace services::dispatcher {
                                                                components::logical_plan::node_t* node);
     schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                 const components::catalog::catalog& catalog,
-                                                components::logical_plan::node_t* node);
+                                                components::logical_plan::node_t* node,
+                                                const components::logical_plan::storage_parameters& parameters);
 
 } // namespace services::dispatcher

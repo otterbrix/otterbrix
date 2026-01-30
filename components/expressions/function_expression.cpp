@@ -21,6 +21,10 @@ namespace components::expressions {
 
     const std::pmr::vector<param_storage>& function_expression_t::args() const noexcept { return args_; }
 
+    void function_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+
+    compute::function_uid function_expression_t::function_uid() const { return function_uid_; }
+
     expression_ptr function_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
         std::pmr::vector<param_storage> args(deserializer->resource());

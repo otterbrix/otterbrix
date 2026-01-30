@@ -415,7 +415,7 @@ namespace services::dispatcher {
                 } else {
                     used_format = check_result->uses_table_data() ? used_format_t::columns : used_format_t::documents;
                     if (used_format == used_format_t::columns) {
-                        auto schema_res = validate_schema(resource(), catalog_, plan.get());
+                        auto schema_res = validate_schema(resource(), catalog_, plan.get(), params->parameters());
                         if (schema_res.is_error()) {
                             error = make_cursor(resource(), schema_res.error().type, schema_res.error().what);
                         }

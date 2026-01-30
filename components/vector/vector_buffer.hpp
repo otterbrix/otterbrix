@@ -99,6 +99,7 @@ namespace components::vector {
         void set_auxiliary(std::unique_ptr<vector_auxiliary_data_t> data) { aux_data = std::move(data); }
         vector_auxiliary_data_t* get_auxiliary() noexcept { return aux_data.get(); }
         const vector_auxiliary_data_t* get_auxiliary() const noexcept { return aux_data.get(); }
+        std::unique_ptr<vector_auxiliary_data_t>&& take_auxiliary() noexcept { return std::move(aux_data); }
 
     protected:
         vector_buffer_type type_;

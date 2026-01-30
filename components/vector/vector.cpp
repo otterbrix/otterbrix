@@ -118,16 +118,16 @@ namespace components::vector {
         , type_(std::move(other.type_))
         , data_(other.data_)
         , validity_(std::move(other.validity_))
-        , buffer_(other.buffer_)
-        , auxiliary_(other.auxiliary_) {}
+        , buffer_(std::move(other.buffer_))
+        , auxiliary_(std::move(other.auxiliary_)) {}
 
     vector_t& vector_t::operator=(vector_t&& other) noexcept {
         vector_type_ = other.vector_type_;
         type_ = std::move(other.type_);
         data_ = other.data_;
         validity_ = std::move(other.validity_);
-        buffer_ = other.buffer_;
-        auxiliary_ = other.auxiliary_;
+        buffer_ = std::move(other.buffer_);
+        auxiliary_ = std::move(other.auxiliary_);
         return *this;
     }
 
@@ -978,7 +978,16 @@ namespace components::vector {
                 break;
             }
             default:
-                throw std::runtime_error("Unimplemented type for normalify");
+                throw std::runtime_error("Unimplemented type for normalize");
+        }
+    }
+
+    template<class T>
+    static void flatten_const_vector(std::byte* data, std::byte* old_data, uint64_t count) {
+        T* output = reinterpret_cast<T*>(data);
+        for (uint64_t i = 0; i < count; i++) {
+            output[i] = *reinterpret_cast<T*>(old_data);
+            ;
         }
     }
 
@@ -990,13 +999,126 @@ namespace components::vector {
                 int64_t start, increment;
                 get_sequence(start, increment);
 
-                buffer_ = std::make_unique<vector_buffer_t>(resource(), type_);
+                buffer_ = std::make_unique<vector_buffer_t>(resource(), type_, count);
                 data_ = buffer_->data();
                 vector_ops::generate_sequence(*this, count, indexing, start, increment);
                 break;
             }
+            case vector_type::CONSTANT: {
+                bool is_null = this->is_null(0);
+                auto old_buffer = std::move(buffer_);
+                auto old_data = data_;
+                buffer_ = std::make_unique<vector_buffer_t>(resource(), type_, count);
+                if (old_buffer) {
+                    buffer_->set_auxiliary(old_buffer->take_auxiliary());
+                }
+                data_ = buffer_->data();
+                vector_type_ = vector_type::FLAT;
+                if (is_null && type_.to_physical_type() != types::physical_type::ARRAY) {
+                    validity_.set_all_invalid(count);
+                    if (type_.to_physical_type() != types::physical_type::STRUCT) {
+                        return;
+                    }
+                }
+                switch (type_.to_physical_type()) {
+                    case types::physical_type::BOOL:
+                        flatten_const_vector<bool>(data_, old_data, count);
+                        break;
+                    case types::physical_type::INT8:
+                        flatten_const_vector<int8_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::INT16:
+                        flatten_const_vector<int16_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::INT32:
+                        flatten_const_vector<int32_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::INT64:
+                        flatten_const_vector<int64_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT8:
+                        flatten_const_vector<uint8_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT16:
+                        flatten_const_vector<uint16_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT32:
+                        flatten_const_vector<uint32_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT64:
+                        flatten_const_vector<uint64_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::INT128:
+                        flatten_const_vector<types::int128_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::UINT128:
+                        flatten_const_vector<types::uint128_t>(data_, old_data, count);
+                        break;
+                    case types::physical_type::FLOAT:
+                        flatten_const_vector<float>(data_, old_data, count);
+                        break;
+                    case types::physical_type::DOUBLE:
+                        flatten_const_vector<double>(data_, old_data, count);
+                        break;
+                        // case types::physical_type::INTERVAL:
+                        //     flatten_const_vector<interval_t>(data_, old_data, count);
+                        //     break;
+                    case types::physical_type::STRING:
+                        flatten_const_vector<std::string_view>(data_, old_data, count);
+                        break;
+                    case types::physical_type::LIST: {
+                        flatten_const_vector<types::list_entry_t>(data_, old_data, count);
+                        break;
+                    }
+                    case types::physical_type::ARRAY: {
+                        auto& original_child = entry();
+                        auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
+                        auto flattened_buffer = std::make_unique<array_vector_buffer_t>(resource(), type_, count);
+                        auto& new_child = flattened_buffer->nested_data();
+
+                        if (is_null) {
+                            validity_.set_all_invalid(count);
+                            new_child.flatten(count * array_size);
+                            new_child.validity_.set_all_invalid(count * array_size);
+                        }
+
+                        auto child_vec = std::make_unique<vector_t>(original_child);
+                        child_vec->flatten(count * array_size);
+
+                        indexing_vector_t child_indexing(resource(), count * array_size);
+                        for (uint64_t array_idx = 0; array_idx < count; array_idx++) {
+                            for (uint64_t elem_idx = 0; elem_idx < array_size; elem_idx++) {
+                                auto position = array_idx * array_size + elem_idx;
+                                if (child_vec->is_null(elem_idx)) {
+                                    new_child.set_null(position, true);
+                                }
+                                child_indexing.set_index(position, elem_idx);
+                            }
+                        }
+
+                        vector_ops::copy(*child_vec, new_child, child_indexing, count * array_size, 0, 0);
+                        auxiliary_ = std::shared_ptr<vector_buffer_t>(flattened_buffer.release());
+                        break;
+                    }
+                    case types::physical_type::STRUCT: {
+                        auto normalized_buffer = std::make_unique<struct_vector_buffer_t>(resource());
+                        auto& new_children = normalized_buffer->entries();
+                        auto& child_entries = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
+                        for (auto& child : child_entries) {
+                            auto vector = std::make_unique<vector_t>(*child);
+                            vector->flatten(count);
+                            new_children.push_back(std::move(vector));
+                        }
+                        auxiliary_ = std::shared_ptr<vector_buffer_t>(normalized_buffer.release());
+                        break;
+                    }
+                    default:
+                        throw std::runtime_error("Unimplemented type for normalize with indexing vector");
+                }
+                break;
+            }
             default:
-                throw std::runtime_error("Unimplemented type for normalify with indexing vector");
+                throw std::runtime_error("Unimplemented type for normalize with indexing vector");
         }
     }
 

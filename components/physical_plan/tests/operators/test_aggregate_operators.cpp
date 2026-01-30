@@ -50,7 +50,7 @@ TEST_CASE("components::physical_plan::aggregate::count") {
             table::operators::aggregate::operator_func_t count(
                 d(table),
                 get_function_by_name("count"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             count.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             count.on_execute(nullptr);
@@ -80,7 +80,7 @@ TEST_CASE("components::physical_plan::aggregate::count") {
             table::operators::aggregate::operator_func_t count(
                 d(table),
                 get_function_by_name("count"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             count.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             count.on_execute(&pipeline_context);
@@ -110,7 +110,7 @@ TEST_CASE("components::physical_plan::aggregate::min") {
             table::operators::aggregate::operator_func_t min_(
                 d(table),
                 get_function_by_name("min"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(nullptr);
@@ -140,7 +140,7 @@ TEST_CASE("components::physical_plan::aggregate::min") {
             table::operators::aggregate::operator_func_t min_(
                 d(table),
                 get_function_by_name("min"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             min_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             min_.on_execute(&pipeline_context);
@@ -170,7 +170,7 @@ TEST_CASE("components::physical_plan::aggregate::max") {
             table::operators::aggregate::operator_func_t max_(
                 d(table),
                 get_function_by_name("max"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(nullptr);
@@ -200,7 +200,7 @@ TEST_CASE("components::physical_plan::aggregate::max") {
             table::operators::aggregate::operator_func_t max_(
                 d(table),
                 get_function_by_name("max"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             max_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             max_.on_execute(&pipeline_context);
@@ -230,7 +230,7 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
             table::operators::aggregate::operator_func_t sum_(
                 d(table),
                 get_function_by_name("sum"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(nullptr);
@@ -260,7 +260,7 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
             table::operators::aggregate::operator_func_t sum_(
                 d(table),
                 get_function_by_name("sum"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             sum_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             sum_.on_execute(&pipeline_context);
@@ -290,7 +290,7 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
             table::operators::aggregate::operator_func_t avg_(
                 d(table),
                 get_function_by_name("avg"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(nullptr);
@@ -319,7 +319,7 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
             table::operators::aggregate::operator_func_t avg_(
                 d(table),
                 get_function_by_name("avg"),
-                std::pmr::vector<key>{{key(&resource, "count")}, &resource});
+                std::pmr::vector<param_storage>{{key(&resource, "count")}, &resource});
             avg_.set_children(boost::intrusive_ptr(
                 new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             avg_.on_execute(&pipeline_context);

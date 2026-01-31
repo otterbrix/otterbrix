@@ -56,9 +56,11 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::load() -> void {
         session_id_t session;
         trace(log_, "wrapper_dispatcher_t::load session: {}", session.data());
-        // Typed send to manager_dispatcher_t::load returns unique_future<void>
-        auto future = actor_zeta::otterbrix::send(manager_dispatcher_, address(),
+        // Typed send to manager_dispatcher_t::load returns pair<bool, unique_future<void>>
+        auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::load, session);
+        // wrapper_dispatcher_t is SYNC, manager_dispatcher_t is also SYNC - no needs_sched handling
+        (void)needs_sched;
         wait_future_void(future);
     }
 
@@ -199,7 +201,7 @@ namespace otterbrix {
                                     const collection_name_t& collection) -> size_t {
         trace(log_, "wrapper_dispatcher_t::size session: {}, collection name : {} ", session.data(), collection);
         // Typed send to manager_dispatcher_t::size returns unique_future<size_t>
-        auto future = actor_zeta::otterbrix::send(manager_dispatcher_, address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::size,
                                                   session, database, collection);
         return wait_future(future);
@@ -255,7 +257,7 @@ namespace otterbrix {
         -> components::cursor::cursor_t_ptr {
         trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
         // Typed send to manager_dispatcher_t::get_schema returns unique_future<cursor_t_ptr>
-        auto future = actor_zeta::otterbrix::send(manager_dispatcher_, address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::get_schema,
                                                   session, ids);
         return wait_future(future);
@@ -274,7 +276,7 @@ namespace otterbrix {
 
         // Typed send returns future with cursor_t_ptr directly!
         // manager_dispatcher_t::execute_plan returns unique_future<cursor_t_ptr>
-        auto future = actor_zeta::otterbrix::send(manager_dispatcher_, address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::execute_plan,
                                                   session, std::move(node), std::move(params));
 

@@ -63,93 +63,57 @@ namespace services::wal {
         }
     }
 
-    void wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
+    actor_zeta::behavior_t wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
         // Poll completed coroutines first
         poll_pending();
 
         switch (msg->command()) {
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::load>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::load, msg);
-                if (!future.available()) {
-                    pending_load_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::load, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_database>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::create_database, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_database, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_database>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::drop_database, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_database, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_collection>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::create_collection, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_collection>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::drop_collection, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::insert_one>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::insert_one, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::insert_one, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::insert_many>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::insert_many, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::insert_many, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::delete_one>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::delete_one, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::delete_one, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::delete_many>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::delete_many, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::delete_many, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::update_one>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::update_one, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::update_one, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::update_many>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::update_many, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::update_many, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_index>: {
-                auto future = actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
-                if (!future.available()) {
-                    pending_id_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
                 break;
             }
             default:

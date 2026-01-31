@@ -24,22 +24,22 @@ namespace services::disk {
 
     index_agent_disk_t::~index_agent_disk_t() { trace(log_, "delete index_agent_disk_t"); }
 
-    void index_agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
+    actor_zeta::behavior_t index_agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::drop>:
-                actor_zeta::dispatch(this, &index_agent_disk_t::drop, msg);
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::drop, msg);
                 break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::insert>:
-                actor_zeta::dispatch(this, &index_agent_disk_t::insert, msg);
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::insert, msg);
                 break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::insert_many>:
-                actor_zeta::dispatch(this, &index_agent_disk_t::insert_many, msg);
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::insert_many, msg);
                 break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove>:
-                actor_zeta::dispatch(this, &index_agent_disk_t::remove, msg);
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove, msg);
                 break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find>:
-                actor_zeta::dispatch(this, &index_agent_disk_t::find, msg);
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::find, msg);
                 break;
             default:
                 break;

@@ -6,6 +6,8 @@
 #include <actor-zeta/actor/implements.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
+#include <actor-zeta/detail/behavior_t.hpp>
+#include <actor-zeta/detail/queue/enqueue_result.hpp>
 #include <actor-zeta/scheduler/sharing_scheduler.hpp>
 
 #include <boost/filesystem.hpp>
@@ -47,7 +49,12 @@ namespace services::wal {
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
+
+        // Custom enqueue_impl for SYNC actor with coroutine behavior()
+        // Hides actor_mixin::enqueue_impl - stores behavior and spin-waits until done
+        [[nodiscard]]
+        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
@@ -113,6 +120,9 @@ namespace services::wal {
 
         // Poll and clean up completed coroutines
         void poll_pending();
+
+        // Stored behavior coroutine for SYNC actor polling
+        actor_zeta::behavior_t current_behavior_;
     };
 
     class manager_wal_replicate_empty_t final
@@ -128,7 +138,7 @@ namespace services::wal {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
 
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
         // Same interface as manager_wal_replicate_t for compatibility
         // Sync methods - called directly after constructor

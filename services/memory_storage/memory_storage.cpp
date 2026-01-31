@@ -1,6 +1,8 @@
 #include "memory_storage.hpp"
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <cassert>
+#include <chrono>
+#include <thread>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -42,43 +44,53 @@ namespace services {
 
     auto memory_storage_t::make_type() const noexcept -> const char* { return "memory_storage"; }
 
-    void memory_storage_t::behavior(actor_zeta::mailbox::message* msg) {
+    // Custom enqueue_impl for SYNC actor with coroutine behavior()
+    // This fixes the deadlock caused by actor_mixin::enqueue_impl discarding behavior_t
+    std::pair<bool, actor_zeta::detail::enqueue_result>
+    memory_storage_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        // Store the behavior coroutine (CRITICAL: prevents coroutine destruction!)
+        current_behavior_ = behavior(msg.get());
+
+        // Poll until behavior completes
+        // Use sleep to allow scheduler worker threads to make progress
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                // The deepest awaited future is ready - resume the coroutine chain
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                // Not ready - sleep briefly to let scheduler workers process messages
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        }
+
+        return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    actor_zeta::behavior_t memory_storage_t::behavior(actor_zeta::mailbox::message* msg) {
         std::lock_guard<spin_lock> guard(lock_);
 
-        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
+        // Poll completed coroutines first (safe with actor-zeta 1.1.1)
         poll_pending();
 
         switch (msg->command()) {
             // Note: sync is called directly, not through message passing
             case actor_zeta::msg_id<memory_storage_t, &memory_storage_t::load>: {
-                // CRITICAL: Store pending coroutine! (per documentation)
-                auto future = actor_zeta::dispatch(this, &memory_storage_t::load, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &memory_storage_t::load, msg);
                 break;
             }
             case actor_zeta::msg_id<memory_storage_t, &memory_storage_t::execute_plan>: {
-                // CRITICAL: Store pending coroutine! execute_plan uses co_await
-                auto future = actor_zeta::dispatch(this, &memory_storage_t::execute_plan, msg);
-                if (!future.available()) {
-                    pending_execute_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &memory_storage_t::execute_plan, msg);
                 break;
             }
             case actor_zeta::msg_id<memory_storage_t, &memory_storage_t::size>: {
-                // size() returns size_t, using pending_size_
-                auto future = actor_zeta::dispatch(this, &memory_storage_t::size, msg);
-                if (!future.available()) {
-                    pending_size_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &memory_storage_t::size, msg);
                 break;
             }
             case actor_zeta::msg_id<memory_storage_t, &memory_storage_t::close_cursor>: {
-                auto future = actor_zeta::dispatch(this, &memory_storage_t::close_cursor, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &memory_storage_t::close_cursor, msg);
                 break;
             }
             default:
@@ -184,12 +196,13 @@ namespace services {
                 load_buffer_->collections.emplace_back(name);
                 debug(log_, "memory_storage_t:load:fill_documents: {}", collection.documents.size());
                 // co_await on each create_documents - wait for completion
-                auto future = actor_zeta::otterbrix::send(executor_address_, address(),
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_address_,
                                                      &collection::executor::executor_t::create_documents,
                                                      session,
                                                      context,
                                                      collection.documents);
-                if (future.needs_scheduling() && executor_) {
+                // Schedule executor if needs_sched (SYNC memory_storage → ASYNC executor)
+                if (needs_sched && executor_) {
                     scheduler_->enqueue(executor_.get());
                 }
                 co_await std::move(future);
@@ -287,14 +300,15 @@ namespace services {
 
         // Use co_await to get result from executor (NOT callback!)
         trace(log_, "memory_storage_t:execute_plan_impl: calling executor with co_await");
-        auto future = actor_zeta::otterbrix::send(executor_address_, address(),
+        auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_address_,
                                                            &collection::executor::executor_t::execute_plan,
                                                            session,
                                                            logical_plan,
                                                            parameters,
                                                            std::move(collections_context_storage),
                                                            used_format);
-        if (future.needs_scheduling() && executor_) {
+        // Schedule executor if needs_sched (SYNC memory_storage → ASYNC executor)
+        if (needs_sched && executor_) {
             scheduler_->enqueue(executor_.get());
         }
         auto result = co_await std::move(future);

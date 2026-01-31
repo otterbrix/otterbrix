@@ -9,12 +9,17 @@
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
-#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/implements.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
+#include <actor-zeta/detail/behavior_t.hpp>
 #include <actor-zeta/mailbox/message.hpp>
+#include <actor-zeta/mailbox/make_message.hpp>
+#include <actor-zeta/detail/queue/enqueue_result.hpp>
+#include <chrono>
+#include <thread>
 
 namespace services::collection {
     class context_collection_t;
@@ -41,7 +46,20 @@ namespace services::disk {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
 
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
+
+        // Required by address_t concept has_enqueue_impl
+        [[nodiscard]]
+        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+
+        // Custom enqueue_impl for SYNC actor with coroutine behavior()
+        // This templated version is called by actor_zeta::send() via dispatch_method_impl
+        template<typename ReturnType, typename... Args>
+        [[nodiscard]]
+        ReturnType enqueue_impl(
+            actor_zeta::actor::address_t sender,
+            actor_zeta::mailbox::message_id cmd,
+            Args&&... args);
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
@@ -173,7 +191,50 @@ namespace services::disk {
 
         // Protection against recursive poll_pending() calls during sync dispatch
         bool is_polling_{false};
+
+        // Stored behavior coroutine for SYNC actor polling
+        actor_zeta::behavior_t current_behavior_;
     };
+
+    // Template implementation must be in header
+    template<typename ReturnType, typename... Args>
+    ReturnType manager_disk_t::enqueue_impl(
+        actor_zeta::actor::address_t sender,
+        actor_zeta::mailbox::message_id cmd,
+        Args&&... args) {
+
+        static_assert(actor_zeta::type_traits::is_unique_future_v<ReturnType>,
+                      "ReturnType must be unique_future<T>");
+        using R = typename actor_zeta::type_traits::is_unique_future<ReturnType>::value_type;
+
+        // Create message with promise/future pair
+        auto [msg, future] = actor_zeta::detail::make_message<R>(
+            resource(),
+            std::move(sender),
+            cmd,
+            std::forward<Args>(args)...);
+
+        // Call behavior() - this starts the coroutine
+        current_behavior_ = behavior(msg.get());
+
+        // SYNC actor polling: wait for coroutine completion on THIS thread
+        // This is necessary because cross-actor futures don't auto-resume
+        // (producer doesn't call cont.resume() for thread safety)
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                // Awaited future is ready - resume coroutine on THIS thread
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                // Not ready - sleep to allow scheduler workers to process messages
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+        }
+
+        return std::move(future);
+    }
 
     class manager_disk_empty_t final : public actor_zeta::actor::actor_mixin<manager_disk_empty_t> {
     public:
@@ -188,7 +249,7 @@ namespace services::disk {
 
         auto make_type() const noexcept -> const char*;
 
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);

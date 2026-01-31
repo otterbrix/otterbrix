@@ -77,8 +77,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         auto view = std::get<components::sql::transform::result_view>(
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
-        auto future = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                  actor_zeta::address_t::empty_address(),
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                   &manager_dispatcher_t::execute_plan,
                                                   session_id_t{},
                                                   std::move(view.node),

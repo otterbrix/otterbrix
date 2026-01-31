@@ -89,7 +89,7 @@ namespace services::wal {
         >;
 
         auto make_type() const noexcept -> const char*;
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
         // send_success removed - now using co_return to return result via future

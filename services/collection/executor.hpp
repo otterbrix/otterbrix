@@ -59,7 +59,7 @@ namespace services::collection::executor {
         >;
 
         auto make_type() const noexcept -> const char*;
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
         void traverse_plan_(const components::session::session_id_t& session,

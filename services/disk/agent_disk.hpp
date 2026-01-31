@@ -57,7 +57,7 @@ namespace services::disk {
             &agent_disk_t::fix_wal_id
         >;
 
-        void behavior(actor_zeta::mailbox::message* msg);
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
         const name_t name_;

@@ -29,12 +29,12 @@ namespace components::base::operators {
                                                                              index_node_->name(),
                                                                              index_node_->keys());
 
-                auto future = actor_zeta::send(context_->disk(),
-                                 pipeline_context->address(),
+                auto [needs_sched, future] = actor_zeta::send(context_->disk(),
                                  &services::disk::manager_disk_t::create_index_agent,
                                  pipeline_context->session,
                                  std::move(index_node_),
                                  context_);
+                (void)needs_sched; // Handled by caller
                 disk_future_ready_ = future.available();
                 disk_future_ = std::make_unique<actor_zeta::unique_future<actor_zeta::address_t>>(std::move(future));
                 break;

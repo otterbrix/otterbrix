@@ -5,7 +5,8 @@
 
 #include <core/tracy/tracy.hpp>
 #include <core/executor.hpp>
-#include <thread>  // for std::this_thread::yield()
+#include <thread>
+#include <chrono>
 
 #include <components/document/document.hpp>
 #include <components/planner/planner.hpp>
@@ -44,44 +45,26 @@ namespace services::dispatcher {
 
     auto dispatcher_t::make_type() const noexcept -> const char* { return "dispatcher_t"; }
 
-    void dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
-        // DISABLED: poll_pending() causes use-after-free race condition
-        // Race between available() (true after set_value) and final_suspend()
-        // See: docs/actor-zeta-race-condition.md
-        // poll_pending();
+    actor_zeta::behavior_t dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+        // Poll completed coroutines (safe with actor-zeta 1.1.1)
+        poll_pending();
 
         switch (msg->command()) {
             case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::load>: {
-                // CRITICAL: Store pending coroutine! (per documentation)
-                // If destroyed immediately, coroutine is destroyed → refcount underflow!
-                auto future = actor_zeta::dispatch(this, &dispatcher_t::load, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                // co_await dispatch handles coroutine lifecycle automatically in 1.1.1
+                co_await actor_zeta::dispatch(this, &dispatcher_t::load, msg);
                 break;
             }
             case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::execute_plan>: {
-                // CRITICAL: Store pending coroutine!
-                // execute_plan now returns cursor_t_ptr through future
-                auto future = actor_zeta::dispatch(this, &dispatcher_t::execute_plan, msg);
-                if (!future.available()) {
-                    pending_cursor_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &dispatcher_t::execute_plan, msg);
                 break;
             }
             case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::size>: {
-                // size() now returns size_t via future
-                auto future = actor_zeta::dispatch(this, &dispatcher_t::size, msg);
-                if (!future.available()) {
-                    pending_size_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &dispatcher_t::size, msg);
                 break;
             }
             case actor_zeta::msg_id<dispatcher_t, &dispatcher_t::close_cursor>: {
-                auto future = actor_zeta::dispatch(this, &dispatcher_t::close_cursor, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &dispatcher_t::close_cursor, msg);
                 break;
             }
             default:
@@ -121,7 +104,8 @@ namespace services::dispatcher {
         load_session_ = session;
         
         trace(log_, "dispatcher_t::load - step 1: loading from disk");
-        auto disk_result = co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::load, session);
+        auto [_, disk_future] = actor_zeta::send(disk_address_, &disk::manager_disk_t::load, session);
+        auto disk_result = co_await std::move(disk_future);
 
         // Step 2: Check result (former load_from_disk_result)
         trace(log_, "dispatcher_t::load - step 2: disk result received, wal_id: {}", disk_result.wal_id());
@@ -134,12 +118,14 @@ namespace services::dispatcher {
 
         // Step 3: Load to memory_storage with co_await
         trace(log_, "dispatcher_t::load - step 3: loading to memory storage");
-        co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::load, session, disk_result);
+        auto [_2, mem_future] = actor_zeta::otterbrix::send(memory_storage_, &services::memory_storage_t::load, session, disk_result);
+        co_await std::move(mem_future);
 
         // Step 4: Load indexes with co_await (wait for all indexes to be created)
         // Pass manager_dispatcher address for execute_plan callbacks
         trace(log_, "dispatcher_t::load - step 4: loading indexes with co_await");
-        co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::load_indexes, session, manager_dispatcher_);
+        auto [_3, idx_future] = actor_zeta::send(disk_address_, &disk::manager_disk_t::load_indexes, session, manager_dispatcher_);
+        co_await std::move(idx_future);
 
         // Step 5: Update catalog
         for (const auto& database : (*disk_result)) {
@@ -152,7 +138,8 @@ namespace services::dispatcher {
 
         // Step 6: Load WAL records with co_await (via interface contract)
         trace(log_, "dispatcher_t::load - step 6: loading WAL records via co_await");
-        auto records = co_await actor_zeta::send(wal_address_, address(), &wal::manager_wal_replicate_t::load, session, disk_result.wal_id());
+        auto [_4, wal_future] = actor_zeta::send(wal_address_, &wal::manager_wal_replicate_t::load, session, disk_result.wal_id());
+        auto records = co_await std::move(wal_future);
 
         // Step 7: Process WAL records (former load_from_wal_result - now inline!)
         load_count_answers_ = records.size();
@@ -195,12 +182,13 @@ namespace services::dispatcher {
             }
 
             // co_await on memory_storage for replay
-            auto exec_result = co_await actor_zeta::otterbrix::send(memory_storage_, address(),
+            auto [_5, exec_future] = actor_zeta::otterbrix::send(memory_storage_,
                                                           &services::memory_storage_t::execute_plan,
                                                           components::session::session_id_t{},
                                                           std::move(logic_plan),
                                                           record.params->take_parameters(),
                                                           used_format);
+            auto exec_result = co_await std::move(exec_future);
             // Update catalog after successful replay
             if (exec_result.cursor->is_success()) {
                 update_catalog(record.data);
@@ -320,12 +308,13 @@ namespace services::dispatcher {
         // co_await on memory_storage_t::execute_plan() - get cursor via future!
         // ========================================================================
         trace(log_, "dispatcher_t::execute_plan: calling memory_storage with co_await");
-        auto exec_result = co_await actor_zeta::otterbrix::send(memory_storage_, address(),
+        auto [_ep, exec_future] = actor_zeta::otterbrix::send(memory_storage_,
                                                       &services::memory_storage_t::execute_plan,
                                                       session,
                                                       std::move(logic_plan),
                                                       params->take_parameters(),
                                                       used_format);
+        auto exec_result = co_await std::move(exec_future);
 
         // ========================================================================
         // Process result
@@ -348,17 +337,20 @@ namespace services::dispatcher {
                 case node_type::create_database_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // Queue disk command (strict durability)
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_database,
+                    auto [_d1, df1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::append_database,
                                      session, plan->database_name());
+                    co_await std::move(df1);
                     // co_await on WAL for durability - cast to specific type for type safety
                     auto create_database = boost::static_pointer_cast<node_create_database_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_w1, wf1] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::create_database, session,
                         create_database);
+                    auto wal_id = co_await std::move(wf1);
                     // Update catalog after successful WAL write
                     update_catalog(plan);
                     // Flush and wait for disk I/O completion (strict durability)
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_d2, df2] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(df2);
                     co_return result;
                 }
 
@@ -371,15 +363,18 @@ namespace services::dispatcher {
                 case node_type::create_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // Queue disk command (strict durability)
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::append_collection,
+                    auto [_c1, cf1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::append_collection,
                                      session, plan->database_name(), plan->collection_name());
+                    co_await std::move(cf1);
                     // co_await on WAL for durability - cast to specific type
                     auto create_collection = boost::static_pointer_cast<node_create_collection_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_c2, cf2] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::create_collection, session, create_collection);
+                    auto wal_id = co_await std::move(cf2);
                     update_catalog(plan);
                     // Flush and wait for disk I/O completion (strict durability)
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_c3, cf3] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(cf3);
                     co_return result;
                 }
 
@@ -387,10 +382,12 @@ namespace services::dispatcher {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
                     auto insert = boost::static_pointer_cast<node_insert_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_i1, if1] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::insert_many, session, insert);
+                    auto wal_id = co_await std::move(if1);
                     update_catalog(plan);
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_i2, if2] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(if2);
                     co_return result;
                 }
 
@@ -398,10 +395,12 @@ namespace services::dispatcher {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
                     auto update = boost::static_pointer_cast<node_update_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_u1, uf1] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::update_many, session, update, params_for_wal);
+                    auto wal_id = co_await std::move(uf1);
                     update_catalog(plan);
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_u2, uf2] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(uf2);
                     co_return result;
                 }
 
@@ -409,23 +408,28 @@ namespace services::dispatcher {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     // co_await on WAL for durability - cast to specific type
                     auto delete_i = boost::static_pointer_cast<node_delete_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_del1, delf1] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::delete_many, session, delete_i, params_for_wal);
+                    auto wal_id = co_await std::move(delf1);
                     update_catalog(plan);
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_del2, delf2] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(delf2);
                     co_return result;
                 }
 
                 case node_type::drop_collection_t: {
                     trace(log_, "dispatcher_t::execute_plan: {}", to_string(plan->type()));
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::remove_collection,
+                    auto [_dr1, drf1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::remove_collection,
                                      session, plan->database_name(), plan->collection_name());
+                    co_await std::move(drf1);
                     // co_await on WAL for durability - cast to specific type
                     auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(plan);
-                    auto wal_id = co_await actor_zeta::send(wal_address_, address(),
+                    auto [_dr2, drf2] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::drop_collection, session, drop_collection);
+                    auto wal_id = co_await std::move(drf2);
                     update_catalog(plan);
-                    co_await actor_zeta::send(disk_address_, address(), &disk::manager_disk_t::flush, session, wal_id);
+                    auto [_dr3, drf3] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(drf3);
                     co_return result;
                 }
 
@@ -465,8 +469,9 @@ namespace services::dispatcher {
         }
 
         // co_await on memory_storage::size - get size via future
-        auto result = co_await actor_zeta::otterbrix::send(memory_storage_, address(), &services::memory_storage_t::size,
+        auto [_sz, szf] = actor_zeta::otterbrix::send(memory_storage_, &services::memory_storage_t::size,
                                                  session, collection_full_name_t{database_name, collection});
+        auto result = co_await std::move(szf);
         co_return result;
     }
 
@@ -755,61 +760,63 @@ namespace services::dispatcher {
 
     auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
-    void manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+    // Custom enqueue_impl for SYNC actor with coroutine behavior()
+    // This fixes the deadlock caused by actor_mixin::enqueue_impl discarding behavior_t
+    std::pair<bool, actor_zeta::detail::enqueue_result>
+    manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        // Store the behavior coroutine (CRITICAL: prevents coroutine destruction!)
+        current_behavior_ = behavior(msg.get());
+
+        // Poll until behavior completes
+        // Use sleep to allow scheduler worker threads to make progress
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                // The deepest awaited future is ready - resume the coroutine chain
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                // Not ready - sleep briefly to let scheduler workers process messages
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        }
+
+        return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    actor_zeta::behavior_t manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
         // Lock required: behavior() can be called concurrently from multiple threads
         // (actor_mixin::enqueue_impl processes messages synchronously in caller's thread)
         std::lock_guard<spin_lock> guard(lock_);
 
-        // DISABLED: poll_pending() causes use-after-free race condition
-        // Race between available() (true after set_value) and final_suspend()
-        // See: docs/actor-zeta-race-condition.md
-        // poll_pending();
+        // Poll completed coroutines (safe with actor-zeta 1.1.1)
+        poll_pending();
 
         switch (msg->command()) {
             // Note: sync is called directly, not through message passing
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::create>: {
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::create, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::create, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::load>: {
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::load, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::load, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>: {
-                // CRITICAL: Store pending coroutine! execute_plan returns cursor_t_ptr
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
-                if (!future.available()) {
-                    pending_cursor_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::execute_plan, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::size>: {
-                // size() returns size_t via future
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::size, msg);
-                if (!future.available()) {
-                    pending_size_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::size, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::get_schema>: {
-                // get_schema() returns cursor_t_ptr via future
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::get_schema, msg);
-                if (!future.available()) {
-                    pending_cursor_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::get_schema, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::close_cursor>: {
-                auto future = actor_zeta::dispatch(this, &manager_dispatcher_t::close_cursor, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::close_cursor, msg);
                 break;
             }
             default:
@@ -864,10 +871,11 @@ namespace services::dispatcher {
         components::session::session_id_t session) {
         trace(log_, "manager_dispatcher_t::load session: {}", session.data());
         // With futures, sender is not needed - caller gets notified via co_await
-        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::load, session);
-        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
-        // needs_scheduling() returns false when actor transitions from running to idle)
-        scheduler_->enqueue(dispatchers_[0].get());
+        auto [needs_sched, future] = actor_zeta::send(dispatcher(), &dispatcher_t::load, session);
+        // Schedule dispatcher_t if needs_sched (SYNC manager → ASYNC dispatcher)
+        if (needs_sched) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
         co_await std::move(future);
         co_return;
     }
@@ -879,12 +887,13 @@ namespace services::dispatcher {
         node_ptr plan,
         parameter_node_ptr params) {
         trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
-        // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
-        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::execute_plan,
+        // Send to dispatcher and schedule it (SYNC manager → ASYNC dispatcher)
+        auto [needs_sched, future] = actor_zeta::send(dispatcher(), &dispatcher_t::execute_plan,
                                        session, std::move(plan), std::move(params));
-        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
-        // needs_scheduling() returns false when actor transitions from running to idle)
-        scheduler_->enqueue(dispatchers_[0].get());
+        // Schedule dispatcher_t if needs_sched
+        if (needs_sched) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
         auto cursor = co_await std::move(future);
         co_return cursor;
     }
@@ -899,12 +908,13 @@ namespace services::dispatcher {
               session.data(),
               database_name,
               collection);
-        // Send to dispatcher and schedule it (cooperative_actor needs explicit scheduling)
-        auto future = actor_zeta::send(dispatcher(), address(), &dispatcher_t::size,
+        // Send to dispatcher and schedule it (SYNC manager → ASYNC dispatcher)
+        auto [needs_sched, future] = actor_zeta::send(dispatcher(), &dispatcher_t::size,
                                        session, std::move(database_name), std::move(collection));
-        // Always schedule dispatcher_t (workaround for actor-zeta race condition where
-        // needs_scheduling() returns false when actor transitions from running to idle)
-        scheduler_->enqueue(dispatchers_[0].get());
+        // Schedule dispatcher_t if needs_sched
+        if (needs_sched) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
         auto result = co_await std::move(future);
         co_return result;
     }

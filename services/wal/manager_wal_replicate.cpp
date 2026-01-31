@@ -1,5 +1,7 @@
 #include "manager_wal_replicate.hpp"
 #include <actor-zeta/spawn.hpp>
+#include <chrono>
+#include <thread>
 
 namespace services::wal {
 
@@ -37,96 +39,85 @@ namespace services::wal {
         }
     }
 
-    void manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
+    // Custom enqueue_impl for SYNC actor with coroutine behavior()
+    // This fixes the deadlock caused by actor_mixin::enqueue_impl discarding behavior_t
+    std::pair<bool, actor_zeta::detail::enqueue_result>
+    manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        // Store the behavior coroutine (CRITICAL: prevents coroutine destruction!)
+        current_behavior_ = behavior(msg.get());
+
+        // Poll until behavior completes
+        // Use sleep to allow scheduler worker threads to make progress
+        while (current_behavior_.is_busy()) {
+            if (current_behavior_.is_awaited_ready()) {
+                // The deepest awaited future is ready - resume the coroutine chain
+                auto cont = current_behavior_.take_awaited_continuation();
+                if (cont) {
+                    cont.resume();
+                }
+            } else {
+                // Not ready - sleep briefly to let scheduler workers process messages
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        }
+
+        return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
         std::lock_guard<spin_lock> guard(lock_);
 
-        // Poll completed coroutines first (per PROMISE_FUTURE_GUIDE.md)
+        // Poll completed coroutines first (safe with actor-zeta 1.1.1)
         poll_pending();
 
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::load>: {
                 // CRITICAL: Store pending coroutine!
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::load, msg);
-                if (!future.available()) {
-                    pending_load_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::load, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::create_database>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::create_database, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_database, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::drop_database>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_database, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_database, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::create_collection>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::create_collection, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::drop_collection>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_collection, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::insert_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::insert_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::insert_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::insert_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::insert_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::insert_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::delete_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::delete_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::delete_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::delete_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::delete_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::delete_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::update_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::update_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::update_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::update_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::update_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::update_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::create_index>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_t::create_index, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_index, msg);
                 break;
             }
             default:
@@ -155,8 +146,9 @@ namespace services::wal {
         session_id_t session,
         services::wal::id_t wal_id) {
         trace(log_, "manager_wal_replicate_t::load, id: {}", wal_id);
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::load, session, wal_id);
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::load, session, wal_id);
+        // Schedule wal_replicate if needs_sched (SYNC manager → ASYNC wal worker)
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -168,8 +160,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_create_database_ptr data) {
         trace(log_, "manager_wal_replicate_t::create_database {}", data->database_name());
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::create_database, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_database, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -179,8 +171,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_drop_database_ptr data) {
         trace(log_, "manager_wal_replicate_t::drop_database {}", data->database_name());
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::drop_database, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_database, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -193,8 +185,8 @@ namespace services::wal {
               "manager_wal_replicate_t::create_collection {}::{}",
               data->database_name(),
               data->collection_name());
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::create_collection, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_collection, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -204,8 +196,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_drop_collection_ptr data) {
         trace(log_, "manager_wal_replicate_t::drop_collection {}::{}", data->database_name(), data->collection_name());
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::drop_collection, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_collection, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -215,8 +207,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_insert_ptr data) {
         trace(log_, "manager_wal_replicate_t::insert_one");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::insert_one, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::insert_one, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -226,8 +218,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_insert_ptr data) {
         trace(log_, "manager_wal_replicate_t::insert_many");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::insert_many, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::insert_many, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -238,8 +230,8 @@ namespace services::wal {
         components::logical_plan::node_delete_ptr data,
         components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::delete_one");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::delete_one, session, std::move(data), std::move(params));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::delete_one, session, std::move(data), std::move(params));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -250,8 +242,8 @@ namespace services::wal {
         components::logical_plan::node_delete_ptr data,
         components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::delete_many");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::delete_many, session, std::move(data), std::move(params));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::delete_many, session, std::move(data), std::move(params));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -262,8 +254,8 @@ namespace services::wal {
         components::logical_plan::node_update_ptr data,
         components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::update_one");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::update_one, session, std::move(data), std::move(params));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::update_one, session, std::move(data), std::move(params));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -274,8 +266,8 @@ namespace services::wal {
         components::logical_plan::node_update_ptr data,
         components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::update_many");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::update_many, session, std::move(data), std::move(params));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::update_many, session, std::move(data), std::move(params));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -285,8 +277,8 @@ namespace services::wal {
         session_id_t session,
         components::logical_plan::node_create_index_ptr data) {
         trace(log_, "manager_wal_replicate_t::create_index");
-        auto future = actor_zeta::send(dispatchers_[0].get(), dispatchers_[0]->address(), &wal_replicate_t::create_index, session, std::move(data));
-        if (future.needs_scheduling()) {
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_index, session, std::move(data));
+        if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
@@ -304,7 +296,7 @@ namespace services::wal {
 
     auto manager_wal_replicate_empty_t::make_type() const noexcept -> const char* { return "manager_wal_empty"; }
 
-    void manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
+    actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
         // Clean up completed futures first
         pending_void_.erase(
             std::remove_if(pending_void_.begin(), pending_void_.end(),
@@ -314,83 +306,50 @@ namespace services::wal {
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::load>:
                 // load returns vector<record_t>, no need to store - it's immediately available
-                actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::load, msg);
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::load, msg);
                 break;
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_database>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_database, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_database, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::drop_database>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_database, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_database, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_collection>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_collection, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::drop_collection>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_collection, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_collection, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::insert_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::insert_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::insert_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::insert_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::insert_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::insert_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::delete_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::delete_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::delete_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::delete_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::delete_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::delete_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::update_one>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::update_one, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::update_one, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::update_many>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::update_many, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::update_many, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_index>: {
-                auto future = actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_index, msg);
-                if (!future.available()) {
-                    pending_void_.push_back(std::move(future));
-                }
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_index, msg);
                 break;
             }
             default:

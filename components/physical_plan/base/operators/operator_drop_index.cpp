@@ -36,12 +36,12 @@ namespace components::base::operators {
         }
 
         if (index_ptr->is_disk()) {
-            auto future = actor_zeta::send(context_->disk(),
-                             pipeline_context->address(),
+            auto [needs_sched, future] = actor_zeta::send(context_->disk(),
                              &services::disk::manager_disk_t::drop_index_agent,
                              pipeline_context->session,
                              node_->name(),
                              context_);
+            (void)needs_sched; // Handled by manager_disk_t
             pipeline_context->add_pending_disk_future(std::move(future));
         }
         index::drop_index(context_->index_engine(), index_ptr);

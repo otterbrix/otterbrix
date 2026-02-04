@@ -29,6 +29,10 @@ namespace services::disk {
 
     /// Disk Manager Interface Contract
     struct disk_contract {
+        // unique_future type alias - required by actor_zeta::send() template
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
+
         // Load all data from disk
         actor_zeta::unique_future<result_load_t> load(session_id_t session);
 

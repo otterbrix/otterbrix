@@ -55,7 +55,6 @@ namespace otterbrix {
 
         // === Blocking public API (for clients) ===
         // All methods use typed send + wait_future
-        auto load() -> void;
         auto create_database(const session_id_t& session, const database_name_t& database)
             -> components::cursor::cursor_t_ptr;
         auto drop_database(const session_id_t& session, const database_name_t& database)

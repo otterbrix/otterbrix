@@ -15,6 +15,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
 #include <services/wal/base.hpp>
+#include <services/wal/record.hpp>
 
 namespace services::wal {
 
@@ -22,6 +23,9 @@ namespace services::wal {
 
     /// WAL Interface Contract
     struct wal_contract {
+        // unique_future type alias - required by actor_zeta::send() template
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
         // Load WAL records starting from given ID
         actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
 

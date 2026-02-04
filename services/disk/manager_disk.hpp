@@ -37,11 +37,19 @@ namespace services::disk {
 
         using address_pack = std::tuple<actor_zeta::address_t>;
 
+        // Yield function type for cooperative scheduling in SYNC actor spin-wait
+        using run_fn_t = std::function<void()>;
+
         manager_disk_t(std::pmr::memory_resource*,
-                       actor_zeta::scheduler_raw,
+                       actor_zeta::scheduler_raw scheduler,
+                       actor_zeta::scheduler_raw scheduler_disk,
                        configuration::config_disk config,
-                       log_t& log);
+                       log_t& log,
+                       run_fn_t run_fn = []{ std::this_thread::yield(); });
         ~manager_disk_t();
+
+        // Set run function for cooperative scheduling (used by tests)
+        void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
@@ -153,6 +161,11 @@ namespace services::disk {
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
+        // Separate scheduler for disk index agents to prevent deadlock
+        // When concurrent SELECT uses disk index, main scheduler_ threads block in manager_disk_t polling loop
+        // while index_agent_disk_t waits in queue of the same scheduler - DEADLOCK
+        actor_zeta::scheduler_raw scheduler_disk_;
+        run_fn_t run_fn_;
         spin_lock lock_;
 
         actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
@@ -228,8 +241,7 @@ namespace services::disk {
                     cont.resume();
                 }
             } else {
-                // Not ready - sleep to allow scheduler workers to process messages
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                run_fn_();
             }
         }
 

@@ -3,7 +3,6 @@
 #include <components/index/single_field_index.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <services/disk/index_agent_disk.hpp>
-#include <services/memory_storage/memory_storage.hpp>
 
 using components::logical_plan::index_type;
 

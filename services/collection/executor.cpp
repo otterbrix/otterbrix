@@ -1,6 +1,14 @@
 #include "executor.hpp"
 
+// Include full WAL/Disk headers BEFORE any other includes that might use them
+#include <services/wal/manager_wal_replicate.hpp>
+#include <services/disk/manager_disk.hpp>
+
 #include <components/index/index_engine.hpp>
+#include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_update.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/base/operators/operator_add_index.hpp>
 #include <components/physical_plan/base/operators/operator_drop_index.hpp>
 #include <components/physical_plan/collection/operators/operator_delete.hpp>
@@ -11,7 +19,6 @@
 #include <core/executor.hpp>
 #include <services/disk/index_agent_disk.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/memory_storage/memory_storage.hpp>
 
 using namespace components::cursor;
 
@@ -24,9 +31,15 @@ namespace services::collection::executor {
         , parameters(parameters)
         , context_storage_(context_storage) {}
 
-    executor_t::executor_t(std::pmr::memory_resource* resource, services::memory_storage_t* memory_storage, log_t&& log)
+    executor_t::executor_t(std::pmr::memory_resource* resource,
+                           actor_zeta::address_t parent_address,
+                           actor_zeta::address_t wal_address,
+                           actor_zeta::address_t disk_address,
+                           log_t&& log)
         : actor_zeta::basic_actor<executor_t>{resource}
-        , memory_storage_(memory_storage->address())
+        , parent_address_(std::move(parent_address))
+        , wal_address_(std::move(wal_address))
+        , disk_address_(std::move(disk_address))
         , plans_(this->resource())
         , log_(log) {}
 
@@ -98,10 +111,60 @@ namespace services::collection::executor {
         }
 
         plan->set_as_root();
+
+        // Save parameters for WAL before moving them to traverse_plan_
+        auto wal_params = components::logical_plan::make_parameter_node(resource());
+        wal_params->set_parameters(parameters);
+
         traverse_plan_(session, std::move(plan), std::move(parameters), std::move(context_storage));
 
-        // Directly await result from execute_sub_plan_ (without intermediate promise)
-        co_return co_await execute_sub_plan_(session);
+        // Await result from execute_sub_plan_
+        auto result = co_await execute_sub_plan_(session);
+
+        // WAL/Disk coordination for DML operations
+        // Use concrete class method pointers - implements<> binds them to contract interface
+        if (result.cursor->is_success() && wal_address_ != actor_zeta::address_t::empty_address()) {
+            using namespace components::logical_plan;
+            switch (logical_plan->type()) {
+                case node_type::insert_t: {
+                    trace(log_, "executor::execute_plan: WAL insert_many");
+                    auto insert = boost::static_pointer_cast<node_insert_t>(logical_plan);
+                    auto [_w1, wf1] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::insert_many, session, insert);
+                    auto wal_id = co_await std::move(wf1);
+                    auto [_d1, df1] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(df1);
+                    break;
+                }
+                case node_type::update_t: {
+                    trace(log_, "executor::execute_plan: WAL update_many");
+                    auto update = boost::static_pointer_cast<node_update_t>(logical_plan);
+                    auto [_w2, wf2] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::update_many, session, update, wal_params);
+                    auto wal_id = co_await std::move(wf2);
+                    auto [_d2, df2] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(df2);
+                    break;
+                }
+                case node_type::delete_t: {
+                    trace(log_, "executor::execute_plan: WAL delete_many");
+                    auto delete_node = boost::static_pointer_cast<node_delete_t>(logical_plan);
+                    auto [_w3, wf3] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::delete_many, session, delete_node, wal_params);
+                    auto wal_id = co_await std::move(wf3);
+                    auto [_d3, df3] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(df3);
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        co_return result;
     }
 
     executor_t::unique_future<void> executor_t::create_documents(
@@ -174,7 +237,7 @@ namespace services::collection::executor {
                 break;
             }
 
-            components::pipeline::context_t pipeline_context{session, address(), memory_storage_, plan_data.parameters};
+            components::pipeline::context_t pipeline_context{session, address(), parent_address_, plan_data.parameters};
             plan->on_execute(&pipeline_context);
 
             trace(log_, "executor: after on_execute, is_executed={}", plan->is_executed());

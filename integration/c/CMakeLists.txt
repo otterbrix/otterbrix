@@ -11,7 +11,6 @@ set(${PROJECT_NAME}_sources
 
 set(otterbrix_LIBS
         otterbrix::log
-        otterbrix::memory_storage
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session

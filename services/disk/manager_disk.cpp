@@ -32,11 +32,15 @@ namespace services::disk {
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* mr,
                                    actor_zeta::scheduler_raw scheduler,
+                                   actor_zeta::scheduler_raw scheduler_disk,
                                    configuration::config_disk config,
-                                   log_t& log)
+                                   log_t& log,
+                                   run_fn_t run_fn)
         : actor_zeta::actor::actor_mixin<manager_disk_t>()
         , resource_(mr)
         , scheduler_(scheduler)
+        , scheduler_disk_(scheduler_disk)
+        , run_fn_(std::move(run_fn))
         , log_(log.clone())
         , fs_(core::filesystem::local_file_system_t())
         , config_(std::move(config))
@@ -129,10 +133,7 @@ namespace services::disk {
                     cont.resume();
                 }
             } else {
-                // Not ready - sleep to allow scheduler workers to process messages
-                // Using sleep instead of yield because we need to release CPU time
-                // for scheduler threads to make progress on ASYNC actors
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                run_fn_();
             }
         }
 
@@ -371,7 +372,7 @@ namespace services::disk {
                         for (auto* index : indexes) {
                             auto [needs_sched, future] = actor_zeta::otterbrix::send(index->address(), &index_agent_disk_t::drop, session);
                             if (needs_sched) {
-                                scheduler_->enqueue(index);
+                                scheduler_disk_->enqueue(index);
                             }
                             co_await std::move(future);
                         }
@@ -471,7 +472,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
                                         &index_agent_disk_t::drop, session);
             if (needs_sched) {
-                scheduler_->enqueue(index_agent);
+                scheduler_disk_->enqueue(index_agent);
             }
             remove_index_impl(index_name);
         } else {
@@ -515,7 +516,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
                                         &index_agent_disk_t::insert_many, session, std::move(values));
             if (needs_sched) {
-                scheduler_->enqueue(index_agent);
+                scheduler_disk_->enqueue(index_agent);
             }
         } else {
             error(log_, "manager_disk: index {} not exists for insert_many", index_name);
@@ -534,7 +535,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
                                         &index_agent_disk_t::insert, session, std::move(key), doc_id);
             if (needs_sched) {
-                scheduler_->enqueue(index_agent);
+                scheduler_disk_->enqueue(index_agent);
             }
         } else {
             error(log_, "manager_disk: index {} not exists for insert", index_name);
@@ -553,7 +554,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
                                         &index_agent_disk_t::remove, session, std::move(key), doc_id);
             if (needs_sched) {
-                scheduler_->enqueue(index_agent);
+                scheduler_disk_->enqueue(index_agent);
             }
         } else {
             error(log_, "manager_disk: index {} not exists for remove", index_name);
@@ -579,7 +580,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
                                         &index_agent_disk_t::insert, session, std::move(key), doc_id);
             if (needs_sched) {
-                scheduler_->enqueue(found_agent);
+                scheduler_disk_->enqueue(found_agent);
             }
         } else {
             error(log_, "manager_disk: agent not found for insert_by_agent");
@@ -605,7 +606,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
                                         &index_agent_disk_t::remove, session, std::move(key), doc_id);
             if (needs_sched) {
-                scheduler_->enqueue(found_agent);
+                scheduler_disk_->enqueue(found_agent);
             }
         } else {
             error(log_, "manager_disk: agent not found for remove_by_agent");
@@ -631,7 +632,7 @@ namespace services::disk {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
                                         &index_agent_disk_t::find, session, std::move(key), compare);
             if (needs_sched) {
-                scheduler_->enqueue(found_agent);
+                scheduler_disk_->enqueue(found_agent);
             }
             co_return co_await std::move(future);
         } else {

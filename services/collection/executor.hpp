@@ -9,7 +9,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <services/collection/collection.hpp>
-#include <services/memory_storage/context_storage.hpp>
+#include <services/collection/context_storage.hpp>
 #include <stack>
 
 namespace services::collection::executor {
@@ -37,7 +37,13 @@ namespace services::collection::executor {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        executor_t(std::pmr::memory_resource* resource, services::memory_storage_t* memory_storage, log_t&& log);
+        // parent_address - address of parent actor (manager_dispatcher_t) for pipeline context
+        // wal_address, disk_address - for WAL/Disk coordination after DML operations
+        executor_t(std::pmr::memory_resource* resource,
+                   actor_zeta::address_t parent_address,
+                   actor_zeta::address_t wal_address,
+                   actor_zeta::address_t disk_address,
+                   log_t&& log);
         ~executor_t() = default;
 
         // execute_plan() returns result via future (NOT via callback!)
@@ -87,7 +93,11 @@ namespace services::collection::executor {
             components::collection::operators::operator_ptr plan);
 
     private:
-        actor_zeta::address_t memory_storage_ = actor_zeta::address_t::empty_address();
+        // Address of parent actor (manager_dispatcher_t) - used for pipeline context
+        actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
+        // WAL/Disk addresses for DML coordination
+        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         plan_storage_t plans_;
         log_t log_;
 

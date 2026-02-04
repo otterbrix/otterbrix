@@ -19,7 +19,7 @@ namespace otterbrix {
         : ptr_(std::move(space))
         , log_(ptr_->get_log().clone()) {
         debug(log_, "wrapper_client::wrapper_client()");
-        ptr_->dispatcher()->load();
+        // Loading is now done by External Loader during spaces construction
     }
 
     wrapper_database_ptr wrapper_client::get_or_create(const std::string& name) {

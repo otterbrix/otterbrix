@@ -13,7 +13,6 @@ target_link_libraries(
         non_thread_scheduler
         otterbrix::log
         otterbrix::logical_plan
-        otterbrix::memory_storage
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::physical_plan

@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::test_save_load::disk") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {
@@ -233,7 +233,7 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {

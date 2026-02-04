@@ -183,7 +183,6 @@ TEST_CASE("integration::cpp::test_index::save_load") {
     INFO("find") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
 
         CHECK_FIND_ALL();
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(10), 1);
@@ -246,7 +245,7 @@ TEST_CASE("integration::cpp::test_index::drop") {
 }
 
 TEST_CASE("integration::cpp::test_index::index already exist") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/index_already_exist");
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -283,7 +282,7 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
 }
 
 TEST_CASE("integration::cpp::test_index::no_type base check") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/no_type_base_check");
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -313,7 +312,7 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 }
 
 TEST_CASE("integration::cpp::test_index::no_type save_load") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/save_load");
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/no_type_save_load");
     test_clear_directory(config);
 
     INFO("initialization") {
@@ -336,7 +335,7 @@ TEST_CASE("integration::cpp::test_index::no_type save_load") {
     INFO("find") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         CHECK_FIND_ALL();
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);

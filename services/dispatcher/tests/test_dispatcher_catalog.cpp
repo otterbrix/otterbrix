@@ -12,7 +12,6 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/memory_storage/memory_storage.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 using namespace services;
@@ -31,23 +30,24 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_("/tmp/test_dispatcher_disk")
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
-        , memory_storage_(actor_zeta::spawn<memory_storage_t>(resource, scheduler_, log_))
         , transformer_(resource) {
         // Call sync methods directly (not through message passing)
         // Pass addresses directly - polymorphic dispatch via interface contracts
-        manager_dispatcher_->sync(std::make_tuple(memory_storage_->address(),
-                                                   manager_wal_->address(),
+        // sync_pack is now 2-tuple: (wal_address, disk_address) - memory_storage merged into manager_dispatcher
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
                                                    manager_disk_->address()));
         manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
                                            manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
-        memory_storage_->sync(std::make_tuple(manager_dispatcher_->address(), manager_disk_->address()));
         manager_wal_->create_wal_worker();
         manager_disk_->create_agent();
 
-        manager_dispatcher_->create_dispatcher();
+        // Set run_fn for SYNC actors to process scheduler queue in single-threaded test mode
+        // This allows ASYNC actors (agent_disk_t, etc.) to make progress
+        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
+        manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
     }
 
     ~test_dispatcher() {
@@ -93,7 +93,6 @@ private:
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    std::unique_ptr<memory_storage_t, actor_zeta::pmr::deleter_t> memory_storage_;
     components::sql::transform::transformer transformer_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };

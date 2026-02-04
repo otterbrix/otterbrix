@@ -27,7 +27,6 @@ if(UNIX AND NOT APPLE)
         otterbrix::disk
         otterbrix::dispatcher
         otterbrix::wal
-        otterbrix::memory_storage
         -Wl,--end-group
     )
 else()
@@ -37,7 +36,6 @@ else()
         otterbrix::disk
         otterbrix::dispatcher
         otterbrix::wal
-        otterbrix::memory_storage
         otterbrix::dispatcher
         otterbrix::disk
     )

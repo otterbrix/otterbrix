@@ -6,7 +6,7 @@
 #include <core/executor.hpp>
 #include <actor-zeta/detail/memory.hpp>
 
-#include <core/file/file_system.hpp>1
+#include <core/file/file_system.hpp>
 
 #include <memory>
 
@@ -30,9 +30,6 @@ namespace services {
         using manager_wal_ptr = std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t>;
         using manager_wal_empty_ptr = std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t>;
     } // namespace wal
-
-    class memory_storage_t;
-    using memory_storage_ptr = std::unique_ptr<memory_storage_t, actor_zeta::pmr::deleter_t>;
 
 } // namespace services
 
@@ -59,7 +56,11 @@ namespace otterbrix {
             manager_disk_;
         std::variant<std::monostate, services::wal::manager_wal_empty_ptr, services::wal::manager_wal_ptr> manager_wal_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
-        services::memory_storage_ptr memory_storage_;
+        // Separate scheduler for disk index agents to prevent deadlock
+        // When concurrent SELECT uses disk index, main scheduler_ threads block in manager_disk_t polling loop
+        // while index_agent_disk_t waits in queue of the same scheduler - DEADLOCK
+        // scheduler_disk_ provides isolated threads for index agents
+        actor_zeta::scheduler_ptr scheduler_disk_;
 
     private:
         inline static std::unordered_set<std::filesystem::path, core::filesystem::path_hash> paths_ = {};

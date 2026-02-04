@@ -20,10 +20,6 @@
 
 #include "forward.hpp"
 
-namespace services {
-    class memory_storage_t;
-}
-
 namespace services::collection {
 
     using document_id_t = components::document::document_id_t;

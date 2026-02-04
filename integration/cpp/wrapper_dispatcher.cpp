@@ -53,17 +53,6 @@ namespace otterbrix {
     // === Blocking public API ===
     // All methods use typed send + wait_future (no callbacks!)
 
-    auto wrapper_dispatcher_t::load() -> void {
-        session_id_t session;
-        trace(log_, "wrapper_dispatcher_t::load session: {}", session.data());
-        // Typed send to manager_dispatcher_t::load returns pair<bool, unique_future<void>>
-        auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::load, session);
-        // wrapper_dispatcher_t is SYNC, manager_dispatcher_t is also SYNC - no needs_sched handling
-        (void)needs_sched;
-        wait_future_void(future);
-    }
-
     auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
         -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_create_database(resource(), {database, {}});

@@ -106,7 +106,6 @@ TEST_CASE("integration::cpp::test_disk_index::scan_after_restart") {
     INFO("phase 2: restart and verify disk-based index scan") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
 
         // These queries use disk-based index (await_async_and_resume path)
         CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
@@ -167,7 +166,7 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
     INFO("phase 2: restart and query via SQL") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 90;", 10);
@@ -201,7 +200,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_queries") {
     INFO("phase 2: concurrent queries after restart") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         std::atomic<int> success_count{0};
         std::atomic<int> error_count{0};
@@ -276,7 +275,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
     INFO("phase 2: restart and query all indexes") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         // Query by count (int)
         CHECK_FIND("count", compare_type::eq, logical_value_t(25), 1);
@@ -352,7 +351,7 @@ TEST_CASE("integration::cpp::test_disk_index::large_dataset") {
     INFO("phase 2: restart and verify - this previously crashed with msgpack::insufficient_bytes") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();  // <-- This previously crashed with msgpack::insufficient_bytes
+        // NOTE: load() removed - External Loader handles loading during construction  // <-- This previously crashed with msgpack::insufficient_bytes
 
         // Verify all documents loaded correctly
         CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
@@ -389,7 +388,7 @@ TEST_CASE("integration::cpp::test_disk_index::very_large_dataset") {
     INFO("phase 2: restart and verify very large dataset") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         // Verify all documents loaded correctly
         CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
@@ -423,7 +422,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
     INFO("phase 2: concurrent queries on large dataset after restart") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         std::atomic<int> success_count{0};
         std::atomic<int> error_count{0};
@@ -506,7 +505,7 @@ TEST_CASE("integration::cpp::test_disk_index::io_error_handling") {
 
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
+        // NOTE: load() removed - External Loader handles loading during construction
 
         // Query should handle the error gracefully (not crash)
         // The behavior depends on implementation - may return empty or fall back to full scan

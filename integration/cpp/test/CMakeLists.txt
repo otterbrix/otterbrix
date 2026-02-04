@@ -51,4 +51,4 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME})
+catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 900)

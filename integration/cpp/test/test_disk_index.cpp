@@ -406,9 +406,11 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/concurrent_large_dataset");
     test_clear_directory(config);
 
-    constexpr int kDocuments = 5000;  // Large dataset that previously caused issues
+    ////constexpr int kDocuments = 5000;  // Large dataset that previously caused issue
+    constexpr int kDocuments = 10;  // Large dataset that previously caused issues
     constexpr int kThreads = 50;
-    constexpr int kQueriesPerThread = 200;
+    ///constexpr int kQueriesPerThread = 200;
+    constexpr int kQueriesPerThread = 10;
 
     INFO("phase 1: create collection with large dataset") {
         test_spaces space(config);

@@ -28,13 +28,13 @@ TEST_CASE("core::b_plus_tree::msgpack_reader") {
         REQUIRE(doc1->get_long("/count") == static_cast<int64_t>(get_field(msg.get(), "/count").value<physical_type::UINT64>()));
         REQUIRE(doc1->get_string("/count_str") == get_field(msg.get(), "/count_str").value<physical_type::STRING>());
         REQUIRE(core::is_equals(doc1->get_double("/count_double"),get_field(msg.get(), "/count_double").value<physical_type::DOUBLE>()));
-        REQUIRE(doc1->get_bool("/count_bool") == get_field(msg.get(), "/count_bool"));
+        REQUIRE(doc1->get_bool("/count_bool") == get_field(msg.get(), "/count_bool").value<physical_type::BOOL>());
         REQUIRE(doc1->get_dict("/null") == get_field(msg.get(), "/null").value<physical_type::NA>());
         for (size_t i = 0; i < doc1->get_array("/count_array")->count(); i++) {
             std::string json_ptr = "/count_array/" + std::to_string(i);
             REQUIRE(doc1->get_long(json_ptr) == static_cast<int64_t>(get_field(msg.get(), json_ptr).value<physical_type::UINT64>()));
         }
-        REQUIRE(doc1->get_bool("/count_dict/odd") == get_field(msg.get(), "/count_dict/odd"));
-        REQUIRE(doc1->get_bool("/count_dict/even") == get_field(msg.get(), "/count_dict/even"));
+        REQUIRE(doc1->get_bool("/count_dict/odd") == get_field(msg.get(), "/count_dict/odd").value<physical_type::BOOL>());
+        REQUIRE(doc1->get_bool("/count_dict/even") == get_field(msg.get(), "/count_dict/even").value<physical_type::BOOL>());
     }
 }

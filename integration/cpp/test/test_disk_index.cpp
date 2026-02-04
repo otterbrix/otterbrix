@@ -264,8 +264,8 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
 
         INIT_COLLECTION();
         CREATE_INDEX("idx_count", "count");
-        CREATE_INDEX("idx_countStr", "countStr");
-        CREATE_INDEX("idx_countDouble", "countDouble");
+        CREATE_INDEX("idx_count_str", "count_str");
+        CREATE_INDEX("idx_count_double", "count_double");
         FILL_COLLECTION(kDocuments);
 
         // Verify all indexes work
@@ -281,7 +281,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
         CHECK_FIND("count", compare_type::eq, logical_value_t(25), 1);
         CHECK_FIND("count", compare_type::gt, logical_value_t(95), 5);
 
-        // Query by countStr (string) - need string value
+        // Query by count_str (string) - need string value
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(
@@ -289,7 +289,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
                 compare_type::eq,
-                key{dispatcher->resource(), "countStr", side_t::left},
+                key{dispatcher->resource(), "count_str", side_t::left},
                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(
                 dispatcher->resource(),
@@ -301,7 +301,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             REQUIRE(c->size() == 1);
         }
 
-        // Query by countDouble (double) - note: gen_doc uses num + 0.1
+        // Query by count_double (double) - note: gen_doc uses num + 0.1
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(
@@ -309,7 +309,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
                 compare_type::eq,
-                key{dispatcher->resource(), "countDouble", side_t::left},
+                key{dispatcher->resource(), "count_double", side_t::left},
                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(
                 dispatcher->resource(),

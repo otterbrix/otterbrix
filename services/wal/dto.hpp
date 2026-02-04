@@ -28,6 +28,7 @@ namespace services::wal {
     crc32_t pack(buffer_t& storage, char* data, size_t size);
     buffer_t read_payload(buffer_t& input, size_tt index_start, size_tt index_stop);
     crc32_t read_crc32(buffer_t& input, size_tt index_start);
+    size_tt read_size_impl(char* input, size_tt index_start);
     size_tt read_size_impl(buffer_t& input, size_tt index_start);
 
     crc32_t pack(buffer_t& storage,

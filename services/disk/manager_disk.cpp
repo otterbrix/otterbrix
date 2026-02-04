@@ -582,6 +582,7 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
+            co_await std::move(future);
         } else {
             error(log_, "manager_disk: agent not found for insert_by_agent");
         }
@@ -608,6 +609,7 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
+            co_await std::move(future);
         } else {
             error(log_, "manager_disk: agent not found for remove_by_agent");
         }

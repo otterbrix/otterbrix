@@ -47,23 +47,11 @@ namespace services::wal {
         return buffer;
     }
 
-    size_tt read_size_impl(char* input, size_tt index_start) {
-        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
-        size_tt size_tmp = 0;
-        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
-        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
-        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
-        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
-        return size_tmp;
-    }
 
-    size_tt read_size_impl(buffer_t& input, size_tt index_start) {
-        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
-        size_tt size_tmp = 0;
-        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
-        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
-        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
-        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
+    size_tt read_size_impl(char* input, int index_start) {
+        const size_tt byte0 = static_cast<uint8_t>(input[index_start]);
+        const size_tt byte1 = static_cast<uint8_t>(input[index_start + 1]);
+        const size_tt size_tmp = static_cast<size_tt>((byte0 << 8) | byte1);
         return size_tmp;
     }
 

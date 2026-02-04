@@ -9,11 +9,11 @@ void document_rw(benchmark::State& state) {
     auto doc = gen_doc(1000, wr_dispatcher()->resource());
 
     std::string key_int{"count"};
-    std::string key_str{"countStr"};
-    std::string key_double{"countDouble"};
-    std::string key_bool{"countBool"};
-    std::string key_array{"countArray"};
-    std::string key_dict{"countDict"};
+    std::string key_str{"count_str"};
+    std::string key_double{"count_double"};
+    std::string key_bool{"count_bool"};
+    std::string key_array{"count_array"};
+    std::string key_dict{"count_dict"};
 
     bool value_bool{true};
     int64_t value_int{100};

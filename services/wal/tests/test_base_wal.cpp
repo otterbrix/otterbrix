@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <components/logical_plan/node_insert.hpp>
+#include <components/tests/generaty.hpp>
 #include <wal/wal.hpp>
 
 #include <string>
@@ -14,8 +15,8 @@ TEST_CASE("services::wal::pack_unpack") {
     const std::string database = "test_database";
     const std::string collection = "test_collection";
 
-    std::pmr::vector<components::document::document_ptr> documents(&resource);
-    auto data = make_node_insert(&resource, {database, collection}, std::move(documents));
+    auto chunk = gen_data_chunk(0, &resource);
+    auto data = make_node_insert(&resource, {database, collection}, std::move(chunk));
 
     const crc32_t last_crc32 = 42;
     const wal::id_t wal_id = 21;

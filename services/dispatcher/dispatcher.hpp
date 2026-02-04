@@ -17,7 +17,6 @@
 
 #include <components/catalog/catalog.hpp>
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>

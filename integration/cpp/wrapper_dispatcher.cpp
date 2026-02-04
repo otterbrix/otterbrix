@@ -83,24 +83,6 @@ namespace otterbrix {
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
-    auto wrapper_dispatcher_t::insert_one(const session_id_t& session,
-                                          const database_name_t& database,
-                                          const collection_name_t& collection,
-                                          document_ptr document) -> cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::insert_one session: {}, collection name: {} ", session.data(), collection);
-        auto plan = components::logical_plan::make_node_insert(resource(), {database, collection}, {document});
-        return send_plan(session, std::move(plan), components::logical_plan::make_parameter_node(resource()));
-    }
-
-    auto wrapper_dispatcher_t::insert_many(const session_id_t& session,
-                                           const database_name_t& database,
-                                           const collection_name_t& collection,
-                                           const std::pmr::vector<document_ptr>& documents) -> cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::insert_many session: {}, collection name: {} ", session.data(), collection);
-        auto plan = components::logical_plan::make_node_insert(resource(), {database, collection}, documents);
-        return send_plan(session, std::move(plan), components::logical_plan::make_parameter_node(resource()));
-    }
-
     auto wrapper_dispatcher_t::find(const session_id_t& session,
                                     components::logical_plan::node_aggregate_ptr condition,
                                     components::logical_plan::parameter_node_ptr params) -> cursor_t_ptr {

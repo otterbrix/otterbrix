@@ -1,5 +1,7 @@
 #include "test_config.hpp"
+#include <components/tests/generaty.hpp>
 #include <components/types/operations_helper.hpp>
+#include <core/operations_helper.hpp>
 
 #include <catch2/catch.hpp>
 
@@ -119,11 +121,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->next_document()->get_long("count") == 0);
-            REQUIRE(cur->next_document()->get_long("count") == 1);
-            REQUIRE(cur->next_document()->get_long("count") == 2);
-            REQUIRE(cur->next_document()->get_long("count") == 3);
-            REQUIRE(cur->next_document()->get_long("count") == 4);
+            // count is column 2 (_id=0, name=1, count=2)
+            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 0);
+            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 1);
+            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 2);
+            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 3);
+            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -132,11 +135,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count DESC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->next_document()->get_long("count") == 99);
-            REQUIRE(cur->next_document()->get_long("count") == 98);
-            REQUIRE(cur->next_document()->get_long("count") == 97);
-            REQUIRE(cur->next_document()->get_long("count") == 96);
-            REQUIRE(cur->next_document()->get_long("count") == 95);
+            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 99);
+            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 98);
+            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 97);
+            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 96);
+            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 95);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -145,11 +148,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY name;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->next_document()->get_long("count") == 0);
-            REQUIRE(cur->next_document()->get_long("count") == 1);
-            REQUIRE(cur->next_document()->get_long("count") == 10);
-            REQUIRE(cur->next_document()->get_long("count") == 11);
-            REQUIRE(cur->next_document()->get_long("count") == 12);
+            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 0);
+            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 1);
+            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 10);
+            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 11);
+            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 12);
         }
     }
 
@@ -256,17 +259,17 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(GROUP BY name;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        int number = 0;
-        while (auto doc = cur->next_document()) {
-            REQUIRE(doc->get_string("name") == std::pmr::string("Name " + std::to_string(number)));
-            REQUIRE(doc->get_long("count_") == 10);
-            REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(
-                core::is_equals(doc->get_double("avg_"), static_cast<double>((number % 20 + (number + 10) % 20) / 2)));
-            REQUIRE(doc->get_long("min_") == number % 20);
-            REQUIRE(doc->get_long("max_") == (number + 10) % 20);
-            ++number;
+        // Columns: name=0, count_=1, sum_=2, avg_=3, min_=4, max_=5
+        for (size_t number = 0; number < 10; ++number) {
+            REQUIRE(cur->chunk_data().value(0, number).value<std::string_view>() ==
+                    "Name " + std::to_string(number));
+            REQUIRE(cur->chunk_data().value(1, number).value<uint64_t>() == 10);
+            REQUIRE(cur->chunk_data().value(2, number).value<int64_t>() ==
+                    5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
+            REQUIRE(core::is_equals(cur->chunk_data().value(3, number).value<double>(),
+                                    static_cast<double>((number % 20 + (number + 10) % 20)) / 2.0));
+            REQUIRE(cur->chunk_data().value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
+            REQUIRE(cur->chunk_data().value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -281,17 +284,19 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(ORDER BY name DESC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        int number = 9;
-        while (auto doc = cur->next_document()) {
-            REQUIRE(doc->get_string("name") == std::pmr::string("Name " + std::to_string(number)));
-            REQUIRE(doc->get_long("count_") == 10);
-            REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(
-                core::is_equals(doc->get_double("avg_"), static_cast<double>((number % 20 + (number + 10) % 20) / 2)));
-            REQUIRE(doc->get_long("min_") == number % 20);
-            REQUIRE(doc->get_long("max_") == (number + 10) % 20);
-            --number;
+        // Columns: name=0, count_=1, sum_=2, avg_=3, min_=4, max_=5
+        // Results are ordered descending by name: Name 9, Name 8, ... Name 0
+        for (size_t row = 0; row < 10; ++row) {
+            int number = 9 - static_cast<int>(row);
+            REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
+                    "Name " + std::to_string(number));
+            REQUIRE(cur->chunk_data().value(1, row).value<uint64_t>() == 10);
+            REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() ==
+                    5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(core::is_equals(cur->chunk_data().value(3, row).value<double>(),
+                                    static_cast<double>((number % 20 + (number + 10) % 20)) / 2.0));
+            REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == number % 20);
+            REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (number + 10) % 20);
         }
     }
 }

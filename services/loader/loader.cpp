@@ -112,20 +112,16 @@ namespace services::loader {
             for (const auto& coll_name : collections) {
                 debug(log_, "loader_t: found collection: {}.{}", db_name, coll_name);
                 collection_full_name_t full_name(db_name, coll_name);
-                // Initialize empty document vector for this collection
-                state.documents.emplace(full_name, std::pmr::vector<document_ptr>(resource_));
+                // Initialize empty placeholder for this collection (columnar data TBD)
+                state.documents.emplace(full_name, std::pmr::vector<int>(resource_));
             }
         }
     }
 
     void loader_t::read_documents(loaded_state_t& state) {
-        trace(log_, "loader_t: reading documents");
-
-        for (auto& [full_name, docs] : state.documents) {
-            debug(log_, "loader_t: loading documents for {}.{}", full_name.database, full_name.collection);
-            disk_->load_documents(full_name.database, full_name.collection, docs);
-            debug(log_, "loader_t: loaded {} documents for {}.{}", docs.size(), full_name.database, full_name.collection);
-        }
+        trace(log_, "loader_t: reading documents - placeholder (columnar persistence TBD)");
+        // TODO: Implement columnar data persistence
+        (void)state;
     }
 
     void loader_t::read_index_definitions(loaded_state_t& state) {

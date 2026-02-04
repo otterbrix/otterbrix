@@ -20,27 +20,6 @@ constexpr auto collection_name = "collection";
 
 collection_full_name_t get_name() { return {database_name, collection_name}; }
 
-TEST_CASE("components::serialization::document") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto doc1 = gen_doc(10, &resource);
-    {
-        msgpack_serializer_t serializer(&resource);
-        serializer.start_array(1);
-        doc1->serialize(&serializer);
-        serializer.end_array();
-        msgpack_deserializer_t deserializer(serializer.result());
-        auto doc2 = document_t::deserialize(&deserializer, 0);
-        REQUIRE(doc1->count() == doc2->count());
-        REQUIRE(doc1->get_string("/_id") == doc2->get_string("/_id"));
-        REQUIRE(doc1->get_long("/count") == doc2->get_long("/count"));
-        REQUIRE(doc1->get_string("/count_str") == doc2->get_string("/count_str"));
-        REQUIRE(doc1->get_double("/count_double") == Approx(doc2->get_double("/count_double")));
-        REQUIRE(doc1->get_bool("/count_bool") == doc2->get_bool("/count_bool"));
-        REQUIRE(doc1->get_array("/count_array")->count() == doc2->get_array("/count_array")->count());
-        REQUIRE(doc1->get_dict("/count_dict")->count() == doc2->get_dict("/count_dict")->count());
-        REQUIRE(doc1->get_dict("/null") == doc2->get_dict("/null"));
-    }
-}
 TEST_CASE("components::serialization::data_chunk") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto chunk1 = gen_data_chunk(10, &resource);

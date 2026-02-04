@@ -10,7 +10,6 @@
 
 #include <actor-zeta.hpp>
 
-#include <components/document/document.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -23,9 +22,6 @@
 // declaration should be in each translation unit.
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
-using components::document::impl::element;
-using components::document::json::json_trie_node;
-using components::document::json::json_type;
 using namespace components::types;
 using components::types::logical_value_t;
 
@@ -45,138 +41,6 @@ logical_value_t to_value(const py::handle& obj) {
     return logical_value_t{};
 }
 
-void build_primitive(components::document::tape_builder& builder, const py::handle& obj) noexcept {
-    if (py::isinstance<py::bool_>(obj)) {
-        builder.build(obj.cast<bool>());
-    } else if (py::isinstance<py::int_>(obj)) {
-        builder.build(obj.cast<int64_t>()); //TODO x64 long -> int64_t x32 long -> int32_t
-    } else if (py::isinstance<py::float_>(obj)) {
-        builder.build(obj.cast<double>());
-    } else if (py::isinstance<py::bytes>(obj)) {
-        py::module base64 = py::module::import("base64");
-        builder.build(base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>());
-    } else if (py::isinstance<py::str>(obj)) {
-        builder.build(obj.cast<std::string>());
-    }
-}
-
-json_trie_node* build_index(const py::handle& py_obj,
-                            components::document::tape_builder& builder,
-                            components::document::impl::base_document* mut_src,
-                            components::document::document_t::allocator_type* allocator) {
-    json_trie_node* res;
-
-    if (py::isinstance<py::dict>(py_obj)) {
-        res = json_trie_node::create_object(allocator);
-        for (const py::handle key : py_obj) {
-            res->as_object()->set(build_index(key, builder, mut_src, allocator),
-                                  build_index(py_obj[key], builder, mut_src, allocator));
-        }
-    } else if (py::isinstance<py::tuple>(py_obj) || py::isinstance<py::list>(py_obj)) {
-        res = json_trie_node::create_array(allocator);
-        uint32_t i = 0;
-        for (const py::handle value : py_obj) {
-            res->as_array()->set(i++, build_index(value, builder, mut_src, allocator));
-        }
-    } else {
-        auto element = mut_src->next_element();
-        build_primitive(builder, py_obj);
-        res = json_trie_node::create(element, allocator);
-    }
-    return res;
-}
-
-document_ptr components::document::py_handle_decoder_t::to_document(const py::handle& py_obj,
-                                                                    std::pmr::memory_resource* resource) {
-    auto res = new (resource->allocate(sizeof(document_t))) document_t(resource, true);
-    auto obj = res->element_ind_->as_object();
-    for (const py::handle key : py_obj) {
-        obj->set(build_index(key, res->builder_, res->mut_src_, resource),
-                 build_index(py_obj[key], res->builder_, res->mut_src_, resource));
-    }
-    return res;
-}
-
-auto to_document(const py::handle& source, std::pmr::memory_resource* resource) -> document_ptr {
-    return components::document::py_handle_decoder_t::to_document(source, resource);
-}
-
-auto from_document(const element* value) -> py::object {
-    switch (value->logical_type()) {
-        case logical_type::BOOLEAN:
-            return py::bool_(value->get_bool().value());
-        case logical_type::UTINYINT:
-        case logical_type::USMALLINT:
-        case logical_type::UINTEGER:
-        case logical_type::UBIGINT:
-            return py::int_(value->get_uint64().value());
-        case logical_type::TINYINT:
-        case logical_type::SMALLINT:
-        case logical_type::INTEGER:
-        case logical_type::BIGINT:
-            return py::int_(value->get_int64().value());
-        case logical_type::FLOAT:
-        case logical_type::DOUBLE:
-            return py::float_(value->get_double().value());
-        case logical_type::STRING_LITERAL:
-            return py::str(value->get_string().value());
-        default:
-            return py::none();
-    }
-}
-
-auto from_document(const json_trie_node* value) -> py::object {
-    if (value->type() == json_type::OBJECT) {
-        py::dict dict;
-        for (auto it = value->get_object()->begin(); it != value->get_object()->end(); ++it) {
-            std::string key(it->first->get_mut()->get_string().value());
-            dict[py::str(key)] = from_document(it->second.get());
-        }
-        return dict;
-    } else if (value->type() == json_type::ARRAY) {
-        py::list list;
-        for (uint32_t i = 0; i < value->get_array()->size(); ++i) {
-            list.append(from_document(value->get_array()->get(i)));
-        }
-        return list;
-    }
-    if (value->type() == json_type::MUT) {
-        return from_document(value->get_mut());
-    }
-    return py::none();
-}
-
-auto from_document(const document_ptr& document) -> py::object {
-    auto node = document->json_trie();
-    return node ? from_document(node.get()) : py::none();
-}
-
-auto from_object(const document_ptr& document, const std::string& key) -> py::object {
-    if (!document->is_exists(key)) {
-        return py::none();
-    }
-    if (document->is_array(key)) {
-        return from_document(document->get_array(key));
-    } else if (document->is_dict(key)) {
-        return from_document(document->get_dict(key));
-    } else {
-        return from_document(document->get_value(key).get_element());
-    }
-}
-auto from_object(const document_ptr& document, uint32_t index) -> py::object {
-    auto key = std::to_string(index);
-    if (!document->is_exists(key)) {
-        return py::none();
-    }
-    if (document->is_array(key)) {
-        return from_document(document->get_array(key));
-    } else if (document->is_dict(key)) {
-        return from_document(document->get_dict(key));
-    } else {
-        return from_document(document->get_value(key).get_element());
-    }
-}
-
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
     py::list res;
     for (const auto& str : src) {
@@ -185,25 +49,17 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
     return res;
 }
 
-auto to_pylist(const std::pmr::vector<components::document::document_id_t>& src) -> py::list {
-    py::list res;
-    for (const auto& str : src) {
-        res.append(str.to_string());
-    }
-    return res;
-}
-
-auto to_sorter(const py::handle& sort_dict) -> components::collection::sort::sorter_t {
-    components::collection::sort::sorter_t sorter;
+auto to_sorter(const py::handle& sort_dict) -> components::table::sort::sorter_t {
+    components::table::sort::sorter_t sorter;
     for (const py::handle key : sort_dict) {
         sorter.add(py::str(key).cast<std::string>(), to_order(sort_dict[key]));
     }
     return sorter;
 }
 
-auto to_order(const py::object& order) -> components::collection::sort::order {
-    return py::int_(order).cast<int>() < 0 ? components::collection::sort::order::descending
-                                           : components::collection::sort::order::ascending;
+auto to_order(const py::object& order) -> components::table::sort::order {
+    return py::int_(order).cast<int>() < 0 ? components::table::sort::order::descending
+                                           : components::table::sort::order::ascending;
 }
 
 using components::logical_plan::node_aggregate_t;

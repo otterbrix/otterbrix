@@ -15,20 +15,16 @@ public:
         : index_t(resource, components::logical_plan::index_type::single, name, keys) {}
 
 private:
-    void insert_impl(value_t, document_ptr) {}
     void insert_impl(value_t, index_value_t) override {}
-    void insert_impl(document_ptr) override {}
     void remove_impl(value_t) override {}
     range find_impl(const value_t&) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));
     }
-    iterator lower_bound_impl(const query_t&) const { return iterator(new impl_t(dummy_storage_.cbegin())); }
     range lower_bound_impl(const value_t&) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));
     }
-    iterator upper_bound_impl(const query_t&) const { return iterator(new impl_t(dummy_storage_.cend())); }
     range upper_bound_impl(const value_t&) const override {
         return std::make_pair(iterator(new impl_t(dummy_storage_.cbegin())),
                               iterator(new impl_t(dummy_storage_.cend())));

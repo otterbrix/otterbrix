@@ -9,7 +9,6 @@
 #include <thread>
 #include <chrono>
 
-#include <components/document/document.hpp>
 #include <components/planner/planner.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
@@ -164,17 +163,9 @@ namespace services::dispatcher {
             auto* context = new collection::context_collection_t(
                 resource(), full_name, disk_address_, log_.clone());
 
-            auto& storage = context->document_storage();
-            for (auto& doc : docs) {
-                if (doc) {
-                    auto doc_id = components::document::get_document_id(doc);
-                    storage.emplace(doc_id, std::move(doc));
-                }
-            }
-
             collections_.emplace(full_name, context);
-            debug(log_, "manager_dispatcher_t::init_from_state: collection {}.{} initialized with {} documents",
-                  full_name.database, full_name.collection, storage.size());
+            debug(log_, "manager_dispatcher_t::init_from_state: collection {}.{} initialized",
+                  full_name.database, full_name.collection);
         }
 
         (void)schemas;
@@ -406,11 +397,7 @@ namespace services::dispatcher {
         if (coll->dropped()) {
             co_return size_t(0);
         }
-        if (coll->uses_datatable()) {
-            co_return coll->table_storage().table().calculate_size();
-        } else {
-            co_return coll->document_storage().size();
-        }
+        co_return coll->table_storage().table().calculate_size();
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::get_schema(
@@ -599,21 +586,10 @@ namespace services::dispatcher {
             }
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
-                if (check == used_format_t::undefined) {
-                    check = static_cast<used_format_t>(data_node->uses_data_chunk());
-                } else if (check != static_cast<used_format_t>(data_node->uses_data_chunk())) {
-                    result = make_cursor(resource(), error_code_t::incompatible_storage_types,
-                                    "logical plan data format is not the same as referenced collection data format");
-                    return false;
-                }
+                // Always using data_chunk (columns) format now
+                check = used_format_t::columns;
 
-                if (used_format == used_format_t::documents && check == used_format_t::columns) {
-                    data_node->convert_to_documents();
-                    check = used_format_t::documents;
-                }
-
-                if (data_node->uses_data_chunk()) {
-                    for (auto& column : data_node->data_chunk().data) {
+                for (auto& column : data_node->data_chunk().data) {
                         auto it = std::find_if(encountered_types.begin(), encountered_types.end(),
                                                [&column](const complex_logical_type& type) {
                                                    return type.alias() == column.type().alias();
@@ -654,7 +630,6 @@ namespace services::dispatcher {
                             }
                         }
                     }
-                }
             }
 
             if (used_format == check) {
@@ -685,8 +660,6 @@ namespace services::dispatcher {
         }
 
         switch (used_format) {
-            case used_format_t::documents:
-                return make_cursor(resource(), std::pmr::vector<components::document::document_ptr>{resource()});
             case used_format_t::columns:
                 return make_cursor(resource(), components::vector::data_chunk_t{resource(), {}, 0});
             default:
@@ -737,27 +710,7 @@ namespace services::dispatcher {
                 }
                 break;
             case node_type::insert_t: {
-                if (!node->children().size() || node->children().back()->type() != node_type::data_t) {
-                    break;
-                }
-
-                std::optional<std::reference_wrapper<computed_schema>> comp_sch;
-                if (catalog_.table_computes(id)) {
-                    comp_sch = catalog_.get_computing_table_schema(id);
-                }
-
-                auto node_info = reinterpret_cast<node_data_ptr&>(node->children().back());
-                if (node_info->uses_documents()) {
-                    for (const auto& doc : node_info->documents()) {
-                        for (const auto& [key, value] : *doc->json_trie()->as_object()) {
-                            auto key_val = key->get_mut()->get_string().value();
-                            auto log_type = components::base::operators::type_from_json(value.get());
-                            if (comp_sch.has_value()) {
-                                comp_sch.value().get().append(std::pmr::string(key_val), log_type);
-                            }
-                        }
-                    }
-                }
+                // Schema tracking for insert operations handled through data_chunk
                 break;
             }
             case node_type::delete_t: {

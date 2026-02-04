@@ -14,7 +14,6 @@
 
 namespace services::disk {
 
-    using components::document::document_id_t;
     using namespace core::filesystem;
 
     namespace {
@@ -173,10 +172,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::remove_collection, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::write_documents>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::write_documents, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::write_data_chunk>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::write_data_chunk, msg);
                 break;
@@ -303,20 +298,6 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::write_documents(session_id_t session,
-                                                                         database_name_t database,
-                                                                         collection_name_t collection,
-                                                                         std::pmr::vector<document_ptr> documents) {
-        trace(log_,
-              "manager_disk_t::write_documents , session : {} , database : {} , collection : {}",
-              session.data(),
-              database,
-              collection);
-        command_write_documents_t command{std::move(database), std::move(collection), std::move(documents)};
-        append_command(commands_, session, command_t(std::move(command)));
-        co_return;
-    }
-
     manager_disk_t::unique_future<void> manager_disk_t::remove_documents(session_id_t session,
                                                                           database_name_t database,
                                                                           collection_name_t collection,
@@ -398,14 +379,6 @@ namespace services::disk {
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>: {
                             auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_collection, command);
-                            if (needs_sched && !agents_.empty()) {
-                                scheduler_->enqueue(agents_[0].get());
-                            }
-                            co_await std::move(future);
-                            break;
-                        }
-                        case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::write_documents>: {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::write_documents, command);
                             if (needs_sched && !agents_.empty()) {
                                 scheduler_->enqueue(agents_[0].get());
                             }
@@ -509,7 +482,7 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::index_insert_many(
         session_id_t session,
         index_name_t index_name,
-        std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values) {
+        std::vector<std::pair<components::types::logical_value_t, size_t>> values) {
         trace(log_, "manager_disk: index_insert_many : {} , {} values", index_name, values.size());
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
@@ -528,12 +501,12 @@ namespace services::disk {
         session_id_t session,
         index_name_t index_name,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         trace(log_, "manager_disk: index_insert : {}", index_name);
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::insert, session, std::move(key), doc_id);
+                                        &index_agent_disk_t::insert, session, std::move(key), row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -547,12 +520,12 @@ namespace services::disk {
         session_id_t session,
         index_name_t index_name,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         trace(log_, "manager_disk: index_remove : {}", index_name);
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::remove, session, std::move(key), doc_id);
+                                        &index_agent_disk_t::remove, session, std::move(key), row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -566,7 +539,7 @@ namespace services::disk {
         session_id_t session,
         actor_zeta::address_t agent_address,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         trace(log_, "manager_disk: index_insert_by_agent");
         // Find agent by address
         index_agent_disk_t* found_agent = nullptr;
@@ -578,7 +551,7 @@ namespace services::disk {
         }
         if (found_agent) {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
-                                        &index_agent_disk_t::insert, session, std::move(key), doc_id);
+                                        &index_agent_disk_t::insert, session, std::move(key), row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
@@ -592,7 +565,7 @@ namespace services::disk {
         session_id_t session,
         actor_zeta::address_t agent_address,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         trace(log_, "manager_disk: index_remove_by_agent");
         // Find agent by address
         index_agent_disk_t* found_agent = nullptr;
@@ -604,7 +577,7 @@ namespace services::disk {
         }
         if (found_agent) {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
-                                        &index_agent_disk_t::remove, session, std::move(key), doc_id);
+                                        &index_agent_disk_t::remove, session, std::move(key), row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
@@ -808,10 +781,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::remove_collection, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::write_documents>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::write_documents, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::write_data_chunk>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::write_data_chunk, msg);
                 break;
@@ -907,16 +876,6 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::write_documents(
-        session_id_t session, database_name_t database, collection_name_t collection,
-        std::pmr::vector<document_ptr> documents) {
-        (void)session;
-        (void)database;
-        (void)collection;
-        (void)documents;
-        co_return;
-    }
-
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::write_data_chunk(
         session_id_t session, database_name_t database, collection_name_t collection,
         std::unique_ptr<components::vector::data_chunk_t> data) {
@@ -973,7 +932,7 @@ namespace services::disk {
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert_many(
         session_id_t session,
         index_name_t index_name,
-        std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values) {
+        std::vector<std::pair<components::types::logical_value_t, size_t>> values) {
         (void)session;
         (void)index_name;
         (void)values;
@@ -984,11 +943,11 @@ namespace services::disk {
         session_id_t session,
         index_name_t index_name,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         (void)session;
         (void)index_name;
         (void)key;
-        (void)doc_id;
+        (void)row_id;
         co_return;
     }
 
@@ -996,11 +955,11 @@ namespace services::disk {
         session_id_t session,
         index_name_t index_name,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         (void)session;
         (void)index_name;
         (void)key;
-        (void)doc_id;
+        (void)row_id;
         co_return;
     }
 
@@ -1008,11 +967,11 @@ namespace services::disk {
         session_id_t session,
         actor_zeta::address_t agent_address,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         (void)session;
         (void)agent_address;
         (void)key;
-        (void)doc_id;
+        (void)row_id;
         co_return;
     }
 
@@ -1020,11 +979,11 @@ namespace services::disk {
         session_id_t session,
         actor_zeta::address_t agent_address,
         components::types::logical_value_t key,
-        components::document::document_id_t doc_id) {
+        size_t row_id) {
         (void)session;
         (void)agent_address;
         (void)key;
-        (void)doc_id;
+        (void)row_id;
         co_return;
     }
 

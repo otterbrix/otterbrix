@@ -12,7 +12,7 @@ namespace components::table::operators {
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
         // TODO: worth to create separate update_join operator or mutable_join with callback
         if (left_ && left_->output() && right_ && right_->output()) {
-            modified_ = base::operators::make_operator_write_data<size_t>(left_->output()->resource());
+            modified_ = base::operators::make_operator_write_data(left_->output()->resource());
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
             auto types_left = chunk_left.types();
@@ -55,7 +55,7 @@ namespace components::table::operators {
                 context_->index_engine()->delete_row(chunk_left, id, pipeline_context);
             }
         } else if (left_ && left_->output()) {
-            modified_ = base::operators::make_operator_write_data<size_t>(left_->output()->resource());
+            modified_ = base::operators::make_operator_write_data(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
             auto types = chunk.types();
             std::unordered_map<std::string, size_t> name_index_map;

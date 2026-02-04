@@ -33,12 +33,6 @@ namespace components::index {
         storage_.insert({key, std::move(value)});
     }
 
-    auto single_field_index_t::insert_impl(document::document_ptr doc) -> void {
-        auto id = document::get_document_id(doc);
-        auto value = doc->get_value(keys().first->as_string()).as_logical_value();
-        insert_impl(value, {id, std::move(doc), -1});
-    }
-
     auto single_field_index_t::remove_impl(components::index::value_t key) -> void {
         storage_.erase(storage_.find(key));
     }

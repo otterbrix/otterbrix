@@ -1,18 +1,5 @@
 #include "generaty.hpp"
 
-void gen_array(int num, const document_ptr& array) {
-    for (int i = 0; i < 5; ++i) {
-        array->set("/" + std::to_string(i), num + i);
-    }
-}
-
-void gen_dict(int num, const document_ptr& dict) {
-    dict->set("/odd", num % 2 != 0);
-    dict->set("/even", num % 2 == 0);
-    dict->set("/three", num % 3 == 0);
-    dict->set("/five", num % 5 == 0);
-}
-
 std::string gen_id(int num) {
     auto res = std::to_string(num);
     while (res.size() < 24) {
@@ -27,43 +14,6 @@ std::pmr::string gen_id(int num, std::pmr::memory_resource* resource) {
         res = "0" + res;
     }
     return res;
-}
-
-document_ptr gen_doc(int num, std::pmr::memory_resource* resource) {
-    document_ptr doc = make_document(resource);
-    doc->set("/_id", gen_id(num, resource));
-    doc->set("/count", num);
-    doc->set("/count_str", std::to_string(num));
-    doc->set("/count_double", float(num) + 0.1);
-    doc->set("/count_bool", num % 2 != 0);
-    doc->set_array("/count_array");
-    gen_array(num, doc->get_array("/count_array"));
-    doc->set_dict("/count_dict");
-    gen_dict(num, doc->get_dict("/count_dict"));
-    doc->set_array("/nested_array");
-    auto array = doc->get_array("/nested_array");
-    for (int i = 0; i < 5; ++i) {
-        auto json_pointer = "/" + std::to_string(i);
-        array->set_array(json_pointer);
-        gen_array(num + i, array->get_array(json_pointer));
-    }
-    doc->set_array("/dict_array");
-    array = doc->get_array("/dict_array");
-    for (int i = 0; i < 5; ++i) {
-        auto json_pointer = "/" + std::to_string(i);
-        array->set_dict(json_pointer);
-        auto dict = array->get_dict(json_pointer);
-        dict->set("/number", num + i);
-    }
-    doc->set_dict("/mixed_dict");
-    auto dict = doc->get_dict("/mixed_dict");
-    for (int i = 0; i < 5; ++i) {
-        auto json_pointer = "/" + std::to_string(num + i);
-        dict->set_dict(json_pointer);
-        gen_dict(num + i, dict->get_dict(json_pointer));
-    }
-    doc->set_null("/null");
-    return doc;
 }
 
 components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_resource* resource) {

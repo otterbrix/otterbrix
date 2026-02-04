@@ -2,7 +2,6 @@
 
 #include <actor-zeta.hpp>
 #include <components/base/collection_full_name.hpp>
-#include <components/document/document.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <variant>
@@ -25,12 +24,6 @@ namespace services::disk {
     struct command_remove_collection_t {
         database_name_t database;
         collection_name_t collection;
-    };
-
-    struct command_write_documents_t {
-        database_name_t database;
-        collection_name_t collection;
-        std::pmr::vector<components::document::document_ptr> documents;
     };
 
     struct command_remove_documents_t {
@@ -65,7 +58,6 @@ namespace services::disk {
                      command_remove_database_t,
                      command_append_collection_t,
                      command_remove_collection_t,
-                     command_write_documents_t,
                      command_remove_documents_t,
                      command_drop_index_t>
             command_;

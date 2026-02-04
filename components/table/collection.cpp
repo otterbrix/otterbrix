@@ -44,10 +44,13 @@ namespace components::table {
 
     void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>&) {
         auto row_group = row_groups_->root_segment();
-        assert(row_group);
         state.row_groups = row_groups_.get();
         state.max_row = row_start_ + static_cast<int64_t>(total_rows_.load());
         state.initialize(types_);
+        // Handle empty collection (no row_groups yet)
+        if (!row_group) {
+            return;
+        }
         while (row_group && !row_group->initialize_scan(state)) {
             row_group = row_groups_->next_segment(row_group);
         }
@@ -150,7 +153,10 @@ namespace components::table {
     uint64_t collection_t::calculate_size() {
         uint64_t res = 0;
         auto row_group = row_groups_->root_segment();
-        assert(row_group);
+        // Handle empty collection (no row_groups yet)
+        if (!row_group) {
+            return 0;
+        }
         while (row_group) {
             res += row_group->calculate_size();
             row_group = row_groups_->next_segment(row_group);

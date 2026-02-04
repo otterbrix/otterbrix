@@ -1,7 +1,6 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <components/document/document.hpp>
 #include <services/wal/base.hpp>
 #include <vector>
 
@@ -9,13 +8,11 @@ namespace services::disk {
 
     struct result_collection_t {
         collection_name_t name;
-        std::pmr::vector<components::document::document_ptr> documents;
 
         result_collection_t() = default;
-        explicit result_collection_t(std::pmr::memory_resource* resource)
-            : documents(resource) {}
-        result_collection_t(std::pmr::memory_resource* resource, collection_name_t n)
-            : name(std::move(n)), documents(resource) {}
+        explicit result_collection_t(std::pmr::memory_resource* /*resource*/) {}
+        result_collection_t(std::pmr::memory_resource* /*resource*/, collection_name_t n)
+            : name(std::move(n)) {}
     };
 
     struct result_database_t {

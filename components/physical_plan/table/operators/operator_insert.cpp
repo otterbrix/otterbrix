@@ -8,7 +8,7 @@ namespace components::table::operators {
 
     void operator_insert::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
-            modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+            modified_ = base::operators::make_operator_write_data(context_->resource());
             output_ = base::operators::make_operator_data(context_->resource(),
                                                           left_->output()->data_chunk().types(),
                                                           left_->output()->data_chunk().size());

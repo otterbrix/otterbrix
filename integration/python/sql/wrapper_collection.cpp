@@ -3,22 +3,242 @@
 #include "convert.hpp"
 #include "wrapper_database.hpp"
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
+#include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+#include <set>
+#include <sstream>
+
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
 // declaration should be in each translation unit.
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 namespace otterbrix {
 
-    using components::document::document_id_t;
-
-    void generate_document_id_if_not_exists(document_ptr& document) {
-        if (!document->is_exists(std::string_view("_id"))) {
-            document->set("_id", document_id_t().to_string());
+    namespace {
+        // Generate a UUID string for _id field
+        std::string generate_uuid() {
+            boost::uuids::random_generator gen;
+            boost::uuids::uuid id = gen();
+            return boost::uuids::to_string(id);
         }
-    }
+
+        // Convert logical_value_t to Python object
+        py::object from_value(const components::types::logical_value_t& value) {
+            using namespace components::types;
+
+            if (value.is_null()) {
+                return py::none();
+            }
+
+            auto phys_type = value.type().to_physical_type();
+            switch (phys_type) {
+                case physical_type::BOOL:
+                    return py::bool_(value.value<bool>());
+                case physical_type::INT8:
+                    return py::int_(value.value<int8_t>());
+                case physical_type::INT16:
+                    return py::int_(value.value<int16_t>());
+                case physical_type::INT32:
+                    return py::int_(value.value<int32_t>());
+                case physical_type::INT64:
+                    return py::int_(value.value<int64_t>());
+                case physical_type::UINT8:
+                    return py::int_(value.value<uint8_t>());
+                case physical_type::UINT16:
+                    return py::int_(value.value<uint16_t>());
+                case physical_type::UINT32:
+                    return py::int_(value.value<uint32_t>());
+                case physical_type::UINT64:
+                    return py::int_(value.value<uint64_t>());
+                case physical_type::FLOAT:
+                    return py::float_(value.value<float>());
+                case physical_type::DOUBLE:
+                    return py::float_(value.value<double>());
+                case physical_type::STRING:
+                    return py::str(std::string(value.value<std::string_view>()));
+                case physical_type::LIST: {
+                    py::list result;
+                    for (const auto& child : value.children()) {
+                        result.append(from_value(child));
+                    }
+                    return result;
+                }
+                case physical_type::STRUCT: {
+                    py::dict result;
+                    const auto& children = value.children();
+                    const auto& child_types = value.type().child_types();
+                    for (size_t i = 0; i < children.size() && i < child_types.size(); ++i) {
+                        result[py::str(child_types[i].alias())] = from_value(children[i]);
+                    }
+                    return result;
+                }
+                default:
+                    return py::none();
+            }
+        }
+
+        // Convert a row from data_chunk to Python dict
+        py::dict row_to_dict(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
+            py::dict result;
+            auto types = chunk.types();
+            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                auto value = chunk.value(col, row_idx);
+                // Get column name from type if available
+                if (col < types.size()) {
+                    auto col_name = types[col].alias();
+                    if (!col_name.empty()) {
+                        result[py::str(col_name)] = from_value(value);
+                    } else {
+                        result[py::int_(col)] = from_value(value);
+                    }
+                }
+            }
+            return result;
+        }
+
+        // Escape a string value for SQL
+        std::string escape_sql_string(const std::string& str) {
+            std::string result;
+            result.reserve(str.size() * 2);
+            for (char c : str) {
+                if (c == '\'') {
+                    result += "''";
+                } else {
+                    result += c;
+                }
+            }
+            return result;
+        }
+
+        // Convert Python value to SQL literal string
+        std::string py_to_sql_literal(const py::handle& obj) {
+            if (py::isinstance<py::none>(obj)) {
+                return "NULL";
+            } else if (py::isinstance<py::bool_>(obj)) {
+                return obj.cast<bool>() ? "TRUE" : "FALSE";
+            } else if (py::isinstance<py::int_>(obj)) {
+                return std::to_string(obj.cast<int64_t>());
+            } else if (py::isinstance<py::float_>(obj)) {
+                return std::to_string(obj.cast<double>());
+            } else if (py::isinstance<py::str>(obj)) {
+                return "'" + escape_sql_string(obj.cast<std::string>()) + "'";
+            } else if (py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj)) {
+                std::string result = "ARRAY[";
+                bool first = true;
+                for (const auto& item : obj) {
+                    if (!first) result += ", ";
+                    result += py_to_sql_literal(item);
+                    first = false;
+                }
+                result += "]";
+                return result;
+            }
+            return "NULL";
+        }
+
+        // Build SQL INSERT statement from py::dict
+        std::string build_insert_sql(const std::string& database,
+                                     const std::string& collection,
+                                     const py::dict& doc,
+                                     bool generate_id = true) {
+            std::stringstream sql;
+            sql << "INSERT INTO " << database << "." << collection << " (";
+
+            std::vector<std::string> columns;
+            std::vector<std::string> values;
+
+            bool has_id = false;
+            for (const auto& item : doc) {
+                std::string key = py::str(item.first).cast<std::string>();
+                if (key == "_id") has_id = true;
+                columns.push_back(key);
+                values.push_back(py_to_sql_literal(item.second));
+            }
+
+            // Generate _id if not present
+            if (generate_id && !has_id) {
+                columns.insert(columns.begin(), "_id");
+                values.insert(values.begin(), "'" + generate_uuid() + "'");
+            }
+
+            for (size_t i = 0; i < columns.size(); ++i) {
+                if (i > 0) sql << ", ";
+                sql << columns[i];
+            }
+            sql << ") VALUES (";
+            for (size_t i = 0; i < values.size(); ++i) {
+                if (i > 0) sql << ", ";
+                sql << values[i];
+            }
+            sql << ");";
+
+            return sql.str();
+        }
+
+        // Build SQL INSERT statement for multiple documents
+        std::string build_insert_many_sql(const std::string& database,
+                                          const std::string& collection,
+                                          const py::list& docs) {
+            if (py::len(docs) == 0) {
+                return "";
+            }
+
+            // Collect all unique column names from all documents
+            std::set<std::string> all_columns;
+            std::vector<py::dict> dict_docs;
+
+            for (const auto& doc : docs) {
+                if (!py::isinstance<py::dict>(doc)) continue;
+                py::dict d = doc.cast<py::dict>();
+                dict_docs.push_back(d);
+                for (const auto& item : d) {
+                    all_columns.insert(py::str(item.first).cast<std::string>());
+                }
+            }
+
+            // Always include _id
+            all_columns.insert("_id");
+
+            std::stringstream sql;
+            sql << "INSERT INTO " << database << "." << collection << " (";
+
+            std::vector<std::string> columns(all_columns.begin(), all_columns.end());
+            for (size_t i = 0; i < columns.size(); ++i) {
+                if (i > 0) sql << ", ";
+                sql << columns[i];
+            }
+            sql << ") VALUES ";
+
+            bool first_doc = true;
+            for (const auto& d : dict_docs) {
+                if (!first_doc) sql << ", ";
+                sql << "(";
+
+                bool first_val = true;
+                for (const auto& col : columns) {
+                    if (!first_val) sql << ", ";
+                    if (col == "_id" && !d.contains(col.c_str())) {
+                        sql << "'" << generate_uuid() << "'";
+                    } else if (d.contains(col.c_str())) {
+                        sql << py_to_sql_literal(d[col.c_str()]);
+                    } else {
+                        sql << "NULL";
+                    }
+                    first_val = false;
+                }
+                sql << ")";
+                first_doc = false;
+            }
+            sql << ";";
+
+            return sql.str();
+        }
+    } // anonymous namespace
 
     wrapper_collection::wrapper_collection(const std::string& name,
                                            const std::string& database,
@@ -60,17 +280,27 @@ namespace otterbrix {
     std::string wrapper_collection::insert_one(const py::handle& document) {
         trace(log_, "wrapper_collection::insert_one");
         if (py::isinstance<py::dict>(document)) {
-            auto doc = to_document(document, ptr_->resource());
-            generate_document_id_if_not_exists(doc);
+            py::dict doc = document.cast<py::dict>();
+
+            // Generate _id if not present, and remember it to return
+            std::string id_value;
+            if (!doc.contains("_id")) {
+                id_value = generate_uuid();
+                doc["_id"] = py::str(id_value);
+            } else {
+                id_value = py::str(doc["_id"]).cast<std::string>();
+            }
+
+            auto sql = build_insert_sql(database_, name_, doc, false);
             auto session_tmp = otterbrix::session_id_t();
-            auto cur = ptr_->insert_one(session_tmp, database_, name_, doc);
-            debug(log_, "wrapper_collection::insert_one {} inserted", cur->size());
+            auto cur = ptr_->execute_sql(session_tmp, sql);
+
             if (cur->is_error()) {
                 debug(log_, "wrapper_collection::insert_one has result error while insert");
-                throw std::runtime_error("wrapper_collection::insert_one error_result");
+                throw std::runtime_error("wrapper_collection::insert_one error_result: " + cur->get_error().what);
             }
             debug(log_, "wrapper_collection::insert_one {} inserted", cur->size());
-            return cur->size() > 0 ? get_document_id(cur->get_document()).to_string() : std::string();
+            return cur->size() > 0 ? id_value : std::string();
         }
         throw std::runtime_error("wrapper_collection::insert_one");
         return std::string();
@@ -79,24 +309,37 @@ namespace otterbrix {
     pybind11::list wrapper_collection::insert_many(const py::handle& documents) {
         trace(log_, "wrapper_collection::insert_many");
         if (py::isinstance<py::list>(documents)) {
-            std::pmr::vector<components::document::document_ptr> docs;
-            for (const auto document : documents) {
-                auto doc = to_document(document, ptr_->resource());
-                generate_document_id_if_not_exists(doc);
-                docs.push_back(std::move(doc));
+            py::list doc_list = documents.cast<py::list>();
+            py::list ids;
+
+            // Generate _ids for documents that don't have one and collect them
+            for (size_t i = 0; i < py::len(doc_list); ++i) {
+                if (py::isinstance<py::dict>(doc_list[i])) {
+                    py::dict doc = doc_list[i].cast<py::dict>();
+                    if (!doc.contains("_id")) {
+                        std::string id_value = generate_uuid();
+                        doc["_id"] = py::str(id_value);
+                        ids.append(py::str(id_value));
+                    } else {
+                        ids.append(doc["_id"]);
+                    }
+                }
             }
+
+            auto sql = build_insert_many_sql(database_, name_, doc_list);
+            if (sql.empty()) {
+                return py::list();
+            }
+
             auto session_tmp = otterbrix::session_id_t();
-            auto cur = ptr_->insert_many(session_tmp, database_, name_, docs);
+            auto cur = ptr_->execute_sql(session_tmp, sql);
+
             if (cur->is_error()) {
                 debug(log_, "wrapper_collection::insert_many has result error while insert");
-                throw std::runtime_error("wrapper_collection::insert_many error_result");
+                throw std::runtime_error("wrapper_collection::insert_many error_result: " + cur->get_error().what);
             }
             debug(log_, "wrapper_collection::insert_many {} inserted", cur->size());
-            py::list list;
-            for (const auto& doc : cur->document_data()) {
-                list.append(get_document_id(doc).to_string());
-            }
-            return list;
+            return ids;
         }
         throw std::runtime_error("wrapper_collection::insert_many");
         return py::list();
@@ -108,37 +351,42 @@ namespace otterbrix {
             auto plan = components::logical_plan::make_node_aggregate(ptr_->resource(), {database_, name_});
             auto params = components::logical_plan::make_parameter_node(ptr_->resource());
             to_statement(ptr_->resource(), pack_to_match(cond), plan.get(), params.get());
-            auto update_doc = to_document(fields, ptr_->resource());
+
+            py::dict fields_dict = fields.cast<py::dict>();
             std::pmr::vector<components::expressions::update_expr_ptr> updates(ptr_->resource());
-            if (update_doc->is_exists("$set")) {
-                for (const auto& [key, value] : *update_doc->get_dict("$set")->json_trie()->as_object()) {
+
+            // Handle $set operator
+            if (fields_dict.contains("$set")) {
+                py::dict set_dict = fields_dict["$set"].cast<py::dict>();
+                for (const auto& item : set_dict) {
+                    std::string key_str = py::str(item.first).cast<std::string>();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_allocator(),
-                                                       key->get_mut()->get_string().take_value()}));
-                    auto id =
-                        params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
+                        components::expressions::key_t{ptr_->resource(), key_str}));
+                    auto id = params->add_parameter(to_value(item.second));
                     updates.back()->left() = new components::expressions::update_expr_get_const_value_t(id);
                 }
             }
-            if (update_doc->is_exists("$inc")) {
-                for (const auto& [key, value] : *update_doc->get_dict("$inc")->json_trie()->as_object()) {
-                    auto key_str = key->get_mut()->get_string().take_value();
+
+            // Handle $inc operator
+            if (fields_dict.contains("$inc")) {
+                py::dict inc_dict = fields_dict["$inc"].cast<py::dict>();
+                for (const auto& item : inc_dict) {
+                    std::string key_str = py::str(item.first).cast<std::string>();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_allocator(),
-                                                       key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{ptr_->resource(), key_str}));
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
                     calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key->get_allocator(),
+                        components::expressions::key_t{ptr_->resource(),
                                                        key_str,
                                                        components::expressions::side_t::left});
-                    auto id =
-                        params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
+                    auto id = params->add_parameter(to_value(item.second));
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
                     updates.back()->left() = std::move(calculate_expr);
                 }
             }
+
             auto session_tmp = otterbrix::session_id_t();
             auto cur = ptr_->update_one(
                 session_tmp,
@@ -150,10 +398,7 @@ namespace otterbrix {
                 debug(log_, "wrapper_collection::update_one has result error while update");
                 throw std::runtime_error("wrapper_collection::update_one error_result");
             }
-            debug(log_,
-                  "wrapper_collection::update_one {} modified, upsert id {}",
-                  cur->size(),
-                  cur->size() == 0 ? "none" : get_document_id(cur->get_document()).to_string());
+            debug(log_, "wrapper_collection::update_one {} modified", cur->size());
             return wrapper_cursor_ptr{new wrapper_cursor{cur, ptr_}};
         }
         return wrapper_cursor_ptr{new wrapper_cursor{new components::cursor::cursor_t(ptr_->resource()), ptr_}};
@@ -165,37 +410,42 @@ namespace otterbrix {
             auto plan = components::logical_plan::make_node_aggregate(ptr_->resource(), {database_, name_});
             auto params = components::logical_plan::make_parameter_node(ptr_->resource());
             to_statement(ptr_->resource(), pack_to_match(cond), plan.get(), params.get());
-            auto update_doc = to_document(fields, ptr_->resource());
+
+            py::dict fields_dict = fields.cast<py::dict>();
             std::pmr::vector<components::expressions::update_expr_ptr> updates(ptr_->resource());
-            if (update_doc->is_exists("$set")) {
-                for (const auto& [key, value] : *update_doc->get_dict("$set")->json_trie()->as_object()) {
+
+            // Handle $set operator
+            if (fields_dict.contains("$set")) {
+                py::dict set_dict = fields_dict["$set"].cast<py::dict>();
+                for (const auto& item : set_dict) {
+                    std::string key_str = py::str(item.first).cast<std::string>();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_allocator(),
-                                                       key->get_mut()->get_string().take_value()}));
-                    auto id =
-                        params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
+                        components::expressions::key_t{ptr_->resource(), key_str}));
+                    auto id = params->add_parameter(to_value(item.second));
                     updates.back()->left() = new components::expressions::update_expr_get_const_value_t(id);
                 }
             }
-            if (update_doc->is_exists("$inc")) {
-                for (const auto& [key, value] : *update_doc->get_dict("$inc")->json_trie()->as_object()) {
-                    auto key_str = key->get_mut()->get_string().take_value();
+
+            // Handle $inc operator
+            if (fields_dict.contains("$inc")) {
+                py::dict inc_dict = fields_dict["$inc"].cast<py::dict>();
+                for (const auto& item : inc_dict) {
+                    std::string key_str = py::str(item.first).cast<std::string>();
                     updates.emplace_back(new components::expressions::update_expr_set_t(
-                        components::expressions::key_t{key->get_allocator(),
-                                                       key->get_mut()->get_string().take_value()}));
+                        components::expressions::key_t{ptr_->resource(), key_str}));
                     components::expressions::update_expr_ptr calculate_expr =
                         new components::expressions::update_expr_calculate_t(
                             components::expressions::update_expr_type::add);
                     calculate_expr->left() = new components::expressions::update_expr_get_value_t(
-                        components::expressions::key_t{key->get_allocator(),
+                        components::expressions::key_t{ptr_->resource(),
                                                        key_str,
                                                        components::expressions::side_t::left});
-                    auto id =
-                        params->add_parameter(components::document::value_t(*value->get_mut()).as_logical_value());
+                    auto id = params->add_parameter(to_value(item.second));
                     calculate_expr->right() = new components::expressions::update_expr_get_const_value_t(id);
                     updates.back()->left() = std::move(calculate_expr);
                 }
             }
+
             auto session_tmp = otterbrix::session_id_t();
             auto cur = ptr_->update_many(
                 session_tmp,
@@ -207,10 +457,7 @@ namespace otterbrix {
                 debug(log_, "wrapper_collection::update_many has result error while update");
                 throw std::runtime_error("wrapper_collection::update_many error_result");
             }
-            debug(log_,
-                  "wrapper_collection::update_one {} modified, upsert id {}",
-                  cur->size(),
-                  cur->size() == 0 ? "none" : get_document_id(cur->get_document()).to_string());
+            debug(log_, "wrapper_collection::update_many {} modified", cur->size());
             return wrapper_cursor_ptr{new wrapper_cursor{cur, ptr_}};
         }
         return wrapper_cursor_ptr{new wrapper_cursor{new components::cursor::cursor_t(ptr_->resource()), ptr_}};
@@ -241,7 +488,7 @@ namespace otterbrix {
             auto cur = ptr_->find_one(session_tmp, plan, params);
             debug(log_, "wrapper_collection::find_one {}", cur->size() > 0);
             if (cur->size() > 0) {
-                return from_document(cur->next_document()).cast<py::dict>();
+                return row_to_dict(cur->chunk_data(), 0);
             }
             return py::dict();
         }

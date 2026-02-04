@@ -1,7 +1,6 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <components/document/document.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
@@ -12,12 +11,10 @@
 
 namespace services::loader {
 
-    using components::document::document_ptr;
-
-    // Map: collection_full_name -> vector of documents
+    // Map: collection_full_name -> placeholder (documents removed, data_chunk persistence TBD)
     using document_map_t = std::pmr::unordered_map<
         collection_full_name_t,
-        std::pmr::vector<document_ptr>,
+        std::pmr::vector<int>,  // placeholder - will be replaced with columnar data
         collection_name_hash>;
 
     // Map: collection_full_name -> optional columnar schema
@@ -30,7 +27,7 @@ namespace services::loader {
     // Loaded state from disk - contains all data needed to initialize memory storage
     struct loaded_state_t {
         std::pmr::set<database_name_t> databases;
-        document_map_t documents;
+        document_map_t documents;  // placeholder - will hold columnar data in future
         schema_map_t schemas;  // optional columnar schemas (currently unused)
         std::pmr::vector<components::logical_plan::node_create_index_ptr> index_definitions;
         std::vector<wal::record_t> wal_records;  // WAL records to replay

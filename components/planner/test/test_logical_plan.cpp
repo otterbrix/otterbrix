@@ -166,35 +166,24 @@ TEST_CASE("components::planner::aggregate") {
 TEST_CASE("components::planner::insert") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
-        std::pmr::vector<components::document::document_ptr> documents = {};
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(documents));
+        auto plan = make_node_insert(&resource, {database_name, collection_name});
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
         REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 0}})_");
     }
     {
-        std::pmr::vector<components::document::document_ptr> documents = {gen_doc(1, &resource)};
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(documents));
+        auto chunk = gen_data_chunk(1, &resource);
+        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
         REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 1}})_");
     }
     {
-        std::pmr::vector<components::document::document_ptr> documents = {gen_doc(1, &resource),
-                                                                          gen_doc(2, &resource),
-                                                                          gen_doc(3, &resource),
-                                                                          gen_doc(4, &resource),
-                                                                          gen_doc(5, &resource)};
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(documents));
+        auto chunk = gen_data_chunk(5, &resource);
+        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
         REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 5}})_");
-    }
-    {
-        auto plan = make_node_insert(&resource, {database_name, collection_name}, {gen_doc(1, &resource)});
-        components::planner::planner_t planner;
-        auto node = planner.create_plan(&resource, plan);
-        REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 1}})_");
     }
 }
 

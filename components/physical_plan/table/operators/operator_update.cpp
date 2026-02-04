@@ -36,7 +36,7 @@ namespace components::table::operators {
                     for (const auto& expr : updates_) {
                         expr->execute(chunk_left, chunk_right, 0, 0, &pipeline_context->parameters);
                     }
-                    modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+                    modified_ = base::operators::make_operator_write_data(context_->resource());
                     table::table_append_state state(context_->resource());
                     context_->table_storage().table().initialize_append(state);
                     for (size_t id = 0; id < output_->data_chunk().size(); id++) {
@@ -46,8 +46,8 @@ namespace components::table::operators {
                     context_->table_storage().table().append(output_->data_chunk(), state);
                 }
             } else {
-                modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
-                no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+                modified_ = base::operators::make_operator_write_data(context_->resource());
+                no_modified_ = base::operators::make_operator_write_data(context_->resource());
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types_left);
                 auto state = context_->table_storage().table().initialize_update({});
                 auto& out_chunk = output_->data_chunk();
@@ -102,8 +102,8 @@ namespace components::table::operators {
                 }
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types);
                 auto& out_chunk = output_->data_chunk();
-                modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
-                no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
+                modified_ = base::operators::make_operator_write_data(context_->resource());
+                no_modified_ = base::operators::make_operator_write_data(context_->resource());
                 auto state = context_->table_storage().table().initialize_update({});
                 auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
                                                                            comp_expr_,

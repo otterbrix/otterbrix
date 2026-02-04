@@ -39,12 +39,11 @@ void init_collection(const collection_name_t& collection_name) {
     auto* dispatcher = test_spaces<on_wal, on_disk>::get().dispatcher();
     auto session = otterbrix::session_id_t();
     dispatcher->create_database(session, database_name);
-    dispatcher->create_collection(session, database_name, collection_name);
-    std::pmr::vector<document_ptr> docs(dispatcher->resource());
-    for (int i = 1; i <= size_collection; ++i) {
-        docs.push_back(gen_doc(i, dispatcher->resource()));
-    }
-    dispatcher->insert_many(session, database_name, collection_name, docs);
+    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    dispatcher->create_collection(session, database_name, collection_name, types);
+    auto chunk = gen_data_chunk(size_collection, dispatcher->resource());
+    auto ins = make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+    dispatcher->execute_plan(session, ins);
 }
 
 template<bool on_wal, bool on_disk>

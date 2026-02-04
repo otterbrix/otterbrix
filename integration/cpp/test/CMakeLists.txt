@@ -7,7 +7,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection.cpp
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
-        test_save_load.cpp
         test_index.cpp
         test_disk_index.cpp
         test_join.cpp
@@ -26,7 +25,6 @@ target_link_libraries(
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk

@@ -10,40 +10,6 @@ set(${PROJECT_NAME}_SOURCES
         base/operators/operator_add_index.cpp
         base/operators/operator_drop_index.cpp
 
-        collection/operators/aggregate/operator_aggregate.cpp
-        collection/operators/aggregate/operator_count.cpp
-        collection/operators/aggregate/operator_min.cpp
-        collection/operators/aggregate/operator_max.cpp
-        collection/operators/aggregate/operator_sum.cpp
-        collection/operators/aggregate/operator_avg.cpp
-
-        collection/operators/get/operator_get.cpp
-        collection/operators/get/simple_value.cpp
-
-        collection/operators/merge/operator_merge.cpp
-        collection/operators/merge/operator_and.cpp
-        collection/operators/merge/operator_or.cpp
-        collection/operators/merge/operator_not.cpp
-
-        collection/operators/predicates/predicate.cpp
-        collection/operators/predicates/simple_predicate.cpp
-
-        collection/operators/scan/full_scan.cpp
-        collection/operators/scan/index_scan.cpp
-        collection/operators/scan/primary_key_scan.cpp
-        collection/operators/scan/transfer_scan.cpp
-
-        collection/operators/sort/sort.cpp
-
-        collection/operators/aggregation.cpp
-        collection/operators/operator_insert.cpp
-        collection/operators/operator_delete.cpp
-        collection/operators/operator_update.cpp
-        collection/operators/operator_match.cpp
-        collection/operators/operator_group.cpp
-        collection/operators/operator_sort.cpp
-        collection/operators/operator_join.cpp
-
         table/operators/aggregate/aggregate_helpers.cpp
         table/operators/aggregate/operator_aggregate.cpp
         table/operators/aggregate/operator_count.cpp
@@ -95,7 +61,6 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
-        otterbrix::document
         otterbrix::types
         otterbrix::vector
         otterbrix::cursor

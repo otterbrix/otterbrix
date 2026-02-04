@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/document/document.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_data.hpp>

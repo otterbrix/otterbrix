@@ -11,7 +11,6 @@
 #include "forward.hpp"
 #include "index.hpp"
 #include <components/context/context.hpp>
-#include <core/btree/btree.hpp>
 #include <core/pmr.hpp>
 
 namespace components::vector {
@@ -36,8 +35,6 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_document(const document_ptr& document, pipeline::context_t* pipeline_context);
-        void delete_document(const document_ptr& document, pipeline::context_t* pipeline_context);
         void insert_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
         void delete_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
 
@@ -83,19 +80,10 @@ namespace components::index {
 
     void drop_index(const index_engine_ptr& ptr, index_t::pointer index);
 
-    void insert(const index_engine_ptr& ptr, id_index id, std::pmr::vector<document_ptr>& docs);
-    void insert(const index_engine_ptr& ptr,
-                id_index id,
-                core::pmr::btree::btree_t<document::document_id_t, document_ptr>& docs);
-    void insert_one(const index_engine_ptr& ptr, id_index id, document_ptr docs);
     void find(const index_engine_ptr& index, id_index id, result_set_t*);
     void find(const index_engine_ptr& index, query_t query, result_set_t*);
 
     void set_disk_agent(const index_engine_ptr& ptr, id_index id,
                         actor_zeta::address_t agent, actor_zeta::address_t manager);
-    void sync_index_from_disk(const index_engine_ptr& ptr,
-                              const actor_zeta::address_t& index_address,
-                              const std::pmr::vector<document::document_id_t>& ids,
-                              const core::pmr::btree::btree_t<document::document_id_t, document_ptr>& storage);
 
 } // namespace components::index

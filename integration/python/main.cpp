@@ -4,8 +4,6 @@
 #include "sql/wrapper_collection.hpp"
 #include "sql/wrapper_cursor.hpp"
 #include "sql/wrapper_database.hpp"
-#include "sql/wrapper_document.hpp"
-#include "sql/wrapper_document_id.hpp"
 
 #include <boost/uuid/uuid.hpp>            // uuid class
 #include <boost/uuid/uuid_generators.hpp> // generators
@@ -74,21 +72,6 @@ PYBIND11_MODULE(otterbrix, m) {
         .def("create_index", &wrapper_collection::create_index, py::arg("keys"), py::arg("type"))
         ///.def("aggregate", &wrapper_collection::aggregate, py::arg("pipeline") = py::sequence())
         ;
-
-    py::class_<wrapper_document_id, boost::intrusive_ptr<wrapper_document_id>>(m, "ObjectId")
-        .def(py::init([]() { return wrapper_document_id(); }))
-        .def(py::init([](const py::str& s) { return wrapper_document_id(s); }))
-        .def(py::init([](const py::int_& time) { return wrapper_document_id(time); }))
-        .def("__repr__", &wrapper_document_id::to_string)
-        .def("getTimestamp", &wrapper_document_id::get_timestamp)
-        .def("toString", &wrapper_document_id::to_string)
-        .def("valueOf", &wrapper_document_id::value_of)
-        .def_property_readonly("str", &wrapper_document_id::to_string);
-
-    py::class_<wrapper_document, boost::intrusive_ptr<wrapper_document>>(m, "Document")
-        .def("__repr__", &wrapper_document::print)
-        .def("__getitem__", &wrapper_document::get)
-        .def("get", &wrapper_document::get);
 
     py::class_<wrapper_cursor, boost::intrusive_ptr<wrapper_cursor>>(m, "Cursor")
         .def("__repr__", &wrapper_cursor::print)

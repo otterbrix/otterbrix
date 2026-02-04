@@ -21,11 +21,11 @@ namespace services::collection::executor {
     };
 
     struct plan_t {
-        std::stack<components::collection::operators::operator_ptr> sub_plans;
+        std::stack<components::base::operators::operator_ptr> sub_plans;
         components::logical_plan::storage_parameters parameters;
         services::context_storage_t context_storage_;
 
-        explicit plan_t(std::stack<components::collection::operators::operator_ptr>&& sub_plans,
+        explicit plan_t(std::stack<components::base::operators::operator_ptr>&& sub_plans,
                         components::logical_plan::storage_parameters parameters,
                         services::context_storage_t&& context_storage);
     };
@@ -54,14 +54,9 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::catalog::used_format_t data_format);
 
-        unique_future<void> create_documents(session_id_t session,
-                                             context_collection_t* collection,
-                                             std::pmr::vector<document_ptr> documents);
-
         // dispatch_traits must be defined AFTER all method declarations
         using dispatch_traits = actor_zeta::dispatch_traits<
-            &executor_t::execute_plan,
-            &executor_t::create_documents
+            &executor_t::execute_plan
         >;
 
         auto make_type() const noexcept -> const char*;
@@ -69,7 +64,7 @@ namespace services::collection::executor {
 
     private:
         void traverse_plan_(const components::session::session_id_t& session,
-                            components::collection::operators::operator_ptr&& plan,
+                            components::base::operators::operator_ptr&& plan,
                             components::logical_plan::storage_parameters&& parameters,
                             services::context_storage_t&& context_storage);
 
@@ -78,19 +73,19 @@ namespace services::collection::executor {
         unique_future<components::cursor::cursor_t_ptr> aggregate_document_impl_(
             const components::session::session_id_t& session,
             context_collection_t* context_,
-            components::collection::operators::operator_ptr plan);
+            components::base::operators::operator_ptr plan);
         unique_future<components::cursor::cursor_t_ptr> update_document_impl_(
             const components::session::session_id_t& session,
             context_collection_t* context_,
-            components::collection::operators::operator_ptr plan);
+            components::base::operators::operator_ptr plan);
         unique_future<components::cursor::cursor_t_ptr> insert_document_impl_(
             const components::session::session_id_t& session,
             context_collection_t* context_,
-            components::collection::operators::operator_ptr plan);
+            components::base::operators::operator_ptr plan);
         unique_future<components::cursor::cursor_t_ptr> delete_document_impl_(
             const components::session::session_id_t& session,
             context_collection_t* context_,
-            components::collection::operators::operator_ptr plan);
+            components::base::operators::operator_ptr plan);
 
     private:
         // Address of parent actor (manager_dispatcher_t) - used for pipeline context

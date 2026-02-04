@@ -10,7 +10,6 @@
 #include <string>
 #include <thread>
 
-#include <components/document/document.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
@@ -27,15 +26,6 @@ using namespace components::expressions;
 
 constexpr auto database_name = "test_database";
 constexpr auto collection_name = "test_collection";
-
-void test_insert_one_doc(wal_replicate_t* wal, std::pmr::memory_resource* resource) {
-    for (int num = 1; num <= 5; ++num) {
-        auto document = gen_doc(num, resource);
-        auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(document)});
-        auto session = components::session::session_id_t();
-        wal->insert_one(session, data);
-    }
-}
 
 void test_insert_one_row(wal_replicate_t* wal, std::pmr::memory_resource* resource) {
     for (int num = 0; num < 5; ++num) {
@@ -81,222 +71,109 @@ test_wal create_test_wal(const std::filesystem::path& path, std::pmr::memory_res
 
 TEST_CASE("services::wal::insert_one_test") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_one_doc", &resource);
-        test_insert_one_doc(test_wal.wal.get(), &resource);
+    auto test_wal = create_test_wal("/tmp/wal/insert_one_row", &resource);
+    test_insert_one_row(test_wal.wal.get(), &resource);
 
-        std::size_t read_index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            wal_entry_t entry;
+    std::size_t read_index = 0;
+    for (int num = 1; num <= 5; ++num) {
+        wal_entry_t entry;
 
-            entry.size_ = test_wal.wal->test_read_size(read_index);
+        entry.size_ = test_wal.wal->test_read_size(read_index);
 
-            auto start = read_index + sizeof(size_tt);
-            auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-            auto output = test_wal.wal->test_read(start, finish);
+        auto start = read_index + sizeof(size_tt);
+        auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
+        auto output = test_wal.wal->test_read(start, finish);
 
-            auto crc32_index = entry.size_;
-            crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
+        auto crc32_index = entry.size_;
+        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
 
-            unpack(output, entry);
-            entry.crc32_ = read_crc32(output, entry.size_);
-            test_wal.scheduler->run();
-            REQUIRE(entry.crc32_ == crc32);
-            REQUIRE(entry.entry_->database_name() == database_name);
-            REQUIRE(entry.entry_->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_documents());
-            auto doc = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().front();
-            REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
-            REQUIRE(doc->get_long("/count") == num);
-            REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
+        unpack(output, entry);
+        entry.crc32_ = read_crc32(output, entry.size_);
+        test_wal.scheduler->run();
+        REQUIRE(entry.crc32_ == crc32);
+        REQUIRE(entry.entry_->database_name() == database_name);
+        REQUIRE(entry.entry_->collection_name() == collection_name);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
+        const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
+        REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
+        REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
+        REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
 
-            read_index = finish;
-        }
-    }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_one_row", &resource);
-        test_insert_one_row(test_wal.wal.get(), &resource);
-
-        std::size_t read_index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            wal_entry_t entry;
-
-            entry.size_ = test_wal.wal->test_read_size(read_index);
-
-            auto start = read_index + sizeof(size_tt);
-            auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-            auto output = test_wal.wal->test_read(start, finish);
-
-            auto crc32_index = entry.size_;
-            crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-            unpack(output, entry);
-            entry.crc32_ = read_crc32(output, entry.size_);
-            test_wal.scheduler->run();
-            REQUIRE(entry.crc32_ == crc32);
-            REQUIRE(entry.entry_->database_name() == database_name);
-            REQUIRE(entry.entry_->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
-            const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
-            REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-            REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
-            REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
-
-            read_index = finish;
-        }
+        read_index = finish;
     }
 }
 
 TEST_CASE("services::wal::insert_many_empty_test") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_many_docs_empty", &resource);
+    auto test_wal = create_test_wal("/tmp/wal/insert_many_rows_empty", &resource);
 
-        std::pmr::vector<components::document::document_ptr> documents(&resource);
-        auto data = components::logical_plan::make_node_insert(&resource,
-                                                               {database_name, collection_name},
-                                                               std::move(documents));
+    auto chunk = gen_data_chunk(0, &resource);
+    auto data =
+        components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
 
-        auto session = components::session::session_id_t();
-        test_wal.wal->insert_many(session, data);
+    auto session = components::session::session_id_t();
+    test_wal.wal->insert_many(session, data);
 
-        wal_entry_t entry;
+    wal_entry_t entry;
 
-        entry.size_ = test_wal.wal->test_read_size(0);
+    entry.size_ = test_wal.wal->test_read_size(0);
 
-        auto start = sizeof(size_tt);
-        auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-        auto output = test_wal.wal->test_read(start, finish);
+    auto start = sizeof(size_tt);
+    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
+    auto output = test_wal.wal->test_read(start, finish);
 
-        auto crc32_index = entry.size_;
-        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
+    auto crc32_index = entry.size_;
+    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
 
-        unpack(output, entry);
-        entry.crc32_ = read_crc32(output, entry.size_);
-        test_wal.scheduler->run();
-        REQUIRE(entry.crc32_ == crc32);
-    }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_many_rows_empty", &resource);
-
-        auto chunk = gen_data_chunk(0, &resource);
-        auto data =
-            components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
-
-        auto session = components::session::session_id_t();
-        test_wal.wal->insert_many(session, data);
-
-        wal_entry_t entry;
-
-        entry.size_ = test_wal.wal->test_read_size(0);
-
-        auto start = sizeof(size_tt);
-        auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-        auto output = test_wal.wal->test_read(start, finish);
-
-        auto crc32_index = entry.size_;
-        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-        unpack(output, entry);
-        entry.crc32_ = read_crc32(output, entry.size_);
-        test_wal.scheduler->run();
-        REQUIRE(entry.crc32_ == crc32);
-    }
+    unpack(output, entry);
+    entry.crc32_ = read_crc32(output, entry.size_);
+    test_wal.scheduler->run();
+    REQUIRE(entry.crc32_ == crc32);
 }
 
 TEST_CASE("services::wal::insert_many_test") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_many_docs", &resource);
+    auto test_wal = create_test_wal("/tmp/wal/insert_many_rows", &resource);
 
-        for (int i = 0; i <= 3; ++i) {
-            std::pmr::vector<components::document::document_ptr> documents(&resource);
-            for (int num = 1; num <= 5; ++num) {
-                documents.push_back(gen_doc(num, &resource));
-            }
-            auto data = components::logical_plan::make_node_insert(&resource,
-                                                                   {database_name, collection_name},
-                                                                   std::move(documents));
-            auto session = components::session::session_id_t();
-            test_wal.wal->insert_many(session, data);
-        }
-
-        std::size_t read_index = 0;
-        for (int i = 0; i <= 3; ++i) {
-            wal_entry_t entry;
-
-            entry.size_ = test_wal.wal->test_read_size(read_index);
-
-            auto start = read_index + sizeof(size_tt);
-            auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-            auto output = test_wal.wal->test_read(start, finish);
-
-            auto crc32_index = entry.size_;
-            crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-            unpack(output, entry);
-            entry.crc32_ = read_crc32(output, entry.size_);
-            test_wal.scheduler->run();
-            REQUIRE(entry.crc32_ == crc32);
-            REQUIRE(entry.entry_->database_name() == database_name);
-            REQUIRE(entry.entry_->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_documents());
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().size() == 5);
-            int num = 0;
-            for (const auto& doc :
-                 reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents()) {
-                ++num;
-                REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
-                REQUIRE(doc->get_long("/count") == num);
-                REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
-            }
-
-            read_index = finish;
-        }
+    for (int i = 0; i <= 3; ++i) {
+        auto chunk = gen_data_chunk(5, 0, &resource);
+        auto data = components::logical_plan::make_node_insert(&resource,
+                                                               {database_name, collection_name},
+                                                               std::move(chunk));
+        auto session = components::session::session_id_t();
+        test_wal.wal->insert_many(session, data);
     }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/insert_many_rows", &resource);
 
-        for (int i = 0; i <= 3; ++i) {
-            auto chunk = gen_data_chunk(5, 0, &resource);
-            auto data = components::logical_plan::make_node_insert(&resource,
-                                                                   {database_name, collection_name},
-                                                                   std::move(chunk));
-            auto session = components::session::session_id_t();
-            test_wal.wal->insert_many(session, data);
+    std::size_t read_index = 0;
+    for (int i = 0; i <= 3; ++i) {
+        wal_entry_t entry;
+
+        entry.size_ = test_wal.wal->test_read_size(read_index);
+
+        auto start = read_index + sizeof(size_tt);
+        auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
+        auto output = test_wal.wal->test_read(start, finish);
+
+        auto crc32_index = entry.size_;
+        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
+
+        unpack(output, entry);
+        entry.crc32_ = read_crc32(output, entry.size_);
+        test_wal.scheduler->run();
+        REQUIRE(entry.crc32_ == crc32);
+        REQUIRE(entry.entry_->database_name() == database_name);
+        REQUIRE(entry.entry_->collection_name() == collection_name);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
+        const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
+        int num = 0;
+        for (size_t j = 0; j < chunk.size(); j++) {
+            ++num;
+            REQUIRE(chunk.value(0, j).value<int64_t>() == num);
+            REQUIRE(chunk.value(1, j).value<std::string_view>() == gen_id(num, &resource));
+            REQUIRE(chunk.value(2, j).value<std::string_view>() == std::to_string(num));
         }
 
-        std::size_t read_index = 0;
-        for (int i = 0; i <= 3; ++i) {
-            wal_entry_t entry;
-
-            entry.size_ = test_wal.wal->test_read_size(read_index);
-
-            auto start = read_index + sizeof(size_tt);
-            auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-            auto output = test_wal.wal->test_read(start, finish);
-
-            auto crc32_index = entry.size_;
-            crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-            unpack(output, entry);
-            entry.crc32_ = read_crc32(output, entry.size_);
-            test_wal.scheduler->run();
-            REQUIRE(entry.crc32_ == crc32);
-            REQUIRE(entry.entry_->database_name() == database_name);
-            REQUIRE(entry.entry_->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
-            const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
-            int num = 0;
-            for (size_t j = 0; j < chunk.size(); j++) {
-                ++num;
-                REQUIRE(chunk.value(0, j).value<int64_t>() == num);
-                REQUIRE(chunk.value(1, j).value<std::string_view>() == gen_id(num, &resource));
-                REQUIRE(chunk.value(2, j).value<std::string_view>() == std::to_string(num));
-            }
-
-            read_index = finish;
-        }
+        read_index = finish;
     }
 }
 
@@ -480,149 +357,54 @@ TEST_CASE("services::wal::update_many_test") {
 
 TEST_CASE("services::wal::find_start_record") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/find_start_record_docs", &resource);
-        test_insert_one_doc(test_wal.wal.get(), &resource);
+    auto test_wal = create_test_wal("/tmp/wal/find_start_record_rows", &resource);
+    test_insert_one_row(test_wal.wal.get(), &resource);
 
-        std::size_t start_index;
-        REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(1), start_index));
-        REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(5), start_index));
-        REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(6), start_index));
-        REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(0), start_index));
-    }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/find_start_record_rows", &resource);
-        test_insert_one_row(test_wal.wal.get(), &resource);
-
-        std::size_t start_index;
-        REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(1), start_index));
-        REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(5), start_index));
-        REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(6), start_index));
-        REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(0), start_index));
-    }
+    std::size_t start_index;
+    REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(1), start_index));
+    REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(5), start_index));
+    REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(6), start_index));
+    REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(0), start_index));
 }
 
 TEST_CASE("services::wal::read_id") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/read_id_docs", &resource);
-        test_insert_one_doc(test_wal.wal.get(), &resource);
+    auto test_wal = create_test_wal("/tmp/wal/read_id_rows", &resource);
+    test_insert_one_row(test_wal.wal.get(), &resource);
 
-        std::size_t index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(num));
-            index = test_wal.wal->test_next_record(index);
-        }
-        REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(0));
+    std::size_t index = 0;
+    for (int num = 1; num <= 5; ++num) {
+        REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(num));
+        index = test_wal.wal->test_next_record(index);
     }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/read_id_rows", &resource);
-        test_insert_one_row(test_wal.wal.get(), &resource);
-
-        std::size_t index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(num));
-            index = test_wal.wal->test_next_record(index);
-        }
-        REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(0));
-    }
+    REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(0));
 }
 
 TEST_CASE("services::wal::read_record") {
     auto resource = std::pmr::synchronized_pool_resource();
-    SECTION("documents") {
-        auto test_wal = create_test_wal("/tmp/wal/read_record_docs", &resource);
-        test_insert_one_doc(test_wal.wal.get(), &resource);
+    auto test_wal = create_test_wal("/tmp/wal/read_record_rows", &resource);
+    test_insert_one_row(test_wal.wal.get(), &resource);
 
-        std::size_t index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            auto record = test_wal.wal->test_read_record(index);
-            REQUIRE(record.data->type() == node_type::insert_t);
-            REQUIRE(record.data->database_name() == database_name);
-            REQUIRE(record.data->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->uses_documents());
-            auto doc = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->documents().front();
-            REQUIRE(doc->get_string("/_id") == gen_id(num, &resource));
-            REQUIRE(doc->get_long("/count") == num);
-            REQUIRE(doc->get_string("/count_str") == std::pmr::string(std::to_string(num), &resource));
-            index = test_wal.wal->test_next_record(index);
-        }
-        REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
+    std::size_t index = 0;
+    for (int num = 1; num <= 5; ++num) {
+        auto record = test_wal.wal->test_read_record(index);
+        REQUIRE(record.data->type() == node_type::insert_t);
+        REQUIRE(record.data->database_name() == database_name);
+        REQUIRE(record.data->collection_name() == collection_name);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->size() >= 0);
+        const auto& chunk = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->data_chunk();
+        REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
+        REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
+        REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
+        index = test_wal.wal->test_next_record(index);
     }
-    SECTION("rows") {
-        auto test_wal = create_test_wal("/tmp/wal/read_record_rows", &resource);
-        test_insert_one_row(test_wal.wal.get(), &resource);
-
-        std::size_t index = 0;
-        for (int num = 1; num <= 5; ++num) {
-            auto record = test_wal.wal->test_read_record(index);
-            REQUIRE(record.data->type() == node_type::insert_t);
-            REQUIRE(record.data->database_name() == database_name);
-            REQUIRE(record.data->collection_name() == collection_name);
-            REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->uses_data_chunk());
-            const auto& chunk = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->data_chunk();
-            REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-            REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
-            REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
-            index = test_wal.wal->test_next_record(index);
-        }
-        REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
-    }
+    REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }
 
 // ============================================================================
 // Tests for large WAL records (> 65KB)
 // These tests verify the fix for size_tt overflow (uint16_t -> uint32_t)
 // ============================================================================
-
-TEST_CASE("services::wal::large_insert_many_documents") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/large_insert_many_docs", &resource);
-
-    // Create 500 documents - serialized size should be ~200KB (well over 65KB limit)
-    constexpr int kDocuments = 500;
-    std::pmr::vector<components::document::document_ptr> documents(&resource);
-    for (int num = 1; num <= kDocuments; ++num) {
-        documents.push_back(gen_doc(num, &resource));
-    }
-    auto data = components::logical_plan::make_node_insert(&resource,
-                                                           {database_name, collection_name},
-                                                           std::move(documents));
-    auto session = components::session::session_id_t();
-    test_wal.wal->insert_many(session, data);
-
-    // Verify the record can be read back correctly
-    wal_entry_t entry;
-    entry.size_ = test_wal.wal->test_read_size(0);
-
-    // Size must be > 65535 (old uint16_t limit)
-    INFO("WAL record size: " << entry.size_ << " bytes");
-    REQUIRE(entry.size_ > 65535);
-
-    auto start = sizeof(size_tt);
-    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-    auto output = test_wal.wal->test_read(start, finish);
-
-    auto crc32_index = entry.size_;
-    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-    unpack(output, entry);
-    entry.crc32_ = read_crc32(output, entry.size_);
-    test_wal.scheduler->run();
-
-    REQUIRE(entry.crc32_ == crc32);
-    REQUIRE(entry.entry_->database_name() == database_name);
-    REQUIRE(entry.entry_->collection_name() == collection_name);
-    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_documents());
-    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().size() == kDocuments);
-
-    // Verify first and last documents
-    auto& docs = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents();
-    REQUIRE(docs.front()->get_string("/_id") == gen_id(1, &resource));
-    REQUIRE(docs.front()->get_long("/count") == 1);
-    REQUIRE(docs.back()->get_string("/_id") == gen_id(kDocuments, &resource));
-    REQUIRE(docs.back()->get_long("/count") == kDocuments);
-}
 
 TEST_CASE("services::wal::large_insert_many_rows") {
     auto resource = std::pmr::synchronized_pool_resource();
@@ -659,7 +441,7 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     REQUIRE(entry.crc32_ == crc32);
     REQUIRE(entry.entry_->database_name() == database_name);
     REQUIRE(entry.entry_->collection_name() == collection_name);
-    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
+    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
 
     const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
     REQUIRE(read_chunk.size() == kRows);
@@ -669,46 +451,4 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     REQUIRE(read_chunk.value(1, 0).value<std::string_view>() == gen_id(1, &resource));
     REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);
     REQUIRE(read_chunk.value(1, kRows - 1).value<std::string_view>() == gen_id(kRows, &resource));
-}
-
-TEST_CASE("services::wal::large_record_read_write_cycle") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/large_read_write_cycle", &resource);
-
-    // Write multiple large records
-    constexpr int kDocumentsPerBatch = 300;
-    constexpr int kBatches = 3;
-
-    for (int batch = 0; batch < kBatches; ++batch) {
-        std::pmr::vector<components::document::document_ptr> documents(&resource);
-        for (int num = 1; num <= kDocumentsPerBatch; ++num) {
-            documents.push_back(gen_doc(batch * kDocumentsPerBatch + num, &resource));
-        }
-        auto data = components::logical_plan::make_node_insert(&resource,
-                                                               {database_name, collection_name},
-                                                               std::move(documents));
-        auto session = components::session::session_id_t();
-        test_wal.wal->insert_many(session, data);
-    }
-
-    // Read all records back using test_read_record
-    std::size_t index = 0;
-    for (int batch = 0; batch < kBatches; ++batch) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.data != nullptr);
-        REQUIRE(record.data->type() == node_type::insert_t);
-        REQUIRE(record.size > 65535);  // Each batch should be > 65KB
-
-        auto& docs = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->documents();
-        REQUIRE(docs.size() == kDocumentsPerBatch);
-
-        // Verify first document in batch
-        int expected_first = batch * kDocumentsPerBatch + 1;
-        REQUIRE(docs.front()->get_long("/count") == expected_first);
-
-        index = test_wal.wal->test_next_record(index);
-    }
-
-    // No more records
-    REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }

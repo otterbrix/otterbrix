@@ -1,7 +1,5 @@
 #include "transformation.hpp"
 
-#include <value.hpp>
-
 namespace components::table::operators::impl {
 
     value_matrix_t transpose(std::pmr::memory_resource* resource, const vector::data_chunk_t& chunk) {

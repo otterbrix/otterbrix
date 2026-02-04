@@ -1,5 +1,7 @@
 #include "test_config.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_insert.hpp>
+#include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
 #include <thread>
@@ -28,19 +30,20 @@ static const collection_name_t collection_name = "testcollection";
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_collection(session, database_name, collection_name);                                    \
+            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
+            dispatcher->create_collection(session, database_name, collection_name, types);                             \
         }                                                                                                              \
     } while (false)
 
 #define FILL_COLLECTION(COUNT)                                                                                         \
     do {                                                                                                               \
-        std::pmr::vector<components::document::document_ptr> documents(dispatcher->resource());                        \
-        for (int num = 1; num <= COUNT; ++num) {                                                                       \
-            documents.push_back(gen_doc(num, dispatcher->resource()));                                                 \
-        }                                                                                                              \
+        auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
+        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),                                  \
+                                                              {database_name, collection_name},                        \
+                                                              std::move(chunk));                                       \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->insert_many(session, database_name, collection_name, documents);                               \
+            dispatcher->execute_plan(session, ins);                                                                    \
         }                                                                                                              \
     } while (false)
 
@@ -138,17 +141,19 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            auto types = gen_data_chunk(0, dispatcher->resource()).types();
+            dispatcher->create_collection(session, database_name, collection_name, types);
         }
 
         // Insert via SQL
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (_id, count, count_str, count_double, count_bool) VALUES ";
             for (int num = 1; num <= kDocuments; ++num) {
                 query << "('" << gen_id(num, dispatcher->resource()) << "', "
-                      << "'Name " << num << "', " << num << ")" << (num == kDocuments ? ";" : ", ");
+                      << num << ", '" << num << "', " << (num + 0.1) << ", " << ((num % 2 != 0) ? "true" : "false") << ")"
+                      << (num == kDocuments ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -264,8 +269,8 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
 
         INIT_COLLECTION();
         CREATE_INDEX("idx_count", "count");
-        CREATE_INDEX("idx_countStr", "countStr");
-        CREATE_INDEX("idx_countDouble", "countDouble");
+        CREATE_INDEX("idx_countStr", "count_str");
+        CREATE_INDEX("idx_countDouble", "count_double");
         FILL_COLLECTION(kDocuments);
 
         // Verify all indexes work
@@ -281,7 +286,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
         CHECK_FIND("count", compare_type::eq, logical_value_t(25), 1);
         CHECK_FIND("count", compare_type::gt, logical_value_t(95), 5);
 
-        // Query by countStr (string) - need string value
+        // Query by count_str (string) - need string value
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(
@@ -289,7 +294,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
                 compare_type::eq,
-                key{dispatcher->resource(), "countStr", side_t::left},
+                key{dispatcher->resource(), "count_str", side_t::left},
                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(
                 dispatcher->resource(),
@@ -301,7 +306,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             REQUIRE(c->size() == 1);
         }
 
-        // Query by countDouble (double) - note: gen_doc uses num + 0.1
+        // Query by count_double (double) - note: gen_data_chunk uses num + 0.1
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(
@@ -309,7 +314,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
                 compare_type::eq,
-                key{dispatcher->resource(), "countDouble", side_t::left},
+                key{dispatcher->resource(), "count_double", side_t::left},
                 id_par{1});
             plan->append_child(components::logical_plan::make_node_match(
                 dispatcher->resource(),

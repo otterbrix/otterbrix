@@ -86,10 +86,6 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        unique_future<void> write_documents(session_id_t session,
-                                            database_name_t database,
-                                            collection_name_t collection,
-                                            std::pmr::vector<document_ptr> documents);
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -110,24 +106,24 @@ namespace services::disk {
         unique_future<void> drop_index_agent_success(session_id_t session);
         unique_future<void> index_insert_many(session_id_t session,
                                               index_name_t index_name,
-                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+                                              std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         unique_future<void> index_insert(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
         unique_future<void> index_remove(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
 
         unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<void> index_remove_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
                                                                  actor_zeta::address_t agent_address,
                                                                  components::types::logical_value_t key,
@@ -143,7 +139,6 @@ namespace services::disk {
             &manager_disk_t::remove_database,
             &manager_disk_t::append_collection,
             &manager_disk_t::remove_collection,
-            &manager_disk_t::write_documents,
             &manager_disk_t::write_data_chunk,
             &manager_disk_t::remove_documents,
             &manager_disk_t::flush,
@@ -282,10 +277,6 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        unique_future<void> write_documents(session_id_t session,
-                                            database_name_t database,
-                                            collection_name_t collection,
-                                            std::pmr::vector<document_ptr> documents);
         unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -308,24 +299,24 @@ namespace services::disk {
         // Index methods - no-op implementations for empty disk
         unique_future<void> index_insert_many(session_id_t session,
                                               index_name_t index_name,
-                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+                                              std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         unique_future<void> index_insert(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
         unique_future<void> index_remove(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
 
         unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<void> index_remove_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
                                                                  actor_zeta::address_t agent_address,
                                                                  components::types::logical_value_t key,
@@ -341,7 +332,6 @@ namespace services::disk {
             &manager_disk_empty_t::remove_database,
             &manager_disk_empty_t::append_collection,
             &manager_disk_empty_t::remove_collection,
-            &manager_disk_empty_t::write_documents,
             &manager_disk_empty_t::write_data_chunk,
             &manager_disk_empty_t::remove_documents,
             &manager_disk_empty_t::flush,

@@ -1,5 +1,4 @@
 #include <catch2/catch.hpp>
-#include <components/document/document.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -11,7 +10,6 @@
 using namespace components;
 using namespace components::sql;
 using namespace components::sql::transform;
-using namespace components::document;
 using namespace components::expressions;
 
 using v = types::logical_value_t;

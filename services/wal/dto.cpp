@@ -55,6 +55,10 @@ namespace services::wal {
         return size_tmp;
     }
 
+    size_tt read_size_impl(buffer_t& input, size_tt index_start) {
+        return read_size_impl(input.data(), static_cast<int>(index_start));
+    }
+
     crc32_t pack(buffer_t& storage, char* input, size_t data_size) {
         auto last_crc32_ = absl::ComputeCrc32c({input, data_size});
         append_size(storage, size_tt(data_size));

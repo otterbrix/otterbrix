@@ -1,9 +1,10 @@
 #include "otterbrix.h"
 
 #include <integration/cpp/base_spaces.hpp>
+#include <components/types/logical_value.hpp>
 
-using document_ptr = components::document::document_ptr;
 using cursor_t = components::cursor::cursor_t;
+using logical_value_t = components::types::logical_value_t;
 
 namespace {
     struct spaces_t;
@@ -18,9 +19,9 @@ namespace {
         boost::intrusive_ptr<cursor_t> cursor;
     };
 
-    struct document_storage_t {
+    struct value_storage_t {
         state_t state;
-        document_ptr document;
+        logical_value_t value;
     };
 
     configuration::config create_config() { return configuration::config::default_config(); }
@@ -47,11 +48,11 @@ namespace {
         return storage;
     }
 
-    document_storage_t* convert_document(doc_ptr ptr) {
+    value_storage_t* convert_value(value_ptr ptr) {
         assert(ptr != nullptr);
-        auto doc_storage = reinterpret_cast<document_storage_t*>(ptr);
-        assert(doc_storage->state == state_t::created);
-        return doc_storage;
+        auto storage = reinterpret_cast<value_storage_t*>(ptr);
+        assert(storage->state == state_t::created);
+        return storage;
     }
 } // namespace
 
@@ -127,33 +128,14 @@ extern "C" int32_t cursor_size(cursor_ptr ptr) {
     return static_cast<int32_t>(storage->cursor->size());
 }
 
+extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
+    auto storage = convert_cursor(ptr);
+    return static_cast<int32_t>(storage->cursor->chunk_data().column_count());
+}
+
 extern "C" bool cursor_has_next(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     return storage->cursor->has_next();
-}
-
-extern "C" doc_ptr cursor_next(cursor_ptr ptr) {
-    auto storage = convert_cursor(ptr);
-    auto doc_storage = std::make_unique<document_storage_t>();
-    doc_storage->state = state_t::created;
-    doc_storage->document = storage->cursor->next_document();
-    return reinterpret_cast<void*>(doc_storage.release());
-}
-
-extern "C" doc_ptr cursor_get(cursor_ptr ptr) {
-    auto storage = convert_cursor(ptr);
-    auto doc_storage = std::make_unique<document_storage_t>();
-    doc_storage->state = state_t::created;
-    doc_storage->document = storage->cursor->get_document();
-    return reinterpret_cast<void*>(doc_storage.release());
-}
-
-extern "C" doc_ptr cursor_get_by_index(cursor_ptr ptr, int index) {
-    auto storage = convert_cursor(ptr);
-    auto doc_storage = std::make_unique<document_storage_t>();
-    doc_storage->state = state_t::created;
-    doc_storage->document = storage->cursor->get_document(static_cast<size_t>(index));
-    return reinterpret_cast<void*>(doc_storage.release());
 }
 
 extern "C" bool cursor_is_success(cursor_ptr ptr) {
@@ -172,235 +154,152 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
     error_message msg;
     msg.code = static_cast<int32_t>(error.type);
     std::string str = error.what;
-    msg.message = new char[sizeof(str)];
+    msg.message = new char[str.size() + 1];
     std::strcpy(msg.message, str.data());
     return msg;
 }
 
-extern "C" void release_document(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    doc_storage->state = state_t::destroyed;
-    delete doc_storage;
+extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
+    auto storage = convert_cursor(ptr);
+    const auto& chunk = storage->cursor->chunk_data();
+    auto types = chunk.types();
+    if (static_cast<size_t>(column_index) < types.size()) {
+        auto name = types[column_index].alias();
+        char* str_ptr = new char[name.size() + 1];
+        std::strcpy(str_ptr, std::string(name).data());
+        return str_ptr;
+    }
+    return nullptr;
 }
 
-extern "C" char* document_id(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    auto str = get_document_id(doc_storage->document).to_string();
-    char* str_ptr = new char[sizeof(str)];
-    std::strcpy(str_ptr, str.data());
+extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index) {
+    auto storage = convert_cursor(ptr);
+    const auto& chunk = storage->cursor->chunk_data();
+
+    if (static_cast<size_t>(row_index) >= chunk.size() ||
+        static_cast<size_t>(column_index) >= chunk.column_count()) {
+        return nullptr;
+    }
+
+    auto value_storage = std::make_unique<value_storage_t>();
+    value_storage->state = state_t::created;
+    value_storage->value = chunk.value(column_index, row_index);
+    return reinterpret_cast<void*>(value_storage.release());
+}
+
+extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name) {
+    auto storage = convert_cursor(ptr);
+    const auto& chunk = storage->cursor->chunk_data();
+    auto types = chunk.types();
+
+    std::string name(column_name.data, column_name.size);
+    for (size_t col = 0; col < types.size(); ++col) {
+        if (types[col].alias() == name) {
+            return cursor_get_value(ptr, row_index, static_cast<int32_t>(col));
+        }
+    }
+    return nullptr;
+}
+
+extern "C" void release_value(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    storage->state = state_t::destroyed;
+    delete storage;
+}
+
+extern "C" bool value_is_null(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    return storage->value.is_null();
+}
+
+extern "C" bool value_is_bool(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    return storage->value.type().to_physical_type() == components::types::physical_type::BOOL;
+}
+
+extern "C" bool value_is_int(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    return pt == components::types::physical_type::INT8 ||
+           pt == components::types::physical_type::INT16 ||
+           pt == components::types::physical_type::INT32 ||
+           pt == components::types::physical_type::INT64;
+}
+
+extern "C" bool value_is_uint(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    return pt == components::types::physical_type::UINT8 ||
+           pt == components::types::physical_type::UINT16 ||
+           pt == components::types::physical_type::UINT32 ||
+           pt == components::types::physical_type::UINT64;
+}
+
+extern "C" bool value_is_double(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    return pt == components::types::physical_type::FLOAT ||
+           pt == components::types::physical_type::DOUBLE;
+}
+
+extern "C" bool value_is_string(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    return storage->value.type().to_physical_type() == components::types::physical_type::STRING;
+}
+
+extern "C" bool value_get_bool(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    return storage->value.value<bool>();
+}
+
+extern "C" int64_t value_get_int(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    switch (pt) {
+        case components::types::physical_type::INT8:
+            return storage->value.value<int8_t>();
+        case components::types::physical_type::INT16:
+            return storage->value.value<int16_t>();
+        case components::types::physical_type::INT32:
+            return storage->value.value<int32_t>();
+        case components::types::physical_type::INT64:
+            return storage->value.value<int64_t>();
+        default:
+            return 0;
+    }
+}
+
+extern "C" uint64_t value_get_uint(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    switch (pt) {
+        case components::types::physical_type::UINT8:
+            return storage->value.value<uint8_t>();
+        case components::types::physical_type::UINT16:
+            return storage->value.value<uint16_t>();
+        case components::types::physical_type::UINT32:
+            return storage->value.value<uint32_t>();
+        case components::types::physical_type::UINT64:
+            return storage->value.value<uint64_t>();
+        default:
+            return 0;
+    }
+}
+
+extern "C" double value_get_double(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto pt = storage->value.type().to_physical_type();
+    if (pt == components::types::physical_type::FLOAT) {
+        return storage->value.value<float>();
+    }
+    return storage->value.value<double>();
+}
+
+extern "C" char* value_get_string(value_ptr ptr) {
+    auto storage = convert_value(ptr);
+    auto sv = storage->value.value<std::string_view>();
+    char* str_ptr = new char[sv.size() + 1];
+    std::memcpy(str_ptr, sv.data(), sv.size());
+    str_ptr[sv.size()] = '\0';
     return str_ptr;
-}
-
-extern "C" bool document_is_valid(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_valid();
-}
-
-extern "C" bool document_is_array(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_array();
-}
-
-extern "C" bool document_is_dict(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_dict();
-}
-
-extern "C" int32_t document_count(doc_ptr ptr) {
-    auto doc_storage = convert_document(ptr);
-    return static_cast<int32_t>(doc_storage->document->count());
-}
-
-extern "C" bool document_is_exist_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_exists(key);
-}
-
-extern "C" bool document_is_exist_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_exists(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_null_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_null(key);
-}
-
-extern "C" bool document_is_null_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_null(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_bool_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_bool(key);
-}
-
-extern "C" bool document_is_bool_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_bool(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_ulong_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_ulong(key);
-}
-
-extern "C" bool document_is_ulong_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_ulong(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_long_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_long(key);
-}
-
-extern "C" bool document_is_long_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_long(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_double_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_double(key);
-}
-
-extern "C" bool document_is_double_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_double(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_string_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_string(key);
-}
-
-extern "C" bool document_is_string_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_string(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_array_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_array(key);
-}
-
-extern "C" bool document_is_array_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_array(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_is_dict_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->is_dict(key);
-}
-
-extern "C" bool document_is_dict_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->is_dict(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" bool document_get_bool_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->get_as<bool>(key);
-}
-
-extern "C" bool document_get_bool_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->get_as<bool>(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" uint64_t document_get_ulong_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->get_as<uint64_t>(key);
-}
-
-extern "C" uint64_t document_get_ulong_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->get_as<uint64_t>(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" int64_t document_get_long_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->get_as<int64_t>(key);
-}
-
-extern "C" int64_t document_get_long_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->get_as<int64_t>(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" double document_get_double_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    return doc_storage->document->get_as<double>(key);
-}
-
-extern "C" double document_get_double_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    return doc_storage->document->get_as<double>(std::to_string(static_cast<uint32_t>(index)));
-}
-
-extern "C" char* document_get_string_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    auto str = doc_storage->document->get_string(key);
-    char* str_ptr = new char[sizeof(str)];
-    std::strcpy(str_ptr, str.data());
-    return str_ptr;
-}
-
-extern "C" char* document_get_string_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    auto str = doc_storage->document->get_string(std::to_string(static_cast<uint32_t>(index)));
-    char* str_ptr = new char[sizeof(str)];
-    std::strcpy(str_ptr, str.data());
-    return str_ptr;
-}
-
-extern "C" doc_ptr document_get_array_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    auto sub_doc_storage = std::make_unique<document_storage_t>();
-    sub_doc_storage->state = state_t::created;
-    sub_doc_storage->document = doc_storage->document->get_array(key);
-    return reinterpret_cast<void*>(sub_doc_storage.release());
-}
-
-extern "C" doc_ptr document_get_array_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    auto sub_doc_storage = std::make_unique<document_storage_t>();
-    sub_doc_storage->state = state_t::created;
-    sub_doc_storage->document = doc_storage->document->get_array(std::to_string(static_cast<uint32_t>(index)));
-    return reinterpret_cast<void*>(sub_doc_storage.release());
-}
-
-extern "C" doc_ptr document_get_dict_by_key(doc_ptr ptr, string_view_t key_raw) {
-    auto doc_storage = convert_document(ptr);
-    std::pmr::string key(key_raw.data, key_raw.size);
-    auto sub_doc_storage = std::make_unique<document_storage_t>();
-    sub_doc_storage->state = state_t::created;
-    sub_doc_storage->document = doc_storage->document->get_dict(key);
-    return reinterpret_cast<void*>(sub_doc_storage.release());
-}
-
-extern "C" doc_ptr document_get_dict_by_index(doc_ptr ptr, int32_t index) {
-    auto doc_storage = convert_document(ptr);
-    auto sub_doc_storage = std::make_unique<document_storage_t>();
-    sub_doc_storage->state = state_t::created;
-    sub_doc_storage->document = doc_storage->document->get_dict(std::to_string(static_cast<uint32_t>(index)));
-    return reinterpret_cast<void*>(sub_doc_storage.release());
 }

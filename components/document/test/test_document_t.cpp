@@ -18,30 +18,30 @@ TEST_CASE("components::document::is/get_value") {
     REQUIRE(doc->is_long("/count"));
     REQUIRE(doc->get_ulong("/count") == 1);
 
-    REQUIRE(doc->is_exists("/countStr"));
-    REQUIRE(doc->is_string("/countStr"));
-    REQUIRE(doc->get_string("/countStr") == "1");
+    REQUIRE(doc->is_exists("/count_str"));
+    REQUIRE(doc->is_string("/count_str"));
+    REQUIRE(doc->get_string("/count_str") == "1");
 
-    REQUIRE(doc->is_exists("/countArray"));
-    REQUIRE(doc->is_array("/countArray"));
+    REQUIRE(doc->is_exists("/count_array"));
+    REQUIRE(doc->is_array("/count_array"));
 
-    REQUIRE(doc->is_exists("/countDict"));
-    REQUIRE(doc->is_dict("/countDict"));
+    REQUIRE(doc->is_exists("/count_dict"));
+    REQUIRE(doc->is_dict("/count_dict"));
 
-    REQUIRE(doc->is_exists("/countArray/1"));
-    REQUIRE(doc->is_long("/countArray/1"));
-    REQUIRE(doc->get_ulong("/countArray/1") == 2);
+    REQUIRE(doc->is_exists("/count_array/1"));
+    REQUIRE(doc->is_long("/count_array/1"));
+    REQUIRE(doc->get_ulong("/count_array/1") == 2);
 
-    REQUIRE(doc->is_exists("/countDict/even"));
-    REQUIRE(doc->is_bool("/countDict/even"));
-    REQUIRE(doc->get_bool("/countDict/even") == false);
+    REQUIRE(doc->is_exists("/count_dict/even"));
+    REQUIRE(doc->is_bool("/count_dict/even"));
+    REQUIRE(doc->get_bool("/count_dict/even") == false);
 
     REQUIRE(doc->is_exists("/null"));
     REQUIRE(doc->is_null("/null"));
 
     REQUIRE_FALSE(doc->is_exists("/other"));
-    REQUIRE_FALSE(doc->is_exists("/countArray/10"));
-    REQUIRE_FALSE(doc->is_exists("/countDict/other"));
+    REQUIRE_FALSE(doc->is_exists("/count_array/10"));
+    REQUIRE_FALSE(doc->is_exists("/count_dict/other"));
 }
 
 TEST_CASE("components::document::compare") {
@@ -497,11 +497,11 @@ TEST_CASE("components::document::is_equals_documents") {
 {
   "_id": "000000000000000000000001",
   "count": 1,
-  "countBool": true,
-  "countDouble": 1.1,
-  "countStr": "1",
-  "countArray": [1, 2, 3, 4, 5],
-  "countDict": {
+  "count_bool": true,
+  "count_double": 1.1,
+  "count_str": "1",
+  "count_array": [1, 2, 3, 4, 5],
+  "count_dict": {
     "even": false,
     "five": false,
     "odd": true,
@@ -526,11 +526,11 @@ TEST_CASE("components::document::is_equals_documents_fail_different_types") {
 {
   "_id": "000000000000000000000001",
   "count": 1,
-  "countBool": true,
-  "countDouble": 1.1,
-  "countStr": "1",
-  "countArray": [1, 2, 3, 4, 5],
-  "countDict": {
+  "count_bool": true,
+  "count_double": 1.1,
+  "count_str": "1",
+  "count_array": [1, 2, 3, 4, 5],
+  "count_dict": {
     "even": false,
     "five": false,
     "odd": true,
@@ -556,11 +556,11 @@ TEST_CASE("components::document::is_equals_documents_fail_different_values") {
 {
   "_id": "000000000000000000000001",
   "count": 1,
-  "countBool": true,
-  "countDouble": 1.1,
-  "countStr": "1",
-  "countArray": [1, 2, 3, 4, 5],
-  "countDict": {
+  "count_bool": true,
+  "count_double": 1.1,
+  "count_str": "1",
+  "count_array": [1, 2, 3, 4, 5],
+  "count_dict": {
     "even": false,
     "five": false,
     "odd": true,

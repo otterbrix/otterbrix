@@ -32,6 +32,14 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection;)_", R"_($aggregate: {})_", vec());
 
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT 101;)_",
+                       R"_($aggregate: {$limit: 101})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_",
+                       R"_($aggregate: {$limit: -1})_",
+                       vec());
+
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",
@@ -172,6 +180,10 @@ TEST_CASE("components::sql::select_from_order_by") {
                        R"_($aggregate: {$sort: {number: 1, name: -1}})_",
                        vec());
 
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number ASC, name DESC LIMIT 200;)_",
+                       R"_($aggregate: {$sort: {number: 1, name: -1}, $limit: 200})_",
+                       vec());
+
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number, "count" ASC, name, value DESC;)_",
                        R"_($aggregate: {$sort: {number: 1, count: 1, name: 1, value: -1}})_",
                        vec());
@@ -188,6 +200,20 @@ TEST_CASE("components::sql::select_from_order_by") {
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection ORDER BY array_field[1] DESC;)_",
                        R"_($aggregate: {$sort: {array_field/1: -1}})_",
                        vec());
+}
+
+TEST_CASE("components::sql::group_by") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    TEST_SIMPLE_SELECT(R"_(SELECT field FROM TestCollection GROUP BY field;)_",
+                       R"_($aggregate: {$group: {field, group_by: field}})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
+                       R"_($aggregate: {$group: {name, name1, 9.99: #0, group_by: name, group_by: name1}})_",
+                       vec({v(9.99f)}));
 }
 
 TEST_CASE("components::sql::select_from_fields") {

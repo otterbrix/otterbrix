@@ -36,16 +36,14 @@ namespace otterbrix {
         }
 
 
-        // PHASE 1: Load data from disk WITHOUT actors (breaks deadlock cycle)
         trace(log_, "spaces::PHASE 1 - Loading data from disk WITHOUT actors");
         services::loader::loader_t loader(config.disk, config.wal, &resource, log_);
         auto state = loader.load();
-        auto index_definitions = std::move(state.index_definitions);  // save before move
-        auto wal_records = std::move(state.wal_records);  // save WAL records before move
+        auto index_definitions = std::move(state.index_definitions);
+        auto wal_records = std::move(state.wal_records);
         trace(log_, "spaces::PHASE 1 complete - loaded {} databases, {} collections, {} indexes, {} WAL records",
               state.databases.size(), state.documents.size(), index_definitions.size(), wal_records.size());
 
-        // PHASE 2: Create actors and initialize from loaded state
         trace(log_, "spaces::PHASE 2 - Creating actors");
 
         trace(log_, "spaces::manager_wal start");
@@ -103,9 +101,6 @@ namespace otterbrix {
             actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        // Call sync methods directly (not through message passing)
-        // Pass addresses directly - polymorphic dispatch via interface contracts
-        // sync_pack is now 2-tuple: (wal_address, disk_address) - memory_storage removed
         manager_dispatcher_->sync(std::make_tuple(manager_wal_address,
                                                    manager_disk_address));
 
@@ -125,8 +120,6 @@ namespace otterbrix {
             disk_empty_ptr->create_agent();
         }
 
-        // PHASE 2.2: Populate catalog BEFORE init_from_state
-        // Use mutable_catalog() to directly populate catalog in manager_dispatcher_
         trace(log_, "spaces::PHASE 2.2 - Populating catalog");
         if (!state.databases.empty() || !state.documents.empty()) {
             auto& catalog = manager_dispatcher_->mutable_catalog();
@@ -147,21 +140,17 @@ namespace otterbrix {
             }
         }
 
-        // PHASE 2.3: Init manager_dispatcher from loaded state
-        // manager_dispatcher_t now contains storage directly (merged from memory_storage_t)
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
         manager_dispatcher_->init_from_state(
             std::move(state.databases),
             std::move(state.documents),
             std::move(state.schemas));
 
-        // PHASE 2.4: Start schedulers
         trace(log_, "spaces::PHASE 2.4 - Starting schedulers");
         scheduler_dispatcher_->start();
         scheduler_->start();
         scheduler_disk_->start();
 
-        // PHASE 2.5: Replay WAL records
         trace(log_, "spaces::PHASE 2.5 - Replaying {} WAL records", wal_records.size());
         if (!wal_records.empty()) {
             auto session = components::session::session_id_t();
@@ -179,7 +168,6 @@ namespace otterbrix {
         }
         trace(log_, "spaces::PHASE 2.5 complete");
 
-        // PHASE 3: Create indexes (NO DEADLOCK - dispatcher is free!)
         trace(log_, "spaces::PHASE 3 - Creating {} indexes", index_definitions.size());
         if (!index_definitions.empty()) {
             auto session = components::session::session_id_t();
@@ -214,4 +202,4 @@ namespace otterbrix {
         paths_.erase(main_path_);
     }
 
-} // namespace otterbrix
+}

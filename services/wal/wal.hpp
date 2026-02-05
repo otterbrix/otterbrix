@@ -40,11 +40,7 @@ namespace services::wal {
         wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config);
         virtual ~wal_replicate_t();
 
-        // Coroutine methods - parameters by value (no const& or & allowed in coroutines)
-        // load() returns records via future (not callback)
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        // WAL methods now return wal::id_t via future after writing
-        // sender parameter removed - result returned via future, not callback
         unique_future<services::wal::id_t> create_database(session_id_t session,
                                             components::logical_plan::node_create_database_ptr data);
         unique_future<services::wal::id_t> drop_database(session_id_t session,
@@ -72,7 +68,6 @@ namespace services::wal {
         unique_future<services::wal::id_t> create_index(session_id_t session,
                                          components::logical_plan::node_create_index_ptr data);
 
-        // dispatch_traits must be defined AFTER all method declarations
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_replicate_t::load,
             &wal_replicate_t::create_database,
@@ -92,7 +87,6 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        // send_success removed - now using co_return to return result via future
 
         virtual void write_buffer(buffer_t& buffer);
         virtual void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const;
@@ -114,11 +108,9 @@ namespace services::wal {
         crc32_t last_crc32_{0};
         file_ptr file_;
 
-        // Pending coroutines storage (CRITICAL for coroutines with co_await)
         std::vector<unique_future<std::vector<record_t>>> pending_load_;
         std::vector<unique_future<services::wal::id_t>> pending_id_;
 
-        // Poll and clean up completed coroutines
         void poll_pending();
 
 #ifdef DEV_MODE
@@ -139,7 +131,6 @@ namespace services::wal {
     public:
         wal_replicate_without_disk_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config);
 
-        // Override coroutine method - returns empty records via future
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
 
     private:

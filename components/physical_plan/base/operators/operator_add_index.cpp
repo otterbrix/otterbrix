@@ -34,7 +34,7 @@ namespace components::base::operators {
                                  pipeline_context->session,
                                  std::move(index_node_),
                                  context_);
-                (void)needs_sched; // Handled by caller
+                (void)needs_sched;
                 disk_future_ready_ = future.available();
                 disk_future_ = std::make_unique<actor_zeta::unique_future<actor_zeta::address_t>>(std::move(future));
                 break;

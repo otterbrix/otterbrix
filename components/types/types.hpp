@@ -584,8 +584,6 @@ namespace components::types {
         uint8_t scale_;
     };
 
-    // enum_logical_type_extension and user_logical_type_extension moved to logical_value.hpp
-    // (C++20 requires complete type for std::vector<logical_value_t>)
 
     class function_logical_type_extension : public logical_type_extension {
     public:

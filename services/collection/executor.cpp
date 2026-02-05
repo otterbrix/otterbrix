@@ -1,6 +1,5 @@
 #include "executor.hpp"
 
-// Include full WAL/Disk headers BEFORE any other includes that might use them
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -44,7 +43,6 @@ namespace services::collection::executor {
         , log_(log) {}
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Poll completed coroutines first (safe with actor-zeta 1.1.1)
         poll_pending();
 
         switch (msg->command()) {
@@ -61,7 +59,6 @@ namespace services::collection::executor {
         }
     }
 
-    // Poll and clean up completed coroutines (per PROMISE_FUTURE_GUIDE.md)
     void executor_t::poll_pending() {
         for (auto it = pending_void_.begin(); it != pending_void_.end();) {
             if (it->available()) {
@@ -106,7 +103,6 @@ namespace services::collection::executor {
         }
 
         if (!plan) {
-            // Return error directly via future (NOT callback!)
             co_return execute_result_t{
                 make_cursor(resource(), error_code_t::create_physical_plan_error, "invalid query plan"),
                 {}
@@ -115,17 +111,13 @@ namespace services::collection::executor {
 
         plan->set_as_root();
 
-        // Save parameters for WAL before moving them to traverse_plan_
         auto wal_params = components::logical_plan::make_parameter_node(resource());
         wal_params->set_parameters(parameters);
 
         traverse_plan_(session, std::move(plan), std::move(parameters), std::move(context_storage));
 
-        // Await result from execute_sub_plan_
         auto result = co_await execute_sub_plan_(session);
 
-        // WAL/Disk coordination for DML operations
-        // Use concrete class method pointers - implements<> binds them to contract interface
         if (result.cursor->is_success() && wal_address_ != actor_zeta::address_t::empty_address()) {
             using namespace components::logical_plan;
             switch (logical_plan->type()) {
@@ -184,7 +176,6 @@ namespace services::collection::executor {
         for (const auto& doc : documents) {
             collection->document_storage().emplace(components::document::get_document_id(doc), doc);
         }
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -213,11 +204,9 @@ namespace services::collection::executor {
 
         trace(log_, "executor::subplans count {}", sub_plans.size());
 
-        // Store plans - execute_sub_plan_ will be called directly via co_await
         plans_.emplace(session, plan_t{std::move(sub_plans), parameters, std::move(context_storage)});
     }
 
-    // Coroutine-based execute_sub_plan_ - returns execute_result_t directly
     executor_t::unique_future<execute_result_t> executor_t::execute_sub_plan_(
         const components::session::session_id_t& session) {
 
@@ -245,24 +234,18 @@ namespace services::collection::executor {
 
             trace(log_, "executor: after on_execute, is_executed={}", plan->is_executed());
             if (!plan->is_executed()) {
-                // Find the operator that's actually waiting (could be a child operator like index_scan)
                 auto waiting_op = plan->find_waiting_operator();
                 if (waiting_op) {
                     trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                    // Call await_async_and_resume on the WAITING operator (not the root)
-                    // Returns unique_future<void> - co_await it (executor is an actor, coroutines work!)
                     co_await waiting_op->await_async_and_resume(&pipeline_context);
                     trace(log_, "executor: after await_async_and_resume completed");
 
-                    // After the waiting operator completes, re-execute the root plan to propagate results
                     if (waiting_op->is_executed()) {
                         trace(log_, "executor: waiting op completed, re-executing root plan");
                         plan->on_execute(&pipeline_context);
                     }
                 }
 
-                // After coroutine migration, all async operators must complete via co_await
-                // If we reach here, it's a bug in the operator implementation
                 if (!plan->is_executed()) {
                     error(log_, "Plan not executed after co_await! session: {}, plan type: {}",session.data(), static_cast<int>(plan->type()));
                     cursor = make_cursor(resource(), error_code_t::create_physical_plan_error,"operator failed to complete execution");
@@ -274,15 +257,11 @@ namespace services::collection::executor {
                 case components::collection::operators::operator_type::add_index: {
                     auto* add_op = static_cast<components::base::operators::operator_add_index*>(plan.get());
 
-                    // co_await on disk future to get index agent address
                     auto disk_address = co_await std::move(add_op->disk_future());
 
-                    // Get id_index from operator (stored on coroutine frame)
                     auto id_index = add_op->id_index();
 
-                    // Check if index already existed (id_index == INDEX_ID_UNDEFINED means index wasn't created)
                     if (id_index == components::index::INDEX_ID_UNDEFINED) {
-                        // Index already exists - return error
                         trace(log_, "executor: index {} already exists, returning error", add_op->index_name());
                         cursor = make_cursor(resource(), error_code_t::index_create_fail, "index already exists");
                         break;
@@ -293,7 +272,6 @@ namespace services::collection::executor {
                     components::index::insert(collection->index_engine(),
                         id_index, collection->document_storage());
 
-                    // Fill index_disk if disk is enabled - route through manager_disk_t for proper scheduling
                     if (disk_address != actor_zeta::address_t::empty_address()) {
                         auto* index = components::index::search_index(collection->index_engine(), id_index);
                         auto range = index->keys();
@@ -306,8 +284,6 @@ namespace services::collection::executor {
                                 values.emplace_back(doc.second->get_value(key), doc.first);
                             }
                         }
-                        // Route through manager_disk_t which has scheduler access
-                        // Await result to ensure index is populated before returning success
                         auto [_idxins, idxf] = actor_zeta::send(collection->disk(),
                                          &services::disk::manager_disk_t::index_insert_many,
                                          session,
@@ -332,7 +308,6 @@ namespace services::collection::executor {
                     break;
 
                 case components::collection::operators::operator_type::remove: {
-                    // Extract updates BEFORE moving plan (critical for schema versioning!)
                     if (plan->modified()) {
                         for (auto& [key, val] : plan->modified()->updated_types_map()) {
                             accumulated_updates[key] += val;
@@ -359,7 +334,6 @@ namespace services::collection::executor {
 
             if (cursor->is_error()) break;
 
-            // Await all pending disk index operations (future pattern)
             if (pipeline_context.has_pending_disk_futures()) {
                 auto disk_futures = pipeline_context.take_pending_disk_futures();
                 for (auto& fut : disk_futures) {
@@ -420,7 +394,6 @@ namespace services::collection::executor {
 
         trace(log_, "executor::execute_plan : operators::operator_type::update");
 
-        // Extract data from plan BEFORE co_await
         auto output = plan->output();
         auto modified = plan->modified();
 
@@ -546,11 +519,9 @@ namespace services::collection::executor {
             }
             co_return make_cursor(resource(), std::move(documents));
         } else {
-            // Use unique_ptr to avoid copy in actor-zeta RTT message passing
             auto data_ptr = output
                 ? std::make_unique<components::vector::data_chunk_t>(std::move(output->data_chunk()))
                 : std::make_unique<components::vector::data_chunk_t>(resource(), std::pmr::vector<components::types::complex_logical_type>{resource()});
-            // Extract size info before co_await
             size_t size = 0;
             if (modified) {
                 size = std::get<std::pmr::vector<size_t>>(modified->ids()).size();
@@ -577,7 +548,6 @@ namespace services::collection::executor {
 
         trace(log_, "executor::execute_plan : operators::operator_type::remove");
 
-        // Extract data from plan BEFORE co_await
         auto modified_data = plan->modified();
         size_t modified_size = modified_data ? modified_data->size() : 0;
 
@@ -592,7 +562,6 @@ namespace services::collection::executor {
             co_await std::move(delf1);
             components::vector::data_chunk_t chunk(resource(), collection->table_storage().table().copy_types(), modified_size);
             chunk.set_cardinality(modified_size);
-            // TODO: handle updated_types_map for delete
             co_return make_cursor(resource(), std::move(chunk));
         } else {
             auto ids_to_remove = modified_data ? modified_data->ids() : std::pmr::vector<document_id_t>{resource()};
@@ -605,7 +574,6 @@ namespace services::collection::executor {
             co_await std::move(delf2);
             std::pmr::vector<document_ptr> documents(resource());
             documents.resize(modified_size);
-            // TODO: handle updated_types_map for delete
             co_return make_cursor(resource(), std::move(documents));
         }
     }

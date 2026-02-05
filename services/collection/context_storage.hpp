@@ -5,7 +5,6 @@
 
 namespace services {
 
-    // Forward declaration
     namespace collection {
         class context_collection_t;
     }

@@ -570,16 +570,11 @@ TEST_CASE("services::wal::read_record") {
     }
 }
 
-// ============================================================================
-// Tests for large WAL records (> 65KB)
-// These tests verify the fix for size_tt overflow (uint16_t -> uint32_t)
-// ============================================================================
 
 TEST_CASE("services::wal::large_insert_many_documents") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/large_insert_many_docs", &resource);
 
-    // Create 500 documents - serialized size should be ~200KB (well over 65KB limit)
     constexpr int kDocuments = 500;
     std::pmr::vector<components::document::document_ptr> documents(&resource);
     for (int num = 1; num <= kDocuments; ++num) {
@@ -591,11 +586,9 @@ TEST_CASE("services::wal::large_insert_many_documents") {
     auto session = components::session::session_id_t();
     test_wal.wal->insert_many(session, data);
 
-    // Verify the record can be read back correctly
     wal_entry_t entry;
     entry.size_ = test_wal.wal->test_read_size(0);
 
-    // Size must be > 65535 (old uint16_t limit)
     INFO("WAL record size: " << entry.size_ << " bytes");
     REQUIRE(entry.size_ > 65535);
 
@@ -616,7 +609,6 @@ TEST_CASE("services::wal::large_insert_many_documents") {
     REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_documents());
     REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().size() == kDocuments);
 
-    // Verify first and last documents
     auto& docs = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents();
     REQUIRE(docs.front()->get_string("/_id") == gen_id(1, &resource));
     REQUIRE(docs.front()->get_long("/count") == 1);
@@ -628,7 +620,6 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/large_insert_many_rows", &resource);
 
-    // Create 500 rows - should exceed 65KB
     constexpr int kRows = 500;
     auto chunk = gen_data_chunk(kRows, 0, &resource);
     auto data = components::logical_plan::make_node_insert(&resource,
@@ -637,12 +628,10 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     auto session = components::session::session_id_t();
     test_wal.wal->insert_many(session, data);
 
-    // Verify the record can be read back correctly
     wal_entry_t entry;
     entry.size_ = test_wal.wal->test_read_size(0);
 
     INFO("WAL record size: " << entry.size_ << " bytes");
-    // Size should be significant (may or may not exceed 65KB depending on data)
     REQUIRE(entry.size_ > 0);
 
     auto start = sizeof(size_tt);
@@ -664,7 +653,6 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
     REQUIRE(read_chunk.size() == kRows);
 
-    // Verify first and last rows
     REQUIRE(read_chunk.value(0, 0).value<int64_t>() == 1);
     REQUIRE(read_chunk.value(1, 0).value<std::string_view>() == gen_id(1, &resource));
     REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);
@@ -675,7 +663,6 @@ TEST_CASE("services::wal::large_record_read_write_cycle") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/large_read_write_cycle", &resource);
 
-    // Write multiple large records
     constexpr int kDocumentsPerBatch = 300;
     constexpr int kBatches = 3;
 
@@ -691,24 +678,21 @@ TEST_CASE("services::wal::large_record_read_write_cycle") {
         test_wal.wal->insert_many(session, data);
     }
 
-    // Read all records back using test_read_record
     std::size_t index = 0;
     for (int batch = 0; batch < kBatches; ++batch) {
         auto record = test_wal.wal->test_read_record(index);
         REQUIRE(record.data != nullptr);
         REQUIRE(record.data->type() == node_type::insert_t);
-        REQUIRE(record.size > 65535);  // Each batch should be > 65KB
+        REQUIRE(record.size > 65535);
 
         auto& docs = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->documents();
         REQUIRE(docs.size() == kDocumentsPerBatch);
 
-        // Verify first document in batch
         int expected_first = batch * kDocumentsPerBatch + 1;
         REQUIRE(docs.front()->get_long("/count") == expected_first);
 
         index = test_wal.wal->test_next_record(index);
     }
 
-    // No more records
     REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }

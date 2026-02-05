@@ -33,9 +33,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
         , transformer_(resource) {
-        // Call sync methods directly (not through message passing)
-        // Pass addresses directly - polymorphic dispatch via interface contracts
-        // sync_pack is now 2-tuple: (wal_address, disk_address) - memory_storage merged into manager_dispatcher
         manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
                                                    manager_disk_->address()));
         manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
@@ -44,16 +41,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         manager_wal_->create_wal_worker();
         manager_disk_->create_agent();
 
-        // Set run_fn for SYNC actors to process scheduler queue in single-threaded test mode
-        // This allows ASYNC actors (agent_disk_t, etc.) to make progress
         manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
         manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
     }
 
     ~test_dispatcher() {
-        // Drain pending jobs before destruction to avoid memory leaks
         scheduler_->stop();
-        // Clean up temp directory
         std::filesystem::remove_all("/tmp/test_dispatcher_disk");
         delete scheduler_;
     }

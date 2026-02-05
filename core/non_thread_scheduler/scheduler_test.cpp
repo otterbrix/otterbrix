@@ -8,18 +8,16 @@ namespace core::non_thread_scheduler {
     clock_test& scheduler_test_t::clock() noexcept { return clock_; }
 
     void scheduler_test_t::start() {
-        // Don't spawn threads - test controls execution manually
     }
 
     void scheduler_test_t::stop() {
         while (run() > 0) {
             clock_.trigger_timeouts();
         }
-        // Clear remaining jobs in the queue to prevent memory leaks
         auto& queue = data().queue;
         std::unique_lock<std::mutex> guard(data().lock);
         while (!queue.empty()) {
-            queue.pop_front(); // unique_ptr auto-deletes the job
+            queue.pop_front();
         }
     }
 
@@ -37,7 +35,6 @@ namespace core::non_thread_scheduler {
         auto result = job->resume(max_throughput());
         switch (result.result) {
             case actor_zeta::scheduler::resume_result::resume:
-                // Re-enqueue the same job directly to avoid creating a new job_ptr wrapper
                 {
                     std::unique_lock<std::mutex> re_guard(data().lock);
                     data().queue.push_back(job.release());
@@ -45,7 +42,6 @@ namespace core::non_thread_scheduler {
                 break;
             case actor_zeta::scheduler::resume_result::done:
             case actor_zeta::scheduler::resume_result::awaiting:
-                // job_ptr managed by unique_ptr, automatically released
                 break;
             case actor_zeta::scheduler::resume_result::shutdown:
                 break;

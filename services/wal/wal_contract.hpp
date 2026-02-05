@@ -21,33 +21,26 @@ namespace services::wal {
 
     using session_id_t = components::session::session_id_t;
 
-    /// WAL Interface Contract
     struct wal_contract {
-        // unique_future type alias - required by actor_zeta::send() template
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-        // Load WAL records starting from given ID
         actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
 
-        // Database operations
         actor_zeta::unique_future<id_t> create_database(session_id_t session,
             components::logical_plan::node_create_database_ptr data);
         actor_zeta::unique_future<id_t> drop_database(session_id_t session,
             components::logical_plan::node_drop_database_ptr data);
 
-        // Collection operations
         actor_zeta::unique_future<id_t> create_collection(session_id_t session,
             components::logical_plan::node_create_collection_ptr data);
         actor_zeta::unique_future<id_t> drop_collection(session_id_t session,
             components::logical_plan::node_drop_collection_ptr data);
 
-        // Insert operations
         actor_zeta::unique_future<id_t> insert_one(session_id_t session,
             components::logical_plan::node_insert_ptr data);
         actor_zeta::unique_future<id_t> insert_many(session_id_t session,
             components::logical_plan::node_insert_ptr data);
 
-        // Delete operations
         actor_zeta::unique_future<id_t> delete_one(session_id_t session,
             components::logical_plan::node_delete_ptr data,
             components::logical_plan::parameter_node_ptr params);
@@ -55,7 +48,6 @@ namespace services::wal {
             components::logical_plan::node_delete_ptr data,
             components::logical_plan::parameter_node_ptr params);
 
-        // Update operations
         actor_zeta::unique_future<id_t> update_one(session_id_t session,
             components::logical_plan::node_update_ptr data,
             components::logical_plan::parameter_node_ptr params);
@@ -63,7 +55,6 @@ namespace services::wal {
             components::logical_plan::node_update_ptr data,
             components::logical_plan::parameter_node_ptr params);
 
-        // Index operations
         actor_zeta::unique_future<id_t> create_index(session_id_t session,
             components::logical_plan::node_create_index_ptr data);
 
@@ -82,7 +73,6 @@ namespace services::wal {
             &wal_contract::create_index
         >;
 
-        // Interface - cannot be instantiated
         wal_contract() = delete;
     };
 

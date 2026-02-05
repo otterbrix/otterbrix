@@ -330,7 +330,6 @@ namespace components::types {
         return std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_).get();
     }
 
-    // Moved from types.hpp to avoid incomplete type issues with C++20
     class enum_logical_type_extension : public logical_type_extension {
     public:
         explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
@@ -343,7 +342,7 @@ namespace components::types {
 
     private:
         std::string type_name_;
-        std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
+        std::vector<logical_value_t> entries_;
     };
 
     class user_logical_type_extension : public logical_type_extension {

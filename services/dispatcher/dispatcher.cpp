@@ -26,9 +26,6 @@ using namespace components::types;
 
 namespace services::dispatcher {
 
-    // ============================================================================
-    // manager_dispatcher_t - merged dispatcher + memory_storage functionality
-    // ============================================================================
 
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
@@ -44,7 +41,6 @@ namespace services::dispatcher {
         , collections_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
-        // executor_ spawned in sync() after wal/disk addresses are available
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
@@ -54,16 +50,10 @@ namespace services::dispatcher {
 
     auto manager_dispatcher_t::make_type() const noexcept -> const char* { return "manager_dispatcher"; }
 
-    // Custom enqueue_impl for SYNC actor with coroutine behavior()
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Store the behavior coroutine (CRITICAL: prevents coroutine destruction!)
         current_behavior_ = behavior(msg.get());
 
-        // Poll until behavior completes
-        // Use run_fn_ for cooperative scheduling:
-        // - Production: std::this_thread::yield() - yields to OS scheduler
-        // - Tests: scheduler_->run() - processes pending actor messages
         while (current_behavior_.is_busy()) {
             if (current_behavior_.is_awaited_ready()) {
                 auto cont = current_behavior_.take_awaited_continuation();
@@ -141,7 +131,6 @@ namespace services::dispatcher {
         wal_address_ = std::get<wal_idx>(pack);
         disk_address_ = std::get<disk_idx>(pack);
 
-        // Spawn executor with WAL/Disk addresses for DML coordination
         executor_ = actor_zeta::spawn<collection::executor::executor_t>(
             resource(), address(), wal_address_, disk_address_, log_.clone());
         executor_address_ = executor_->address();
@@ -181,14 +170,12 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::init_from_state: complete - {} collections", collections_.size());
     }
 
-    // execute_plan - main entry point, handles DDL locally, DML via executor
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::execute_plan(
         components::session::session_id_t session,
         node_ptr plan,
         parameter_node_ptr params) {
         trace(log_, "manager_dispatcher_t::execute_plan session: {}, {}", session.data(), plan->to_string());
 
-        // Create a copy of params for WAL operations
         auto params_for_wal = make_parameter_node(resource());
         params_for_wal->set_parameters(params->parameters());
 
@@ -197,7 +184,6 @@ namespace services::dispatcher {
         cursor_t_ptr error;
         used_format_t used_format = used_format_t::undefined;
 
-        // Validation
         switch (logic_plan->type()) {
             case node_type::create_database_t:
                 if (!check_namespace_exists(id)) {
@@ -280,7 +266,6 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
-        // DDL operations - handle directly without message passing
         collection::executor::execute_result_t exec_result;
         switch (logic_plan->type()) {
             case node_type::create_database_t:
@@ -296,7 +281,6 @@ namespace services::dispatcher {
                 exec_result = drop_collection_(std::move(logic_plan));
                 break;
             default:
-                // DML operations - go through executor
                 exec_result = co_await execute_plan_impl(session, std::move(logic_plan),
                                                           params->take_parameters(), used_format);
                 break;
@@ -350,8 +334,6 @@ namespace services::dispatcher {
                 case node_type::insert_t:
                 case node_type::update_t:
                 case node_type::delete_t: {
-                    // WAL/Disk coordination moved to executor_t
-                    // Just update catalog (for computed schema tracking)
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
                     update_catalog(plan);
                     co_return result;
@@ -446,7 +428,6 @@ namespace services::dispatcher {
         co_return;
     }
 
-    // DDL methods - local operations
     collection::executor::execute_result_t manager_dispatcher_t::create_database_(
         node_ptr logical_plan) {
         trace(log_, "manager_dispatcher_t:create_database {}", logical_plan->database_name());
@@ -498,7 +479,6 @@ namespace services::dispatcher {
         return {std::move(cursor), {}};
     }
 
-    // DML operations - go through executor
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>
     manager_dispatcher_t::execute_plan_impl(
         components::session::session_id_t session,
@@ -545,7 +525,6 @@ namespace services::dispatcher {
         co_return result;
     }
 
-    // Helper methods
     cursor_t_ptr manager_dispatcher_t::check_namespace_exists(const table_id id) const {
         cursor_t_ptr error;
         if (!catalog_.namespace_exists(id.get_namespace())) {

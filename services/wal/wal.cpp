@@ -64,7 +64,6 @@ namespace services::wal {
     }
 
     actor_zeta::behavior_t wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Poll completed coroutines first
         poll_pending();
 
         switch (msg->command()) {
@@ -123,7 +122,6 @@ namespace services::wal {
 
     auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
-    // send_success removed - now using co_return to return result via future
 
     void wal_replicate_t::write_buffer(buffer_t& buffer) { file_->write(buffer.data(), buffer.size()); }
 
@@ -135,7 +133,6 @@ namespace services::wal {
     wal_replicate_t::~wal_replicate_t() { trace(log_, "delete wal_replicate_t"); }
     
     static size_tt read_size_impl(const char* input, size_tt index_start) {
-        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
         size_tt size_tmp = 0;
         size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
         size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
@@ -175,12 +172,9 @@ namespace services::wal {
             } while (records[size++].is_valid());
             records.erase(records.end() - 1);
         }
-        // Return records via future instead of callback
         co_return records;
     }
 
-    // WAL methods now return id_t via future after write
-    // sender parameter removed - result via future, not callback
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_database(
         session_id_t session,
@@ -433,7 +427,6 @@ namespace services::wal {
         services::wal::id_t
     ) {
         (void)session;
-        // Return empty records via future instead of callback
         co_return std::vector<record_t>{};
     }
 

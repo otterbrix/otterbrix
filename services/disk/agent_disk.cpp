@@ -7,7 +7,7 @@ namespace services::disk {
         : actor_zeta::basic_actor<agent_disk_t>(resource)
         , log_(log.clone())
         , disk_(path_db, this->resource()) {
-        (void)manager;  // unused - manager's resource is passed explicitly
+        (void)manager;
         trace(log_, "agent_disk::create");
     }
 
@@ -16,7 +16,6 @@ namespace services::disk {
     auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }
 
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Clean up completed futures first
         std::erase_if(pending_void_, [](const auto& f) { return f.available(); });
         std::erase_if(pending_load_, [](const auto& f) { return f.available(); });
 

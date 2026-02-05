@@ -210,8 +210,6 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->insert(key, document);
                 if (index->is_disk() && pipeline_context && index->disk_manager()) {
-                    // Route through manager_disk_t which has scheduler access
-                    // Copy values for by-value args (actor-zeta 1.1.0 requirement)
                     auto session_copy = pipeline_context->session;
                     auto agent_copy = index->disk_agent();
                     auto key_copy = key;
@@ -221,7 +219,7 @@ namespace components::index {
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
                                                    document::get_document_id(document));
-                    (void)needs_sched; // Handled by manager_disk_t
+                    (void)needs_sched;
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -234,7 +232,6 @@ namespace components::index {
                 auto key = get_value_by_index(index, document);
                 index->remove(key); //todo: bug
                 if (index->is_disk() && pipeline_context && index->disk_manager()) {
-                    // Route through manager_disk_t which has scheduler access
                     auto session_copy = pipeline_context->session;
                     auto agent_copy = index->disk_agent();
                     auto key_copy = key;
@@ -244,7 +241,7 @@ namespace components::index {
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
                                                    document::get_document_id(document));
-                    (void)needs_sched; // Handled by manager_disk_t
+                    (void)needs_sched;
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -267,7 +264,7 @@ namespace components::index {
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
                                                    components::document::document_id_t(row));
-                    (void)needs_sched; // Handled by manager_disk_t
+                    (void)needs_sched;
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -290,7 +287,7 @@ namespace components::index {
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
                                                    components::document::document_id_t(row));
-                    (void)needs_sched; // Handled by manager_disk_t
+                    (void)needs_sched;
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -310,7 +307,7 @@ namespace components::index {
                         actor_zeta::address_t agent, actor_zeta::address_t manager) {
         auto* index = search_index(ptr, id);
         if (index) {
-            auto agent_copy = agent;  // copy for add_disk_agent
+            auto agent_copy = agent;
             index->set_disk_agent(std::move(agent), std::move(manager));
             ptr->add_disk_agent(id, std::move(agent_copy));
         }

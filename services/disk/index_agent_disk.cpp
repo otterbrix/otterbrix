@@ -18,7 +18,7 @@ namespace services::disk {
                                                          collection->name().collection / index_name,
                                                      this->resource()))
         , collection_(collection) {
-        (void)manager;  // unused - manager's resource is passed explicitly
+        (void)manager;
         trace(log_, "index_agent_disk::create {}", index_name);
     }
 
@@ -56,7 +56,6 @@ namespace services::disk {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();
         is_dropped_ = true;
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -67,7 +66,6 @@ namespace services::disk {
     ) {
         trace(log_, "index_agent_disk_t::insert {}, session: {}", value.to_string(), session.data());
         index_disk_->insert(key, value);
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -77,10 +75,8 @@ namespace services::disk {
     ) {
         trace(log_, "index_agent_disk_t::insert_many: {}, session: {}", values.size(), session.data());
         for (const auto& [key, value] : values) {
-            // Convert document::value_t to types::logical_value_t for index_disk
             index_disk_->insert(key.as_logical_value(), value);
         }
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -91,7 +87,6 @@ namespace services::disk {
     ) {
         trace(log_, "index_agent_disk_t::remove {}, session: {}", value.to_string(), session.data());
         index_disk_->remove(key, value);
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -129,7 +124,6 @@ namespace services::disk {
             default:
                 break;
         }
-        // Return result via future, caller uses co_await to get it
         co_return res;
     }
 

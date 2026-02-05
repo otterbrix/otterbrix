@@ -58,8 +58,6 @@ namespace components::base::operators {
         void on_resume(pipeline::context_t* pipeline_context);
         void async_wait();
 
-        // Virtual method for async operations - override in operators with disk futures
-        // Uses unique_future<void> - promise_type extracts resource() from this (first coroutine arg)
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         bool is_executed() const;
@@ -67,13 +65,11 @@ namespace components::base::operators {
         bool is_root() const noexcept;
         void set_as_root() noexcept;
 
-        // Find operator in waiting state (searches this node and children recursively)
         ptr find_waiting_operator();
 
         const collection_full_name_t& collection_name() const noexcept;
         services::collection::context_collection_t* context() noexcept;
 
-        // Required for coroutine promise_type (used by await_async_and_resume)
         std::pmr::memory_resource* resource() const noexcept;
 
         [[nodiscard]] ptr left() const noexcept;

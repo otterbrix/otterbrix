@@ -31,18 +31,11 @@ namespace otterbrix {
     using components::document::document_ptr;
     using components::session::session_id_t;
 
-    // ============================================================================
-    // wrapper_dispatcher_t - "boundary" between sync and async worlds
-    // All methods use typed send + wait_future (event loop with mutex+cv)
-    // NO CALLBACKS - results returned via future directly!
-    // ============================================================================
     class wrapper_dispatcher_t final : public actor_zeta::actor::actor_mixin<wrapper_dispatcher_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // dispatch_traits is EMPTY - no callback methods!
-        // All results come via future from typed send
         using dispatch_traits = actor_zeta::dispatch_traits<>;
 
         /// blocking method
@@ -53,8 +46,6 @@ namespace otterbrix {
         auto make_type() const noexcept -> const char*;
         void behavior(actor_zeta::mailbox::message* msg);
 
-        // === Blocking public API (for clients) ===
-        // All methods use typed send + wait_future
         auto create_database(const session_id_t& session, const database_name_t& database)
             -> components::cursor::cursor_t_ptr;
         auto drop_database(const session_id_t& session, const database_name_t& database)
@@ -119,11 +110,9 @@ namespace otterbrix {
         log_t log_;
         std::atomic_int i = 0;
 
-        // Event loop state - shared CV, each thread polls only its own future
         std::mutex event_loop_mutex_;
         std::condition_variable event_loop_cv_;
 
-        // Event loop methods
         template<typename T>
         T wait_future(unique_future<T>& future);
         void wait_future_void(unique_future<void>& future);
@@ -133,11 +122,8 @@ namespace otterbrix {
                        components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
     };
 
-    // Template implementation - each thread polls only its own future
-    // No cross-thread available() calls - avoids race condition in actor-zeta
     template<typename T>
     T wrapper_dispatcher_t::wait_future(unique_future<T>& future) {
-        // Each thread checks only its own future
         while (!future.available()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
             if (!future.available()) {
@@ -145,7 +131,6 @@ namespace otterbrix {
             }
         }
 
-        // My future is ready - notify others (scheduler processed something)
         event_loop_cv_.notify_all();
 
         return std::move(future).get();

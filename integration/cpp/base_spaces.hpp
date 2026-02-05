@@ -56,10 +56,6 @@ namespace otterbrix {
             manager_disk_;
         std::variant<std::monostate, services::wal::manager_wal_empty_ptr, services::wal::manager_wal_ptr> manager_wal_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
-        // Separate scheduler for disk index agents to prevent deadlock
-        // When concurrent SELECT uses disk index, main scheduler_ threads block in manager_disk_t polling loop
-        // while index_agent_disk_t waits in queue of the same scheduler - DEADLOCK
-        // scheduler_disk_ provides isolated threads for index agents
         actor_zeta::scheduler_ptr scheduler_disk_;
 
     private:

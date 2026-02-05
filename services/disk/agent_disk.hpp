@@ -31,7 +31,6 @@ namespace services::disk {
 
         auto make_type() const noexcept -> const char*;
 
-        // Coroutine methods - parameters by value (no const& allowed in coroutines)
         unique_future<result_load_t> load(session_id_t session);
 
         unique_future<void> append_database(command_t command);
@@ -45,7 +44,6 @@ namespace services::disk {
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
-        // dispatch_traits must be defined AFTER all method declarations
         using dispatch_traits = actor_zeta::dispatch_traits<
             &agent_disk_t::load,
             &agent_disk_t::append_database,
@@ -64,7 +62,6 @@ namespace services::disk {
         log_t log_;
         disk_t disk_;
 
-        // Pending coroutines storage (CRITICAL: coroutines must be stored!)
         std::vector<unique_future<void>> pending_void_;
         std::vector<unique_future<result_load_t>> pending_load_;
     };

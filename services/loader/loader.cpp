@@ -27,7 +27,6 @@ namespace services::loader {
             trace(log_, "loader_t: opening disk at {}", config_.path.string());
             disk_ = std::make_unique<disk::disk_t>(config_.path, resource_);
 
-            // Open indexes metafile if it exists
             auto indexes_path = config_.path / "indexes_METADATA";
             if (std::filesystem::exists(indexes_path)) {
                 trace(log_, "loader_t: opening indexes metafile at {}", indexes_path.string());
@@ -38,7 +37,6 @@ namespace services::loader {
             }
         }
 
-        // Open WAL file if it exists (file is at config.path / ".wal")
         auto wal_file_path = wal_config_.path / ".wal";
         debug(log_, "loader_t: WAL file path: {}, exists: {}",
               wal_file_path.string(),
@@ -76,19 +74,14 @@ namespace services::loader {
             return state;
         }
 
-        // Step 1: Read databases and collections structure
         read_databases_and_collections(state);
 
-        // Step 2: Read documents for all collections
         read_documents(state);
 
-        // Step 3: Read index definitions
         read_index_definitions(state);
 
-        // Step 4: Read WAL checkpoint
         read_wal_checkpoint(state);
 
-        // Step 5: Read WAL records for replay
         read_wal_records(state);
 
         trace(log_, "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records",
@@ -112,7 +105,6 @@ namespace services::loader {
             for (const auto& coll_name : collections) {
                 debug(log_, "loader_t: found collection: {}.{}", db_name, coll_name);
                 collection_full_name_t full_name(db_name, coll_name);
-                // Initialize empty document vector for this collection
                 state.documents.emplace(full_name, std::pmr::vector<document_ptr>(resource_));
             }
         }
@@ -136,8 +128,6 @@ namespace services::loader {
             return;
         }
 
-        // This logic is copied from manager_disk_t::read_indexes_impl()
-        // Format: [size_t][msgpack_data]... repeated
         constexpr auto count_byte_by_size = sizeof(size_t);
         size_t size;
         size_t offset = 0;
@@ -163,7 +153,6 @@ namespace services::loader {
                 auto index_ptr = boost::polymorphic_pointer_downcast<
                     components::logical_plan::node_create_index_t>(index);
 
-                // Validate index files before adding definition
                 auto index_path = config_.path / index_ptr->collection_full_name().database /
                                   index_ptr->collection_full_name().collection / index_ptr->name();
                 if (is_index_valid(index_path)) {
@@ -201,12 +190,9 @@ namespace services::loader {
 
         debug(log_, "loader_t: WAL file exists, last_wal_id from disk checkpoint: {}", state.last_wal_id);
 
-        // Debug: check first size
         auto first_size = read_wal_size(0);
         debug(log_, "loader_t: first WAL record size at index 0 = {}", first_size);
 
-        // Read ALL WAL records and filter by id > checkpoint
-        // This is more robust than searching for specific IDs
         std::size_t start_index = 0;
         std::size_t total_records = 0;
         std::size_t skipped_records = 0;
@@ -217,7 +203,6 @@ namespace services::loader {
                 break;
             }
 
-            // Skip records with corrupted data (CRC mismatch)
             if (!record.data) {
                 debug(log_, "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
                       start_index, record.crc32, record.last_crc32);
@@ -227,7 +212,6 @@ namespace services::loader {
 
             total_records++;
 
-            // Only keep records with id > last checkpoint
             if (record.id > state.last_wal_id) {
                 debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
                       record.id, record.data->to_string());
@@ -244,12 +228,10 @@ namespace services::loader {
     }
 
     loader_t::size_tt loader_t::read_wal_size(std::size_t start_index) const {
-        // WAL stores size in BIG-ENDIAN format
         char buf[4];
         if (!wal_file_->read(buf, sizeof(size_tt), start_index)) {
             return 0;
         }
-        // Convert from big-endian to native
         size_tt size = 0;
         size = (size_tt(uint8_t(buf[0])) << 24) |
                (size_tt(uint8_t(buf[1])) << 16) |
@@ -285,14 +267,12 @@ namespace services::loader {
             auto finish = start + record.size + sizeof(crc32_t);
             auto output = read_wal_data(start, finish);
 
-            // Read CRC32 from the end of the data - stored in BIG-ENDIAN format
             const char* crc_ptr = output.data() + record.size;
             record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) |
                            (crc32_t(uint8_t(crc_ptr[1])) << 16) |
                            (crc32_t(uint8_t(crc_ptr[2])) << 8) |
                            (crc32_t(uint8_t(crc_ptr[3])));
 
-            // Verify CRC32
             auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
             if (record.crc32 == computed_crc) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
@@ -306,10 +286,7 @@ namespace services::loader {
                 record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
                 deserializer.pop_array();
             } else {
-                // CRC32 mismatch - invalid record
-                // Debug: log CRC values (can't use debug() in const method, so just set data to null)
                 record.data = nullptr;
-                // Store computed CRC in last_crc32 for debugging
                 record.last_crc32 = computed_crc;
             }
         } else {
@@ -323,12 +300,10 @@ namespace services::loader {
     }
 
     bool loader_t::is_index_valid(const std::filesystem::path& index_path) const {
-        // Check if index directory exists
         if (!std::filesystem::exists(index_path) || !std::filesystem::is_directory(index_path)) {
             return false;
         }
 
-        // Check metadata file exists and has non-zero size
         auto metadata_path = index_path / "metadata";
         if (!std::filesystem::exists(metadata_path)) {
             return false;
@@ -337,11 +312,10 @@ namespace services::loader {
             return false;
         }
 
-        // Check that all segment files have non-zero size
         for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
             if (entry.is_regular_file() && entry.path().filename() != "metadata") {
                 if (std::filesystem::file_size(entry.path()) == 0) {
-                    return false;  // Corrupted segment file
+                    return false;
                 }
             }
         }

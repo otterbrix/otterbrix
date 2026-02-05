@@ -335,7 +335,6 @@ TEST_CASE("integration::cpp::test_index::no_type save_load") {
     INFO("find") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        // NOTE: load() removed - External Loader handles loading during construction
 
         CHECK_FIND_ALL();
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);

@@ -30,7 +30,6 @@ namespace components::base::operators {
 
         auto index_ptr = index::search_index(context_->index_engine(), node_->name());
         if (!index_ptr) {
-            // Store error cursor for executor to retrieve
             error_cursor_ = make_cursor(context_->resource(), error_code_t::index_not_exists);
             return;
         }
@@ -41,10 +40,9 @@ namespace components::base::operators {
                              pipeline_context->session,
                              node_->name(),
                              context_);
-            (void)needs_sched; // Handled by manager_disk_t
+            (void)needs_sched;
             pipeline_context->add_pending_disk_future(std::move(future));
         }
         index::drop_index(context_->index_engine(), index_ptr);
-        // Success - executor will create success cursor
     }
 } // namespace components::base::operators

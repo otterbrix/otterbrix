@@ -68,7 +68,6 @@ TEST_CASE("integration::cpp::test_save_load::disk") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        // NOTE: load() removed - External Loader handles loading during construction
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {
@@ -112,9 +111,6 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     }
 
     SECTION("extending wal") {
-        // NOTE: Do NOT create test_spaces here - we only want to append WAL records
-        // without loading the full actor system. test_spaces would create duplicate
-        // WAL actors that would race with our local actors on the same files.
         auto resource = std::pmr::synchronized_pool_resource();
         auto log = initialization_logger("python", config.log.path.c_str());
         log.set_level(config.log.level);
@@ -233,7 +229,6 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        // NOTE: load() removed - External Loader handles loading during construction
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {

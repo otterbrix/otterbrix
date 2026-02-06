@@ -1,10 +1,16 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <mutex>
+#include <condition_variable>
+#include <vector>
+#include <functional>
 
 #include <actor-zeta.hpp>
+#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 #include <core/spinlock/spinlock.hpp>
 
@@ -19,19 +25,27 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/transformer/transformer.hpp>
-#include <integration/cpp/impl/session_blocker.hpp>
 
 namespace otterbrix {
 
     using components::document::document_ptr;
     using components::session::session_id_t;
 
-    class wrapper_dispatcher_t final : public actor_zeta::cooperative_supervisor<wrapper_dispatcher_t> {
+    class wrapper_dispatcher_t final : public actor_zeta::actor::actor_mixin<wrapper_dispatcher_t> {
     public:
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
+
+        using dispatch_traits = actor_zeta::dispatch_traits<>;
+
         /// blocking method
         wrapper_dispatcher_t(std::pmr::memory_resource*, actor_zeta::address_t, log_t& log);
         ~wrapper_dispatcher_t();
-        auto load() -> void;
+
+        std::pmr::memory_resource* resource() const noexcept { return resource_; }
+        auto make_type() const noexcept -> const char*;
+        void behavior(actor_zeta::mailbox::message* msg);
+
         auto create_database(const session_id_t& session, const database_name_t& database)
             -> components::cursor::cursor_t_ptr;
         auto drop_database(const session_id_t& session, const database_name_t& database)
@@ -90,43 +104,36 @@ namespace otterbrix {
                         const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
             -> components::cursor::cursor_t_ptr;
 
-        actor_zeta::behavior_t behavior();
-        auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-        auto make_type() const noexcept -> const char*;
-
-    protected:
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void final;
-
     private:
-        // Behaviors
-        actor_zeta::behavior_t load_finish_;
-        actor_zeta::behavior_t execute_plan_finish_;
-        actor_zeta::behavior_t size_finish_;
-        actor_zeta::behavior_t schema_finish_;
-        /// async method
-        auto load_finish(const session_id_t& session) -> void;
-        auto execute_plan_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
-        auto size_finish(const session_id_t& session, size_t size) -> void;
-        auto schema_finish(const session_id_t& session, components::cursor::cursor_t_ptr cursor) -> void;
+        std::pmr::memory_resource* resource_;
+        actor_zeta::address_t manager_dispatcher_;
+        log_t log_;
+        std::atomic_int i = 0;
 
-        // due to hashing, incoming session can be unusable, and has to be replaced
-        session_id_t init(const session_id_t& session, void* local_storage);
-        void wait(const session_id_t& session);
-        void notify(const session_id_t& session);
-        void notify(const session_id_t& session, size_t size);
-        void notify(const session_id_t& session, components::cursor::cursor_t_ptr cursor);
+        std::mutex event_loop_mutex_;
+        std::condition_variable event_loop_cv_;
+
+        template<typename T>
+        T wait_future(unique_future<T>& future);
+        void wait_future_void(unique_future<void>& future);
 
         auto send_plan(const session_id_t& session,
                        components::logical_plan::node_ptr node,
                        components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;
-
-        actor_zeta::address_t manager_dispatcher_;
-        components::sql::transform::transformer transformer_;
-        log_t log_;
-        std::atomic_int i = 0;
-        std::mutex output_mtx_;
-        spin_lock input_mtx_;
-        std::condition_variable cv_;
-        impl::session_block_t blocker_;
     };
+
+    template<typename T>
+    T wrapper_dispatcher_t::wait_future(unique_future<T>& future) {
+        while (!future.available()) {
+            std::unique_lock<std::mutex> lock(event_loop_mutex_);
+            if (!future.available()) {
+                event_loop_cv_.wait_for(lock, std::chrono::milliseconds(10));
+            }
+        }
+
+        event_loop_cv_.notify_all();
+
+        return std::move(future).get();
+    }
+
 } // namespace otterbrix

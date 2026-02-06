@@ -6,7 +6,6 @@ set(${PROJECT_NAME}_HEADERS
 
 set(${PROJECT_NAME}_SOURCES
         dispatcher.cpp
-        session.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

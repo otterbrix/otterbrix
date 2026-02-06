@@ -330,6 +330,33 @@ namespace components::types {
         return std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_).get();
     }
 
+    class enum_logical_type_extension : public logical_type_extension {
+    public:
+        explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
+
+        const std::string& type_name() { return type_name_; }
+        const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
+
+        void serialize(serializer::msgpack_serializer_t* serializer) const override;
+        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+
+    private:
+        std::string type_name_;
+        std::vector<logical_value_t> entries_;
+    };
+
+    class user_logical_type_extension : public logical_type_extension {
+    public:
+        explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
+
+        void serialize(serializer::msgpack_serializer_t* serializer) const override;
+        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+
+    private:
+        std::string catalog_;
+        std::vector<logical_value_t> user_type_modifiers_;
+    };
+
 } // namespace components::types
 
 template<typename Stream>

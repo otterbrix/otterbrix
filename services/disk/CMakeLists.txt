@@ -8,7 +8,6 @@ set(${PROJECT_NAME}_HEADERS
         index_agent_disk.hpp
         manager_disk.hpp
         metadata.hpp
-        route.hpp
         result.hpp
 )
 
@@ -38,6 +37,7 @@ target_link_libraries(
     otterbrix::document
     otterbrix::collection
     otterbrix::b_plus_tree
+    otterbrix::locks
     spdlog::spdlog
     Boost::boost
     actor-zeta::actor-zeta

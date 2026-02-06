@@ -118,16 +118,16 @@ namespace components::vector {
         , type_(std::move(other.type_))
         , data_(other.data_)
         , validity_(std::move(other.validity_))
-        , buffer_(other.buffer_)
-        , auxiliary_(other.auxiliary_) {}
+        , buffer_(std::move(other.buffer_))
+        , auxiliary_(std::move(other.auxiliary_)) {}
 
     vector_t& vector_t::operator=(vector_t&& other) noexcept {
         vector_type_ = other.vector_type_;
         type_ = std::move(other.type_);
         data_ = other.data_;
         validity_ = std::move(other.validity_);
-        buffer_ = other.buffer_;
-        auxiliary_ = other.auxiliary_;
+        buffer_ = std::move(other.buffer_);
+        auxiliary_ = std::move(other.auxiliary_);
         return *this;
     }
 

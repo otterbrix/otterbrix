@@ -60,7 +60,7 @@ jobs:
       - name: Set env conan dependencies
         run: |
           pip install --user --retries=30 --upgrade pip
-          pip install --user --retries=30 conan==2.15.0
+          pip install --user --retries=30 conan==2.24.0
 
       - name: Add user local bin to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH

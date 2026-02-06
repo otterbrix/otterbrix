@@ -4,6 +4,7 @@
 
 #include <absl/crc/crc32c.h>
 #include <actor-zeta.hpp>
+#include <actor-zeta/spawn.hpp>
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/log/log.hpp>
 #include <string>
@@ -32,8 +33,7 @@ void test_insert_one_doc(wal_replicate_t* wal, std::pmr::memory_resource* resour
         auto document = gen_doc(num, resource);
         auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(document)});
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        wal->insert_one(session, address, data);
+        wal->insert_one(session, data);
     }
 }
 
@@ -42,8 +42,7 @@ void test_insert_one_row(wal_replicate_t* wal, std::pmr::memory_resource* resour
         auto chunk = gen_data_chunk(1, num, resource);
         auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(chunk)});
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        wal->insert_one(session, address, data);
+        wal->insert_one(session, data);
     }
 }
 
@@ -59,16 +58,8 @@ struct test_wal {
             config_wal.path = path;
             return config_wal;
         }())
-        , manager(actor_zeta::spawn_supervisor<manager_wal_replicate_t>(resource, scheduler, config, log))
-        , wal([this]() {
-            auto allocate_byte = sizeof(wal_replicate_t);
-            auto allocate_byte_alignof = alignof(wal_replicate_t);
-            void* buffer = manager->resource()->allocate(allocate_byte, allocate_byte_alignof);
-            auto* wal_ptr = new (buffer) wal_replicate_t(manager.get(), log, config);
-            return std::unique_ptr<wal_replicate_t, actor_zeta::pmr::deleter_t>(
-                wal_ptr,
-                actor_zeta::pmr::deleter_t(manager->resource()));
-        }()) {
+        , manager(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler, config, log))
+        , wal(actor_zeta::spawn<wal_replicate_t>(resource, manager.get(), log, config)) {
         log.set_level(log_t::level::trace);
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path);
@@ -167,8 +158,7 @@ TEST_CASE("services::wal::insert_many_empty_test") {
                                                                std::move(documents));
 
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->insert_many(session, address, data);
+        test_wal.wal->insert_many(session, data);
 
         wal_entry_t entry;
 
@@ -194,8 +184,7 @@ TEST_CASE("services::wal::insert_many_empty_test") {
             components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
 
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->insert_many(session, address, data);
+        test_wal.wal->insert_many(session, data);
 
         wal_entry_t entry;
 
@@ -229,8 +218,7 @@ TEST_CASE("services::wal::insert_many_test") {
                                                                    {database_name, collection_name},
                                                                    std::move(documents));
             auto session = components::session::session_id_t();
-            auto address = actor_zeta::base::address_t::address_t::empty_address();
-            test_wal.wal->insert_many(session, address, data);
+            test_wal.wal->insert_many(session, data);
         }
 
         std::size_t read_index = 0;
@@ -275,8 +263,7 @@ TEST_CASE("services::wal::insert_many_test") {
                                                                    {database_name, collection_name},
                                                                    std::move(chunk));
             auto session = components::session::session_id_t();
-            auto address = actor_zeta::base::address_t::address_t::empty_address();
-            test_wal.wal->insert_many(session, address, data);
+            test_wal.wal->insert_many(session, data);
         }
 
         std::size_t read_index = 0;
@@ -329,8 +316,7 @@ TEST_CASE("services::wal::delete_one_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_one(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->delete_one(session, address, data, params);
+        test_wal.wal->delete_one(session, data, params);
     }
 
     std::size_t index = 0;
@@ -368,8 +354,7 @@ TEST_CASE("services::wal::delete_many_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_many(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->delete_many(session, address, data, params);
+        test_wal.wal->delete_many(session, data, params);
     }
 
     std::size_t index = 0;
@@ -412,8 +397,7 @@ TEST_CASE("services::wal::update_one_test") {
 
         auto data = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->update_one(session, address, data, params);
+        test_wal.wal->update_one(session, data, params);
     }
 
     std::size_t index = 0;
@@ -464,8 +448,7 @@ TEST_CASE("services::wal::update_many_test") {
 
         auto data = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        auto address = actor_zeta::base::address_t::address_t::empty_address();
-        test_wal.wal->update_many(session, address, data, params);
+        test_wal.wal->update_many(session, data, params);
     }
 
     std::size_t index = 0;
@@ -585,4 +568,131 @@ TEST_CASE("services::wal::read_record") {
         }
         REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
     }
+}
+
+
+TEST_CASE("services::wal::large_insert_many_documents") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto test_wal = create_test_wal("/tmp/wal/large_insert_many_docs", &resource);
+
+    constexpr int kDocuments = 500;
+    std::pmr::vector<components::document::document_ptr> documents(&resource);
+    for (int num = 1; num <= kDocuments; ++num) {
+        documents.push_back(gen_doc(num, &resource));
+    }
+    auto data = components::logical_plan::make_node_insert(&resource,
+                                                           {database_name, collection_name},
+                                                           std::move(documents));
+    auto session = components::session::session_id_t();
+    test_wal.wal->insert_many(session, data);
+
+    wal_entry_t entry;
+    entry.size_ = test_wal.wal->test_read_size(0);
+
+    INFO("WAL record size: " << entry.size_ << " bytes");
+    REQUIRE(entry.size_ > 65535);
+
+    auto start = sizeof(size_tt);
+    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
+    auto output = test_wal.wal->test_read(start, finish);
+
+    auto crc32_index = entry.size_;
+    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
+
+    unpack(output, entry);
+    entry.crc32_ = read_crc32(output, entry.size_);
+    test_wal.scheduler->run();
+
+    REQUIRE(entry.crc32_ == crc32);
+    REQUIRE(entry.entry_->database_name() == database_name);
+    REQUIRE(entry.entry_->collection_name() == collection_name);
+    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_documents());
+    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents().size() == kDocuments);
+
+    auto& docs = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->documents();
+    REQUIRE(docs.front()->get_string("/_id") == gen_id(1, &resource));
+    REQUIRE(docs.front()->get_long("/count") == 1);
+    REQUIRE(docs.back()->get_string("/_id") == gen_id(kDocuments, &resource));
+    REQUIRE(docs.back()->get_long("/count") == kDocuments);
+}
+
+TEST_CASE("services::wal::large_insert_many_rows") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto test_wal = create_test_wal("/tmp/wal/large_insert_many_rows", &resource);
+
+    constexpr int kRows = 500;
+    auto chunk = gen_data_chunk(kRows, 0, &resource);
+    auto data = components::logical_plan::make_node_insert(&resource,
+                                                           {database_name, collection_name},
+                                                           std::move(chunk));
+    auto session = components::session::session_id_t();
+    test_wal.wal->insert_many(session, data);
+
+    wal_entry_t entry;
+    entry.size_ = test_wal.wal->test_read_size(0);
+
+    INFO("WAL record size: " << entry.size_ << " bytes");
+    REQUIRE(entry.size_ > 0);
+
+    auto start = sizeof(size_tt);
+    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
+    auto output = test_wal.wal->test_read(start, finish);
+
+    auto crc32_index = entry.size_;
+    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
+
+    unpack(output, entry);
+    entry.crc32_ = read_crc32(output, entry.size_);
+    test_wal.scheduler->run();
+
+    REQUIRE(entry.crc32_ == crc32);
+    REQUIRE(entry.entry_->database_name() == database_name);
+    REQUIRE(entry.entry_->collection_name() == collection_name);
+    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->uses_data_chunk());
+
+    const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
+    REQUIRE(read_chunk.size() == kRows);
+
+    REQUIRE(read_chunk.value(0, 0).value<int64_t>() == 1);
+    REQUIRE(read_chunk.value(1, 0).value<std::string_view>() == gen_id(1, &resource));
+    REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);
+    REQUIRE(read_chunk.value(1, kRows - 1).value<std::string_view>() == gen_id(kRows, &resource));
+}
+
+TEST_CASE("services::wal::large_record_read_write_cycle") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto test_wal = create_test_wal("/tmp/wal/large_read_write_cycle", &resource);
+
+    constexpr int kDocumentsPerBatch = 300;
+    constexpr int kBatches = 3;
+
+    for (int batch = 0; batch < kBatches; ++batch) {
+        std::pmr::vector<components::document::document_ptr> documents(&resource);
+        for (int num = 1; num <= kDocumentsPerBatch; ++num) {
+            documents.push_back(gen_doc(batch * kDocumentsPerBatch + num, &resource));
+        }
+        auto data = components::logical_plan::make_node_insert(&resource,
+                                                               {database_name, collection_name},
+                                                               std::move(documents));
+        auto session = components::session::session_id_t();
+        test_wal.wal->insert_many(session, data);
+    }
+
+    std::size_t index = 0;
+    for (int batch = 0; batch < kBatches; ++batch) {
+        auto record = test_wal.wal->test_read_record(index);
+        REQUIRE(record.data != nullptr);
+        REQUIRE(record.data->type() == node_type::insert_t);
+        REQUIRE(record.size > 65535);
+
+        auto& docs = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->documents();
+        REQUIRE(docs.size() == kDocumentsPerBatch);
+
+        int expected_first = batch * kDocumentsPerBatch + 1;
+        REQUIRE(docs.front()->get_long("/count") == expected_first);
+
+        index = test_wal.wal->test_next_record(index);
+    }
+
+    REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }

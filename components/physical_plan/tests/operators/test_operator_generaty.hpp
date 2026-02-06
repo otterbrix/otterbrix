@@ -4,9 +4,7 @@
 #include <components/physical_plan/collection/operators/operator_insert.hpp>
 #include <components/physical_plan/table/operators/operator_insert.hpp>
 #include <components/tests/generaty.hpp>
-#include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/collection/collection.hpp>
-#include <services/memory_storage/memory_storage.hpp>
 
 using namespace components;
 using namespace components::collection;
@@ -17,8 +15,6 @@ struct context_t final {
 
     context_t(log_t& log, std::vector<table::column_definition_t> columns, std::pmr::memory_resource* resource)
         : resource_(resource)
-        , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , memory_storage_(actor_zeta::spawn_supervisor<services::memory_storage_t>(resource_, scheduler_.get(), log))
         , collection_([this](auto& log, auto&& columns) {
             collection_full_name_t name;
             name.database = "TestDatabase";
@@ -40,8 +36,6 @@ struct context_t final {
     ~context_t() = default;
 
     std::pmr::memory_resource* resource_;
-    actor_zeta::scheduler_ptr scheduler_;
-    std::unique_ptr<services::memory_storage_t, actor_zeta::pmr::deleter_t> memory_storage_;
     std::unique_ptr<services::collection::context_collection_t, actor_zeta::pmr::deleter_t> collection_;
 };
 

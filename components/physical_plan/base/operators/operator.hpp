@@ -4,6 +4,7 @@
 #include <components/context/context.hpp>
 #include <components/physical_plan/base/operators/operator_data.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 namespace components::expressions {
     class key_t;
@@ -57,13 +58,19 @@ namespace components::base::operators {
         void on_resume(pipeline::context_t* pipeline_context);
         void async_wait();
 
+        virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
+
         bool is_executed() const;
         bool is_wait_sync_disk() const;
         bool is_root() const noexcept;
         void set_as_root() noexcept;
 
+        ptr find_waiting_operator();
+
         const collection_full_name_t& collection_name() const noexcept;
         services::collection::context_collection_t* context() noexcept;
+
+        std::pmr::memory_resource* resource() const noexcept;
 
         [[nodiscard]] ptr left() const noexcept;
         [[nodiscard]] ptr right() const noexcept;

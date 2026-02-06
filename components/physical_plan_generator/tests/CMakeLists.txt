@@ -13,8 +13,8 @@ target_link_libraries(
         non_thread_scheduler
         otterbrix::log
         otterbrix::logical_plan
-        otterbrix::collection
-        otterbrix::memory_storage
+        otterbrix::dispatcher
+        otterbrix::wal
         otterbrix::physical_plan
         otterbrix::cursor
         otterbrix::session
@@ -26,6 +26,24 @@ target_link_libraries(
         Boost::boost
         Catch2::Catch2
 )
+
+# Handle circular dependency: index <-> disk <-> collection
+# Use linker group on Linux to resolve mutual symbol references
+if(UNIX AND NOT APPLE)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        -Wl,--start-group
+        otterbrix::collection
+        otterbrix::disk
+        otterbrix::index
+        -Wl,--end-group
+    )
+else()
+    # macOS/other: link twice to resolve circular deps
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        otterbrix::collection
+        otterbrix::disk
+    )
+endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC
         ..

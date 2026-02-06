@@ -6,7 +6,7 @@ namespace components::base::operators {
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
     operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_(context)
+        : context_([](services::collection::context_collection_t* context){assert(context!=nullptr);return context;}(context))
         , type_(type) {}
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
@@ -67,7 +67,7 @@ namespace components::base::operators {
     services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
 
     std::pmr::memory_resource* operator_t::resource() const noexcept {
-        return context_ ? context_->resource() : std::pmr::get_default_resource();
+        return context_->resource();
     }
 
     operator_ptr operator_t::left() const noexcept { return left_; }

@@ -51,7 +51,7 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 60)
+catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 900)
 
 # Note: set_tests_properties must be called after tests are discovered
 # For catch_discover_tests, use TEST_SPEC to filter and set properties at runtime

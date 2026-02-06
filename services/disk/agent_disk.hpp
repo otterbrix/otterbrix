@@ -62,8 +62,8 @@ namespace services::disk {
         log_t log_;
         disk_t disk_;
 
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<result_load_t>> pending_load_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<result_load_t>> pending_load_;
     };
 
     using agent_disk_ptr = std::unique_ptr<agent_disk_t, actor_zeta::pmr::deleter_t>;

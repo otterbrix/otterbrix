@@ -26,8 +26,7 @@ namespace otterbrix {
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
-    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
-        (void)msg;
+    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {
     }
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }

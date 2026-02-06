@@ -108,8 +108,8 @@ namespace services::wal {
         crc32_t last_crc32_{0};
         file_ptr file_;
 
-        std::vector<unique_future<std::vector<record_t>>> pending_load_;
-        std::vector<unique_future<services::wal::id_t>> pending_id_;
+        std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
+        std::pmr::vector<unique_future<services::wal::id_t>> pending_id_;
 
         void poll_pending();
 

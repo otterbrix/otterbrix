@@ -7,7 +7,7 @@
 namespace services::disk {
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
-                                           manager_disk_t* manager,
+                                           manager_disk_t* /*manager*/, //TODO: need change signatures
                                            const path_t& path_db,
                                            collection::context_collection_t* collection,
                                            const index_name_t& index_name,
@@ -18,7 +18,6 @@ namespace services::disk {
                                                          collection->name().collection / index_name,
                                                      this->resource()))
         , collection_(collection) {
-        (void)manager;
         trace(log_, "index_agent_disk::create {}", index_name);
     }
 

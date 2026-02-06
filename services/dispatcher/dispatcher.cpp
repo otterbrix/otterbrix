@@ -38,7 +38,11 @@ namespace services::dispatcher {
         , run_fn_(std::move(run_fn))
         , catalog_(resource_ptr)
         , databases_(resource_ptr)
-        , collections_(resource_ptr) {
+        , collections_(resource_ptr)
+        , pending_void_(resource_ptr)
+        , pending_cursor_(resource_ptr)
+        , pending_size_(resource_ptr)
+        , pending_execute_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
     }
@@ -140,7 +144,7 @@ namespace services::dispatcher {
     void manager_dispatcher_t::init_from_state(
         std::pmr::set<database_name_t> databases,
         loader::document_map_t documents,
-        loader::schema_map_t schemas) {
+        loader::schema_map_t /*schemas*/) {
         trace(log_, "manager_dispatcher_t::init_from_state: populating storage");
 
         databases_ = std::move(databases);
@@ -166,7 +170,6 @@ namespace services::dispatcher {
                   full_name.database, full_name.collection, storage.size());
         }
 
-        (void)schemas;
         trace(log_, "manager_dispatcher_t::init_from_state: complete - {} collections", collections_.size());
     }
 

@@ -17,7 +17,6 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
 #include <services/disk/index_agent_disk.hpp>
-#include <services/disk/manager_disk.hpp>
 
 using namespace components::cursor;
 
@@ -40,7 +39,9 @@ namespace services::collection::executor {
         , wal_address_(std::move(wal_address))
         , disk_address_(std::move(disk_address))
         , plans_(this->resource())
-        , log_(log) {}
+        , log_(log)
+        , pending_void_(resource)
+        , pending_execute_(resource) {}
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
         poll_pending();
@@ -48,10 +49,6 @@ namespace services::collection::executor {
         switch (msg->command()) {
             case actor_zeta::msg_id<executor_t, &executor_t::execute_plan>: {
                 co_await actor_zeta::dispatch(this, &executor_t::execute_plan, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::create_documents>: {
-                co_await actor_zeta::dispatch(this, &executor_t::create_documents, msg);
                 break;
             }
             default:
@@ -160,23 +157,6 @@ namespace services::collection::executor {
         }
 
         co_return result;
-    }
-
-    executor_t::unique_future<void> executor_t::create_documents(
-        session_id_t session,
-        context_collection_t* collection,
-        std::pmr::vector<document_ptr> documents
-    ) {
-        trace(log_,
-              "executor_t::create_documents: {}::{}, count: {}, session: {}",
-              collection->name().database,
-              collection->name().collection,
-              documents.size(),
-              session.data());
-        for (const auto& doc : documents) {
-            collection->document_storage().emplace(components::document::get_document_id(doc), doc);
-        }
-        co_return;
     }
 
     void executor_t::traverse_plan_(const components::session::session_id_t& session,
@@ -519,22 +499,12 @@ namespace services::collection::executor {
             }
             co_return make_cursor(resource(), std::move(documents));
         } else {
-            auto data_ptr = output
-                ? std::make_unique<components::vector::data_chunk_t>(std::move(output->data_chunk()))
-                : std::make_unique<components::vector::data_chunk_t>(resource(), std::pmr::vector<components::types::complex_logical_type>{resource()});
             size_t size = 0;
             if (modified) {
                 size = std::get<std::pmr::vector<size_t>>(modified->ids()).size();
             } else {
                 size = collection->table_storage().table().calculate_size();
             }
-            auto [_wr2, wrf2] = actor_zeta::send(collection->disk(),
-                             &services::disk::manager_disk_t::write_data_chunk,
-                             session,
-                             collection->name().database,
-                             collection->name().collection,
-                             std::move(data_ptr));
-            co_await std::move(wrf2);
             components::vector::data_chunk_t chunk(resource(), {}, size);
             chunk.set_cardinality(size);
             co_return make_cursor(resource(), std::move(chunk));

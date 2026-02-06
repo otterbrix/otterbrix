@@ -49,13 +49,8 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::catalog::used_format_t data_format);
 
-        unique_future<void> create_documents(session_id_t session,
-                                             context_collection_t* collection,
-                                             std::pmr::vector<document_ptr> documents);
-
         using dispatch_traits = actor_zeta::dispatch_traits<
-            &executor_t::execute_plan,
-            &executor_t::create_documents
+            &executor_t::execute_plan
         >;
 
         auto make_type() const noexcept -> const char*;
@@ -93,8 +88,8 @@ namespace services::collection::executor {
         plan_storage_t plans_;
         log_t log_;
 
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<execute_result_t>> pending_execute_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<execute_result_t>> pending_execute_;
 
         void poll_pending();
     };

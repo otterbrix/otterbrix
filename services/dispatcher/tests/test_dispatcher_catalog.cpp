@@ -38,8 +38,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
                                            manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
-        manager_wal_->create_wal_worker();
-        manager_disk_->create_agent();
 
         manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
         manager_disk_->set_run_fn([this]{ scheduler_->run(100); });

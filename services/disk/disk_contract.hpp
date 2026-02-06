@@ -48,10 +48,7 @@ namespace services::disk {
                                             database_name_t database,
                                             collection_name_t collection,
                                             std::pmr::vector<components::document::document_ptr> documents);
-        actor_zeta::unique_future<void> write_data_chunk(session_id_t session,
-                                             database_name_t database,
-                                             collection_name_t collection,
-                                             std::unique_ptr<components::vector::data_chunk_t> data);
+
         actor_zeta::unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -103,7 +100,6 @@ namespace services::disk {
             &disk_contract::append_collection,
             &disk_contract::remove_collection,
             &disk_contract::write_documents,
-            &disk_contract::write_data_chunk,
             &disk_contract::remove_documents,
             &disk_contract::flush,
             &disk_contract::create_index_agent,

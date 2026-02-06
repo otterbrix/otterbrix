@@ -55,7 +55,7 @@ namespace services::wal {
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(address_pack pack);
-        void create_wal_worker();
+
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
         unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
         unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
@@ -105,9 +105,10 @@ namespace services::wal {
         std::vector<wal_replicate_ptr> dispatchers_;
         spin_lock lock_;
 
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<std::vector<record_t>>> pending_load_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
 
+        void create_wal_worker(int count_worker);
         void poll_pending();
 
         actor_zeta::behavior_t current_behavior_;
@@ -130,7 +131,6 @@ namespace services::wal {
 
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         void sync(address_pack pack);
-        void create_wal_worker();
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
         unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
@@ -173,7 +173,7 @@ namespace services::wal {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler::sharing_scheduler* scheduler_;
         log_t log_;
-        std::vector<unique_future<services::wal::id_t>> pending_void_;
+        std::pmr::vector<unique_future<services::wal::id_t>> pending_void_;
     };
 
 } //namespace services::wal

@@ -97,27 +97,21 @@ namespace otterbrix {
                                                                                      log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
-        wrapper_dispatcher_ =
-            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+        wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_address,
-                                                   manager_disk_address));
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_address,manager_disk_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-            wal_ptr->create_wal_worker();
         } else {
             wal_empty_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-            wal_empty_ptr->create_wal_worker();
         }
 
         if (disk_ptr) {
             disk_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
-            disk_ptr->create_agent();
         } else {
             disk_empty_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
-            disk_empty_ptr->create_agent();
         }
 
         trace(log_, "spaces::PHASE 2.2 - Populating catalog");

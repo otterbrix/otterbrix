@@ -67,15 +67,15 @@ namespace components::collection::operators {
             auto session_copy = pipeline_context->session;
             auto agent_copy = index->disk_agent();
             auto value_copy = value;
-            auto [needs_sched, future] = actor_zeta::send(index->disk_manager(),
+            auto [_, future] = actor_zeta::send(index->disk_manager(),
                              &services::disk::manager_disk_t::index_find_by_agent,
                              std::move(session_copy),
                              std::move(agent_copy),
                              std::move(value_copy),
                              expr_->type());
-            (void)needs_sched;
-            disk_future_ready_ = future.available();
-            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
+            bool tmp_disk_future_ready_ = future.available();
+            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result> >(std::move(future));
+            disk_future_ready_ = tmp_disk_future_ready_;
             async_wait();
         } else {
             trace(context_->log(), "index_scan: prepare result");

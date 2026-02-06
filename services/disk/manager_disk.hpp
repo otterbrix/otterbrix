@@ -65,7 +65,6 @@ namespace services::disk {
             Args&&... args);
 
         void sync(address_pack pack);
-        void create_agent();
 
         unique_future<result_load_t> load(session_id_t session);
         unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
@@ -84,10 +83,7 @@ namespace services::disk {
                                             database_name_t database,
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
-        unique_future<void> write_data_chunk(session_id_t session,
-                                             database_name_t database,
-                                             collection_name_t collection,
-                                             std::unique_ptr<components::vector::data_chunk_t> data);
+
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -136,7 +132,6 @@ namespace services::disk {
             &manager_disk_t::append_collection,
             &manager_disk_t::remove_collection,
             &manager_disk_t::write_documents,
-            &manager_disk_t::write_data_chunk,
             &manager_disk_t::remove_documents,
             &manager_disk_t::flush,
             &manager_disk_t::create_index_agent,
@@ -173,6 +168,7 @@ namespace services::disk {
         };
         std::pmr::unordered_map<session_id_t, removed_index_t> removed_indexes_;
 
+        void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
         void write_index_impl(const components::logical_plan::node_create_index_ptr& index);
         unique_future<void> load_indexes_impl(session_id_t session, actor_zeta::address_t dispatcher_address);
@@ -182,9 +178,9 @@ namespace services::disk {
         void remove_index_impl(const index_name_t& index_name);
         void remove_all_indexes_from_collection_impl(const collection_name_t& collection_name);
 
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<result_load_t>> pending_load_;
-        std::vector<unique_future<index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<result_load_t>> pending_load_;
+        std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;
 
         void poll_pending();
 
@@ -241,7 +237,6 @@ namespace services::disk {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
         void sync(address_pack pack);
-        void create_agent();
 
         unique_future<result_load_t> load(session_id_t session);
         unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
@@ -260,10 +255,7 @@ namespace services::disk {
                                             database_name_t database,
                                             collection_name_t collection,
                                             std::pmr::vector<document_ptr> documents);
-        unique_future<void> write_data_chunk(session_id_t session,
-                                             database_name_t database,
-                                             collection_name_t collection,
-                                             std::unique_ptr<components::vector::data_chunk_t> data);
+
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -313,7 +305,6 @@ namespace services::disk {
             &manager_disk_empty_t::append_collection,
             &manager_disk_empty_t::remove_collection,
             &manager_disk_empty_t::write_documents,
-            &manager_disk_empty_t::write_data_chunk,
             &manager_disk_empty_t::remove_documents,
             &manager_disk_empty_t::flush,
             &manager_disk_empty_t::create_index_agent,
@@ -330,9 +321,9 @@ namespace services::disk {
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler::sharing_scheduler* scheduler_;
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<result_load_t>> pending_load_;
-        std::vector<unique_future<index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<result_load_t>> pending_load_;
+        std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;
     };
 
 } //namespace services::disk

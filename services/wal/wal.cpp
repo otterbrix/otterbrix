@@ -34,7 +34,9 @@ namespace services::wal {
         : actor_zeta::basic_actor<wal_replicate_t>(resource)
         , log_(log.clone())
         , config_(std::move(config))
-        , fs_(core::filesystem::local_file_system_t()) {
+        , fs_(core::filesystem::local_file_system_t())
+        , pending_load_(resource)
+        , pending_id_(resource) {
         if (config_.sync_to_disk) {
             std::filesystem::create_directories(config_.path);
             file_ = open_file(fs_,
@@ -423,10 +425,9 @@ namespace services::wal {
         : wal_replicate_t(resource, manager, log, std::move(config)) {}
 
     wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(
-        session_id_t session,
+        session_id_t /*session*/,
         services::wal::id_t
     ) {
-        (void)session;
         co_return std::vector<record_t>{};
     }
 

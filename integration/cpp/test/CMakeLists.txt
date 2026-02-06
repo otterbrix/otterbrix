@@ -51,4 +51,12 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 900)
+catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 60)
+
+# Note: set_tests_properties must be called after tests are discovered
+# For catch_discover_tests, use TEST_SPEC to filter and set properties at runtime
+# set_tests_properties(
+#     "integration::cpp::test_disk_index::concurrent_queries"
+#     "integration::cpp::test_disk_index::concurrent_large_dataset"
+#     PROPERTIES TIMEOUT 1800
+# )

@@ -57,7 +57,12 @@ namespace components::index {
 
     const actor_zeta::address_t& index_t::disk_agent() const noexcept { return disk_agent_; }
 
-    void index_t::set_disk_agent(actor_zeta::address_t address) noexcept { disk_agent_ = std::move(address); }
+    const actor_zeta::address_t& index_t::disk_manager() const noexcept { return disk_manager_; }
+
+    void index_t::set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept {
+        disk_agent_ = std::move(agent);
+        disk_manager_ = std::move(manager);
+    }
 
     void index_t::clean_memory_to_new_elements(std::size_t count) noexcept { clean_memory_to_new_elements_impl(count); }
 

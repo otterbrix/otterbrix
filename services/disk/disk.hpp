@@ -3,7 +3,7 @@
 #include <components/document/document_id.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <filesystem>
-#include <wal/base.hpp>
+#include <services/wal/base.hpp>
 
 #include "metadata.hpp"
 

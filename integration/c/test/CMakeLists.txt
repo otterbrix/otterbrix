@@ -15,7 +15,6 @@ target_link_libraries(
 
         otterbrix::test_generaty
         otterbrix::log
-        otterbrix::memory_storage
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session

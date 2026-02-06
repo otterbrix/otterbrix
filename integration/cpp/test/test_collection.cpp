@@ -22,7 +22,6 @@ TEST_CASE("integration::cpp::test_collection") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    dispatcher->load();
 
     INFO("initialization") {
         {

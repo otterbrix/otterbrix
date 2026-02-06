@@ -10,6 +10,12 @@ namespace services::disk {
     struct result_collection_t {
         collection_name_t name;
         std::pmr::vector<components::document::document_ptr> documents;
+
+        result_collection_t() = default;
+        explicit result_collection_t(std::pmr::memory_resource* resource)
+            : documents(resource) {}
+        result_collection_t(std::pmr::memory_resource* resource, collection_name_t n)
+            : name(std::move(n)), documents(resource) {}
     };
 
     struct result_database_t {
@@ -17,7 +23,7 @@ namespace services::disk {
         std::vector<result_collection_t> collections;
 
         std::vector<collection_name_t> name_collections() const;
-        void set_collection(const std::vector<collection_name_t>& names);
+        void set_collection(std::pmr::memory_resource* resource, const std::vector<collection_name_t>& names);
     };
 
     class result_load_t {

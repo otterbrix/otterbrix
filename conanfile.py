@@ -19,7 +19,7 @@ class OtterbrixConan(ConanFile):
         self.requires("zlib/1.3.1@")
         self.requires("bzip2/1.0.8@")
         self.requires("magic_enum/0.8.1@")
-        self.requires("actor-zeta/1.0.0a12@")
+        self.requires("actor-zeta/1.1.1@")
 
     # options = {
     #     "actor-zeta/*:cxx_standard": [17],
@@ -38,8 +38,8 @@ class OtterbrixConan(ConanFile):
 
     def config_options(self):
         if self.settings.get_safe("compiler.cppstd") is None:
-            self.settings.cppstd = 17
-        self.options["actor-zeta/*"].cxx_standard = 17
+            self.settings.cppstd = 20
+        self.options["actor-zeta/*"].cxx_standard = 20
         self.options["actor-zeta/*"].fPIC = True
         self.options["actor-zeta/*"].exceptions_disable = False
         self.options["actor-zeta/*"].rtti_disable = False
@@ -47,8 +47,8 @@ class OtterbrixConan(ConanFile):
 
 
     def validate(self):
-        if not check_min_cppstd(self, 17):
-            raise ConanInvalidConfiguration("")
+        # C++20 required - validated by CMakeLists.txt
+        pass
 
     def layout(self):
         cmake_layout(self)
@@ -58,7 +58,7 @@ class OtterbrixConan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
-        tc.variables["CMAKE_CXX_STANDARD"] = "17"
+        tc.variables["CMAKE_CXX_STANDARD"] = "20"
         tc.generate()
 
         deps = CMakeDeps(self)

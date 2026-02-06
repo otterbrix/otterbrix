@@ -35,32 +35,32 @@ private:
 
 template<typename S, typename... Args>
 auto info(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->info(fmt::format(format_str, std::forward<Args>(args)...));
+    log->info(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto debug(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->debug(fmt::format(format_str, std::forward<Args>(args)...));
+    log->debug(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto warn(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->warn(fmt::format(format_str, std::forward<Args>(args)...));
+    log->warn(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto error(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->error(fmt::format(format_str, std::forward<Args>(args)...));
+    log->error(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto critical(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->critical(fmt::format(format_str, std::forward<Args>(args)...));
+    log->critical(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S, typename... Args>
 auto trace(log_t& log, const S& format_str, Args&&... args) -> void {
-    log->trace(fmt::format(format_str, std::forward<Args>(args)...));
+    log->trace(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
 template<typename S>

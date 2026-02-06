@@ -3,6 +3,7 @@
 #include <actor-zeta.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/document/document.hpp>
+#include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <variant>
 
@@ -33,14 +34,15 @@ namespace services::disk {
     };
 
     struct command_remove_documents_t {
+        using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
         database_name_t database;
         collection_name_t collection;
-        std::pmr::vector<components::document::document_id_t> documents;
+        document_ids_t documents;
     };
 
     struct command_drop_index_t {
         std::string index_name;
-        actor_zeta::base::address_t address;
+        actor_zeta::address_t address;
     };
 
     class command_t {

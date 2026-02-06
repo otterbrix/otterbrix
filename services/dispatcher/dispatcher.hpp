@@ -2,10 +2,17 @@
 
 #include <unordered_map>
 #include <variant>
+#include <functional>
 
 #include <actor-zeta.hpp>
+#include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/detail/future.hpp>
+#include <actor-zeta/detail/behavior_t.hpp>
+#include <actor-zeta/detail/queue/enqueue_result.hpp>
 
-#include <core/excutor.hpp>
+#include <core/executor.hpp>
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/catalog/catalog.hpp>
@@ -15,86 +22,96 @@
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/base/operators/operator_write_data.hpp>
 #include <services/disk/result.hpp>
+#include <services/disk/disk_contract.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
-
-#include "route.hpp"
-#include "session.hpp"
+#include <services/wal/wal_contract.hpp>
+#include <services/collection/executor.hpp>
+#include <services/collection/context_storage.hpp>
+#include <services/loader/loaded_state.hpp>
+#include <core/btree/btree.hpp>
 
 namespace services::dispatcher {
 
-    class manager_dispatcher_t;
+    class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
+        using database_storage_t = std::pmr::set<database_name_t>;
+        using collection_storage_t =
+            core::pmr::btree::btree_t<collection_full_name_t, std::unique_ptr<services::collection::context_collection_t>>;
 
-    class dispatcher_t final : public actor_zeta::basic_actor<dispatcher_t> {
     public:
+        template<typename T>
+        using unique_future = actor_zeta::unique_future<T>;
+
         using recomputed_types = components::base::operators::operator_write_data_t::updated_types_map_t;
 
-        dispatcher_t(manager_dispatcher_t*,
-                     actor_zeta::address_t&,
-                     actor_zeta::address_t&,
-                     actor_zeta::address_t&,
-                     log_t& log);
-        ~dispatcher_t() override;
+        using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
 
+        using run_fn_t = std::function<void()>;
+
+        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log,
+                             run_fn_t run_fn = []{ std::this_thread::yield(); });
+        ~manager_dispatcher_t();
+
+        void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
+
+        std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
+        actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        actor_zeta::behavior_t behavior();
+        [[nodiscard]]
+        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        void load(const components::session::session_id_t& session, actor_zeta::address_t sender);
-        void load_from_disk_result(const components::session::session_id_t& session,
-                                   const services::disk::result_load_t& result);
-        void load_from_memory_storage_result(const components::session::session_id_t& session);
-        void load_from_wal_result(const components::session::session_id_t& session,
-                                  std::vector<services::wal::record_t>& records);
-        void execute_plan(const components::session::session_id_t& session,
-                          components::logical_plan::node_ptr plan,
-                          components::logical_plan::parameter_node_ptr params,
-                          actor_zeta::address_t address);
-        void execute_plan_finish(const components::session::session_id_t& session,
-                                 components::cursor::cursor_t_ptr cursor);
-        void execute_plan_delete_finish(const components::session::session_id_t& session,
-                                        components::cursor::cursor_t_ptr cursor,
-                                        recomputed_types updates);
-        void size(const components::session::session_id_t& session,
-                  std::string& database_name,
-                  std::string& collection,
-                  actor_zeta::base::address_t sender);
-        void size_finish(const components::session::session_id_t&, components::cursor::cursor_t_ptr&& cursor);
-        void close_cursor(const components::session::session_id_t& session);
-        void wal_success(const components::session::session_id_t& session, services::wal::id_t wal_id);
-        bool load_from_wal_in_progress(const components::session::session_id_t& session);
+        void sync(sync_pack pack);
 
-        const components::catalog::catalog& current_catalog();
+        void init_from_state(
+            std::pmr::set<database_name_t> databases,
+            loader::document_map_t documents,
+            loader::schema_map_t schemas);
+
+        components::catalog::catalog& mutable_catalog() { return catalog_; }
+
+        unique_future<components::cursor::cursor_t_ptr> execute_plan(
+            components::session::session_id_t session,
+            components::logical_plan::node_ptr plan,
+            components::logical_plan::parameter_node_ptr params);
+        unique_future<size_t> size(components::session::session_id_t session,
+                                   std::string database_name,
+                                   std::string collection);
+        unique_future<components::cursor::cursor_t_ptr> get_schema(
+            components::session::session_id_t session,
+            std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
+        unique_future<void> close_cursor(components::session::session_id_t session);
+
+        using dispatch_traits = actor_zeta::dispatch_traits<
+            &manager_dispatcher_t::execute_plan,
+            &manager_dispatcher_t::size,
+            &manager_dispatcher_t::get_schema,
+            &manager_dispatcher_t::close_cursor
+        >;
+
+        const components::catalog::catalog& current_catalog() const { return catalog_; }
 
     private:
-        // Behaviors
-        actor_zeta::behavior_t load_;
-        actor_zeta::behavior_t load_from_disk_result_;
-        actor_zeta::behavior_t load_from_memory_storage_result_;
-        actor_zeta::behavior_t load_from_wal_result_;
-        actor_zeta::behavior_t execute_plan_;
-        actor_zeta::behavior_t execute_plan_finish_;
-        actor_zeta::behavior_t execute_plan_delete_finish_;
-        actor_zeta::behavior_t size_;
-        actor_zeta::behavior_t size_finish_;
-        actor_zeta::behavior_t close_cursor_;
-        actor_zeta::behavior_t wal_success_;
-
+        std::pmr::memory_resource* resource_;
+        actor_zeta::scheduler_raw scheduler_;
         log_t log_;
+        run_fn_t run_fn_;
         components::catalog::catalog catalog_;
-        actor_zeta::address_t manager_dispatcher_;
-        actor_zeta::address_t memory_storage_;
-        actor_zeta::address_t manager_wal_;
-        actor_zeta::address_t manager_disk_;
-        session_storage_t session_to_address_;
+
+        database_storage_t databases_;
+        collection_storage_t collections_;
+        services::collection::executor::executor_ptr executor_{nullptr,
+                                                               actor_zeta::pmr::deleter_t(std::pmr::null_memory_resource())};
+        actor_zeta::address_t executor_address_{actor_zeta::address_t::empty_address()};
+
+        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
+
+        spin_lock lock_;
+
         std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;
-        std::unordered_map<components::session::session_id_t, components::cursor::cursor_t_ptr>
-            result_storage_; // to be able return result from wal_success
-        disk::result_load_t load_result_;
+
         recomputed_types update_result_;
-        components::session::session_id_t load_session_;
-        services::wal::id_t last_wal_id_{0};
-        std::size_t load_count_answers_{0};
 
         components::cursor::cursor_t_ptr check_namespace_exists(const components::catalog::table_id id) const;
         components::cursor::cursor_t_ptr check_collection_exists(const components::catalog::table_id id) const;
@@ -104,80 +121,26 @@ namespace services::dispatcher {
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
         void update_catalog(components::logical_plan::node_ptr node);
-        // TODO figure out what to do with records
-        std::vector<services::wal::record_t> records_;
-    };
 
-    using dispatcher_ptr = std::unique_ptr<dispatcher_t, actor_zeta::pmr::deleter_t>;
+        services::collection::executor::execute_result_t create_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t drop_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t create_collection_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t drop_collection_(components::logical_plan::node_ptr logical_plan);
 
-    class manager_dispatcher_t final : public actor_zeta::cooperative_supervisor<manager_dispatcher_t> {
-    public:
-        using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
+        unique_future<services::collection::executor::execute_result_t> execute_plan_impl(
+            components::session::session_id_t session,
+            components::logical_plan::node_ptr logical_plan,
+            components::logical_plan::storage_parameters parameters,
+            components::catalog::used_format_t used_format);
 
-        enum class unpack_rules : uint64_t
-        {
-            memory_storage = 0,
-            manager_wal = 1,
-            manager_disk = 2
-        };
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
+        std::pmr::vector<unique_future<size_t>> pending_size_;
+        std::pmr::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
 
-        void sync(address_pack& pack) {
-            memory_storage_ = std::get<static_cast<uint64_t>(unpack_rules::memory_storage)>(pack);
-            manager_wal_ = std::get<static_cast<uint64_t>(unpack_rules::manager_wal)>(pack);
-            manager_disk_ = std::get<static_cast<uint64_t>(unpack_rules::manager_disk)>(pack);
-        }
+        void poll_pending();
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
-
-        ~manager_dispatcher_t() override;
-
-        auto make_type() const noexcept -> const char*;
-
-        actor_zeta::behavior_t behavior();
-
-        auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t*;
-
-        ///-----
-        void create_dispatcher() {
-            actor_zeta::send(address(), address(), handler_id(route::create), components::session::session_id_t());
-        }
-        ///------
-        void create(const components::session::session_id_t& session);
-        void load(const components::session::session_id_t& session);
-        void execute_plan(const components::session::session_id_t& session,
-                          components::logical_plan::node_ptr plan,
-                          components::logical_plan::parameter_node_ptr params);
-        void
-        size(const components::session::session_id_t& session, std::string& database_name, std::string& collection);
-        void close_cursor(const components::session::session_id_t& session);
-
-        const components::catalog::catalog& current_catalog();
-
-        void get_schema(const components::session::session_id_t& session,
-                        const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids);
-
-    protected:
-        auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override;
-
-    private:
-        // Behaviors
-        actor_zeta::behavior_t create_;
-        actor_zeta::behavior_t load_;
-        actor_zeta::behavior_t execute_plan_;
-        actor_zeta::behavior_t size_;
-        actor_zeta::behavior_t schema_;
-        actor_zeta::behavior_t close_cursor_;
-        actor_zeta::behavior_t sync_;
-
-        spin_lock lock_;
-        log_t log_;
-        actor_zeta::scheduler_raw e_;
-        actor_zeta::address_t memory_storage_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t manager_disk_ = actor_zeta::address_t::empty_address();
-        std::vector<dispatcher_ptr> dispatchers_;
-
-        auto dispatcher() -> actor_zeta::address_t;
+        actor_zeta::behavior_t current_behavior_;
     };
 
 } // namespace services::dispatcher

@@ -21,6 +21,7 @@ target_link_libraries(
         otterbrix::cursor
         otterbrix::context
         otterbrix::logical_plan
+        otterbrix::log
         dl
         Boost::boost
         magic_enum::magic_enum

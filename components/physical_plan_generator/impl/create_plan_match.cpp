@@ -34,9 +34,16 @@ namespace services::collection::planner::impl {
         //return boost::intrusive_ptr(new components::collection::operators::primary_key_scan(context_));
         //}
         if (context_) {
-            if (is_can_index_find_by_predicate(expr->type()) &&
-                components::index::search_index(context_->index_engine(), {expr->primary_key()})) {
-                return boost::intrusive_ptr(new components::collection::operators::index_scan(context_, expr, limit));
+            if (is_can_index_find_by_predicate(expr->type())) {
+                auto* found_index = components::index::search_index(context_->index_engine(), {expr->primary_key()});
+                bool index_exist  = static_cast<bool>(found_index);
+                trace(context_->log(), "create_plan_match: key={}, is_can_index={}, found_index={}",
+                      expr->primary_key().as_string(),
+                      is_can_index_find_by_predicate(expr->type()),
+                      index_exist);
+                if (index_exist) {
+                    return boost::intrusive_ptr(new components::collection::operators::index_scan(context_, expr, limit));
+                }
             }
             auto predicate = components::collection::operators::predicates::create_predicate(expr);
             return boost::intrusive_ptr(

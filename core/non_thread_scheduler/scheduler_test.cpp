@@ -2,50 +2,46 @@
 
 namespace core::non_thread_scheduler {
 
-    namespace {
-
-        class dummy_worker : public actor_zeta::execution_unit {
-        public:
-            dummy_worker(scheduler_test_t* parent)
-                : parent_(parent) {}
-
-            void execute_later(actor_zeta::scheduler::resumable* ptr) override { parent_->jobs.push_back(ptr); }
-
-        private:
-            scheduler_test_t* parent_;
-        };
-
-    } // namespace
-
     scheduler_test_t::scheduler_test_t(std::size_t num_worker_threads, std::size_t max_throughput)
-        : super(num_worker_threads, max_throughput) {}
+        : base_t(num_worker_threads, max_throughput) {}
 
     clock_test& scheduler_test_t::clock() noexcept { return clock_; }
 
-    void scheduler_test_t::start() {}
+    void scheduler_test_t::start() {
+    }
 
     void scheduler_test_t::stop() {
         while (run() > 0) {
             clock_.trigger_timeouts();
         }
+        auto& queue = data().queue;
+        std::unique_lock<std::mutex> guard(data().lock);
+        while (!queue.empty()) {
+            queue.pop_front();
+        }
     }
 
-    void scheduler_test_t::enqueue(actor_zeta::scheduler::resumable* ptr) { jobs.push_back(ptr); }
-
     bool scheduler_test_t::run_once() {
-        if (jobs.empty()) {
+        auto& queue = data().queue;
+        std::unique_lock<std::mutex> guard(data().lock);
+
+        if (queue.empty()) {
             return false;
         }
-        auto job = jobs.front();
-        jobs.pop_front();
-        dummy_worker worker{this};
-        switch (job->resume(&worker, 1)) {
+
+        auto job = queue.pop_front();
+        guard.unlock();
+
+        auto result = job->resume(max_throughput());
+        switch (result.result) {
             case actor_zeta::scheduler::resume_result::resume:
-                jobs.push_front(job);
+                {
+                    std::unique_lock<std::mutex> re_guard(data().lock);
+                    data().queue.push_back(job.release());
+                }
                 break;
             case actor_zeta::scheduler::resume_result::done:
             case actor_zeta::scheduler::resume_result::awaiting:
-                intrusive_ptr_release(job);
                 break;
             case actor_zeta::scheduler::resume_result::shutdown:
                 break;
@@ -61,7 +57,8 @@ namespace core::non_thread_scheduler {
         return res;
     }
 
-    size_t scheduler_test_t::advance_time(actor_zeta::clock::clock_t::duration_type time) {
+    size_t scheduler_test_t::advance_time(clock_test::duration_type time) {
         return clock_.advance_time(time);
     }
+
 } // namespace core::non_thread_scheduler

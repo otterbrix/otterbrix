@@ -1,5 +1,7 @@
 #include "clock_test.hpp"
 
+#include <cassert>
+
 namespace core::non_thread_scheduler {
 
     clock_test::clock_test()

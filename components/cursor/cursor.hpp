@@ -35,6 +35,7 @@ namespace components::cursor {
         create_physical_plan_error = 8,
         schema_error = 9,
         incompatible_storage_types = 10,
+        index_not_exists = 11,
     };
 
     struct error_t {

@@ -11,11 +11,10 @@ namespace services::disk {
         return names;
     }
 
-    void result_database_t::set_collection(const std::vector<collection_name_t>& names) {
-        collections.resize(names.size());
-        std::size_t i = 0;
+    void result_database_t::set_collection(std::pmr::memory_resource* resource, const std::vector<collection_name_t>& names) {
+        collections.reserve(names.size());
         for (const auto& name : names) {
-            collections[i++] = {name, {}};
+            collections.emplace_back(resource, name);
         }
     }
 

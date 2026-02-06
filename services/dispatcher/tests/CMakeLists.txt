@@ -15,7 +15,6 @@ target_link_libraries(
         otterbrix::sql
         otterbrix::wal
         otterbrix::disk
-        otterbrix::memory_storage
         otterbrix::test_generaty
 
         Catch2::Catch2

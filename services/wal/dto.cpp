@@ -20,7 +20,9 @@ namespace services::wal {
     }
 
     void append_size(buffer_t& storage, size_tt size) {
-        storage.push_back((buffer_element_t((size >> 8 & 0xff))));
+        storage.push_back(buffer_element_t((size >> 24) & 0xff));
+        storage.push_back(buffer_element_t((size >> 16) & 0xff));
+        storage.push_back(buffer_element_t((size >> 8) & 0xff));
         storage.push_back(buffer_element_t(size & 0xff));
     }
 
@@ -29,24 +31,28 @@ namespace services::wal {
         std::copy(ptr, ptr + size, std::back_inserter(storage));
     }
 
-    crc32_t read_crc32(buffer_t& input, int index_start) {
+    crc32_t read_crc32(buffer_t& input, size_tt index_start) {
         crc32_t crc32_tmp = 0;
-        crc32_tmp = 0xff000000 & (uint32_t(input[size_t(index_start)]) << 24);
-        crc32_tmp |= 0x00ff0000 & (uint32_t(input[size_t(index_start) + 1]) << 16);
-        crc32_tmp |= 0x0000ff00 & (uint32_t(input[size_t(index_start) + 2]) << 8);
-        crc32_tmp |= 0x000000ff & (uint32_t(input[size_t(index_start) + 3]));
+        crc32_tmp = 0xff000000 & (uint32_t(input[index_start]) << 24);
+        crc32_tmp |= 0x00ff0000 & (uint32_t(input[index_start + 1]) << 16);
+        crc32_tmp |= 0x0000ff00 & (uint32_t(input[index_start + 2]) << 8);
+        crc32_tmp |= 0x000000ff & (uint32_t(input[index_start + 3]));
         return crc32_tmp;
     }
 
-    buffer_t read_payload(buffer_t& input, int index_start, int index_stop) {
-        buffer_t buffer(input.begin() + index_start, input.begin() + index_stop);
+    buffer_t read_payload(buffer_t& input, size_tt index_start, size_tt index_stop) {
+        buffer_t buffer(input.begin() + static_cast<std::ptrdiff_t>(index_start),
+                        input.begin() + static_cast<std::ptrdiff_t>(index_stop));
         return buffer;
     }
 
-    size_tt read_size_impl(char* input, int index_start) {
-        const size_tt byte0 = static_cast<uint8_t>(input[index_start]);
-        const size_tt byte1 = static_cast<uint8_t>(input[index_start + 1]);
-        const size_tt size_tmp = static_cast<size_tt>((byte0 << 8) | byte1);
+
+    size_tt read_size_impl(buffer_t& input, size_tt index_start) {
+        size_tt size_tmp = 0;
+        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
+        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
+        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
+        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
         return size_tmp;
     }
 

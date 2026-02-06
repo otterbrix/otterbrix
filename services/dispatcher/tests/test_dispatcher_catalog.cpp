@@ -2,17 +2,16 @@
 
 #include "../dispatcher.hpp"
 
+#include <actor-zeta/spawn.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
+#include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
-#include <core/system_command.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/disk/route.hpp>
-#include <services/memory_storage/memory_storage.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 using namespace services;
@@ -23,114 +22,70 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
-struct test_dispatcher : actor_zeta::cooperative_supervisor<test_dispatcher> {
+struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     test_dispatcher(std::pmr::memory_resource* resource)
-        : actor_zeta::cooperative_supervisor<test_dispatcher>(resource)
+        : actor_zeta::actor::actor_mixin<test_dispatcher>()
+        , resource_(resource)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn_supervisor<manager_dispatcher_t>(resource, scheduler_, log_))
-        , manager_disk_(actor_zeta::spawn_supervisor<manager_disk_empty_t>(resource, scheduler_))
-        , manager_wal_(actor_zeta::spawn_supervisor<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
-        , memory_storage_(actor_zeta::spawn_supervisor<memory_storage_t>(resource, scheduler_, log_))
-        , transformer_(resource)
-        , execute_plan_finish_(actor_zeta::make_behavior(resource,
-                                                         handler_id(dispatcher::route::execute_plan),
-                                                         this,
-                                                         &test_dispatcher::execute_plan_finish))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
+        , disk_config_("/tmp/test_dispatcher_disk")
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
+        , transformer_(resource) {
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
+                                                   manager_disk_->address()));
+        manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
+                                           manager_dispatcher_->address()));
+        manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
 
-    {
-        actor_zeta::send(manager_dispatcher_->address(),
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(memory_storage_->address(),
-                                         actor_zeta::address_t(manager_wal_->address()),
-                                         actor_zeta::address_t(manager_disk_->address())));
-
-        actor_zeta::send(
-            manager_wal_->address(),
-            actor_zeta::address_t::empty_address(),
-            core::handler_id(core::route::sync),
-            std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
-
-        actor_zeta::send(manager_disk_->address(),
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(manager_dispatcher_->address()));
-
-        actor_zeta::send(memory_storage_,
-                         actor_zeta::address_t::empty_address(),
-                         core::handler_id(core::route::sync),
-                         std::make_tuple(manager_dispatcher_->address(), manager_disk_->address()));
-
-        actor_zeta::send(manager_wal_->address(),
-                         actor_zeta::address_t::empty_address(),
-                         wal::handler_id(wal::route::create));
-
-        actor_zeta::send(manager_disk_->address(),
-                         actor_zeta::address_t::empty_address(),
-                         disk::handler_id(disk::route::create_agent));
-
-        manager_dispatcher_->create_dispatcher();
+        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
+        manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
     }
 
-    ~test_dispatcher() { delete scheduler_; }
-
-    auto make_type() const noexcept -> const char* { return "test_dispatcher"; }
-
-    auto make_scheduler() noexcept -> actor_zeta::scheduler_abstract_t* { return nullptr; }
-
-    auto enqueue_impl(actor_zeta::message_ptr msg, actor_zeta::execution_unit*) -> void override {
-        set_current_message(std::move(msg));
-        behavior()(current_message());
+    ~test_dispatcher() {
+        scheduler_->stop();
+        std::filesystem::remove_all("/tmp/test_dispatcher_disk");
+        delete scheduler_;
     }
 
-    actor_zeta::behavior_t behavior() {
-        return actor_zeta::make_behavior(resource(), [this](actor_zeta::message* msg) -> void {
-            switch (msg->command()) {
-                case handler_id(dispatcher::route::execute_plan_finish):
-                    execute_plan_finish_(msg);
-                    break;
-            }
-        });
-    }
-
-    void execute_plan_finish(components::session::session_id_t&, cursor_t_ptr result) {
-        if (static_cast<bool>(assertion_)) {
-            assertion_(result, const_cast<catalog&>(manager_dispatcher_->current_catalog()));
-        }
-    }
+    std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     void step() { scheduler_->run(); }
 
     void step_with_assertion(std::function<void(cursor_t_ptr, catalog&)> assertion) {
-        assertion_ = std::move(assertion);
         step();
+        if (pending_future_ && pending_future_->valid() && pending_future_->available()) {
+            auto result = std::move(*pending_future_).get();
+            pending_future_.reset();
+            assertion(result, const_cast<catalog&>(manager_dispatcher_->current_catalog()));
+        }
     }
 
     void execute_sql(const std::string& query) {
-        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        std::pmr::monotonic_buffer_resource parser_arena(resource_);
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         auto view = std::get<components::sql::transform::result_view>(
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
-        actor_zeta::send(manager_dispatcher_,
-                         address(),
-                         dispatcher::handler_id(dispatcher::route::execute_plan),
-                         session_id_t{},
-                         std::move(view.node),
-                         std::move(view.params));
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+                                                  &manager_dispatcher_t::execute_plan,
+                                                  session_id_t{},
+                                                  std::move(view.node),
+                                                  std::move(view.params));
+        pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
     }
 
 private:
+    std::pmr::memory_resource* resource_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
-    std::unique_ptr<manager_disk_empty_t, actor_zeta::pmr::deleter_t> manager_disk_;
+    configuration::config_disk disk_config_;
+    std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    std::unique_ptr<memory_storage_t, actor_zeta::pmr::deleter_t> memory_storage_;
     components::sql::transform::transformer transformer_;
-    actor_zeta::behavior_t execute_plan_finish_;
-    std::function<void(cursor_t_ptr, catalog&)> assertion_;
+    std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };
 
 TEST_CASE("services::dispatcher::schemeful_operations") {

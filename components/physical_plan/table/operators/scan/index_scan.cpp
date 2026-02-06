@@ -1,6 +1,8 @@
 #include "index_scan.hpp"
-#include <components/index/disk/route.hpp>
+#include <services/disk/index_agent_disk.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/collection/collection.hpp>
+#include <core/executor.hpp>
 
 namespace components::table::operators {
 
@@ -80,13 +82,22 @@ namespace components::table::operators {
         trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
         context_->table_storage().table();
-        if (index && index->is_disk()) {
-            trace(context_->log(), "index_scan: send query into disk");
+        if (index && index->is_disk() && index->disk_manager()) {
+            trace(context_->log(), "index_scan: send query into disk (future-based)");
             auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            pipeline_context->send(index->disk_agent(),
-                                   services::index::handler_id(services::index::route::find),
-                                   value,
-                                   expr_->type());
+            auto session_copy = pipeline_context->session;
+            auto agent_copy = index->disk_agent();
+            auto value_copy = value;
+            auto [_, future] = actor_zeta::send(index->disk_manager(),
+                                           &services::disk::manager_disk_t::index_find_by_agent,
+                                           std::move(session_copy),
+                                           std::move(agent_copy),
+                                           std::move(value_copy),
+                                           expr_->type());
+
+            bool tmp_disk_future_ready_ = future.available();
+            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
+            disk_future_ready_ = tmp_disk_future_ready_;
             async_wait();
         } else {
             trace(context_->log(), "index_scan: prepare result");
@@ -109,17 +120,35 @@ namespace components::table::operators {
     void index_scan::on_resume_impl(pipeline::context_t* pipeline_context) {
         trace(context_->log(), "resume index_scan by field \"{}\"", expr_->primary_key().as_string());
         auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
+
+        if (index && index->is_disk() && !disk_result_.empty()) {
+            trace(context_->log(), "index_scan: disk result received, size: {}", disk_result_.size());
+        }
+
         trace(context_->log(), "index_scan: prepare result");
         if (!limit_.check(0)) {
             return; //limit = 0
         }
         if (index) {
-            output_ =
-                search_by_index(index, expr_, limit_, &pipeline_context->parameters, context_->table_storage().table());
+            output_ = search_by_index(index,
+                                      expr_,
+                                      limit_,
+                                      &pipeline_context->parameters,
+                                      context_->table_storage().table());
         } else {
             output_ = base::operators::make_operator_data(context_->resource(),
                                                           context_->table_storage().table().copy_types());
         }
+    }
+
+    actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
+        if (disk_future_) {
+            trace(context_->log(), "index_scan: await disk future (unique_future)");
+            disk_result_ = co_await std::move(*disk_future_);
+            trace(context_->log(), "index_scan: disk future resolved, result size: {}", disk_result_.size());
+        }
+        on_resume(ctx);
+        co_return;
     }
 
 } // namespace components::table::operators

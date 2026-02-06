@@ -6,7 +6,7 @@ namespace components::base::operators {
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
     operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_(context)
+        : context_([](services::collection::context_collection_t* context){assert(context!=nullptr);return context;}(context))
         , type_(type) {}
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
@@ -43,9 +43,32 @@ namespace components::base::operators {
 
     void operator_t::set_as_root() noexcept { root = true; }
 
+    operator_t::ptr operator_t::find_waiting_operator() {
+        if (is_wait_sync_disk()) {
+            return ptr(this);
+        }
+        if (left_) {
+            auto found = left_->find_waiting_operator();
+            if (found) {
+                return found;
+            }
+        }
+        if (right_) {
+            auto found = right_->find_waiting_operator();
+            if (found) {
+                return found;
+            }
+        }
+        return nullptr;
+    }
+
     const collection_full_name_t& operator_t::collection_name() const noexcept { return context_->name(); }
 
     services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
+
+    std::pmr::memory_resource* operator_t::resource() const noexcept {
+        return context_->resource();
+    }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
 
@@ -78,6 +101,10 @@ namespace components::base::operators {
     void operator_t::on_resume_impl(pipeline::context_t*) {}
 
     void operator_t::on_prepare_impl() {}
+
+    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
+        co_return;
+    }
 
     read_only_operator_t::read_only_operator_t(services::collection::context_collection_t* collection,
                                                operator_type type)

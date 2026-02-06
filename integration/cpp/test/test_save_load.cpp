@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
+#include <actor-zeta/spawn.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <services/disk/disk.hpp>
@@ -67,7 +68,6 @@ TEST_CASE("integration::cpp::test_save_load::disk") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {
@@ -111,118 +111,116 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     }
 
     SECTION("extending wal") {
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
+        auto resource = std::pmr::synchronized_pool_resource();
         auto log = initialization_logger("python", config.log.path.c_str());
         log.set_level(config.log.level);
-        auto manager = actor_zeta::spawn_supervisor<services::wal::manager_wal_replicate_t>(dispatcher->resource(),
-                                                                                            nullptr,
-                                                                                            config.wal,
-                                                                                            log);
-        services::wal::wal_replicate_t wal(manager.get(), log, config.wal);
+        auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
+                                                                                  static_cast<actor_zeta::scheduler_raw>(nullptr),
+                                                                                  config.wal,
+                                                                                  log);
+        auto wal = actor_zeta::spawn<services::wal::wal_replicate_t>(&resource, manager.get(), log, config.wal);
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {
                 auto col_name = collection_name + "_" + std::to_string(n_col);
                 uint n_doc = count_documents + 1;
-                auto doc = gen_doc(int(n_doc), dispatcher->resource());
+                auto doc = gen_doc(int(n_doc), &resource);
                 doc->set("number", gen_doc_number(n_db, n_col, n_doc));
                 auto session = otterbrix::session_id_t();
-                auto address = actor_zeta::address_t::empty_address();
                 auto insert_one =
-                    components::logical_plan::make_node_insert(dispatcher->resource(), {db_name, col_name}, {doc});
-                wal.insert_one(session, address, insert_one);
+                    components::logical_plan::make_node_insert(&resource, {db_name, col_name}, {doc});
+                wal->insert_one(session, insert_one);
 
                 {
                     auto match = components::logical_plan::make_node_match(
-                        dispatcher->resource(),
+                        &resource,
                         {db_name, col_name},
                         components::expressions::make_compare_expression(
-                            dispatcher->resource(),
+                            &resource,
                             compare_type::eq,
-                            key{dispatcher->resource(), "count", side_t::left},
+                            key{&resource, "count", side_t::left},
                             core::parameter_id_t{1}));
-                    auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+                    auto params = components::logical_plan::make_parameter_node(&resource);
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(1));
-                    auto delete_one = components::logical_plan::make_node_delete_one(dispatcher->resource(),
+                    auto delete_one = components::logical_plan::make_node_delete_one(&resource,
                                                                                      {db_name, col_name},
                                                                                      match);
-                    wal.delete_one(session, address, delete_one, params);
+                    wal->delete_one(session, delete_one, params);
                 }
 
                 {
-                    auto expr = components::expressions::make_compare_union_expression(dispatcher->resource(),
+                    auto expr = components::expressions::make_compare_union_expression(&resource,
                                                                                        compare_type::union_and);
                     expr->append_child(components::expressions::make_compare_expression(
-                        dispatcher->resource(),
+                        &resource,
                         compare_type::gte,
-                        key{dispatcher->resource(), "count", side_t::left},
+                        key{&resource, "count", side_t::left},
                         core::parameter_id_t{1}));
                     expr->append_child(components::expressions::make_compare_expression(
-                        dispatcher->resource(),
+                        &resource,
                         compare_type::lte,
-                        key{dispatcher->resource(), "count", side_t::left},
+                        key{&resource, "count", side_t::left},
                         core::parameter_id_t{2}));
-                    auto match = components::logical_plan::make_node_match(dispatcher->resource(),
+                    auto match = components::logical_plan::make_node_match(&resource,
                                                                            {db_name, col_name},
                                                                            std::move(expr));
-                    auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+                    auto params = components::logical_plan::make_parameter_node(&resource);
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(2));
                     params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(4));
-                    auto delete_many = components::logical_plan::make_node_delete_many(dispatcher->resource(),
+                    auto delete_many = components::logical_plan::make_node_delete_many(&resource,
                                                                                        {db_name, col_name},
                                                                                        match);
-                    wal.delete_many(session, address, delete_many, params);
+                    wal->delete_many(session, delete_many, params);
                 }
 
                 {
                     auto match = components::logical_plan::make_node_match(
-                        dispatcher->resource(),
+                        &resource,
                         {db_name, col_name},
                         components::expressions::make_compare_expression(
-                            dispatcher->resource(),
+                            &resource,
                             compare_type::eq,
-                            key{dispatcher->resource(), "count", side_t::left},
+                            key{&resource, "count", side_t::left},
                             core::parameter_id_t{1}));
-                    auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+                    auto params = components::logical_plan::make_parameter_node(&resource);
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
                     params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(0));
                     components::expressions::update_expr_ptr update_expr =
                         new components::expressions::update_expr_set_t(
-                            components::expressions::key_t{dispatcher->resource(), "count"});
+                            components::expressions::key_t{&resource, "count"});
                     update_expr->left() =
                         new components::expressions::update_expr_get_const_value_t(core::parameter_id_t{2});
-                    auto update_one = components::logical_plan::make_node_update_one(dispatcher->resource(),
+                    auto update_one = components::logical_plan::make_node_update_one(&resource,
                                                                                      {db_name, col_name},
                                                                                      match,
                                                                                      {update_expr},
                                                                                      false);
-                    wal.update_one(session, address, update_one, params);
+                    wal->update_one(session, update_one, params);
                 }
 
                 {
                     auto match = components::logical_plan::make_node_match(
-                        dispatcher->resource(),
+                        &resource,
                         {db_name, col_name},
                         components::expressions::make_compare_expression(
-                            dispatcher->resource(),
+                            &resource,
                             compare_type::gt,
-                            key{dispatcher->resource(), "count", side_t::left},
+                            key{&resource, "count", side_t::left},
                             core::parameter_id_t{1}));
-                    auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+                    auto params = components::logical_plan::make_parameter_node(&resource);
                     params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(5));
                     params->add_parameter(core::parameter_id_t{2}, components::types::logical_value_t(1000));
                     components::expressions::update_expr_ptr update_expr =
                         new components::expressions::update_expr_set_t(
-                            components::expressions::key_t{dispatcher->resource(), "count"});
+                            components::expressions::key_t{&resource, "count"});
                     update_expr->left() =
                         new components::expressions::update_expr_get_const_value_t(core::parameter_id_t{2});
-                    auto update_many = components::logical_plan::make_node_update_many(dispatcher->resource(),
+                    auto update_many = components::logical_plan::make_node_update_many(&resource,
                                                                                        {db_name, col_name},
                                                                                        match,
                                                                                        {update_expr},
                                                                                        false);
-                    wal.update_many(session, address, update_many, params);
+                    wal->update_many(session, update_many, params);
                 }
             }
         }
@@ -231,7 +229,6 @@ TEST_CASE("integration::cpp::test_save_load::disk+wal") {
     SECTION("load") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        dispatcher->load();
         for (uint n_db = 1; n_db <= count_databases; ++n_db) {
             auto db_name = database_name + "_" + std::to_string(n_db);
             for (uint n_col = 1; n_col <= count_collections; ++n_col) {

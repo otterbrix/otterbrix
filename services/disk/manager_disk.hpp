@@ -348,8 +348,6 @@ namespace services::disk {
 
     private:
         std::pmr::memory_resource* resource_;
-        actor_zeta::scheduler::sharing_scheduler* scheduler_;
-        // Storage for pending coroutine futures (critical for coroutine lifetime!)
         std::vector<unique_future<void>> pending_void_;
         std::vector<unique_future<result_load_t>> pending_load_;
         std::vector<unique_future<index_disk_t::result>> pending_find_;

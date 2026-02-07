@@ -164,7 +164,7 @@ extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
     const auto& chunk = storage->cursor->chunk_data();
     auto types = chunk.types();
     if (static_cast<size_t>(column_index) < types.size()) {
-        auto name = types[column_index].alias();
+        auto name = types[static_cast<size_t>(column_index)].alias();
         char* str_ptr = new char[name.size() + 1];
         std::strcpy(str_ptr, std::string(name).data());
         return str_ptr;
@@ -183,7 +183,7 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
 
     auto value_storage = std::make_unique<value_storage_t>();
     value_storage->state = state_t::created;
-    value_storage->value = chunk.value(column_index, row_index);
+    value_storage->value = chunk.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
     return reinterpret_cast<void*>(value_storage.release());
 }
 

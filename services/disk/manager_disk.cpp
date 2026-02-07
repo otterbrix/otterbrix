@@ -732,10 +732,9 @@ namespace services::disk {
     }
 
     manager_disk_empty_t::manager_disk_empty_t(std::pmr::memory_resource* mr,
-                                               actor_zeta::scheduler::sharing_scheduler* scheduler)
+                                               actor_zeta::scheduler::sharing_scheduler* /*scheduler*/)
         : actor_zeta::actor::actor_mixin<manager_disk_empty_t>()
-        , resource_(mr)
-        , scheduler_(scheduler) {}
+        , resource_(mr) {}
 
     auto manager_disk_empty_t::make_type() const noexcept -> const char* { return "manager_disk"; }
 

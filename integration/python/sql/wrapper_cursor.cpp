@@ -171,7 +171,7 @@ std::string wrapper_cursor::print() {
     return "{}";
 }
 
-wrapper_cursor& wrapper_cursor::sort(py::object sorter, py::object order) {
+wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) {
     // Sorting is not directly supported on data_chunk based cursor
     // This would require re-implementing sort logic for data_chunk
     // For now, this is a no-op - sorting should be done via SQL ORDER BY

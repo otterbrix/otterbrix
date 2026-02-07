@@ -289,7 +289,6 @@ namespace services::wal {
                                                                  log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
         , resource_(mr)
-        , scheduler_(scheduler)
         , log_(log) {
         trace(log, "manager_wal_replicate_empty_t");
     }

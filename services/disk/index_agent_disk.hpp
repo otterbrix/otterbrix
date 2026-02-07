@@ -32,7 +32,7 @@ namespace services::disk {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;
         using value_t = components::types::logical_value_t;
-        using doc_value_t = components::document::value_t;
+
 
     public:
         template<typename T>

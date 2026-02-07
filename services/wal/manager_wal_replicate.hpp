@@ -189,9 +189,7 @@ namespace services::wal {
 
     private:
         std::pmr::memory_resource* resource_;
-        actor_zeta::scheduler::sharing_scheduler* scheduler_;
         log_t log_;
-        // Storage for pending coroutine futures (critical for coroutine lifetime!)
         std::vector<unique_future<services::wal::id_t>> pending_void_;
     };
 

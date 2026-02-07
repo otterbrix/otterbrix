@@ -16,15 +16,14 @@ namespace components::base::operators {
         bool disk_future_ready() const { return disk_future_ready_; }
         auto& disk_future() { return *disk_future_; }
 
-        // Index ID stored on coroutine frame (replaces session mechanism)
         uint32_t id_index() const { return id_index_; }
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         logical_plan::node_create_index_ptr index_node_;
-        std::string index_name_;  // cached before index_node_ is moved
-        uint32_t id_index_{index::INDEX_ID_UNDEFINED};  // stored on coroutine frame
+        std::string index_name_;
+        uint32_t id_index_{index::INDEX_ID_UNDEFINED};
         bool disk_future_ready_{false};
         std::unique_ptr<actor_zeta::unique_future<actor_zeta::address_t>> disk_future_;
     };

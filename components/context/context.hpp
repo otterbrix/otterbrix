@@ -25,17 +25,14 @@ namespace components::pipeline {
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 
-        // Add pending disk operation future for later awaiting
         void add_pending_disk_future(disk_future_t&& future) {
             pending_disk_futures_.push_back(std::move(future));
         }
-
-        // Take all pending disk futures (moves them out)
+        
         std::vector<disk_future_t> take_pending_disk_futures() {
             return std::move(pending_disk_futures_);
         }
-
-        // Check if there are pending disk operations
+        
         bool has_pending_disk_futures() const noexcept {
             return !pending_disk_futures_.empty();
         }

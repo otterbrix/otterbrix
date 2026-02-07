@@ -29,14 +29,15 @@ namespace components::base::operators {
                                                                              index_node_->name(),
                                                                              index_node_->keys());
 
-                auto [needs_sched, future] = actor_zeta::send(context_->disk(),
+                auto [_, future] = actor_zeta::send(context_->disk(),
                                  &services::disk::manager_disk_t::create_index_agent,
                                  pipeline_context->session,
                                  std::move(index_node_),
                                  context_);
-                (void)needs_sched; // Handled by caller
-                disk_future_ready_ = future.available();
-                disk_future_ = std::make_unique<actor_zeta::unique_future<actor_zeta::address_t>>(std::move(future));
+
+                bool tmp_disk_future_ready_ = future.available();
+                disk_future_ = std::make_unique<actor_zeta::unique_future<actor_zeta::address_t>>(std::move(future)); //TODO: research std::unique_ptr<actor_zeta::unique_future<actor_zeta::address_t>>
+                disk_future_ready_ = tmp_disk_future_ready_;
                 break;
             }
             case logical_plan::index_type::composite:

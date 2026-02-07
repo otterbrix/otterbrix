@@ -30,21 +30,19 @@ namespace components::base::operators {
 
         auto index_ptr = index::search_index(context_->index_engine(), node_->name());
         if (!index_ptr) {
-            // Store error cursor for executor to retrieve
             error_cursor_ = make_cursor(context_->resource(), error_code_t::index_not_exists);
             return;
         }
 
         if (index_ptr->is_disk()) {
-            auto [needs_sched, future] = actor_zeta::send(context_->disk(),
+            auto [_, future] = actor_zeta::send(context_->disk(),
                              &services::disk::manager_disk_t::drop_index_agent,
                              pipeline_context->session,
                              node_->name(),
                              context_);
-            (void)needs_sched; // Handled by manager_disk_t
+
             pipeline_context->add_pending_disk_future(std::move(future));
         }
         index::drop_index(context_->index_engine(), index_ptr);
-        // Success - executor will create success cursor
     }
 } // namespace components::base::operators

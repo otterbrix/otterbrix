@@ -6,7 +6,7 @@ namespace components::base::operators {
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
     operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_(context)
+        : context_([](services::collection::context_collection_t* context){assert(context!=nullptr);return context;}(context))
         , type_(type) {}
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
@@ -44,18 +44,16 @@ namespace components::base::operators {
     void operator_t::set_as_root() noexcept { root = true; }
 
     operator_t::ptr operator_t::find_waiting_operator() {
-        // Check if this operator is waiting
         if (is_wait_sync_disk()) {
             return ptr(this);
         }
-        // Search left subtree
         if (left_) {
             auto found = left_->find_waiting_operator();
             if (found) {
                 return found;
             }
         }
-        // Search right subtree
+
         if (right_) {
             auto found = right_->find_waiting_operator();
             if (found) {
@@ -70,7 +68,7 @@ namespace components::base::operators {
     services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
 
     std::pmr::memory_resource* operator_t::resource() const noexcept {
-        return context_ ? context_->resource() : std::pmr::get_default_resource();
+        return context_->resource();
     }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
@@ -106,8 +104,6 @@ namespace components::base::operators {
     void operator_t::on_prepare_impl() {}
 
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
-        // Default: do nothing, let caller use fallback suspend logic
-        // Override in operators with disk futures to await and resume
         co_return;
     }
 

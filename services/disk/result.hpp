@@ -9,6 +9,7 @@ namespace services::disk {
     struct result_collection_t {
         collection_name_t name;
 
+
         result_collection_t() = default;
         explicit result_collection_t(std::pmr::memory_resource* /*resource*/) {}
         result_collection_t(std::pmr::memory_resource* /*resource*/, collection_name_t n)

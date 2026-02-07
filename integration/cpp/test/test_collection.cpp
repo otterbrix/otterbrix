@@ -24,8 +24,6 @@ TEST_CASE("integration::cpp::test_collection") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    // NOTE: load() removed - External Loader handles loading during construction
-
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
 
     INFO("initialization") {

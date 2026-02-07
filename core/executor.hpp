@@ -15,11 +15,6 @@ namespace actor_zeta {
 
     namespace otterbrix {
 
-        // Custom send for otterbrix actors via address_t
-        // Unlike standard actor_zeta::send which requires is_interface,
-        // this version works with concrete actors accessed via address_t
-        // If target is empty, returns a ready no-op future (for disabled services like disk)
-        // Returns pair<bool, future> where bool indicates needs_scheduling
         template<typename Method, typename... Args,
                  typename Actor = typename type_traits::callable_trait<Method>::class_type>
         [[nodiscard]] inline auto send(
@@ -30,31 +25,23 @@ namespace actor_zeta {
             using result_type = typename type_traits::callable_trait<Method>::result_type;
             using value_type = typename type_traits::is_unique_future<result_type>::value_type;
 
-            static_assert(
-                type_traits::is_unique_future_v<result_type>,
-                "Method must return unique_future<T>");
-
-            // If target is empty (e.g., disk manager when disk is disabled),
-            // return a ready no-op future instead of crashing
+            static_assert(type_traits::is_unique_future_v<result_type>,"Method must return unique_future<T>");
+            
             if (!target) {
-                // Get resource from target (even empty address has resource)
                 auto* resource = target.resource();
                 if constexpr (std::is_void_v<value_type>) {
                     return {false, make_ready_future(resource)};
                 } else if constexpr (std::is_same_v<value_type, actor::address_t>) {
-                    // For address_t, create a ready future with empty address
                     return {false, make_ready_future<value_type>(resource, actor::address_t::empty_address())};
                 } else {
                     return {false, make_ready_future<value_type>(resource)};
                 }
             }
-
-            // Cast address back to Actor* and use direct dispatch
+            
             auto* actor = static_cast<Actor*>(target.get());
             using methods = typename Actor::dispatch_traits::methods;
 
-            return runtime_dispatch_helper<Actor, Method, methods>::dispatch(
-                method, actor, std::forward<Args>(args)...);
+            return runtime_dispatch_helper<Actor, Method, methods>::dispatch(method, actor, std::forward<Args>(args)...);
         }
 
     } // namespace otterbrix

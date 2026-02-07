@@ -32,6 +32,7 @@ namespace services::disk {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;
         using value_t = components::types::logical_value_t;
+        using doc_value_t = components::document::value_t;
 
     public:
         template<typename T>
@@ -49,14 +50,13 @@ namespace services::disk {
         collection::context_collection_t* collection() const;
         bool is_dropped() const;
 
-        // Coroutine methods - parameters by value (no const& allowed in coroutines)
         unique_future<void> drop(session_id_t session);
         unique_future<void> insert(session_id_t session, value_t key, size_t row_id);
         unique_future<void> insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
         unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
         unique_future<index_disk_t::result> find(session_id_t session, value_t value, components::expressions::compare_type compare);
 
-        // dispatch_traits must be defined AFTER all method declarations
+
         using dispatch_traits = actor_zeta::dispatch_traits<
             &index_agent_disk_t::drop,
             &index_agent_disk_t::insert,

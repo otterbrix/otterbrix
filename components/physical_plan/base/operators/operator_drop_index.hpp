@@ -12,7 +12,6 @@ namespace components::base::operators {
         operator_drop_index(services::collection::context_collection_t* context,
                             logical_plan::node_drop_index_ptr node);
 
-        // Returns error cursor if index not found, nullptr otherwise
         const cursor::cursor_t_ptr& error_cursor() const { return error_cursor_; }
 
     private:

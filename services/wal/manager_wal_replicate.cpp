@@ -285,7 +285,7 @@ namespace services::wal {
     }
 
     manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* mr,
-                                                                 actor_zeta::scheduler::sharing_scheduler* scheduler,
+                                                                 actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
                                                                  log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
         , resource_(mr)

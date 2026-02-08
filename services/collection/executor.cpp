@@ -82,7 +82,7 @@ namespace services::collection::executor {
         components::logical_plan::node_ptr logical_plan,
         components::logical_plan::storage_parameters parameters,
         services::context_storage_t context_storage,
-        components::catalog::used_format_t data_format
+        components::catalog::used_format_t /*data_format*/
     ) {
         trace(log_, "executor::execute_plan, session: {}", session.data());
 

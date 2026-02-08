@@ -2,6 +2,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/logical_plan/node_create_index.hpp>
+#include <components/table/data_table.hpp>
 #include <core/pmr.hpp>
 #include <core/executor.hpp>
 #include <services/collection/collection.hpp>
@@ -28,6 +29,22 @@ namespace components::base::operators {
                             : index::make_index<index::single_field_index_t>(context_->index_engine(),
                                                                              index_node_->name(),
                                                                              index_node_->keys());
+
+                if (id_index_ != index::INDEX_ID_UNDEFINED) {
+                    auto& table = context_->table_storage().table();
+                    auto total_rows = table.row_group()->total_rows();
+                    if (total_rows > 0) {
+                        int64_t row_offset = 0;
+                        table.scan_table_segment(0, total_rows, [&](vector::data_chunk_t& chunk) {
+                            for (size_t i = 0; i < chunk.size(); i++) {
+                                context_->index_engine()->insert_row(chunk,
+                                                                     static_cast<size_t>(row_offset) + i,
+                                                                     pipeline_context);
+                            }
+                            row_offset += static_cast<int64_t>(chunk.size());
+                        });
+                    }
+                }
 
                 auto [_, future] = actor_zeta::send(context_->disk(),
                                  &services::disk::manager_disk_t::create_index_agent,

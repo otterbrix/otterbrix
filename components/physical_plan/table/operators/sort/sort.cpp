@@ -22,7 +22,7 @@ namespace components::table::sort {
             auto pos_2 = static_cast<size_t>(
                 std::find_if(vec2.begin(), vec2.end(), [&key](const auto& val) { return val.type().alias() == key; }) -
                 vec2.begin());
-            auto k_order = static_cast<int>(order_ == order::ascending ? compare_t::less : compare_t::more);
+            auto k_order = static_cast<int>(order_ == order::ascending ? compare_t::more : compare_t::less);
             if (pos_1 >= vec1.size() && pos_2 >= vec2.size()) {
                 return compare_t::equals;
             } else if (pos_1 >= vec1.size()) {

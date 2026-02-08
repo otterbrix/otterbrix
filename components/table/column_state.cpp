@@ -5,10 +5,16 @@
 #include "storage/block_handle.hpp"
 #include "storage/block_manager.hpp"
 #include "storage/buffer_manager.hpp"
+#include <regex>
 
 namespace components::table {
 
     bool constant_filter_t::compare(const types::logical_value_t& value) const {
+        if (filter_type == expressions::compare_type::regex) {
+            auto str = std::string(value.value<std::string_view>());
+            auto pattern = std::string(constant.value<std::string_view>());
+            return std::regex_search(str, std::regex(pattern));
+        }
         auto comp = value.compare(constant);
         if (comp == types::compare_t::equals) {
             switch (filter_type) {

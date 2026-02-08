@@ -9,11 +9,11 @@ namespace components::table::operators {
 
     operator_group_t::operator_group_t(services::collection::context_collection_t* context)
         : read_write_operator_t(context, operator_type::aggregate)
-        , keys_(context_->resource())
-        , values_(context_->resource())
-        , inputs_(context_->resource())
-        , result_types_(context_->resource())
-        , transposed_output_(context_->resource()) {}
+        , keys_(context->resource())
+        , values_(context->resource())
+        , inputs_(context->resource())
+        , result_types_(context->resource())
+        , transposed_output_(context->resource()) {}
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource)
         : read_write_operator_t(nullptr, operator_type::aggregate)

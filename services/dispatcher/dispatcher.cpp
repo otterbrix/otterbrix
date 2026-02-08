@@ -710,7 +710,20 @@ namespace services::dispatcher {
                 }
                 break;
             case node_type::insert_t: {
-                // Schema tracking for insert operations handled through data_chunk
+                if (catalog_.table_computes(id)) {
+                    auto& sch = catalog_.get_computing_table_schema(id);
+                    for (const auto& child : node->children()) {
+                        if (child->type() == node_type::data_t) {
+                            auto* data_node = static_cast<const node_data_t*>(child.get());
+                            auto& chunk = data_node->data_chunk();
+                            for (const auto& col : chunk.data) {
+                                for (size_t i = 0; i < chunk.size(); i++) {
+                                    sch.append(std::pmr::string(col.type().alias(), resource()), col.type());
+                                }
+                            }
+                        }
+                    }
+                }
                 break;
             }
             case node_type::delete_t: {

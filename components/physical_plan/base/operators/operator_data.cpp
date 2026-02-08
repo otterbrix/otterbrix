@@ -24,7 +24,7 @@ namespace components::base::operators {
 
     const vector::data_chunk_t& operator_data_t::data_chunk() const { return data_; }
 
-    std::pmr::memory_resource* operator_data_t::resource() { return resource_; }
+    std::pmr::memory_resource* operator_data_t::resource() const { return resource_; }
 
     void operator_data_t::append(vector::vector_t row) {
         size_t index = data_.size();

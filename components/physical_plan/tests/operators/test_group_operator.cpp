@@ -100,14 +100,14 @@ TEST_CASE("components::physical_plan::group::all") {
         // Output columns should be: count_bool, cnt, sum, avg
         const auto& chunk = sort->output()->data_chunk();
 
-        // First row (count_bool = false): odd numbers 1,3,5,...,99 (50 items, sum=2500, avg=50)
+        // First row (count_bool = false): even numbers 2,4,6,...,100 (50 items, sum=2550, avg=51)
         REQUIRE(chunk.value(0, 0).value<bool>() == false);  // count_bool
-        REQUIRE(chunk.value(1, 0).value<int64_t>() == 50);       // cnt
-        REQUIRE(chunk.value(2, 0).value<int64_t>() == 2500);     // sum
+        REQUIRE(chunk.value(1, 0).value<uint64_t>() == 50);       // cnt
+        REQUIRE(chunk.value(2, 0).value<int64_t>() == 2550);     // sum
 
-        // Second row (count_bool = true): even numbers 2,4,6,...,100 (50 items, sum=2550, avg=51)
+        // Second row (count_bool = true): odd numbers 1,3,5,...,99 (50 items, sum=2500, avg=50)
         REQUIRE(chunk.value(0, 1).value<bool>() == true);   // count_bool
-        REQUIRE(chunk.value(1, 1).value<int64_t>() == 50);       // cnt
-        REQUIRE(chunk.value(2, 1).value<int64_t>() == 2550);     // sum
+        REQUIRE(chunk.value(1, 1).value<uint64_t>() == 50);       // cnt
+        REQUIRE(chunk.value(2, 1).value<int64_t>() == 2500);     // sum
     }
 }

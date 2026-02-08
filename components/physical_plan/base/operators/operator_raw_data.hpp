@@ -9,6 +9,8 @@ namespace components::base::operators {
         explicit operator_raw_data_t(vector::data_chunk_t&& chunk);
         explicit operator_raw_data_t(const vector::data_chunk_t& chunk);
 
+        std::pmr::memory_resource* resource() const noexcept override;
+
     private:
         void on_execute_impl(pipeline::context_t*) override;
     };

@@ -33,6 +33,11 @@ namespace components::table {
 
     const std::pmr::vector<types::complex_logical_type>& collection_t::types() const { return types_; }
 
+    void collection_t::adopt_types(std::pmr::vector<types::complex_logical_type> types) {
+        assert(types_.empty() && "adopt_types can only be called on schema-less collection");
+        types_ = std::move(types);
+    }
+
     void collection_t::append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row) {
         assert(start_row >= row_start_);
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);

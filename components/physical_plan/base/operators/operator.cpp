@@ -1,4 +1,5 @@
 #include "operator.hpp"
+#include <cassert>
 #include <services/collection/collection.hpp>
 
 namespace components::base::operators {
@@ -6,7 +7,7 @@ namespace components::base::operators {
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
     operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_([](services::collection::context_collection_t* context){assert(context!=nullptr);return context;}(context))
+        : context_(context)
         , type_(type) {}
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
@@ -63,11 +64,15 @@ namespace components::base::operators {
         return nullptr;
     }
 
-    const collection_full_name_t& operator_t::collection_name() const noexcept { return context_->name(); }
+    const collection_full_name_t& operator_t::collection_name() const noexcept {
+        assert(context_ && "collection_name() requires non-null context");
+        return context_->name();
+    }
 
     services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
 
     std::pmr::memory_resource* operator_t::resource() const noexcept {
+        assert(context_ && "resource() requires non-null context");
         return context_->resource();
     }
 

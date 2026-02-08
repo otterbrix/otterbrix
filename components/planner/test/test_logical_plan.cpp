@@ -166,7 +166,8 @@ TEST_CASE("components::planner::aggregate") {
 TEST_CASE("components::planner::insert") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
-        auto plan = make_node_insert(&resource, {database_name, collection_name});
+        auto chunk = gen_data_chunk(0, &resource);
+        auto plan = make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
         components::planner::planner_t planner;
         auto node = planner.create_plan(&resource, plan);
         REQUIRE(node->to_string() == R"_($insert: {$raw_data: {$rows: 0}})_");

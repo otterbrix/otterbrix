@@ -85,6 +85,15 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
+    void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
+        assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
+        column_definitions_.reserve(types.size());
+        for (const auto& type : types) {
+            column_definitions_.emplace_back(type.alias(), type);
+        }
+        row_groups_->adopt_types(copy_types());
+    }
+
     void data_table_t::initialize_scan(table_scan_state& state,
                                        const std::vector<storage_index_t>& column_ids,
                                        const table_filter_t* filter) {

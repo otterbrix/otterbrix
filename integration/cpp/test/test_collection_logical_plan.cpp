@@ -427,8 +427,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
                         (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
@@ -453,8 +453,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
                         (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
@@ -478,8 +478,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
                         (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
@@ -514,8 +514,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
 
             for (int index = 0, num = 13; index < 13; ++index, ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(index)).value<int64_t>() ==
+                REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(index)).value<int64_t>() ==
                         (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(index)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
@@ -616,15 +616,17 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
 
             for (int num = 12; num >= 0; --num) {
+                // Sort is DESC by avg, so row 0 has highest avg(key)=74, row 12 has lowest avg=50
+                int orig = 12 - num;
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                        (orig + 25) * 2 * 10);
                 REQUIRE(core::is_equals(cur->chunk_data().value(3, static_cast<size_t>(num)).value<double>(),
-                                        static_cast<double>((num + 25) * 2)));
+                                        static_cast<double>((orig + 25) * 2)));
                 REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                        (orig + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                        (orig + 25) * 2 * 10);
             }
         }
         INFO("just raw data") {

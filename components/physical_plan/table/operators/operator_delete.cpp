@@ -54,6 +54,10 @@ namespace components::table::operators {
                 modified_->append(id);
                 context_->index_engine()->delete_row(chunk_left, id, pipeline_context);
             }
+            for (const auto& type : types_left) {
+                modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
+                    index;
+            }
         } else if (left_ && left_->output()) {
             modified_ = base::operators::make_operator_write_data(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
@@ -88,6 +92,10 @@ namespace components::table::operators {
                 size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
                 modified_->append(id);
                 context_->index_engine()->delete_row(chunk, i, pipeline_context);
+            }
+            for (const auto& type : types) {
+                modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
+                    index;
             }
         }
     }

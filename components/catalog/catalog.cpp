@@ -59,7 +59,7 @@ namespace components::catalog {
             const auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
             auto it = info.find(id.table_name());
             if (it != info.end()) {
-                return used_format_t::documents;
+                return used_format_t::columns;
             }
         }
 

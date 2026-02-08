@@ -400,12 +400,14 @@ namespace services::disk {
             }
             commands_.erase(session);
         }
-        // Forward fix_wal_id to agent and wait for completion
-        auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal_id);
-        if (needs_sched && !agents_.empty()) {
-            scheduler_->enqueue(agents_[0].get());
-        }
-        co_await std::move(future);
+        // TODO: Re-enable fix_wal_id once write_data_chunk is implemented.
+        // Currently write_data_chunk is a NO-OP, so WAL records must be replayed
+        // on restart to restore data and schema via adopt_schema.
+        // auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal_id);
+        // if (needs_sched && !agents_.empty()) {
+        //     scheduler_->enqueue(agents_[0].get());
+        // }
+        // co_await std::move(future);
         co_return;
     }
 

@@ -156,20 +156,19 @@ namespace components::table::operators::predicates {
             auto expr_val = parameters->parameters.at(expr->value());
 
             return
-                [column_path, val = expr_val.value<std::string_view>(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
+                [column_path, pattern = std::string(expr_val.value<std::string_view>()), side](
+                    const vector::data_chunk_t& chunk_left,
+                    const vector::data_chunk_t& chunk_right,
+                    size_t index_left,
+                    size_t index_right) {
                     if (side == expressions::side_t::left) {
                         assert(column_path.first.front() < chunk_left.column_count());
-                        return std::regex_match(
-                            chunk_left.at(column_path.first)->data<std::string_view>()[index_left].data(),
-                            std::regex(fmt::format(".*{}.*", val)));
+                        auto sv = chunk_left.at(column_path.first)->data<std::string_view>()[index_left];
+                        return std::regex_search(std::string(sv), std::regex(pattern));
                     } else {
                         assert(column_path.first.front() < chunk_right.column_count());
-                        return std::regex_match(
-                            chunk_right.at(column_path.first)->data<std::string_view>()[index_right].data(),
-                            std::regex(fmt::format(".*{}.*", val)));
+                        auto sv = chunk_right.at(column_path.first)->data<std::string_view>()[index_right];
+                        return std::regex_search(std::string(sv), std::regex(pattern));
                     }
                 };
         }
@@ -221,17 +220,13 @@ namespace components::table::operators::predicates {
                                                                     size_t index_left,
                                                                     size_t index_right) {
                 if (one_sided) {
-                    return std::regex_match(
-                        chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left].data(),
-                        std::regex(fmt::format(
-                            ".*{}.*",
-                            chunk_left.at(column_path_right.first)->data<std::string_view>()[index_left].data())));
+                    auto sv = chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left];
+                    auto pattern = chunk_left.at(column_path_right.first)->data<std::string_view>()[index_left];
+                    return std::regex_search(std::string(sv), std::regex(std::string(pattern)));
                 } else {
-                    return std::regex_match(
-                        chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left].data(),
-                        std::regex(fmt::format(
-                            ".*{}.*",
-                            chunk_right.at(column_path_right.first)->data<std::string_view>()[index_right].data())));
+                    auto sv = chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left];
+                    auto pattern = chunk_right.at(column_path_right.first)->data<std::string_view>()[index_right];
+                    return std::regex_search(std::string(sv), std::regex(std::string(pattern)));
                 }
             };
         }

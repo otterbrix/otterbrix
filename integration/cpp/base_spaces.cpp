@@ -179,9 +179,12 @@ namespace otterbrix {
         }
         trace(log_, "spaces::PHASE 2.5 complete");
 
-        // PHASE 3: Create indexes (NO DEADLOCK - dispatcher is free!)
-        trace(log_, "spaces::PHASE 3 - Creating {} indexes", index_definitions.size());
-        if (!index_definitions.empty()) {
+        // PHASE 3: Create indexes only if no WAL records were replayed
+        // WAL replay already handles CREATE_INDEX operations, so PHASE 3 is redundant in that case
+        // and would cause duplicate index entries
+        if (!wal_records.empty()) {
+            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
+        } else if (!index_definitions.empty()) {
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {

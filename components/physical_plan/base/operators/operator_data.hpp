@@ -23,7 +23,7 @@ namespace components::base::operators {
         std::size_t size() const;
         vector::data_chunk_t& data_chunk();
         const vector::data_chunk_t& data_chunk() const;
-        std::pmr::memory_resource* resource();
+        std::pmr::memory_resource* resource() const;
         void append(vector::vector_t row);
 
     private:

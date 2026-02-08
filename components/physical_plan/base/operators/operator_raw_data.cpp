@@ -14,6 +14,10 @@ namespace components::base::operators {
         chunk.copy(output_->data_chunk(), 0);
     }
 
+    std::pmr::memory_resource* operator_raw_data_t::resource() const noexcept {
+        return output_->resource();
+    }
+
     void operator_raw_data_t::on_execute_impl(pipeline::context_t*) {}
 
 } // namespace components::base::operators

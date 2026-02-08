@@ -825,6 +825,13 @@ namespace components::vector {
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {
+        if (!validity_.row_is_valid(index)) {
+            types::logical_value_t null_val;
+            if (type_.has_alias()) {
+                null_val.set_alias(type_.alias());
+            }
+            return null_val;
+        }
         auto value = value_internal(index);
         if (type_.has_alias()) {
             value.set_alias(type_.alias());

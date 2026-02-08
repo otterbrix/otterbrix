@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+#include <memory_resource>
 #include <services/wal/base.hpp>
 #include <vector>
 

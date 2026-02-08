@@ -93,7 +93,7 @@ TEST_CASE("services::wal::insert_one_test") {
         REQUIRE(entry.crc32_ == crc32);
         REQUIRE(entry.entry_->database_name() == database_name);
         REQUIRE(entry.entry_->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
         const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
         REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
         REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
@@ -163,7 +163,7 @@ TEST_CASE("services::wal::insert_many_test") {
         REQUIRE(entry.crc32_ == crc32);
         REQUIRE(entry.entry_->database_name() == database_name);
         REQUIRE(entry.entry_->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
         const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
         int num = 0;
         for (size_t j = 0; j < chunk.size(); j++) {
@@ -391,7 +391,7 @@ TEST_CASE("services::wal::read_record") {
         REQUIRE(record.data->type() == node_type::insert_t);
         REQUIRE(record.data->database_name() == database_name);
         REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->size() >= 0);
+        REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->size() > 0);
         const auto& chunk = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->data_chunk();
         REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
         REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
@@ -441,7 +441,7 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     REQUIRE(entry.crc32_ == crc32);
     REQUIRE(entry.entry_->database_name() == database_name);
     REQUIRE(entry.entry_->collection_name() == collection_name);
-    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() >= 0);
+    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
 
     const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
     REQUIRE(read_chunk.size() == kRows);

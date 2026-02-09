@@ -1,0 +1,63 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "scikit-build>=0.13",
+    "pybind11>=2.10.0",
+    "cmake",
+    "ninja; platform_system!='Windows'",
+]
+
+build-backend = "setuptools.build_meta"
+
+[tool.scikit-build]
+cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=./cmake-build/build/Release/generators"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--import-mode=importlib",
+]
+[project]
+name = "otterbrix"
+dynamic = ["version"]
+requires-python = ">= 3.7"
+dependencies = [
+    "numpy",
+    "pandas<3",
+    "typing_extensions",
+]
+authors = [
+    { name = "Otterbrix Team", email = "team@otterbrix.com" },
+]
+description = "Otterbrix: computation framework for Semi-structured data processing."
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: GPU",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: C",
+    "Programming Language :: C++",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: POSIX",
+    "Operating System :: Unix",
+    "Operating System :: MacOS",
+]

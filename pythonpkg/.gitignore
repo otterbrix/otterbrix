@@ -1,0 +1,25 @@
+dist
+otterbrix.egg-info
+*build*
+.eggs
+.pytest_cache
+/duckdb_tarball/
+duckdb.cpp
+duckdb.hpp
+parquet_extension.cpp
+parquet_extension.hpp
+githash.list
+includes.list
+sources.list
+venv/
+duckdb_build
+CMakeUserPresets.json
+__pycache__/
+*.cmake
+CMakeFiles/
+# python parquet files used in tests
+tests/unsigned.parquet
+tests/userdata1.parquet
+.*
+*.tmp
+tmp/

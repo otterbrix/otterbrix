@@ -149,7 +149,7 @@ jobs:
       - name: Test package imports
         run: |
           python3 -c "import distutils.sysconfig as sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
-          python3 -c "from otterbrix import Client, DataBase, Collection, Connection, Cursor"
+          python3 -c "from otterbrix import Client, Connection, Cursor, connect"
 
       - name: Run pytest
         run: |

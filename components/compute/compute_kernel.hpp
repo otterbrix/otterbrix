@@ -14,8 +14,8 @@ namespace components::compute {
     class compute_kernel;
 
     // originally, arrow-compute's datum is a variant<scalar, vector<T>, data_chunk>.
-    // in our implementation scalar holding is not required, vector is held inside data_chunk (which is vector<vector>)
-    using datum_t = vector::data_chunk_t;
+    // in our implementation it is a little bit simplified
+    using datum_t = std::variant<std::pmr::vector<types::logical_value_t>, vector::data_chunk_t>;
 
     // opaque kernel-specific state, for example, if there is some kind of initialization required
     class kernel_state {
@@ -67,7 +67,8 @@ namespace components::compute {
                                                         vector::vector_t& output)>;
 
     // datum are results aggregated over batches
-    using vector_finalize_fn = std::function<compute_status(kernel_context& ctx, size_t exec_length, datum_t& output)>;
+    using vector_finalize_fn =
+        std::function<compute_status(kernel_context& ctx, size_t exec_length, vector::data_chunk_t& output)>;
 
     class vector_kernel : public compute_kernel {
     public:
@@ -80,7 +81,7 @@ namespace components::compute {
                                const vector::data_chunk_t& inputs,
                                size_t exec_length,
                                vector::vector_t& output) const;
-        compute_status finalize(kernel_context& ctx, size_t exec_length, datum_t& output) const;
+        compute_status finalize(kernel_context& ctx, size_t exec_length, vector::data_chunk_t& output) const;
 
     private:
         vector_exec_fn exec_;
@@ -91,7 +92,8 @@ namespace components::compute {
         std::function<compute_status(kernel_context& ctx, const vector::data_chunk_t& input, size_t exec_length)>;
     using aggregate_merge_fn =
         std::function<compute_status(kernel_context& ctx, kernel_state&& next_state, kernel_state& prev_state)>;
-    using aggregate_finalize_fn = std::function<compute_status(kernel_context& ctx, datum_t& output)>;
+    using aggregate_finalize_fn =
+        std::function<compute_status(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& output)>;
 
     class aggregate_kernel : public compute_kernel {
     public:
@@ -103,12 +105,28 @@ namespace components::compute {
 
         compute_status consume(kernel_context& ctx, const vector::data_chunk_t& input, size_t exec_length) const;
         compute_status merge(kernel_context& ctx, kernel_state&& from, kernel_state& into) const;
-        compute_status finalize(kernel_context& ctx, datum_t& output) const;
+        compute_status finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& output) const;
 
     private:
         aggregate_consume_fn consume_;
         aggregate_merge_fn merge_;
         aggregate_finalize_fn finalize_;
+    };
+
+    using row_exec_fn = std::function<compute_status(kernel_context& ctx,
+                                                     const std::pmr::vector<types::logical_value_t>& inputs,
+                                                     std::pmr::vector<types::logical_value_t>& output)>;
+
+    class row_kernel : public compute_kernel {
+    public:
+        row_kernel(kernel_signature_t signature, row_exec_fn exec);
+
+        compute_status execute(kernel_context& ctx,
+                               const std::pmr::vector<types::logical_value_t>& inputs,
+                               std::pmr::vector<types::logical_value_t>& output) const;
+
+    private:
+        row_exec_fn exec_;
     };
 
 } // namespace components::compute

@@ -59,7 +59,7 @@ namespace components::table::operators::aggregate {
                 }
                 auto res = func_->execute(c, c.size());
                 if (res.status() == compute::compute_status::ok()) {
-                    result = res.value().value(0, 0);
+                    result = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
                 }
             }
         }

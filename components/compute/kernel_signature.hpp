@@ -58,6 +58,8 @@ namespace components::compute {
         const kernel_signature_t& lhs,
         const kernel_signature_t& rhs,
         const std::pmr::unordered_map<std::string, types::complex_logical_type>& registered_types);
+
+    // Returns true if none of signature permutation results in conflict
     bool check_signature_conflicts(
         const std::vector<kernel_signature_t>& lhs,
         const std::vector<kernel_signature_t>& rhs,

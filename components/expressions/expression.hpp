@@ -71,7 +71,7 @@ namespace components::expressions {
                 if constexpr (std::is_same_v<type, core::parameter_id_t>) {
                     stream << "#" << p;
                 } else if constexpr (std::is_same_v<type, key_t>) {
-                    stream << "\"$" << p << "\"";
+                    stream << "\"" << p << "\"";
                 } else if constexpr (std::is_same_v<type, expression_ptr>) {
                     stream << p->to_string();
                 }

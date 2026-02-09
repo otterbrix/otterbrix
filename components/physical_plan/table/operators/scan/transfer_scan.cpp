@@ -22,7 +22,7 @@ namespace components::table::operators {
         for (size_t i = 0; i < context_->table_storage().table().column_count(); i++) {
             column_indices.emplace_back(static_cast<int64_t>(i));
         }
-        table::table_scan_state state(std::pmr::get_default_resource());
+        table::table_scan_state state(context_->resource());
         context_->table_storage().table().initialize_scan(state, column_indices);
         // TODO: check limit inside scan
         context_->table_storage().table().scan(output_->data_chunk(), state);

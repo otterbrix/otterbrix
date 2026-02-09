@@ -8,10 +8,10 @@ namespace components::table::operators {
     operator_update::operator_update(services::collection::context_collection_t* context,
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
-                                     expressions::compare_expression_ptr comp_expr)
+                                     expressions::expression_ptr expr)
         : read_write_operator_t(context, operator_type::update)
         , updates_(std::move(updates))
-        , comp_expr_(std::move(comp_expr))
+        , expr_(std::move(expr))
         , upsert_(upsert) {}
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
@@ -51,12 +51,13 @@ namespace components::table::operators {
                 output_ = base::operators::make_operator_data(left_->output()->resource(), types_left);
                 auto state = context_->table_storage().table().initialize_update({});
                 auto& out_chunk = output_->data_chunk();
-                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                           comp_expr_,
-                                                                           types_left,
-                                                                           types_right,
-                                                                           &pipeline_context->parameters)
-                                            : predicates::create_all_true_predicate(left_->output()->resource());
+                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                      pipeline_context->function_registry,
+                                                                      expr_,
+                                                                      types_left,
+                                                                      types_right,
+                                                                      &pipeline_context->parameters)
+                                       : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
                     for (size_t j = 0; j < chunk_right.size(); j++) {
@@ -105,12 +106,13 @@ namespace components::table::operators {
                 modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 no_modified_ = base::operators::make_operator_write_data<size_t>(context_->resource());
                 auto state = context_->table_storage().table().initialize_update({});
-                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                           comp_expr_,
-                                                                           types,
-                                                                           types,
-                                                                           &pipeline_context->parameters)
-                                            : predicates::create_all_true_predicate(left_->output()->resource());
+                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                      pipeline_context->function_registry,
+                                                                      expr_,
+                                                                      types,
+                                                                      types,
+                                                                      &pipeline_context->parameters)
+                                       : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
                     if (predicate->check(chunk, i)) {

@@ -1,4 +1,8 @@
 #include "simple_predicate.hpp"
+#include "utils.hpp"
+
+#include "expressions/function_expression.hpp"
+
 #include <components/physical_plan/base/operators/operator.hpp>
 #include <components/types/operations_helper.hpp>
 #include <fmt/format.h>
@@ -8,325 +12,330 @@ namespace components::table::operators::predicates {
 
     namespace impl {
 
-        std::pair<std::pmr::vector<size_t>, const types::complex_logical_type*>
-        get_column_path(std::pmr::memory_resource* resource,
-                        const expressions::key_t& key,
-                        const std::pmr::vector<types::complex_logical_type>& types) {
-            std::pmr::vector<size_t> res(resource);
-            for (uint64_t i = 0; i < types.size(); i++) {
-                if (core::pmr::operator==(types[i].alias(), key.storage().front())) {
-                    res.emplace_back(i);
-                    break;
-                }
-            }
-            if (res.empty()) {
-                assert(false && "data_chunk_t::column_index: no such column");
-                return {{size_t(-1)}, nullptr};
-            } else {
-                const types::complex_logical_type* sub_column = &types[res.front()];
-                for (auto it = std::next(key.storage().begin()); it != key.storage().end(); ++it) {
-                    bool field_found = false;
-                    for (uint64_t i = 0; i < sub_column->child_types().size(); i++) {
-                        if (core::pmr::operator==(sub_column->child_types()[i].alias(), *it)) {
-                            res.emplace_back(i);
-                            sub_column = &sub_column->child_types()[i];
-                            field_found = true;
-                            break;
-                        }
-                    }
-                    if (!field_found) {
-                        return {{size_t(-1)}, nullptr};
-                    }
-                }
-                return {res, sub_column};
-            }
-        }
-
-        template<typename T = void>
-        struct create_binary_comparator_t;
-        template<typename T = void>
-        struct create_unary_comparator_t;
-
-        template<>
-        struct create_unary_comparator_t<void> {
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(COMP&& comp,
-                            std::pmr::vector<size_t> column_path,
-                            expressions::side_t side,
-                            const logical_plan::expr_value_t& value) const -> simple_predicate::check_function_t {
-                return [comp, column_path = std::move(column_path), side, &value](
-                           const vector::data_chunk_t& chunk_left,
-                           const vector::data_chunk_t& chunk_right,
-                           size_t index_left,
-                           size_t index_right) {
-                    assert(column_path.front() < chunk_left.column_count());
-                    if (side == expressions::side_t::left) {
-                        assert(column_path.front() < chunk_left.column_count());
-                        return comp(chunk_left.at(column_path)->data<LeftType>()[index_left], value.value<RightType>());
-                    } else {
-                        assert(column_path.front() < chunk_right.column_count());
-                        return comp(chunk_right.at(column_path)->data<LeftType>()[index_right],
-                                    value.value<RightType>());
-                    }
-                };
-            }
-            // SFINAE unable to compare types
-            template<typename LeftType,
-                     typename RightType,
-                     typename... Args,
-                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
-                throw std::runtime_error("invalid expression in create_unary_comparator");
-            }
-        };
-
-        template<>
-        struct create_binary_comparator_t<void> {
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(COMP&& comp,
-                            std::pmr::vector<size_t> column_path_left,
-                            std::pmr::vector<size_t> column_path_right,
-                            bool one_sided) const -> simple_predicate::check_function_t {
-                return [comp,
-                        column_path_left = std::move(column_path_left),
-                        column_path_right = std::move(column_path_right),
-                        one_sided](const vector::data_chunk_t& chunk_left,
-                                   const vector::data_chunk_t& chunk_right,
-                                   size_t index_left,
-                                   size_t index_right) {
-                    if (one_sided) {
-                        assert(column_path_left.front() < chunk_left.column_count());
-                        assert(column_path_right.front() < chunk_left.column_count());
-                        return comp(chunk_left.at(column_path_left)->data<LeftType>()[index_left],
-                                    chunk_left.at(column_path_right)->data<RightType>()[index_left]);
-                    } else {
-                        assert(column_path_left.front() < chunk_left.column_count());
-                        assert(column_path_right.front() < chunk_right.column_count());
-                        return comp(chunk_left.at(column_path_left)->data<LeftType>()[index_left],
-                                    chunk_right.at(column_path_right)->data<RightType>()[index_right]);
-                    }
-                };
-            }
-            // SFINAE unable to compare types
-            template<typename LeftType,
-                     typename RightType,
-                     typename... Args,
-                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
-            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
-                throw std::runtime_error("invalid expression in create_binary_comparator");
-            }
-        };
-
-        // by this point compare_expression is unmodifiable, so we have to pass side explicitly
-        template<typename COMP>
-        simple_predicate::check_function_t
-        create_unary_comparator(std::pmr::memory_resource* resource,
-                                const expressions::compare_expression_ptr& expr,
-                                const std::pmr::vector<types::complex_logical_type>& types,
-                                const logical_plan::storage_parameters* parameters,
-                                expressions::side_t side) {
-            auto column_path = get_column_path(resource, expr->primary_key(), types);
-            const auto& expr_val = parameters->parameters.at(expr->value());
-
-            auto type_left = column_path.second->to_physical_type();
-            auto type_right = expr_val.type().to_physical_type();
-
-            return types::double_simple_physical_type_switch<create_unary_comparator_t>(type_left,
-                                                                                        type_right,
-                                                                                        COMP{},
-                                                                                        std::move(column_path.first),
-                                                                                        side,
-                                                                                        expr_val);
-        }
-
-        simple_predicate::check_function_t
-        create_unary_regex_comparator(std::pmr::memory_resource* resource,
-                                      const expressions::compare_expression_ptr& expr,
-                                      const std::pmr::vector<types::complex_logical_type>& types,
-                                      const logical_plan::storage_parameters* parameters,
-                                      expressions::side_t side) {
-            assert(side != expressions::side_t::undefined);
-            auto column_path = get_column_path(resource, expr->primary_key(), types);
-            auto expr_val = parameters->parameters.at(expr->value());
-
-            return
-                [column_path, val = expr_val.value<std::string_view>(), side](const vector::data_chunk_t& chunk_left,
-                                                                              const vector::data_chunk_t& chunk_right,
-                                                                              size_t index_left,
-                                                                              size_t index_right) {
-                    if (side == expressions::side_t::left) {
-                        assert(column_path.first.front() < chunk_left.column_count());
-                        return std::regex_match(
-                            chunk_left.at(column_path.first)->data<std::string_view>()[index_left].data(),
-                            std::regex(fmt::format(".*{}.*", val)));
-                    } else {
-                        assert(column_path.first.front() < chunk_right.column_count());
-                        return std::regex_match(
-                            chunk_right.at(column_path.first)->data<std::string_view>()[index_right].data(),
-                            std::regex(fmt::format(".*{}.*", val)));
-                    }
-                };
-        }
-
-        template<typename COMP>
-        simple_predicate::check_function_t
-        create_binary_comparator(std::pmr::memory_resource* resource,
-                                 const expressions::compare_expression_ptr& expr,
-                                 const std::pmr::vector<types::complex_logical_type>& types_left,
-                                 const std::pmr::vector<types::complex_logical_type>& types_right) {
-            bool one_sided = false;
-            auto column_path_left = get_column_path(resource, expr->primary_key(), types_left);
-            auto column_path_right = get_column_path(resource, expr->secondary_key(), types_right);
-            types::physical_type type_left = column_path_left.second->to_physical_type();
-            types::physical_type type_right;
-            if (column_path_right.first.front() == std::numeric_limits<size_t>::max()) {
-                // one-sided expr
-                column_path_right = get_column_path(resource, expr->secondary_key(), types_left);
-                one_sided = true;
-                type_right = column_path_right.second->to_physical_type();
-            } else {
-                type_right = column_path_right.second->to_physical_type();
-            }
-
-            return types::double_simple_physical_type_switch<create_binary_comparator_t>(
-                type_left,
-                type_right,
-                COMP{},
-                std::move(column_path_left.first),
-                std::move(column_path_right.first),
-                one_sided);
-        }
-
-        simple_predicate::check_function_t
-        create_binary_regex_comparator(std::pmr::memory_resource* resource,
-                                       const expressions::compare_expression_ptr& expr,
-                                       const std::pmr::vector<types::complex_logical_type>& types_left,
-                                       const std::pmr::vector<types::complex_logical_type>& types_right) {
-            bool one_sided = false;
-            auto column_path_left = get_column_path(resource, expr->primary_key(), types_left);
-            auto column_path_right = get_column_path(resource, expr->secondary_key(), types_right);
-            if (column_path_right.first.front() == std::numeric_limits<size_t>::max()) {
-                // one-sided expr
-                column_path_right = get_column_path(resource, expr->secondary_key(), types_left);
-            }
-
-            return [column_path_left, column_path_right, one_sided](const vector::data_chunk_t& chunk_left,
-                                                                    const vector::data_chunk_t& chunk_right,
-                                                                    size_t index_left,
-                                                                    size_t index_right) {
-                if (one_sided) {
-                    return std::regex_match(
-                        chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left].data(),
-                        std::regex(fmt::format(
-                            ".*{}.*",
-                            chunk_left.at(column_path_right.first)->data<std::string_view>()[index_left].data())));
+        const types::complex_logical_type& get_sub_type(const expressions::key_t& key,
+                                                        const std::pmr::vector<types::complex_logical_type>& types) {
+            const types::complex_logical_type* sub_type = &types[key.path().front()];
+            for (auto it = std::next(key.path().begin()); it != key.path().end(); ++it) {
+                if (sub_type->type() == types::logical_type::ARRAY || sub_type->type() == types::logical_type::LIST) {
+                    sub_type = &sub_type->child_type();
                 } else {
-                    return std::regex_match(
-                        chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left].data(),
-                        std::regex(fmt::format(
-                            ".*{}.*",
-                            chunk_right.at(column_path_right.first)->data<std::string_view>()[index_right].data())));
+                    sub_type = &sub_type->child_types().at(*it);
                 }
-            };
+            }
+            return *sub_type;
+        }
+
+        const types::complex_logical_type&
+        get_sub_type(const expressions::key_t& key,
+                     const std::pmr::vector<types::complex_logical_type>& types_left,
+                     const std::pmr::vector<types::complex_logical_type>& types_right) {
+            return key.side() == expressions::side_t::left ? get_sub_type(key, types_left)
+                                                           : get_sub_type(key, types_right);
+        }
+
+        // Because regex is not a constexpr(?), we use it to dispatch function
+        template<typename T = void>
+        struct regex;
+
+        template<>
+        struct regex<void> {};
+
+        template<typename COMP, typename T, typename U, std::enable_if_t<!std::is_same_v<COMP, regex<>>, bool> = true>
+        bool evaluate_comp(T left, U right) {
+            return COMP{}(left, right);
+        }
+
+        template<typename COMP, typename T, typename U, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
+        bool evaluate_comp(T, U) {
+            throw std::runtime_error("incorrect argument type for regex");
+        }
+
+        template<typename COMP, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
+        bool evaluate_comp(std::string_view left, std::string_view right) {
+            return std::regex_match(left.data(), std::regex(fmt::format(".*{}.*", right.data())));
+        }
+
+        template<typename COMP, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
+        bool evaluate_comp(const types::logical_value_t& left, const types::logical_value_t& right) {
+            return std::regex_match(left.value<std::string_view>().data(),
+                                    std::regex(fmt::format(".*{}.*", right.value<std::string_view>().data())));
+        }
+
+        template<typename T = void>
+        struct create_simple_comparator_t;
+
+        template<>
+        struct create_simple_comparator_t<void> {
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, const expressions::key_t& key_left, const expressions::key_t& key_right) const
+                -> simple_predicate::check_function_t {
+                if (key_left.side() == expressions::side_t::left) {
+                    if (key_right.side() == expressions::side_t::left) {
+                        return [column_path_left = key_left.path(),
+                                column_path_right = key_right.path()](const vector::data_chunk_t& chunk_left,
+                                                                      const vector::data_chunk_t&,
+                                                                      size_t index_left,
+                                                                      size_t) {
+                            return evaluate_comp<COMP>(chunk_left.at(column_path_left)->data<LeftType>()[index_left],
+                                                       chunk_left.at(column_path_right)->data<RightType>()[index_left]);
+                        };
+                    } else {
+                        assert(key_right.side() == expressions::side_t::right);
+                        return [column_path_left = key_left.path(),
+                                column_path_right = key_right.path()](const vector::data_chunk_t& chunk_left,
+                                                                      const vector::data_chunk_t& chunk_right,
+                                                                      size_t index_left,
+                                                                      size_t index_right) {
+                            return evaluate_comp<COMP>(
+                                chunk_left.at(column_path_left)->data<LeftType>()[index_left],
+                                chunk_right.at(column_path_right)->data<RightType>()[index_right]);
+                        };
+                    }
+                } else {
+                    assert(key_left.side() == expressions::side_t::right);
+                    if (key_right.side() == expressions::side_t::left) {
+                        return [column_path_left = key_left.path(),
+                                column_path_right = key_right.path()](const vector::data_chunk_t& chunk_left,
+                                                                      const vector::data_chunk_t& chunk_right,
+                                                                      size_t index_left,
+                                                                      size_t index_right) {
+                            return evaluate_comp<COMP>(chunk_right.at(column_path_left)->data<LeftType>()[index_right],
+                                                       chunk_left.at(column_path_right)->data<RightType>()[index_left]);
+                        };
+                    } else {
+                        assert(key_right.side() == expressions::side_t::right);
+                        return [column_path_left = key_left.path(),
+                                column_path_right = key_right.path()](const vector::data_chunk_t&,
+                                                                      const vector::data_chunk_t& chunk_right,
+                                                                      size_t,
+                                                                      size_t index_right) {
+                            return evaluate_comp<COMP>(
+                                chunk_right.at(column_path_left)->data<LeftType>()[index_right],
+                                chunk_right.at(column_path_right)->data<RightType>()[index_right]);
+                        };
+                    }
+                }
+            }
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, const expressions::key_t& key_left, types::logical_value_t&& value) const
+                -> simple_predicate::check_function_t {
+                if (key_left.side() == expressions::side_t::left) {
+                    return [column_path = key_left.path(),
+                            value = std::move(value)](const vector::data_chunk_t& chunk_left,
+                                                      const vector::data_chunk_t&,
+                                                      size_t index_left,
+                                                      size_t) {
+                        return evaluate_comp<COMP>(chunk_left.at(column_path)->data<LeftType>()[index_left],
+                                                   value.value<RightType>());
+                    };
+                } else {
+                    return [column_path = key_left.path(),
+                            value = std::move(value)](const vector::data_chunk_t&,
+                                                      const vector::data_chunk_t& chunk_right,
+                                                      size_t,
+                                                      size_t index_right) {
+                        return evaluate_comp<COMP>(chunk_right.at(column_path)->data<LeftType>()[index_right],
+                                                   value.value<RightType>());
+                    };
+                }
+            }
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, types::logical_value_t&& value, const expressions::key_t& key_right) const
+                -> simple_predicate::check_function_t {
+                if (key_right.side() == expressions::side_t::left) {
+                    return [column_path = key_right.path(),
+                            value = std::move(value)](const vector::data_chunk_t& chunk_left,
+                                                      const vector::data_chunk_t&,
+                                                      size_t index_left,
+                                                      size_t) {
+                        return evaluate_comp<COMP>(value.value<LeftType>(),
+                                                   chunk_left.at(column_path)->data<RightType>()[index_left]);
+                    };
+                } else {
+                    return [column_path = key_right.path(),
+                            value = std::move(value)](const vector::data_chunk_t&,
+                                                      const vector::data_chunk_t& chunk_right,
+                                                      size_t,
+                                                      size_t index_right) {
+                        return evaluate_comp<COMP>(value.value<LeftType>(),
+                                                   chunk_right.at(column_path)->data<RightType>()[index_right]);
+                    };
+                }
+            }
+            template<typename LeftType,
+                     typename RightType,
+                     typename COMP,
+                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(COMP&&, types::logical_value_t&& value_left, types::logical_value_t&& value_right) const
+                -> simple_predicate::check_function_t {
+                return [value_left = std::move(value_left.value<LeftType>()),
+                        value_right = std::move(value_right.value<RightType>())](const vector::data_chunk_t&,
+                                                                                 const vector::data_chunk_t&,
+                                                                                 size_t,
+                                                                                 size_t) {
+                    return evaluate_comp<COMP>(value_left, value_right);
+                };
+            }
+            // SFINAE unable to compare types
+            template<typename LeftType,
+                     typename RightType,
+                     typename... Args,
+                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            auto operator()(Args&&...) const -> simple_predicate::check_function_t {
+                throw std::runtime_error("invalid expression in create_simple_comparator");
+            }
+        };
+
+        template<typename COMP>
+        simple_predicate::check_function_t
+        create_simple_comparator(const expressions::key_t& key_left,
+                                 const expressions::key_t& key_right,
+                                 const std::pmr::vector<types::complex_logical_type>& types_left,
+                                 const std::pmr::vector<types::complex_logical_type>& types_right,
+                                 const logical_plan::storage_parameters*) {
+            auto sub_type_left = get_sub_type(key_left, types_left, types_right);
+            auto sub_type_right = get_sub_type(key_right, types_left, types_right);
+            types::physical_type type_left = sub_type_left.to_physical_type();
+            types::physical_type type_right = sub_type_right.to_physical_type();
+
+            return types::double_simple_physical_type_switch<create_simple_comparator_t>(type_left,
+                                                                                         type_right,
+                                                                                         COMP{},
+                                                                                         key_left,
+                                                                                         key_right);
+        }
+
+        template<typename COMP>
+        simple_predicate::check_function_t
+        create_simple_comparator(const expressions::key_t& key_left,
+                                 core::parameter_id_t id_right,
+                                 const std::pmr::vector<types::complex_logical_type>& types_left,
+                                 const std::pmr::vector<types::complex_logical_type>& types_right,
+                                 const logical_plan::storage_parameters* parameters) {
+            auto sub_type_left = get_sub_type(key_left, types_left, types_right);
+            auto value_right = parameters->parameters.at(id_right);
+            types::physical_type type_left = sub_type_left.to_physical_type();
+            types::physical_type type_right = value_right.type().to_physical_type();
+
+            return types::double_simple_physical_type_switch<create_simple_comparator_t>(type_left,
+                                                                                         type_right,
+                                                                                         COMP{},
+                                                                                         key_left,
+                                                                                         std::move(value_right));
+        }
+
+        template<typename COMP>
+        simple_predicate::check_function_t
+        create_simple_comparator(core::parameter_id_t id_left,
+                                 const expressions::key_t& key_right,
+                                 const std::pmr::vector<types::complex_logical_type>& types_left,
+                                 const std::pmr::vector<types::complex_logical_type>& types_right,
+                                 const logical_plan::storage_parameters* parameters) {
+            auto value_left = parameters->parameters.at(id_left);
+            auto sub_type_right = get_sub_type(key_right, types_left, types_right);
+            types::physical_type type_left = value_left.type().to_physical_type();
+            types::physical_type type_right = sub_type_right.to_physical_type();
+
+            return types::double_simple_physical_type_switch<create_simple_comparator_t>(type_left,
+                                                                                         type_right,
+                                                                                         COMP{},
+                                                                                         std::move(value_left),
+                                                                                         key_right);
+        }
+
+        template<typename COMP>
+        simple_predicate::check_function_t
+        create_simple_comparator(core::parameter_id_t id_left,
+                                 core::parameter_id_t id_right,
+                                 const std::pmr::vector<types::complex_logical_type>&,
+                                 const std::pmr::vector<types::complex_logical_type>&,
+                                 const logical_plan::storage_parameters* parameters) {
+            auto value_left = parameters->parameters.at(id_left);
+            auto value_right = parameters->parameters.at(id_right);
+            types::physical_type type_left = value_left.type().to_physical_type();
+            types::physical_type type_right = value_right.type().to_physical_type();
+
+            return types::double_simple_physical_type_switch<create_simple_comparator_t>(type_left,
+                                                                                         type_right,
+                                                                                         COMP{},
+                                                                                         std::move(value_left),
+                                                                                         std::move(value_right));
+        }
+
+        template<typename COMP>
+        simple_predicate::check_function_t
+        create_simple_comparator(const expressions::compare_expression_ptr& expr,
+                                 const std::pmr::vector<types::complex_logical_type>& types_left,
+                                 const std::pmr::vector<types::complex_logical_type>& types_right,
+                                 const logical_plan::storage_parameters* parameters) {
+            assert(!std::holds_alternative<expressions::expression_ptr>(expr->left()) &&
+                   !std::holds_alternative<expressions::expression_ptr>(expr->right()));
+            if (std::holds_alternative<expressions::key_t>(expr->left())) {
+                if (std::holds_alternative<expressions::key_t>(expr->right())) {
+                    return create_simple_comparator<COMP>(std::get<expressions::key_t>(expr->left()),
+                                                          std::get<expressions::key_t>(expr->right()),
+                                                          types_left,
+                                                          types_right,
+                                                          parameters);
+                } else {
+                    assert(std::holds_alternative<core::parameter_id_t>(expr->right()));
+                    return create_simple_comparator<COMP>(std::get<expressions::key_t>(expr->left()),
+                                                          std::get<core::parameter_id_t>(expr->right()),
+                                                          types_left,
+                                                          types_right,
+                                                          parameters);
+                }
+            } else {
+                assert(std::holds_alternative<core::parameter_id_t>(expr->left()));
+                if (std::holds_alternative<expressions::key_t>(expr->right())) {
+                    return create_simple_comparator<COMP>(std::get<core::parameter_id_t>(expr->left()),
+                                                          std::get<expressions::key_t>(expr->right()),
+                                                          types_left,
+                                                          types_right,
+                                                          parameters);
+                } else {
+                    assert(std::holds_alternative<core::parameter_id_t>(expr->right()));
+                    return create_simple_comparator<COMP>(std::get<core::parameter_id_t>(expr->left()),
+                                                          std::get<core::parameter_id_t>(expr->right()),
+                                                          types_left,
+                                                          types_right,
+                                                          parameters);
+                }
+            }
         }
 
         template<typename COMP>
         simple_predicate::check_function_t
         create_comparator(std::pmr::memory_resource* resource,
+                          const compute::function_registry_t* function_registry,
                           const expressions::compare_expression_ptr& expr,
                           const std::pmr::vector<types::complex_logical_type>& types_left,
                           const std::pmr::vector<types::complex_logical_type>& types_right,
                           const logical_plan::storage_parameters* parameters) {
-            // TODO: use schema to determine expr side before this
-            if (!expr->primary_key().is_null() && !expr->secondary_key().is_null()) {
-                return create_binary_comparator<COMP>(resource, expr, types_left, types_right);
+            if (std::holds_alternative<expressions::expression_ptr>(expr->left()) ||
+                std::holds_alternative<expressions::expression_ptr>(expr->right())) {
+                return [left_getter = create_value_getter(resource, function_registry, expr->left(), parameters),
+                        right_getter = create_value_getter(resource, function_registry, expr->right(), parameters)](
+                           const vector::data_chunk_t& chunk_left,
+                           const vector::data_chunk_t& chunk_right,
+                           size_t index_left,
+                           size_t index_right) {
+                    return evaluate_comp<COMP>(
+                        left_getter.operator()(chunk_left, chunk_right, index_left, index_right),
+                        right_getter.operator()(chunk_left, chunk_right, index_left, index_right));
+                };
             } else {
-                if (expr->primary_key().side() == expressions::side_t::left) {
-                    return create_unary_comparator<COMP>(resource,
-                                                         expr,
-                                                         types_left,
-                                                         parameters,
-                                                         expressions::side_t::left);
-                } else if (expr->primary_key().side() == expressions::side_t::right) {
-                    return create_unary_comparator<COMP>(resource,
-                                                         expr,
-                                                         types_right,
-                                                         parameters,
-                                                         expressions::side_t::right);
-                } else {
-                    auto path = get_column_path(resource, expr->primary_key(), types_left);
-                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
-                        return create_unary_comparator<COMP>(resource,
-                                                             expr,
-                                                             types_left,
-                                                             parameters,
-                                                             expressions::side_t::left);
-                    }
-                    path = get_column_path(resource, expr->primary_key(), types_right);
-                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
-                        // undefined sided expressions store value on the left side by default
-                        return create_unary_comparator<COMP>(resource,
-                                                             expr,
-                                                             types_right,
-                                                             parameters,
-                                                             expressions::side_t::left);
-                    }
-                }
+                return create_simple_comparator<COMP>(expr, types_left, types_right, parameters);
             }
-
-            return [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return false; };
-        }
-
-        simple_predicate::check_function_t
-        create_regex_comparator(std::pmr::memory_resource* resource,
-                                const expressions::compare_expression_ptr& expr,
-                                const std::pmr::vector<types::complex_logical_type>& types_left,
-                                const std::pmr::vector<types::complex_logical_type>& types_right,
-                                const logical_plan::storage_parameters* parameters) {
-            // TODO: use schema to determine expr side before this
-            if (!expr->primary_key().is_null() && !expr->secondary_key().is_null()) {
-                return create_binary_regex_comparator(resource, expr, types_left, types_right);
-            } else {
-                if (expr->primary_key().side() == expressions::side_t::left) {
-                    return create_unary_regex_comparator(resource,
-                                                         expr,
-                                                         types_left,
-                                                         parameters,
-                                                         expressions::side_t::left);
-                } else if (expr->primary_key().side() == expressions::side_t::right) {
-                    return create_unary_regex_comparator(resource,
-                                                         expr,
-                                                         types_right,
-                                                         parameters,
-                                                         expressions::side_t::right);
-                } else {
-                    auto path = get_column_path(resource, expr->primary_key(), types_left);
-                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
-                        return create_unary_regex_comparator(resource,
-                                                             expr,
-                                                             types_left,
-                                                             parameters,
-                                                             expressions::side_t::left);
-                    }
-                    path = get_column_path(resource, expr->primary_key(), types_right);
-                    if (path.first.front() != std::numeric_limits<size_t>::max()) {
-                        // undefined sided expressions store value on the left side by default
-                        return create_unary_regex_comparator(resource,
-                                                             expr,
-                                                             types_right,
-                                                             parameters,
-                                                             expressions::side_t::left);
-                    }
-                }
-            }
-
-            return [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return false; };
         }
 
     } // namespace impl
@@ -366,6 +375,7 @@ namespace components::table::operators::predicates {
     }
 
     predicate_ptr create_simple_predicate(std::pmr::memory_resource* resource,
+                                          const compute::function_registry_t* function_registry,
                                           const expressions::compare_expression_ptr& expr,
                                           const std::pmr::vector<types::complex_logical_type>& types_left,
                                           const std::pmr::vector<types::complex_logical_type>& types_right,
@@ -379,51 +389,73 @@ namespace components::table::operators::predicates {
                 std::vector<predicate_ptr> nested;
                 nested.reserve(expr->children().size());
                 for (const auto& nested_expr : expr->children()) {
-                    nested.emplace_back(create_simple_predicate(
-                        resource,
-                        reinterpret_cast<const expressions::compare_expression_ptr&>(nested_expr),
-                        types_left,
-                        types_right,
-                        parameters));
+                    nested.emplace_back(create_predicate(resource,
+                                                         function_registry,
+                                                         nested_expr,
+                                                         types_left,
+                                                         types_right,
+                                                         parameters));
                 }
                 return {new simple_predicate(std::move(nested), expr->type())};
             }
             case compare_type::eq:
-                return {new simple_predicate(
-                    impl::create_comparator<std::equal_to<>>(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<std::equal_to<>>(resource,
+                                                                                      function_registry,
+                                                                                      expr,
+                                                                                      types_left,
+                                                                                      types_right,
+                                                                                      parameters))};
             case compare_type::ne:
-                return {new simple_predicate(
-                    impl::create_comparator<std::not_equal_to<>>(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<std::not_equal_to<>>(resource,
+                                                                                          function_registry,
+                                                                                          expr,
+                                                                                          types_left,
+                                                                                          types_right,
+                                                                                          parameters))};
             case compare_type::gt:
-                return {new simple_predicate(
-                    impl::create_comparator<std::greater<>>(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<std::greater<>>(resource,
+                                                                                     function_registry,
+                                                                                     expr,
+                                                                                     types_left,
+                                                                                     types_right,
+                                                                                     parameters))};
             case compare_type::gte:
                 return {new simple_predicate(impl::create_comparator<std::greater_equal<>>(resource,
+                                                                                           function_registry,
                                                                                            expr,
                                                                                            types_left,
                                                                                            types_right,
                                                                                            parameters))};
             case compare_type::lt:
-                return {new simple_predicate(
-                    impl::create_comparator<std::less<>>(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<std::less<>>(resource,
+                                                                                  function_registry,
+                                                                                  expr,
+                                                                                  types_left,
+                                                                                  types_right,
+                                                                                  parameters))};
             case compare_type::lte:
-                return {new simple_predicate(
-                    impl::create_comparator<std::less_equal<>>(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<std::less_equal<>>(resource,
+                                                                                        function_registry,
+                                                                                        expr,
+                                                                                        types_left,
+                                                                                        types_right,
+                                                                                        parameters))};
             case compare_type::regex: {
-                return {new simple_predicate(
-                    impl::create_regex_comparator(resource, expr, types_left, types_right, parameters))};
+                return {new simple_predicate(impl::create_comparator<impl::regex<>>(resource,
+                                                                                    function_registry,
+                                                                                    expr,
+                                                                                    types_left,
+                                                                                    types_right,
+                                                                                    parameters))};
             }
-            case compare_type::all_true:
-                return {new simple_predicate(
-                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return true; })};
             case compare_type::all_false:
                 return {new simple_predicate(
                     [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return false; })};
+            case compare_type::all_true:
             default:
-                break;
+                return {new simple_predicate(
+                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return true; })};
         }
-        return {new simple_predicate(
-            [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return true; })};
     }
 
 } // namespace components::table::operators::predicates

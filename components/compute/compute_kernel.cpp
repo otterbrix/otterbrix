@@ -42,7 +42,7 @@ namespace components::compute {
         return exec_(ctx, inputs, exec_length, output);
     }
 
-    compute_status vector_kernel::finalize(kernel_context& ctx, size_t exec_length, datum_t& output) const {
+    compute_status vector_kernel::finalize(kernel_context& ctx, size_t exec_length, data_chunk_t& output) const {
         if (finalize_) {
             return finalize_(ctx, exec_length, output);
         }
@@ -71,8 +71,19 @@ namespace components::compute {
         return merge_(ctx, std::move(from), into);
     }
 
-    compute_status aggregate_kernel::finalize(kernel_context& ctx, datum_t& output) const {
+    compute_status aggregate_kernel::finalize(kernel_context& ctx,
+                                              std::pmr::vector<types::logical_value_t>& output) const {
         return finalize_(ctx, output);
+    }
+
+    row_kernel::row_kernel(kernel_signature_t signature, row_exec_fn exec)
+        : compute_kernel(std::move(signature))
+        , exec_(std::move(exec)) {}
+
+    compute_status row_kernel::execute(kernel_context& ctx,
+                                       const std::pmr::vector<types::logical_value_t>& inputs,
+                                       std::pmr::vector<types::logical_value_t>& output) const {
+        return exec_(ctx, inputs, output);
     }
 
 } // namespace components::compute

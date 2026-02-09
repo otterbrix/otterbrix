@@ -37,7 +37,7 @@ static compute_status vector_exec(kernel_context& ctx, const data_chunk_t& in, s
     return compute_status::ok();
 }
 
-static compute_status vector_finalize(kernel_context& ctx, size_t, datum_t&) {
+static compute_status vector_finalize(kernel_context& ctx, size_t, data_chunk_t&) {
     auto* c = static_cast<counters*>(ctx.state());
     REQUIRE(c->exec_called);                    // at least one call
     REQUIRE(c->multiplier == MAGIC_MULTIPLIER); // init was called with function_options
@@ -67,10 +67,8 @@ static compute_status agg_merge(kernel_context&, kernel_state&& from, kernel_sta
     return compute_status::ok();
 }
 
-static compute_status agg_finalize(kernel_context& ctx, datum_t& out) {
-    vector_t vec(ctx.exec_context().resource(), logical_type::INTEGER, 2);
-    vec.set_value(0, logical_value_t{static_cast<agg_counter*>(ctx.state())->value});
-    out.data.emplace_back(std::move(vec));
+static compute_status agg_finalize(kernel_context& ctx, std::pmr::vector<components::types::logical_value_t>& out) {
+    out.emplace_back(static_cast<agg_counter*>(ctx.state())->value);
     return compute_status::ok();
 }
 
@@ -95,7 +93,7 @@ TEST_CASE("components::compute::vector::single") {
 
     auto res = fn->execute(chunk, 1, &opts);
     REQUIRE(res);
-    REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
+    REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::vector::batch") {
@@ -120,9 +118,9 @@ TEST_CASE("components::compute::vector::batch") {
 
     auto res = fn->execute(batch, 1, &opts);
     REQUIRE(res);
-    REQUIRE(res.value().data.size() == 2);
-    REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER);
-    REQUIRE(res.value().data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
+    REQUIRE(std::get<data_chunk_t>(res.value()).data.size() == 2);
+    REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER);
+    REQUIRE(std::get<data_chunk_t>(res.value()).data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::aggregate::single") {
@@ -138,7 +136,8 @@ TEST_CASE("components::compute::aggregate::single") {
 
     auto res = fn->execute(chunk, 2);
     REQUIRE(res);
-    REQUIRE(res.value().data[0].data<int>()[0] == 25); // 10 (init) + 5 (agg) + 10 (init + merge)
+    REQUIRE(std::get<std::pmr::vector<logical_value_t>>(res.value())[0].value<int>() ==
+            25); // 10 (init) + 5 (agg) + 10 (init + merge)
 }
 
 TEST_CASE("components::compute::aggregate::batch") {
@@ -162,7 +161,8 @@ TEST_CASE("components::compute::aggregate::batch") {
 
     auto res = fn->execute(batch, 2);
     REQUIRE(res);
-    REQUIRE(res.value().data[0].data<int>()[0] == 40); // 3 init (1 initial + 2 for each batch, 10 from aggregate)
+    REQUIRE(std::get<std::pmr::vector<logical_value_t>>(res.value())[0].value<int>() ==
+            40); // 3 init (1 initial + 2 for each batch, 10 from aggregate)
 }
 
 TEST_CASE("components::compute::options_required") {
@@ -200,10 +200,10 @@ TEST_CASE("components::compute::errors") {
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
         REQUIRE(fn->add_kernel(std::move(k)));
 
-        data_chunk_t chunk(std::pmr::get_default_resource(), {logical_type::STRING_LITERAL});
-        chunk.set_value(0, 0, logical_value_t("oops"));
+        data_chunk_t try_chunk(std::pmr::get_default_resource(), {logical_type::STRING_LITERAL});
+        try_chunk.set_value(0, 0, logical_value_t("oops"));
 
-        auto res = fn->execute(chunk, 1);
+        auto res = fn->execute(try_chunk, 1);
         REQUIRE_FALSE(res);
         REQUIRE(res.status().code() == compute_status_code_t::EXECUTION_ERROR);
     }

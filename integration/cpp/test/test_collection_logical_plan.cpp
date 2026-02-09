@@ -683,10 +683,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 calculate_expr->right() = new expressions::update_expr_get_const_value_t(id_par{1});
                 update_expr->left() = std::move(calculate_expr);
 
-                auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                             compare_type::eq,
-                                                                             key{dispatcher->resource(), "count"},
-                                                                             key{dispatcher->resource(), "count"});
+                auto expr = components::expressions::make_compare_expression(
+                    dispatcher->resource(),
+                    compare_type::eq,
+                    key{{{"initial_table", "count"}, dispatcher->resource()}},
+                    key{{{"from_table", "count"}, dispatcher->resource()}});
 
                 auto update = logical_plan::make_node_update_many(
                     dispatcher->resource(),
@@ -697,6 +698,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     {std::move(update_expr)},
                     false);
                 update->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
+                update->set_result_alias("initial_table");
+                update->children().back()->set_result_alias("from_table");
                 auto cur = dispatcher->execute_plan(session, update, params);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == 10);

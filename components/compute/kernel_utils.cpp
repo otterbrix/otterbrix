@@ -11,7 +11,7 @@ namespace components::compute {
     function_registry_t* exec_context_t::func_registry() const { return func_registry_; }
 
     exec_context_t& default_exec_context() {
-        static exec_context_t default_ctx;
+        static exec_context_t default_ctx(std::pmr::get_default_resource());
         return default_ctx;
     }
 } // namespace components::compute

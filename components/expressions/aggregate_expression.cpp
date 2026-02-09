@@ -51,6 +51,8 @@ namespace components::expressions {
 
     compute::function_uid aggregate_expression_t::function_uid() const { return function_uid_; }
 
+    std::pmr::vector<param_storage>& aggregate_expression_t::params() { return params_; }
+
     const std::pmr::vector<param_storage>& aggregate_expression_t::params() const { return params_; }
 
     void aggregate_expression_t::append_param(const param_storage& param) { params_.push_back(param); }

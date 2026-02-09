@@ -58,6 +58,8 @@ set(${PROJECT_NAME}_SOURCES
 
         table/operators/predicates/predicate.cpp
         table/operators/predicates/simple_predicate.cpp
+        table/operators/predicates/function_predicate.cpp
+        table/operators/predicates/utils.cpp
 
         table/operators/scan/full_scan.cpp
         table/operators/scan/index_scan.cpp

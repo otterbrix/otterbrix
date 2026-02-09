@@ -210,7 +210,11 @@ namespace services::collection::executor {
                                      make_cursor(resource(), error_code_t::collection_dropped, "collection dropped"));
             return;
         }
-        components::pipeline::context_t pipeline_context{session, address(), memory_storage_, parameters};
+        components::pipeline::context_t pipeline_context{session,
+                                                         address(),
+                                                         memory_storage_,
+                                                         &function_registry_,
+                                                         std::move(parameters)};
         plan->on_execute(&pipeline_context);
         if (!plan->is_executed()) {
             sessions::make_session(

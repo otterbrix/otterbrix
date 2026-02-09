@@ -60,7 +60,8 @@ namespace components::expressions {
     {
         parameter_id,
         key,
-        expression
+        expression,
+        null
     };
 
     param_storage deserialize_param_storage(serializer::msgpack_deserializer_t* deserializer, size_t index) {
@@ -73,8 +74,10 @@ namespace components::expressions {
             deserializer->advance_array(1);
             res = expressions::expression_i::deserialize(deserializer);
             deserializer->pop_array();
-        } else {
+        } else if (tag == param_storage_tag::key) {
             res = deserializer->deserialize_key(1);
+        } else {
+            res = nullptr;
         }
         deserializer->pop_array();
         return res;
@@ -92,8 +95,13 @@ namespace components::expressions {
                     serializer->append_enum(param_storage_tag::key);
                     serializer->append(value);
                 } else if constexpr (std::is_same_v<param_type, expressions::expression_ptr>) {
-                    serializer->append_enum(param_storage_tag::expression);
-                    value->serialize(serializer);
+                    if (value) {
+                        serializer->append_enum(param_storage_tag::expression);
+                        value->serialize(serializer);
+                    } else {
+                        serializer->append_enum(param_storage_tag::null);
+                        serializer->append_null();
+                    }
                 } else {
                     assert(false);
                 }

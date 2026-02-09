@@ -44,14 +44,14 @@ TEST_CASE("components::expression::scalar::to_string") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr =
         make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"), key(&resource, "count"));
-    REQUIRE(expr->to_string() == R"(count: "$count")");
+    REQUIRE(expr->to_string() == R"(count: "count")");
     expr = make_scalar_expression(&resource, scalar_type::floor, key(&resource, "count"), key(&resource, "count"));
-    REQUIRE(expr->to_string() == R"(count: {$floor: "$count"})");
+    REQUIRE(expr->to_string() == R"(count: {$floor: "count"})");
 
     expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "multi"));
     expr->append_param(core::parameter_id_t(1));
     expr->append_param(key(&resource, "key"));
     expr->append_param(
         make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "value"), key(&resource, "count")));
-    REQUIRE(expr->to_string() == R"(multi: {$multiply: [#1, "$key", value: "$count"]})");
+    REQUIRE(expr->to_string() == R"(multi: {$multiply: [#1, "key", value: "count"]})");
 }

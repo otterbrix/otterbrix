@@ -344,8 +344,11 @@ TEST_CASE("services::wal::delete_one_test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
-        REQUIRE(match->value() == core::parameter_id_t{1});
+        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
+        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
+                components::expressions::key_t{&resource, "count"});
+        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
+        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         index = test_wal.wal->test_next_record(index);
@@ -383,8 +386,11 @@ TEST_CASE("services::wal::delete_many_test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
-        REQUIRE(match->value() == core::parameter_id_t{1});
+        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
+        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
+                components::expressions::key_t{&resource, "count"});
+        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
+        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 1);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         index = test_wal.wal->test_next_record(index);
@@ -427,8 +433,11 @@ TEST_CASE("services::wal::update_one_test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
-        REQUIRE(match->value() == core::parameter_id_t{1});
+        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
+        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
+                components::expressions::key_t{&resource, "count"});
+        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
+        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
@@ -479,8 +488,11 @@ TEST_CASE("services::wal::update_many_test") {
         auto match =
             reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
         REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(match->primary_key() == components::expressions::key_t{&resource, "count"});
-        REQUIRE(match->value() == core::parameter_id_t{1});
+        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
+        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
+                components::expressions::key_t{&resource, "count"});
+        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
+        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
         REQUIRE(record.params->parameters().parameters.size() == 2);
         REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
         auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();

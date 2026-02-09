@@ -12,6 +12,7 @@
 #include <vector>
 
 namespace components::compute {
+    class row_function;
     class vector_function;
     class aggregate_function;
 
@@ -46,9 +47,10 @@ namespace components::compute {
         virtual ~function_executor() = default;
         virtual compute_status init(const function_options* options, exec_context_t& exec_ctx) = 0;
 
-        virtual compute_result<datum_t> execute(const components::vector::data_chunk_t& args, size_t exec_length) = 0;
-        virtual compute_result<datum_t> execute(const std::vector<components::vector::data_chunk_t>& inputs,
+        virtual compute_result<datum_t> execute(const vector::data_chunk_t& args, size_t exec_length) = 0;
+        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs,
                                                 size_t exec_length) = 0;
+        virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
     };
 
     class function_visitor {
@@ -57,6 +59,7 @@ namespace components::compute {
 
         virtual void visit(const vector_function& func) = 0;
         virtual void visit(const aggregate_function& func) = 0;
+        virtual void visit(const row_function& func) = 0;
     };
 
     template<typename T, std::enable_if_t<std::is_move_constructible_v<T>, bool> = true>
@@ -90,6 +93,10 @@ namespace components::compute {
                                                 const function_options* options = nullptr,
                                                 exec_context_t& ctx = default_exec_context()) const;
 
+        virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs,
+                                                const function_options* options = nullptr,
+                                                exec_context_t& ctx = default_exec_context()) const;
+
         const function_options* default_options() const;
 
         virtual compute_result<std::reference_wrapper<const compute_kernel>>
@@ -113,8 +120,8 @@ namespace components::compute {
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
     struct registered_func_id {
-        compute::function_uid uid;
-        std::vector<compute::kernel_signature_t> signatures;
+        function_uid uid;
+        std::vector<kernel_signature_t> signatures;
     };
 
     namespace detail {
@@ -179,8 +186,9 @@ namespace components::compute {
         public:
             kernel_nth_visitor(size_t n);
 
-            virtual void visit(const vector_function& func) override;
-            virtual void visit(const aggregate_function& func) override;
+            void visit(const vector_function& func) override;
+            void visit(const aggregate_function& func) override;
+            void visit(const row_function& func) override;
 
         private:
             size_t nth_;
@@ -191,8 +199,9 @@ namespace components::compute {
         public:
             kernel_executor_visitor();
 
-            virtual void visit(const vector_function& func) override;
-            virtual void visit(const aggregate_function& func) override;
+            void visit(const vector_function& func) override;
+            void visit(const aggregate_function& func) override;
+            void visit(const row_function& func) override;
         };
 
         const compute_kernel* dispatch_exact_impl(const function& func,
@@ -208,6 +217,12 @@ namespace components::compute {
     class aggregate_function : public detail::function_impl<aggregate_kernel> {
     public:
         aggregate_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
+        void accept_visitor(function_visitor& visitor) const override;
+    };
+
+    class row_function : public detail::function_impl<row_kernel> {
+    public:
+        row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
     };
 

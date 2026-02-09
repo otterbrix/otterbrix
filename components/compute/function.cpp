@@ -54,8 +54,7 @@ namespace components::compute {
             return init_kernel(options);
         }
 
-        compute_status check_args(const data_chunk_t& args) {
-            auto types = args.types();
+        compute_status check_args(const std::pmr::vector<types::complex_logical_type>& types) {
             if (types.size() != in_types_.size()) {
                 return compute_status::execution_error("Invalid argument count");
             }
@@ -69,9 +68,11 @@ namespace components::compute {
             return compute_status::ok();
         }
 
+        compute_status check_args(const data_chunk_t& args) { return check_args(args.types()); }
+
         compute_status check_args(const std::vector<data_chunk_t>& args) {
             auto types = args.front().types();
-            if (auto st = check_args(args.front()); !st) {
+            if (auto st = check_args(types); !st) {
                 return st;
             }
 
@@ -92,11 +93,18 @@ namespace components::compute {
             return executor_->execute(args, exec_length);
         }
 
-        compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs, size_t exec_length) override {
+        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs, size_t exec_length) override {
             if (auto st = check_init(); !st) {
                 return st;
             }
             return executor_->execute(inputs, exec_length);
+        }
+
+        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
+            if (auto st = check_init(); !st) {
+                return st;
+            }
+            return executor_->execute(inputs);
         }
 
         static compute_result<function_executor_impl_t>
@@ -215,6 +223,31 @@ namespace components::compute {
         }
     }
 
+    compute_result<datum_t> function::execute(const std::pmr::vector<logical_value_t>& args,
+                                              const function_options* options,
+                                              exec_context_t& ctx) const {
+        std::pmr::vector<complex_logical_type> types(args.get_allocator().resource());
+        types.reserve(args.size());
+        for (const auto& arg : args) {
+            types.emplace_back(arg.type());
+        }
+
+        auto fn_exec = function_executor_impl_t::get_best_function_executor(types, *this);
+        if (!fn_exec) {
+            return fn_exec.status();
+        }
+
+        if (auto st = fn_exec.value().check_args(types); !st) {
+            return st;
+        }
+
+        if (auto st = fn_exec.value().init(options, ctx)) {
+            return fn_exec.value().execute(args);
+        } else {
+            return st;
+        }
+    }
+
     const function_options* function::default_options() const { return default_options_; }
 
     vector_function::vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
@@ -229,6 +262,11 @@ namespace components::compute {
         : function_impl<aggregate_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
 
     void aggregate_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
+
+    row_function::row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
+        : function_impl<row_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
+
+    void row_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
 
     std::once_flag function_registry_t::init_flag_;
     std::unique_ptr<function_registry_t> function_registry_t::default_registry_;
@@ -282,6 +320,8 @@ namespace components::compute {
             result = &func.kernels()[nth_].get();
         }
 
+        void kernel_nth_visitor::visit(const row_function& func) { result = &func.kernels()[nth_].get(); }
+
         kernel_executor_visitor::kernel_executor_visitor()
             : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr) {}
 
@@ -292,6 +332,8 @@ namespace components::compute {
         void kernel_executor_visitor::visit(const compute::aggregate_function&) {
             result = detail::kernel_executor_t::make_aggregate();
         }
+
+        void kernel_executor_visitor::visit(const row_function&) { result = detail::kernel_executor_t::make_row(); }
 
         const compute_kernel* dispatch_exact_impl(const function& func,
                                                   const std::pmr::vector<complex_logical_type>& in_types) {

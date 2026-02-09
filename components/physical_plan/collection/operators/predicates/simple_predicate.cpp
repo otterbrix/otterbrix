@@ -85,8 +85,8 @@ namespace components::collection::operators::predicates {
         };
 
         // TODO: side definition and error handling is supposed to be done before this, using schema
-        auto primary_key = expr->primary_key();
-        auto secondary_key = expr->secondary_key();
+        auto primary_key = std::get<expressions::key_t>(expr->left());
+        auto secondary_key = std::get<expressions::key_t>(expr->right());
         if (!deduce_side(document_left, document_right, primary_key)) {
             return std::nullopt;
         }
@@ -123,8 +123,8 @@ namespace components::collection::operators::predicates {
         };
 
         // TODO: side definition and error handling is supposed to be done before this, using schema
-        auto primary_key = expr->primary_key();
-        auto secondary_key = expr->secondary_key();
+        auto primary_key = std::get<expressions::key_t>(expr->left());
+        auto secondary_key = std::get<expressions::key_t>(expr->right());
         if (!deduce_side(document_left, document_right, primary_key)) {
             return false;
         }
@@ -151,24 +151,30 @@ namespace components::collection::operators::predicates {
                                                    const document::document_ptr& document_left,
                                                    const document::document_ptr& document_right,
                                                    const logical_plan::storage_parameters* parameters) {
-        if (!expr->primary_key().is_null() && !expr->secondary_key().is_null()) {
+        const auto& primary_key = expr->left();
+        const auto& secondary_key = expr->right();
+        if (std::holds_alternative<expressions::key_t>(primary_key) &&
+            std::holds_alternative<expressions::key_t>(secondary_key)) {
             return compare_documents(expr, document_left, document_right);
         }
-        auto it = parameters->parameters.find(expr->value());
+
+        const auto& actual_key = std::get<expressions::key_t>(primary_key);
+        auto id = std::get<core::parameter_id_t>(secondary_key);
+        auto it = parameters->parameters.find(id);
         if (it == parameters->parameters.end()) {
             return std::nullopt;
         }
-        if (expr->primary_key().side() == expressions::side_t::left) {
-            return document_left->get_value(expr->primary_key().as_string()).as_logical_value().compare(it->second);
+        if (actual_key.side() == expressions::side_t::left) {
+            return document_left->get_value(actual_key.as_string()).as_logical_value().compare(it->second);
         }
-        if (expr->primary_key().side() == expressions::side_t::right) {
-            return document_right->get_value(expr->primary_key().as_string()).as_logical_value().compare(it->second);
+        if (actual_key.side() == expressions::side_t::right) {
+            return document_right->get_value(actual_key.as_string()).as_logical_value().compare(it->second);
         }
-        if (document_left->is_exists(expr->primary_key().as_string())) {
-            return document_left->get_value(expr->primary_key().as_string()).as_logical_value().compare(it->second);
+        if (document_left->is_exists(actual_key.as_string())) {
+            return document_left->get_value(actual_key.as_string()).as_logical_value().compare(it->second);
         }
-        if (document_right->is_exists(expr->primary_key().as_string())) {
-            return document_right->get_value(expr->primary_key().as_string()).as_logical_value().compare(it->second);
+        if (document_right->is_exists(actual_key.as_string())) {
+            return document_right->get_value(actual_key.as_string()).as_logical_value().compare(it->second);
         }
         return std::nullopt;
     }
@@ -258,39 +264,45 @@ namespace components::collection::operators::predicates {
                 return {new simple_predicate([&expr](const document::document_ptr& document_left,
                                                      const document::document_ptr& document_right,
                                                      const logical_plan::storage_parameters* parameters) {
-                    if (!expr->primary_key().is_null() && !expr->secondary_key().is_null()) {
+                    const auto& primary_key = expr->left();
+                    const auto& secondary_key = expr->right();
+                    if (std::holds_alternative<expressions::key_t>(primary_key) &&
+                        std::holds_alternative<expressions::key_t>(secondary_key)) {
                         return compare_regex_documents(expr, document_left, document_right);
                     }
-                    auto it = parameters->parameters.find(expr->value());
+
+                    const auto& actual_key = std::get<expressions::key_t>(primary_key);
+                    auto id = std::get<core::parameter_id_t>(secondary_key);
+                    auto it = parameters->parameters.find(id);
                     if (it == parameters->parameters.end()) {
                         return false;
                     }
-                    if (expr->primary_key().side() == expressions::side_t::left) {
-                        return document_left->type_by_key(expr->primary_key().as_string()) ==
+                    if (actual_key.side() == expressions::side_t::left) {
+                        return document_left->type_by_key(actual_key.as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
                                std::regex_match(
-                                   document_left->get_string(expr->primary_key().as_string()).data(),
+                                   document_left->get_string(actual_key.as_string()).data(),
                                    std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
-                    if (expr->primary_key().side() == expressions::side_t::right) {
-                        return document_right->type_by_key(expr->primary_key().as_string()) ==
+                    if (actual_key.side() == expressions::side_t::right) {
+                        return document_right->type_by_key(actual_key.as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
                                std::regex_match(
-                                   document_right->get_string(expr->primary_key().as_string()).data(),
+                                   document_right->get_string(actual_key.as_string()).data(),
                                    std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
-                    if (document_left->is_exists(expr->primary_key().as_string())) {
-                        return document_left->type_by_key(expr->primary_key().as_string()) ==
+                    if (document_left->is_exists(actual_key.as_string())) {
+                        return document_left->type_by_key(actual_key.as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
                                std::regex_match(
-                                   document_left->get_string(expr->primary_key().as_string()).data(),
+                                   document_left->get_string(actual_key.as_string()).data(),
                                    std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
-                    if (document_right->is_exists(expr->primary_key().as_string())) {
-                        return document_right->type_by_key(expr->primary_key().as_string()) ==
+                    if (document_right->is_exists(actual_key.as_string())) {
+                        return document_right->type_by_key(actual_key.as_string()) ==
                                    types::logical_type::STRING_LITERAL &&
                                std::regex_match(
-                                   document_right->get_string(expr->primary_key().as_string()).data(),
+                                   document_right->get_string(actual_key.as_string()).data(),
                                    std::regex(fmt::format(".*{}.*", it->second.value<std::string_view>())));
                     }
                     return false;

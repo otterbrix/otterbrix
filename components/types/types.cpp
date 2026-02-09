@@ -229,59 +229,7 @@ namespace components::types {
         }
     }
 
-    physical_type complex_logical_type::to_physical_type() const {
-        switch (type_) {
-            case logical_type::NA:
-            case logical_type::BOOLEAN:
-                return physical_type::BOOL;
-            case logical_type::TINYINT:
-                return physical_type::INT8;
-            case logical_type::UTINYINT:
-                return physical_type::UINT8;
-            case logical_type::SMALLINT:
-                return physical_type::INT16;
-            case logical_type::USMALLINT:
-                return physical_type::UINT16;
-            case logical_type::ENUM:
-            case logical_type::INTEGER:
-                return physical_type::INT32;
-            case logical_type::UINTEGER:
-                return physical_type::UINT32;
-            case logical_type::BIGINT:
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
-                return physical_type::INT64;
-            case logical_type::UBIGINT:
-                return physical_type::UINT64;
-            case logical_type::UHUGEINT:
-                return physical_type::UINT128;
-            case logical_type::HUGEINT:
-            case logical_type::UUID:
-                return physical_type::INT128;
-            case logical_type::FLOAT:
-                return physical_type::FLOAT;
-            case logical_type::DOUBLE:
-                return physical_type::DOUBLE;
-            case logical_type::STRING_LITERAL:
-                return physical_type::STRING;
-            case logical_type::DECIMAL:
-                return physical_type::INT64;
-            case logical_type::VALIDITY:
-                return physical_type::BIT;
-            case logical_type::ARRAY:
-                return physical_type::ARRAY;
-            case logical_type::STRUCT:
-            case logical_type::UNION:
-            case logical_type::VARIANT:
-                return physical_type::STRUCT;
-            case logical_type::LIST:
-                return physical_type::LIST;
-            default:
-                return physical_type::INVALID;
-        }
-    }
+    physical_type complex_logical_type::to_physical_type() const { return types::to_physical_type(type_); }
 
     void complex_logical_type::set_alias(const std::string& alias) {
         if (extension_) {

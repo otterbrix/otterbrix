@@ -45,6 +45,7 @@ namespace components::logical_plan {
     std::pmr::vector<node_ptr>& node_t::children() { return children_; }
 
     const std::pmr::vector<expression_ptr>& node_t::expressions() const { return expressions_; }
+    std::pmr::vector<expression_ptr>& node_t::expressions() { return expressions_; }
 
     void node_t::set_result_alias(const std::string& alias) { result_alias_ = alias; }
 

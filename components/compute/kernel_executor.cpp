@@ -72,12 +72,12 @@ namespace components::compute::detail {
                 return st;
             }
 
-            datum_t out(kernel_ctx().exec_context().resource(), {});
+            data_chunk_t out(kernel_ctx().exec_context().resource(), {});
             out.data.emplace_back(std::move(results_.front()));
             if (auto st = kernel().finalize(kernel_ctx(), exec_length, out); !st) {
                 return st;
             }
-            return out;
+            return compute_result{datum_t{std::move(out)}};
         }
 
         compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs, size_t exec_length) override {
@@ -87,7 +87,7 @@ namespace components::compute::detail {
 
             data_chunk_t merged(exec_ctx().resource(), {});
             if (inputs.empty()) {
-                return merged;
+                return compute_result{datum_t{std::move(merged)}};
             }
 
             for (const auto& in : inputs) {
@@ -105,7 +105,12 @@ namespace components::compute::detail {
                 return st;
             }
 
-            return merged;
+            return compute_result{datum_t{std::move(merged)}};
+        }
+
+        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
+            return compute_result<datum_t>{
+                compute_status::not_implemented("vector_executor does not support row operations")};
         }
 
     private:
@@ -156,6 +161,11 @@ namespace components::compute::detail {
             return finalize();
         }
 
+        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
+            return compute_result<datum_t>{
+                compute_status::not_implemented("vector_executor does not support row operations")};
+        }
+
     private:
         compute_status consume(const data_chunk_t& inputs, size_t exec_length) {
             if (state() == nullptr) {
@@ -186,16 +196,42 @@ namespace components::compute::detail {
         }
 
         compute_result<datum_t> finalize() {
-            datum_t out(kernel_ctx().exec_context().resource(), {});
+            std::pmr::vector<types::logical_value_t> out(kernel_ctx().exec_context().resource());
             if (auto st = kernel().finalize(kernel_ctx(), out); !st) {
                 return st;
             }
 
-            return out;
+            return compute_result{datum_t{std::move(out)}};
         }
 
         const std::pmr::vector<types::complex_logical_type>* input_types_;
         const function_options* options_;
+    };
+
+    class row_executor final : public kernel_executor_impl<row_kernel> {
+    public:
+        compute_result<datum_t> execute(const data_chunk_t&, size_t) override {
+            return compute_result<datum_t>{
+                compute_status::not_implemented("vector_executor does not support chunk operations")};
+        }
+
+        compute_result<datum_t> execute(const std::vector<data_chunk_t>&, size_t) override {
+            return compute_result<datum_t>{
+                compute_status::not_implemented("vector_executor does not support chunk operations")};
+        }
+
+        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
+            if (auto st = check_kernel(); !st) {
+                return st;
+            }
+
+            std::pmr::vector<logical_value_t> output(inputs.get_allocator().resource());
+            if (auto st = kernel().execute(kernel_ctx(), inputs, output); !st) {
+                return st;
+            }
+
+            return compute_result{datum_t{std::move(output)}};
+        }
     };
 
     std::unique_ptr<kernel_executor_t> kernel_executor_t::make_vector() { return std::make_unique<vector_executor>(); }
@@ -203,4 +239,6 @@ namespace components::compute::detail {
     std::unique_ptr<kernel_executor_t> kernel_executor_t::make_aggregate() {
         return std::make_unique<aggregate_executor>();
     }
+
+    std::unique_ptr<kernel_executor_t> kernel_executor_t::make_row() { return std::make_unique<row_executor>(); }
 } // namespace components::compute::detail

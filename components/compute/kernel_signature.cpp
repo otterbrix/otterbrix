@@ -152,7 +152,6 @@ namespace components::compute {
         return check_signature_conflicts(lhs.input_types, rhs.input_types, registered_types);
     }
 
-    // Returns true if any signature permutation results in conflict
     bool check_signature_conflicts(
         const std::vector<kernel_signature_t>& lhs,
         const std::vector<kernel_signature_t>& rhs,

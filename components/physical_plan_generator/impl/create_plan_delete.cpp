@@ -95,11 +95,9 @@ namespace services::table::planner::impl {
 
             return plan;
         } else {
-            auto expr =
-                reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node_match->expressions()[0]);
-
             auto plan = boost::intrusive_ptr(
-                new components::table::operators::operator_delete(context.at(node->collection_full_name()), *expr));
+                new components::table::operators::operator_delete(context.at(node->collection_full_name()),
+                                                                  node_match->expressions()[0]));
             if (node_raw_data) {
                 plan->set_children(boost::intrusive_ptr(new components::table::operators::full_scan(
                                        context.at(node->collection_full_name()),

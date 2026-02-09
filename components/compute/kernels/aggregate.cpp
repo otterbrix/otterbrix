@@ -290,11 +290,8 @@ namespace {
         return compute_status::ok();
     }
 
-    static compute_status sum_finalize(kernel_context& ctx, datum_t& out) {
-        vector_t vec(ctx.exec_context().resource(), static_cast<sum_kernel_state*>(ctx.state())->value.type(), 1);
-        vec.set_value(0, static_cast<sum_kernel_state*>(ctx.state())->value);
-        out.data.emplace_back(std::move(vec));
-        out.set_cardinality(out.size() + 1);
+    static compute_status sum_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
+        out.emplace_back(static_cast<sum_kernel_state*>(ctx.state())->value);
         return compute_status::ok();
     }
 
@@ -321,11 +318,8 @@ namespace {
         return compute_status::ok();
     }
 
-    static compute_status min_finalize(kernel_context& ctx, datum_t& out) {
-        vector_t vec(ctx.exec_context().resource(), static_cast<min_kernel_state*>(ctx.state())->value.type(), 1);
-        vec.set_value(0, static_cast<min_kernel_state*>(ctx.state())->value);
-        out.data.emplace_back(std::move(vec));
-        out.set_cardinality(out.size() + 1);
+    static compute_status min_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
+        out.emplace_back(static_cast<min_kernel_state*>(ctx.state())->value);
         return compute_status::ok();
     }
 
@@ -352,11 +346,8 @@ namespace {
         return compute_status::ok();
     }
 
-    static compute_status max_finalize(kernel_context& ctx, datum_t& out) {
-        vector_t vec(ctx.exec_context().resource(), static_cast<max_kernel_state*>(ctx.state())->value.type(), 1);
-        vec.set_value(0, static_cast<max_kernel_state*>(ctx.state())->value);
-        out.data.emplace_back(std::move(vec));
-        out.set_cardinality(out.size() + 1);
+    static compute_status max_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
+        out.emplace_back(static_cast<max_kernel_state*>(ctx.state())->value);
         return compute_status::ok();
     }
 
@@ -381,11 +372,8 @@ namespace {
         return compute_status::ok();
     }
 
-    static compute_status count_finalize(kernel_context& ctx, datum_t& out) {
-        vector_t vec(ctx.exec_context().resource(), logical_type::UBIGINT, 1);
-        vec.set_value(0, logical_value_t{static_cast<count_kernel_state*>(ctx.state())->value});
-        out.data.emplace_back(std::move(vec));
-        out.set_cardinality(out.size() + 1);
+    static compute_status count_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
+        out.emplace_back(static_cast<count_kernel_state*>(ctx.state())->value);
         return compute_status::ok();
     }
 
@@ -415,13 +403,9 @@ namespace {
         return compute_status::ok();
     }
 
-    static compute_status avg_finalize(kernel_context& ctx, datum_t& out) {
-        vector_t vec(ctx.exec_context().resource(), static_cast<avg_kernel_state*>(ctx.state())->value.type(), 1);
-        vec.set_value(0,
-                      operator_switch<divide_operator_t>(static_cast<avg_kernel_state*>(ctx.state())->value,
-                                                         static_cast<avg_kernel_state*>(ctx.state())->count));
-        out.data.emplace_back(std::move(vec));
-        out.set_cardinality(out.size() + 1);
+    static compute_status avg_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
+        out.emplace_back(operator_switch<divide_operator_t>(static_cast<avg_kernel_state*>(ctx.state())->value,
+                                                            static_cast<avg_kernel_state*>(ctx.state())->count));
         return compute_status::ok();
     }
 

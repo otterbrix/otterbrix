@@ -11,8 +11,7 @@ namespace components::compute {
 
     class exec_context_t {
     public:
-        explicit exec_context_t(std::pmr::memory_resource* resource = std::pmr::get_default_resource(),
-                                function_registry_t* registry = nullptr);
+        explicit exec_context_t(std::pmr::memory_resource* resource, function_registry_t* registry = nullptr);
 
         exec_context_t(const exec_context_t&) = default;
         exec_context_t(exec_context_t&& other) = default;
@@ -27,6 +26,7 @@ namespace components::compute {
         function_registry_t* func_registry_;
     };
 
+    //TODO: remove default version, because it requires a static initialization of memory_resource
     exec_context_t& default_exec_context();
 
     struct kernel_init_args {

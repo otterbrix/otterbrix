@@ -12,13 +12,13 @@ namespace components::table::operators {
         operator_update(services::collection::context_collection_t* context,
                         std::pmr::vector<expressions::update_expr_ptr> updates,
                         bool upsert,
-                        expressions::compare_expression_ptr comp_expr = nullptr);
+                        expressions::expression_ptr expr = nullptr);
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         std::pmr::vector<expressions::update_expr_ptr> updates_;
-        expressions::compare_expression_ptr comp_expr_;
+        expressions::expression_ptr expr_;
         bool upsert_;
     };
 

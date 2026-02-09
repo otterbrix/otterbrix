@@ -19,6 +19,8 @@ namespace components::expressions {
 
     const std::string& function_expression_t::name() const noexcept { return name_; }
 
+    std::pmr::vector<param_storage>& function_expression_t::args() noexcept { return args_; }
+
     const std::pmr::vector<param_storage>& function_expression_t::args() const noexcept { return args_; }
 
     void function_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }

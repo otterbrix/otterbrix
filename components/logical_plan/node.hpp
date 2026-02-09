@@ -34,6 +34,7 @@ namespace components::logical_plan {
         const std::pmr::vector<node_ptr>& children() const;
         std::pmr::vector<node_ptr>& children();
         const std::pmr::vector<expression_ptr>& expressions() const;
+        std::pmr::vector<expression_ptr>& expressions();
 
         void set_result_alias(const std::string& alias);
         void reserve_child(std::size_t count);

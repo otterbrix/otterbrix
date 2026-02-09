@@ -44,11 +44,11 @@ TEST_CASE("components::expression::aggregate::equals") {
 TEST_CASE("components::expression::aggregate::to_string") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum"), key(&resource, "count"));
-    REQUIRE(expr->to_string() == R"(sum: {$sum: "$count"})");
+    REQUIRE(expr->to_string() == R"(sum: {$sum: "count"})");
 
     expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum"));
     expr->append_param(core::parameter_id_t(1));
     expr->append_param(key(&resource, "key"));
     expr->append_param(make_aggregate_expression(&resource, "count", key(&resource, "key"), key(&resource, "count")));
-    REQUIRE(expr->to_string() == R"(sum: {$sum: [#1, "$key", key: {$count: "$count"}]})");
+    REQUIRE(expr->to_string() == R"(sum: {$sum: [#1, "key", key: {$count: "count"}]})");
 }

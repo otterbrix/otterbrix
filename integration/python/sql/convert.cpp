@@ -232,7 +232,7 @@ using components::expressions::scalar_expression_t;
 using components::expressions::scalar_type;
 
 void normalize(compare_expression_ptr& expr) {
-    if (expr->type() == compare_type::invalid && !expr->primary_key().is_null()) {
+    if (expr->type() == compare_type::invalid && std::holds_alternative<components::expressions::key_t>(expr->left())) {
         expr->set_type(compare_type::eq);
     }
 }

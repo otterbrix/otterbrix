@@ -91,7 +91,7 @@ TEST_CASE("components::planner::group") {
         auto node_group = make_node_group(&resource, get_name(), expressions);
         REQUIRE(
             node_group->to_string() ==
-            R"_($group: {_id: "$date", total: {$sum: {$multiply: ["$price", "$quantity"]}}, avg_quantity: {$avg: "$quantity"}})_");
+            R"_($group: {_id: "date", total: {$sum: {$multiply: ["price", "quantity"]}}, avg_quantity: {$avg: "quantity"}})_");
     }
     {
         std::vector<expression_ptr> expressions;
@@ -103,7 +103,7 @@ TEST_CASE("components::planner::group") {
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);
-        REQUIRE(node_group->to_string() == R"_($group: {_id: "$date", count_4: {$multiply: [#1, "$count"]}})_");
+        REQUIRE(node_group->to_string() == R"_($group: {_id: "date", count_4: {$multiply: [#1, "count"]}})_");
     }
 }
 
@@ -158,7 +158,7 @@ TEST_CASE("components::planner::aggregate") {
 
     REQUIRE(node_aggregate->to_string() == R"_($aggregate: {)_"
                                            R"_($match: {"key": {$eq: #1}}, )_"
-                                           R"_($group: {_id: "$date", count_4: {$multiply: [#1, "$count"]}}, )_"
+                                           R"_($group: {_id: "date", count_4: {$multiply: [#1, "count"]}}, )_"
                                            R"_($sort: {name: 1, count: -1})_"
                                            R"_(})_");
 }

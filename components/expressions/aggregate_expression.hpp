@@ -22,6 +22,7 @@ namespace components::expressions {
         const std::string& function_name() const;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;
+        std::pmr::vector<param_storage>& params();
         const std::pmr::vector<param_storage>& params() const;
 
         void append_param(const param_storage& param);

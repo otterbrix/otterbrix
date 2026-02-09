@@ -42,21 +42,23 @@ namespace components::table::operators {
                 // pointer + size to avoid std::vector and std::pmr::vector clashing
                 auto* local_types = types.data();
                 size_t size = types.size();
-                for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
+                const auto& primary_key = std::get<expressions::key_t>(expression->left());
+                auto id = std::get<core::parameter_id_t>(expression->right());
+                for (size_t i = 0; i < primary_key.storage().size(); i++) {
                     auto it =
                         std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                            return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
+                            return core::pmr::operator==(type.alias(), primary_key.storage()[i]);
                         });
                     assert(it != local_types + size);
                     indices.emplace_back(it - local_types);
                     // if it isn't the last one
-                    if (i + 1 != expression->primary_key().storage().size()) {
+                    if (i + 1 != primary_key.storage().size()) {
                         local_types = it->child_types().data();
                         size = it->child_types().size();
                     }
                 }
                 return std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                  parameters->parameters.at(expression->value()),
+                                                                  parameters->parameters.at(id),
                                                                   std::move(indices));
             }
         }

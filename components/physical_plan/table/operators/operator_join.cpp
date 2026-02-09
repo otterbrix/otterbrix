@@ -8,10 +8,10 @@ namespace components::table::operators {
 
     operator_join_t::operator_join_t(services::collection::context_collection_t* context,
                                      type join_type,
-                                     const expressions::compare_expression_ptr& expression)
+                                     const expressions::expression_ptr& expression)
         : read_only_operator_t(context, operator_type::join)
         , join_type_(join_type)
-        , expression_(std::move(expression)) {}
+        , expression_(expression) {}
 
     void operator_join_t::on_execute_impl(pipeline::context_t* context) {
         if (!left_ || !right_) {
@@ -64,6 +64,7 @@ namespace components::table::operators {
             }
 
             auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                        context->function_registry,
                                                                         expression_,
                                                                         chunk_left.types(),
                                                                         chunk_right.types(),
@@ -72,19 +73,19 @@ namespace components::table::operators {
 
             switch (join_type_) {
                 case type::inner:
-                    inner_join_(std::move(predicate), context);
+                    inner_join_(predicate, context);
                     break;
                 case type::full:
-                    outer_full_join_(std::move(predicate), context);
+                    outer_full_join_(predicate, context);
                     break;
                 case type::left:
-                    outer_left_join_(std::move(predicate), context);
+                    outer_left_join_(predicate, context);
                     break;
                 case type::right:
-                    outer_right_join_(std::move(predicate), context);
+                    outer_right_join_(predicate, context);
                     break;
                 case type::cross:
-                    cross_join_(std::move(predicate), context);
+                    cross_join_(context);
                     break;
                 default:
                     break;
@@ -97,7 +98,7 @@ namespace components::table::operators {
         }
     }
 
-    void operator_join_t::inner_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
+    void operator_join_t::inner_join_(const predicates::predicate_ptr& predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -138,7 +139,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_full_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
+    void operator_join_t::outer_full_join_(const predicates::predicate_ptr& predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -198,7 +199,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_left_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
+    void operator_join_t::outer_left_join_(const predicates::predicate_ptr& predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -246,7 +247,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::outer_right_join_(predicates::predicate_ptr predicate, pipeline::context_t*) {
+    void operator_join_t::outer_right_join_(const predicates::predicate_ptr& predicate, pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();
@@ -294,7 +295,7 @@ namespace components::table::operators {
         chunk_res.set_cardinality(res_count);
     }
 
-    void operator_join_t::cross_join_(predicates::predicate_ptr, pipeline::context_t*) {
+    void operator_join_t::cross_join_(pipeline::context_t*) {
         const auto& chunk_left = left_->output()->data_chunk();
         const auto& chunk_right = right_->output()->data_chunk();
         auto& chunk_res = output_->data_chunk();

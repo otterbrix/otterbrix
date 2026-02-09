@@ -11,7 +11,7 @@ namespace components::table::operators {
                                              const logical_plan::storage_parameters* parameters) {
         using expressions::compare_type;
         using logical_plan::get_parameter;
-        auto value = get_parameter(parameters, expr->value());
+        auto value = get_parameter(parameters, std::get<core::parameter_id_t>(expr->right()));
         switch (expr->type()) {
             case compare_type::eq:
                 return {index->find(value)};
@@ -77,12 +77,14 @@ namespace components::table::operators {
         , limit_(limit) {}
 
     void index_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
-        trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
-        auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
+        const auto& primary_key = std::get<expressions::key_t>(expr_->left());
+        trace(context_->log(), "index_scan by field \"{}\"", primary_key.as_string());
+        auto* index = index::search_index(context_->index_engine(), {primary_key});
         context_->table_storage().table();
         if (index && index->is_disk()) {
             trace(context_->log(), "index_scan: send query into disk");
-            auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
+            auto value = logical_plan::get_parameter(&pipeline_context->parameters,
+                                                     std::get<core::parameter_id_t>(expr_->right()));
             pipeline_context->send(index->disk_agent(),
                                    services::index::handler_id(services::index::route::find),
                                    value,
@@ -107,8 +109,9 @@ namespace components::table::operators {
     }
 
     void index_scan::on_resume_impl(pipeline::context_t* pipeline_context) {
-        trace(context_->log(), "resume index_scan by field \"{}\"", expr_->primary_key().as_string());
-        auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
+        const auto& primary_key = std::get<expressions::key_t>(expr_->left());
+        trace(context_->log(), "resume index_scan by field \"{}\"", primary_key.as_string());
+        auto* index = index::search_index(context_->index_engine(), {primary_key});
         trace(context_->log(), "index_scan: prepare result");
         if (!limit_.check(0)) {
             return; //limit = 0

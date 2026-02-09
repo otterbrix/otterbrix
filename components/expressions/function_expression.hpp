@@ -22,6 +22,7 @@ namespace components::expressions {
                               std::pmr::vector<param_storage>&& args);
 
         const std::string& name() const noexcept;
+        std::pmr::vector<param_storage>& args() noexcept;
         const std::pmr::vector<param_storage>& args() const noexcept;
         void add_function_uid(compute::function_uid uid);
         compute::function_uid function_uid() const;

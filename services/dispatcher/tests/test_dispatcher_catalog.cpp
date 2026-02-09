@@ -41,8 +41,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
                                            manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
-        manager_wal_->create_wal_worker();
-        manager_disk_->create_agent();
 
         // Set run_fn for SYNC actors to process scheduler queue in single-threaded test mode
         // This allows ASYNC actors (agent_disk_t, etc.) to make progress

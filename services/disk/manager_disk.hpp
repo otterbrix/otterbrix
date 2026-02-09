@@ -71,7 +71,6 @@ namespace services::disk {
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
-        void create_agent();
 
         unique_future<result_load_t> load(session_id_t session);
         unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
@@ -179,6 +178,7 @@ namespace services::disk {
         };
         std::pmr::unordered_map<session_id_t, removed_index_t> removed_indexes_;
 
+        void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
         void write_index_impl(const components::logical_plan::node_create_index_ptr& index);
         unique_future<void> load_indexes_impl(session_id_t session, actor_zeta::address_t dispatcher_address);
@@ -190,9 +190,9 @@ namespace services::disk {
 
         // Pending coroutines storage (CRITICAL per PROMISE_FUTURE_GUIDE.md!)
         // Coroutines with co_await MUST be stored, otherwise refcount underflow
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<result_load_t>> pending_load_;
-        std::vector<unique_future<index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<result_load_t>> pending_load_;
+        std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;
 
         // Poll and clean up completed coroutines
         void poll_pending();
@@ -260,7 +260,6 @@ namespace services::disk {
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
-        void create_agent();
 
         // Coroutine methods - must return unique_future<T>
         // All methods from disk_contract must be present (no-op implementations)
@@ -347,10 +346,12 @@ namespace services::disk {
         >;
 
     private:
+        void create_agent(int count_agents);
+
         std::pmr::memory_resource* resource_;
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<result_load_t>> pending_load_;
-        std::vector<unique_future<index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<result_load_t>> pending_load_;
+        std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;
     };
 
 } //namespace services::disk

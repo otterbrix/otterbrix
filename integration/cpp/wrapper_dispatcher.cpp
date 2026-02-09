@@ -16,20 +16,19 @@ using namespace components::cursor;
 
 namespace otterbrix {
 
-    wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* mr,
+    wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* resource,
                                                actor_zeta::address_t manager_dispatcher,
                                                log_t& log)
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
-        , resource_(mr)
+        , resource_(resource)
         , manager_dispatcher_(manager_dispatcher)
         , log_(log.clone()) {}
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
-    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
+    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {
         // No callback methods - behavior is empty
         // All results come via future from typed send
-        (void)msg;
     }
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }

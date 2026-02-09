@@ -155,10 +155,10 @@ namespace services::dispatcher {
             components::catalog::used_format_t used_format);
 
         // Pending coroutines storage (CRITICAL per documentation!)
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
-        std::vector<unique_future<size_t>> pending_size_;
-        std::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
+        std::pmr::vector<unique_future<size_t>> pending_size_;
+        std::pmr::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
 
         void poll_pending();
 

@@ -5,15 +5,18 @@
 
 namespace services::wal {
 
-    manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* mr,
+    manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
                                                      log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
-        , resource_(mr)
+        , resource_(resource)
         , scheduler_(scheduler)
         , config_(std::move(config))
-        , log_(log.clone()) {
+        , log_(log.clone())
+        , pending_void_(resource)
+        , pending_load_(resource) {
+        create_wal_worker(config_.agent);
         trace(log_, "manager_wal_replicate_t start thread pool");
     }
 
@@ -130,15 +133,17 @@ namespace services::wal {
         manager_dispatcher_ = std::get<static_cast<uint64_t>(unpack_rules::manager_dispatcher)>(pack);
     }
 
-    void manager_wal_replicate_t::create_wal_worker() {
-        if (config_.sync_to_disk) {
-            trace(log_, "manager_wal_replicate_t::create_wal_worker");
-            auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_);
-            dispatchers_.emplace_back(std::move(worker));
-        } else {
-            trace(log_, "manager_wal_replicate_t::create_wal_worker without disk");
-            auto worker = actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_);
-            dispatchers_.emplace_back(std::move(worker));
+    void manager_wal_replicate_t::create_wal_worker(int count_worker) {
+        for (int i = 0; i < count_worker; ++i) {
+            if (config_.sync_to_disk) {
+                trace(log_, "manager_wal_replicate_t::create_wal_worker");
+                auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_);
+                dispatchers_.emplace_back(std::move(worker));
+            } else {
+                trace(log_, "manager_wal_replicate_t::create_wal_worker without disk");
+                auto worker = actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_);
+                dispatchers_.emplace_back(std::move(worker));
+            }
         }
     }
 
@@ -284,12 +289,13 @@ namespace services::wal {
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* mr,
+    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* resource,
                                                                  actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
                                                                  log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
-        , resource_(mr)
-        , log_(log) {
+        , resource_(resource)
+        , log_(log)
+        , pending_void_(resource) {
         trace(log, "manager_wal_replicate_empty_t");
     }
 
@@ -357,104 +363,91 @@ namespace services::wal {
     }
 
     // Sync methods - called directly after constructor (no-op for empty version)
-    void manager_wal_replicate_empty_t::sync(address_pack pack) {
-        (void)pack;
+    void manager_wal_replicate_empty_t::sync(address_pack /*pack*/) {
         trace(log_, "manager_wal_replicate_empty_t::sync - no-op");
     }
 
-    void manager_wal_replicate_empty_t::create_wal_worker() {
+    void manager_wal_replicate_empty_t::create_wal_worker(int) {
         trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
     }
 
     // Coroutine implementations - all return id=0 immediately (empty stub)
     manager_wal_replicate_empty_t::unique_future<std::vector<record_t>> manager_wal_replicate_empty_t::load(
-        session_id_t session, services::wal::id_t wal_id) {
-        (void)session; (void)wal_id;
+        session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::load - return empty records");
         co_return std::vector<record_t>{};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_database(
-        session_id_t session, components::logical_plan::node_create_database_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_create_database_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_database - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_database(
-        session_id_t session, components::logical_plan::node_drop_database_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_drop_database_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::drop_database - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_collection(
-        session_id_t session, components::logical_plan::node_create_collection_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_create_collection_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_collection - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_collection(
-        session_id_t session, components::logical_plan::node_drop_collection_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_drop_collection_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::drop_collection - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::insert_one(
-        session_id_t session, components::logical_plan::node_insert_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_insert_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::insert_one - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::insert_many(
-        session_id_t session, components::logical_plan::node_insert_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_insert_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::insert_many - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::delete_one(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params) {
-        (void)session; (void)data; (void)params;
+        session_id_t /*session*/,
+        components::logical_plan::node_delete_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::delete_one - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::delete_many(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params) {
-        (void)session; (void)data; (void)params;
+        session_id_t /*session*/,
+        components::logical_plan::node_delete_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::delete_many - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::update_one(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params) {
-        (void)session; (void)data; (void)params;
+        session_id_t /*session*/,
+        components::logical_plan::node_update_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::update_one - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::update_many(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params) {
-        (void)session; (void)data; (void)params;
+        session_id_t /*session*/,
+        components::logical_plan::node_update_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::update_many - return success");
         co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_index(
-        session_id_t session, components::logical_plan::node_create_index_ptr data) {
-        (void)session; (void)data;
+        session_id_t /*session*/, components::logical_plan::node_create_index_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_index - return success");
         co_return services::wal::id_t{0};
     }

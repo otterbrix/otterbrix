@@ -3,11 +3,12 @@
 
 namespace services::disk {
 
-    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* manager, const path_t& path_db, log_t& log)
+    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* /*manager*/, const path_t& path_db, log_t& log)
         : actor_zeta::basic_actor<agent_disk_t>(resource)
         , log_(log.clone())
-        , disk_(path_db, this->resource()) {
-        (void)manager;  // unused - manager's resource is passed explicitly
+        , disk_(path_db, this->resource())
+        , pending_void_(resource)
+        , pending_load_(resource) {
         trace(log_, "agent_disk::create");
     }
 
@@ -100,7 +101,6 @@ namespace services::disk {
               remove_command.collection,
               ids.size());
         // TODO: Implement row removal for columnar storage
-        (void)ids;
         co_return;
     }
 

@@ -111,18 +111,14 @@ namespace otterbrix {
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-            wal_ptr->create_wal_worker();
         } else {
             wal_empty_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-            wal_empty_ptr->create_wal_worker();
         }
 
         if (disk_ptr) {
             disk_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
-            disk_ptr->create_agent();
         } else {
             disk_empty_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
-            disk_empty_ptr->create_agent();
         }
 
         // PHASE 2.2: Populate catalog BEFORE init_from_state

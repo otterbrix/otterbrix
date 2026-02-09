@@ -41,7 +41,9 @@ namespace services::collection::executor {
         , wal_address_(std::move(wal_address))
         , disk_address_(std::move(disk_address))
         , plans_(this->resource())
-        , log_(log) {}
+        , log_(log)
+        , pending_void_(resource)
+        , pending_execute_(resource) {}
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
         // Poll completed coroutines first (safe with actor-zeta 1.1.1)

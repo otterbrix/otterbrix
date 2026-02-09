@@ -118,10 +118,9 @@ namespace services::loader {
         }
     }
 
-    void loader_t::read_documents(loaded_state_t& state) {
+    void loader_t::read_documents(loaded_state_t& /*state*/) {
         trace(log_, "loader_t: reading documents - placeholder (columnar persistence TBD)");
         // TODO: Implement columnar data persistence
-        (void)state;
     }
 
     void loader_t::read_index_definitions(loaded_state_t& state) {

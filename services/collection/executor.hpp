@@ -98,8 +98,8 @@ namespace services::collection::executor {
 
         // Pending coroutines storage (CRITICAL per documentation!)
         // Coroutines with co_await MUST be stored, otherwise refcount underflow
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<execute_result_t>> pending_execute_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<execute_result_t>> pending_execute_;
 
         // Poll and clean up completed coroutines
         void poll_pending();

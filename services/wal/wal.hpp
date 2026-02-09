@@ -115,8 +115,8 @@ namespace services::wal {
         file_ptr file_;
 
         // Pending coroutines storage (CRITICAL for coroutines with co_await)
-        std::vector<unique_future<std::vector<record_t>>> pending_load_;
-        std::vector<unique_future<services::wal::id_t>> pending_id_;
+        std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
+        std::pmr::vector<unique_future<services::wal::id_t>> pending_id_;
 
         // Poll and clean up completed coroutines
         void poll_pending();

@@ -58,7 +58,6 @@ namespace services::wal {
 
         // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
-        void create_wal_worker();
         // load() returns records via future (co_await on wal_replicate_t::load)
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
         // WAL methods now return wal::id_t via future after writing
@@ -102,6 +101,8 @@ namespace services::wal {
         >;
 
     private:
+        void create_wal_worker(int count_worker);
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         configuration::config_wal config_;
@@ -115,8 +116,8 @@ namespace services::wal {
 
         // Pending coroutines storage (CRITICAL per PROMISE_FUTURE_GUIDE.md!)
         // Coroutines with co_await MUST be stored, otherwise refcount underflow
-        std::vector<unique_future<void>> pending_void_;
-        std::vector<unique_future<std::vector<record_t>>> pending_load_;
+        std::pmr::vector<unique_future<void>> pending_void_;
+        std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
 
         // Poll and clean up completed coroutines
         void poll_pending();
@@ -144,7 +145,6 @@ namespace services::wal {
         // Sync methods - called directly after constructor
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         void sync(address_pack pack);
-        void create_wal_worker();
 
         // Coroutine methods - all return success immediately (id=0 for empty WAL)
         // load() returns empty records via future
@@ -188,9 +188,11 @@ namespace services::wal {
         >;
 
     private:
+        void create_wal_worker(int count_worker);
+
         std::pmr::memory_resource* resource_;
         log_t log_;
-        std::vector<unique_future<services::wal::id_t>> pending_void_;
+        std::pmr::vector<unique_future<services::wal::id_t>> pending_void_;
     };
 
 } //namespace services::wal

@@ -53,6 +53,8 @@ namespace components::cursor {
 
     std::size_t cursor_t::size() const { return size_; }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
+    void cursor_t::advance() { ++current_index_; }
+    index_t cursor_t::current_index() const { return current_index_; }
 
     bool cursor_t::is_success() const noexcept { return success_; }
 

@@ -308,7 +308,12 @@ namespace components::sql::transform {
                         return types::logical_value_t(intVal(value));
                     case T_Float:
                         return types::logical_value_t(static_cast<float>(floatVal(value)));
+                    case T_Null:
+                        return types::logical_value_t(nullptr);
+                    default:
+                        break;
                 }
+                break;
             }
             case T_A_ArrayExpr: {
                 auto array = pg_ptr_cast<A_ArrayExpr>(node);

@@ -1,5 +1,4 @@
 #include "wrapper_cursor.hpp"
-#include "convert.hpp"
 #include <components/types/logical_value.hpp>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
@@ -62,6 +61,15 @@ namespace {
         }
     }
 
+    // Convert a row from data_chunk to Python tuple (PEP 249 style)
+    py::tuple row_to_tuple(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
+        py::tuple result(chunk.column_count());
+        for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+            result[col] = from_value(chunk.value(col, row_idx));
+        }
+        return result;
+    }
+
     // Convert a row from data_chunk to Python dict
     py::dict row_to_dict(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
         py::dict result;
@@ -90,10 +98,10 @@ void wrapper_cursor::close() { close_ = true; }
 bool wrapper_cursor::has_next() { return ptr_->has_next(); }
 
 wrapper_cursor& wrapper_cursor::next() {
-    // Advance to next row - cursor tracks position internally via has_next
     if (!ptr_->has_next()) {
         throw py::stop_iteration();
     }
+    ptr_->advance();
     return *this;
 }
 
@@ -183,15 +191,18 @@ void wrapper_cursor::execute(std::string& query) {
 }
 
 py::object wrapper_cursor::get_(const std::string& key) const {
-    // Get value by column name from first row
     if (ptr_->size() == 0) {
         return py::none();
+    }
+    auto row = ptr_->current_index();
+    if (row < 0) {
+        row = 0;
     }
     const auto& chunk = ptr_->chunk_data();
     auto types = chunk.types();
     for (uint64_t col = 0; col < chunk.column_count(); ++col) {
         if (col < types.size() && types[col].alias() == key) {
-            return from_value(chunk.value(col, 0));
+            return from_value(chunk.value(col, static_cast<uint64_t>(row)));
         }
     }
     return py::none();
@@ -204,3 +215,57 @@ py::object wrapper_cursor::get_(std::size_t index) const {
     }
     return row_to_dict(ptr_->chunk_data(), index);
 }
+
+// PEP 249
+
+py::object wrapper_cursor::fetch_current_row_() {
+    const auto& chunk = ptr_->chunk_data();
+    auto row = ptr_->current_index();
+    if (row < 0) {
+        row = 0;
+    }
+    return row_to_tuple(chunk, static_cast<uint64_t>(row));
+}
+
+py::object wrapper_cursor::fetchone() {
+    if (!ptr_->has_next()) {
+        return py::none();
+    }
+    ptr_->advance();
+    return fetch_current_row_();
+}
+
+py::list wrapper_cursor::fetchmany(int size) {
+    py::list result;
+    for (int i = 0; i < size && ptr_->has_next(); ++i) {
+        ptr_->advance();
+        result.append(fetch_current_row_());
+    }
+    return result;
+}
+
+py::list wrapper_cursor::fetchall() {
+    py::list result;
+    while (ptr_->has_next()) {
+        ptr_->advance();
+        result.append(fetch_current_row_());
+    }
+    return result;
+}
+
+py::object wrapper_cursor::description() const {
+    if (ptr_->size() == 0 && ptr_->chunk_data().column_count() == 0) {
+        return py::none();
+    }
+    auto types = ptr_->chunk_data().types();
+    py::list desc;
+    for (uint64_t col = 0; col < types.size(); ++col) {
+        auto name = std::string(types[col].alias());
+        auto type_name = std::string(types[col].type_name());
+        // PEP 249: (name, type_code, display_size, internal_size, precision, scale, null_ok)
+        desc.append(py::make_tuple(name, type_name, py::none(), py::none(), py::none(), py::none(), py::none()));
+    }
+    return desc;
+}
+
+int64_t wrapper_cursor::rowcount() const { return static_cast<int64_t>(ptr_->size()); }

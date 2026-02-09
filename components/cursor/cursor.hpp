@@ -64,6 +64,8 @@ namespace components::cursor {
         std::size_t size() const;
 
         bool has_next() const;
+        void advance();
+        index_t current_index() const;
 
         bool is_success() const noexcept;
         bool is_error() const noexcept;

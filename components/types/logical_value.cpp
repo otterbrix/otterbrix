@@ -107,6 +107,8 @@ namespace components::types {
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 value_ = std::make_unique<std::vector<logical_value_t>>();
                 break;
             case logical_type::INVALID:
@@ -174,6 +176,8 @@ namespace components::types {
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 value_ = std::make_unique<std::vector<logical_value_t>>(
                     *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
@@ -243,6 +247,8 @@ namespace components::types {
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
             case logical_type::ENUM:
@@ -311,6 +317,8 @@ namespace components::types {
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 value_ = std::make_unique<std::vector<logical_value_t>>(
                     *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
@@ -381,6 +389,8 @@ namespace components::types {
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
                 value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
                 break;
             case logical_type::ENUM:
@@ -539,6 +549,8 @@ namespace components::types {
                 case logical_type::ARRAY:
                 case logical_type::MAP:
                 case logical_type::STRUCT:
+                case logical_type::UNION:
+                case logical_type::VARIANT:
                     return *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_) ==
                            *std::get<std::unique_ptr<std::vector<logical_value_t>>>(rhs.value_);
                 default:

@@ -42,18 +42,29 @@ namespace components::table::operators {
                 // pointer + size to avoid std::vector and std::pmr::vector clashing
                 auto* local_types = types.data();
                 size_t size = types.size();
+                bool path_valid = true;
                 for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
                     auto it =
                         std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
                             return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
                         });
-                    assert(it != local_types + size);
+                    if (it == local_types + size) {
+                        path_valid = false;
+                        break;
+                    }
                     indices.emplace_back(it - local_types);
                     // if it isn't the last one
                     if (i + 1 != expression->primary_key().storage().size()) {
+                        if (it->child_types().empty()) {
+                            path_valid = false;
+                            break;
+                        }
                         local_types = it->child_types().data();
                         size = it->child_types().size();
                     }
+                }
+                if (!path_valid) {
+                    return nullptr;
                 }
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(expression->value()),

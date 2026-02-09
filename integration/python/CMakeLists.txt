@@ -5,8 +5,6 @@ set(${PROJECT_NAME}_sql_sources
         sql/spaces.cpp
         sql/wrapper_client.cpp
         sql/wrapper_connection.cpp
-        sql/wrapper_collection.cpp
-        sql/wrapper_database.cpp
         sql/wrapper_cursor.cpp
 )
 

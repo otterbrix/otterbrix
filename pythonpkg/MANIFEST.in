@@ -1,7 +1,0 @@
-include CMakeLists.txt
-include conanfile.py
-include integration/CMakeLists.txt
-recursive-include integration/python CMakeLists.txt *.cpp *.hpp
-recursive-include components CMakeLists.txt *.cpp *.hpp
-recursive-include core CMakeLists.txt *.cpp *.hpp
-include util/debug.hpp

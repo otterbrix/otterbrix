@@ -62,9 +62,7 @@ TEST_CASE("components::physical_plan::group::sort") {
         sort->on_execute(nullptr);
         REQUIRE(sort->output()->size() == 2);
 
-        // Check sorted values using data_chunk
         const auto& chunk = sort->output()->data_chunk();
-        // count_bool column should be sorted: false (0) first, then true (1)
         auto val0 = chunk.value(0, 0);  // First row, first column (count_bool)
         auto val1 = chunk.value(0, 1);  // Second row, first column (count_bool)
         REQUIRE(val0.value<bool>() == false);
@@ -96,16 +94,12 @@ TEST_CASE("components::physical_plan::group::all") {
         sort->on_execute(nullptr);
         REQUIRE(sort->output()->size() == 2);
 
-        // Check aggregate values using data_chunk
-        // Output columns should be: count_bool, cnt, sum, avg
         const auto& chunk = sort->output()->data_chunk();
 
-        // First row (count_bool = false): even numbers 2,4,6,...,100 (50 items, sum=2550, avg=51)
         REQUIRE(chunk.value(0, 0).value<bool>() == false);  // count_bool
         REQUIRE(chunk.value(1, 0).value<uint64_t>() == 50);       // cnt
         REQUIRE(chunk.value(2, 0).value<int64_t>() == 2550);     // sum
 
-        // Second row (count_bool = true): odd numbers 1,3,5,...,99 (50 items, sum=2500, avg=50)
         REQUIRE(chunk.value(0, 1).value<bool>() == true);   // count_bool
         REQUIRE(chunk.value(1, 1).value<uint64_t>() == 50);       // cnt
         REQUIRE(chunk.value(2, 1).value<int64_t>() == 2500);     // sum

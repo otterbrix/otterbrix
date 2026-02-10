@@ -18,8 +18,6 @@ namespace components::table::operators {
     private:
         type join_type_;
         expressions::compare_expression_ptr expression_;
-        std::unordered_map<std::string, size_t> name_index_map_left_;
-        std::unordered_map<std::string, size_t> name_index_map_right_;
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 

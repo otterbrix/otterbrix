@@ -24,7 +24,6 @@ namespace services::wal {
 
     auto manager_wal_replicate_t::make_type() const noexcept -> const char* { return "manager_wal"; }
 
-    // Poll and clean up completed coroutines (per PROMISE_FUTURE_GUIDE.md)
     void manager_wal_replicate_t::poll_pending() {
         for (auto it = pending_void_.begin(); it != pending_void_.end();) {
             if (it->available()) {
@@ -42,24 +41,17 @@ namespace services::wal {
         }
     }
 
-    // Custom enqueue_impl for SYNC actor with coroutine behavior()
-    // This fixes the deadlock caused by actor_mixin::enqueue_impl discarding behavior_t
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Store the behavior coroutine (CRITICAL: prevents coroutine destruction!)
         current_behavior_ = behavior(msg.get());
 
-        // Poll until behavior completes
-        // Use sleep to allow scheduler worker threads to make progress
         while (current_behavior_.is_busy()) {
             if (current_behavior_.is_awaited_ready()) {
-                // The deepest awaited future is ready - resume the coroutine chain
                 auto cont = current_behavior_.take_awaited_continuation();
                 if (cont) {
                     cont.resume();
                 }
             } else {
-                // Not ready - sleep briefly to let scheduler workers process messages
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
             }
         }
@@ -70,12 +62,10 @@ namespace services::wal {
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
         std::lock_guard<spin_lock> guard(lock_);
 
-        // Poll completed coroutines first (safe with actor-zeta 1.1.1)
         poll_pending();
 
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::load>: {
-                // CRITICAL: Store pending coroutine!
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::load, msg);
                 break;
             }
@@ -152,14 +142,12 @@ namespace services::wal {
         services::wal::id_t wal_id) {
         trace(log_, "manager_wal_replicate_t::load, id: {}", wal_id);
         auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::load, session, wal_id);
-        // Schedule wal_replicate if needs_sched (SYNC manager → ASYNC wal worker)
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
     }
 
-    // WAL methods: send + enqueue + co_await
 
     manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::create_database(
         session_id_t session,
@@ -302,7 +290,6 @@ namespace services::wal {
     auto manager_wal_replicate_empty_t::make_type() const noexcept -> const char* { return "manager_wal_empty"; }
 
     actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Clean up completed futures first
         pending_void_.erase(
             std::remove_if(pending_void_.begin(), pending_void_.end(),
                            [](const auto& f) { return f.available(); }),
@@ -310,7 +297,6 @@ namespace services::wal {
 
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::load>:
-                // load returns vector<record_t>, no need to store - it's immediately available
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::load, msg);
                 break;
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_database>: {
@@ -362,7 +348,6 @@ namespace services::wal {
         }
     }
 
-    // Sync methods - called directly after constructor (no-op for empty version)
     void manager_wal_replicate_empty_t::sync(address_pack /*pack*/) {
         trace(log_, "manager_wal_replicate_empty_t::sync - no-op");
     }
@@ -371,7 +356,6 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
     }
 
-    // Coroutine implementations - all return id=0 immediately (empty stub)
     manager_wal_replicate_empty_t::unique_future<std::vector<record_t>> manager_wal_replicate_empty_t::load(
         session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::load - return empty records");

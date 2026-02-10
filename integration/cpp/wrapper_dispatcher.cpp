@@ -27,15 +27,11 @@ namespace otterbrix {
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
     void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {
-        // No callback methods - behavior is empty
-        // All results come via future from typed send
     }
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }
 
-    // Helper for void futures - each thread polls only its own future
     void wrapper_dispatcher_t::wait_future_void(unique_future<void>& future) {
-        // Each thread checks only its own future
         while (!future.available()) {
             std::unique_lock<std::mutex> lock(event_loop_mutex_);
             if (!future.available()) {
@@ -43,14 +39,11 @@ namespace otterbrix {
             }
         }
 
-        // My future is ready - notify others (scheduler processed something)
         event_loop_cv_.notify_all();
 
         std::move(future).get();
     }
 
-    // === Blocking public API ===
-    // All methods use typed send + wait_future (no callbacks!)
 
     auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
         -> cursor_t_ptr {
@@ -170,7 +163,6 @@ namespace otterbrix {
                                     const database_name_t& database,
                                     const collection_name_t& collection) -> size_t {
         trace(log_, "wrapper_dispatcher_t::size session: {}, collection name : {} ", session.data(), collection);
-        // Typed send to manager_dispatcher_t::size returns unique_future<size_t>
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::size,
                                                   session, database, collection);
@@ -209,7 +201,6 @@ namespace otterbrix {
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-        // Create local transformer for thread-safety (transformer uses std::move on internal state)
         transformer local_transformer(resource());
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
             std::holds_alternative<bind_error>(result)) {
@@ -226,31 +217,22 @@ namespace otterbrix {
                                           const std::pmr::vector<std::pair<database_name_t, collection_name_t>>& ids)
         -> components::cursor::cursor_t_ptr {
         trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
-        // Typed send to manager_dispatcher_t::get_schema returns unique_future<cursor_t_ptr>
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::get_schema,
                                                   session, ids);
         return wait_future(future);
     }
 
-    // ============================================================================
-    // send_plan - MAIN METHOD for execute_plan
-    // Uses typed send + wait_future (event loop pattern)
-    // Result returned via future directly, no callbacks!
-    // ============================================================================
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,
                                                  components::logical_plan::node_ptr node,
                                                  components::logical_plan::parameter_node_ptr params) {
         trace(log_, "wrapper_dispatcher_t::send_plan session: {}, {} ", session.data(), node->to_string());
         assert(params);
 
-        // Typed send returns future with cursor_t_ptr directly!
-        // manager_dispatcher_t::execute_plan returns unique_future<cursor_t_ptr>
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
                                                   &services::dispatcher::manager_dispatcher_t::execute_plan,
                                                   session, std::move(node), std::move(params));
 
-        // Event loop wait on future (mutex + cv)
         return wait_future(future);
     }
 

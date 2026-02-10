@@ -52,7 +52,6 @@ namespace components::table {
         state.row_groups = row_groups_.get();
         state.max_row = row_start_ + static_cast<int64_t>(total_rows_.load());
         state.initialize(types_);
-        // Handle empty collection (no row_groups yet)
         if (!row_group) {
             return;
         }
@@ -158,7 +157,6 @@ namespace components::table {
     uint64_t collection_t::calculate_size() {
         uint64_t res = 0;
         auto row_group = row_groups_->root_segment();
-        // Handle empty collection (no row_groups yet)
         if (!row_group) {
             return 0;
         }

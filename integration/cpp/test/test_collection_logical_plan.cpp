@@ -120,7 +120,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
         }
-        // same query, but now count is compared with different numeric type
         {
             auto session = otterbrix::session_id_t();
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -534,8 +533,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         logical_plan::make_node_sort(dispatcher->resource(), {}, std::move(sort)));
                 }
                 {
-                    // test data does not have any overlaping values, so group here is for raw_data support
-                    // not for a functionality
                     auto group = logical_plan::make_node_group(dispatcher->resource(), {});
                     auto scalar_expr = make_scalar_expression(dispatcher->resource(),
                                                               expressions::scalar_type::get_field,
@@ -616,7 +613,6 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
 
             for (int num = 12; num >= 0; --num) {
-                // Sort is DESC by avg, so row 0 has highest avg(key)=74, row 12 has lowest avg=50
                 int orig = 12 - num;
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==

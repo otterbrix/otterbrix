@@ -44,7 +44,6 @@ TEST_CASE("components::cursor::data_chunk") {
         REQUIRE(cursor->is_success());
         REQUIRE_FALSE(cursor->is_error());
         REQUIRE(cursor->size() == 100);
-        REQUIRE(cursor->uses_table_data());
     }
 
     SECTION("cursor with empty data_chunk") {

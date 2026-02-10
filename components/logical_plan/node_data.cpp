@@ -24,8 +24,7 @@ namespace components::logical_plan {
     size_t node_data_t::size() const { return data_.size(); }
 
     node_data_ptr node_data_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        deserializer->deserialize_bool(1); // skip uses_data_chunk flag for backwards compat
-        deserializer->advance_array(2);
+        deserializer->advance_array(1);
         auto result = make_node_raw_data(deserializer->resource(), vector::data_chunk_t::deserialize(deserializer));
         deserializer->pop_array();
         return result;
@@ -42,9 +41,8 @@ namespace components::logical_plan {
     }
 
     void node_data_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(3);
+        serializer->start_array(2);
         serializer->append_enum(serializer::serialization_type::logical_node_data);
-        serializer->append(true); // uses_data_chunk = true always
         data_.serialize(serializer);
         serializer->end_array();
     }

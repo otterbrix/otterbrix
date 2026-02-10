@@ -62,32 +62,24 @@ namespace services::disk {
 
     manager_disk_t::~manager_disk_t() { trace(log_, "delete manager_disk_t"); }
 
-    // Poll and clean up completed coroutines (per PROMISE_FUTURE_GUIDE.md)
     void manager_disk_t::poll_pending() {
-        // Guard against recursive calls during sync dispatch
         if (is_polling_) {
             return;
         }
         is_polling_ = true;
 
-        // Early exit if vectors are empty
         if (pending_void_.empty() && pending_load_.empty() && pending_find_.empty()) {
             is_polling_ = false;
             return;
         }
 
-        // Use index-based iteration to be safe from iterator invalidation
-        // during recursive behavior() calls that may push_back
         size_t i = 0;
         while (i < pending_void_.size()) {
-            // Check valid() first to avoid crash on moved-from futures
             if (!pending_void_[i].valid() || pending_void_[i].available()) {
-                // Swap with last and pop to avoid shifting
                 if (i + 1 < pending_void_.size()) {
                     std::swap(pending_void_[i], pending_void_.back());
                 }
                 pending_void_.pop_back();
-                // Don't increment i - check swapped element
             } else {
                 ++i;
             }
@@ -120,17 +112,12 @@ namespace services::disk {
         is_polling_ = false;
     }
 
-    // Required by address_t concept has_enqueue_impl
-    // SYNC actor polling: wait for coroutine completion on THIS thread
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         current_behavior_ = behavior(msg.get());
 
-        // Polling loop: wait for coroutine completion
-        // Cross-actor futures don't auto-resume (thread safety)
         while (current_behavior_.is_busy()) {
             if (current_behavior_.is_awaited_ready()) {
-                // Awaited future is ready - resume coroutine on THIS thread
                 auto cont = current_behavior_.take_awaited_continuation();
                 if (cont) {
                     cont.resume();
@@ -146,13 +133,10 @@ namespace services::disk {
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         std::lock_guard<spin_lock> guard(lock_);
 
-        // Poll completed coroutines first (safe with actor-zeta 1.1.1)
         poll_pending();
 
         switch (msg->command()) {
-            // Note: sync and create_agent are called directly, not through message passing
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::load>: {
-                // CRITICAL: Store pending coroutine!
                 co_await actor_zeta::dispatch(this, &manager_disk_t::load, msg);
                 break;
             }
@@ -245,9 +229,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<result_load_t> manager_disk_t::load(session_id_t session) {
         trace(log_, "manager_disk_t::load , session : {}", session.data());
-        // Forward to agent and co_await the result
         auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::load, session);
-        // Schedule agent if needs_sched (SYNC manager → ASYNC agent)
         if (needs_sched) {
             scheduler_->enqueue(agents_[0].get());
         }
@@ -329,7 +311,6 @@ namespace services::disk {
               collection,
               data ? data->size() : 0);
         // TODO: Implement actual disk persistence for data_chunk (columnar storage)
-        // For now, this is a no-op placeholder - data_chunk persistence is not yet implemented
         co_return;
     }
 
@@ -347,7 +328,6 @@ namespace services::disk {
                         }
                     }
                     if (indexes.empty()) {
-                        // Forward command to agent and wait for completion (strict durability)
                         auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection, command);
                         if (needs_sched) {
                             scheduler_->enqueue(agents_[0].get());
@@ -364,7 +344,6 @@ namespace services::disk {
                         }
                     }
                 } else {
-                    // Forward command to agent based on command type and wait for completion
                     switch (command.name()) {
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>: {
                             auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_database, command);
@@ -406,13 +385,6 @@ namespace services::disk {
             commands_.erase(session);
         }
         // TODO: Re-enable fix_wal_id once write_data_chunk is implemented.
-        // Currently write_data_chunk is a NO-OP, so WAL records must be replayed
-        // on restart to restore data and schema via adopt_schema.
-        // auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal_id);
-        // if (needs_sched) {
-        //     scheduler_->enqueue(agents_[0].get());
-        // }
-        // co_await std::move(future);
         co_return;
     }
 
@@ -547,7 +519,6 @@ namespace services::disk {
         components::types::logical_value_t key,
         size_t row_id) {
         trace(log_, "manager_disk: index_insert_by_agent");
-        // Find agent by address
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
             if (ptr->address() == agent_address) {
@@ -574,7 +545,6 @@ namespace services::disk {
         components::types::logical_value_t key,
         size_t row_id) {
         trace(log_, "manager_disk: index_remove_by_agent");
-        // Find agent by address
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
             if (ptr->address() == agent_address) {
@@ -601,7 +571,6 @@ namespace services::disk {
         components::types::logical_value_t key,
         components::expressions::compare_type compare) {
         trace(log_, "manager_disk: index_find_by_agent");
-        // Find agent by address
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
             if (ptr->address() == agent_address) {
@@ -645,7 +614,6 @@ namespace services::disk {
         for (auto& index : indexes) {
             trace(log_, "manager_disk: load_indexes_impl : {}", index->name());
 
-            // co_await on each index - wait for creation!
             auto [_cr, cursor_future] = actor_zeta::send(
                 dispatcher_address,
                 &dispatcher::manager_dispatcher_t::execute_plan,
@@ -654,7 +622,6 @@ namespace services::disk {
                 components::logical_plan::make_parameter_node(resource()));
             auto cursor = co_await std::move(cursor_future);
 
-            // Check result
             if (cursor && cursor->is_error()) {
                 error(log_, "manager_disk: failed to create index {}: {}",
                       index->name(), cursor->get_error().what);
@@ -747,15 +714,12 @@ namespace services::disk {
     auto manager_disk_empty_t::make_type() const noexcept -> const char* { return "manager_disk"; }
 
     void manager_disk_empty_t::sync(address_pack /*pack*/) {
-        // no-op for empty version
     }
 
     void manager_disk_empty_t::create_agent(int) {
-        // no-op for empty version
     }
 
     actor_zeta::behavior_t manager_disk_empty_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Clean up completed or invalid futures first
         pending_void_.erase(
             std::remove_if(pending_void_.begin(), pending_void_.end(),
                            [](const auto& f) { return !f.valid() || f.available(); }),

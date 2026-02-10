@@ -44,14 +44,12 @@ PYBIND11_MODULE(otterbrix, m) {
         .def("get_error", &wrapper_cursor::get_error)
         .def("sort", &wrapper_cursor::sort, py::arg("key_or_list"), py::arg("direction") = py::none())
         .def("execute", &wrapper_cursor::execute, py::arg("querry"))
-        // PEP 249
         .def("fetchone", &wrapper_cursor::fetchone)
         .def("fetchmany", &wrapper_cursor::fetchmany, py::arg("size") = 1)
         .def("fetchall", &wrapper_cursor::fetchall)
         .def_property_readonly("description", &wrapper_cursor::description)
         .def_property_readonly("rowcount", &wrapper_cursor::rowcount);
 
-    // PEP 249: module-level connect()
     m.def(
         "connect",
         [](const py::str& dsn) {

@@ -12,14 +12,11 @@ namespace components::table::operators {
     void operator_insert::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
             auto& incoming = left_->output()->data_chunk();
-            // Auto-adopt schema from data for schema-less collections
             if (context_->table_storage().table().columns().empty() &&
                 incoming.column_count() > 0) {
                 context_->table_storage().table().adopt_schema(incoming.types());
             }
 
-            // Expand incoming chunk to match table schema if it has fewer columns
-            // (e.g. SQL INSERT that specifies only some columns)
             auto& table_columns = context_->table_storage().table().columns();
             if (!table_columns.empty() && incoming.column_count() < table_columns.size()) {
                 auto* resource = context_->resource();
@@ -28,7 +25,6 @@ namespace components::table::operators {
                     full_types.push_back(col_def.type());
                 }
 
-                // Build expanded data vector by moving matching columns from incoming
                 std::vector<vector::vector_t> expanded_data;
                 expanded_data.reserve(table_columns.size());
                 for (size_t t = 0; t < table_columns.size(); t++) {
@@ -42,7 +38,6 @@ namespace components::table::operators {
                         }
                     }
                     if (!found) {
-                        // Create NULL-filled vector for missing column
                         expanded_data.emplace_back(resource, full_types[t], incoming.size());
                         expanded_data.back().validity().set_all_invalid(incoming.size());
                     }
@@ -50,7 +45,6 @@ namespace components::table::operators {
                 incoming.data = std::move(expanded_data);
             }
 
-            // Find _id column in incoming data
             int64_t id_col = -1;
             for (uint64_t i = 0; i < incoming.column_count(); i++) {
                 if (incoming.data[i].type().has_alias() && incoming.data[i].type().alias() == "_id") {
@@ -59,13 +53,11 @@ namespace components::table::operators {
                 }
             }
 
-            // Collect existing _id values if table has data and incoming has _id column
             std::unordered_set<std::string> existing_ids;
             auto& table = context_->table_storage().table();
             auto total_rows = table.row_group()->total_rows();
             if (id_col >= 0 && total_rows > 0) {
                 table.scan_table_segment(0, total_rows, [&](vector::data_chunk_t& chunk) {
-                    // Find _id column in existing table
                     int64_t table_id_col = -1;
                     for (uint64_t i = 0; i < chunk.column_count(); i++) {
                         if (chunk.data[i].type().has_alias() && chunk.data[i].type().alias() == "_id") {
@@ -84,7 +76,6 @@ namespace components::table::operators {
                 });
             }
 
-            // Build list of non-duplicate row indices
             std::vector<uint64_t> keep_indices;
             if (id_col >= 0 && !existing_ids.empty()) {
                 for (uint64_t row = 0; row < incoming.size(); row++) {
@@ -113,7 +104,6 @@ namespace components::table::operators {
             }
 
             if (keep_indices.size() == incoming.size()) {
-                // No duplicates — use original path
                 modified_ = base::operators::make_operator_write_data(context_->resource());
                 output_ = base::operators::make_operator_data(context_->resource(),
                                                               incoming.types(), incoming.size());
@@ -130,7 +120,6 @@ namespace components::table::operators {
                 table.finalize_append(state);
                 incoming.copy(output_->data_chunk(), 0);
             } else {
-                // Build filtered chunk with only non-duplicate rows
                 auto* resource = context_->resource();
                 vector::indexing_vector_t indexing(resource, keep_indices.size());
                 for (size_t i = 0; i < keep_indices.size(); i++) {

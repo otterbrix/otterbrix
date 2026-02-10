@@ -1,4 +1,4 @@
-[fix-load-indexes-deadlock.md](docs/fix-load-indexes-deadlock.md)## **About Otterbrix**
+## **About Otterbrix**
 
 ## **Overview**
 

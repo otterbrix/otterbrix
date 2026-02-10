@@ -77,7 +77,6 @@ inline context_ptr init_table(std::pmr::memory_resource* resource) {
     return table;
 }
 
-// Aliases for backward compatibility - now both point to table-based implementation
 inline context_ptr create_collection(std::pmr::memory_resource* resource) {
     return create_table(resource);
 }

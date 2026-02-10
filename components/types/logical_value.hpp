@@ -99,7 +99,6 @@ namespace components::types {
                      double,
                      void*,
 
-                     // everything bigger than 8 bytes or has no fixed size is allocated on the heap
 
                      std::unique_ptr<int128_t>,
                      std::unique_ptr<uint128_t>,
@@ -330,7 +329,6 @@ namespace components::types {
         return std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_).get();
     }
 
-    // Moved from types.hpp to avoid incomplete type issues with C++20
     class enum_logical_type_extension : public logical_type_extension {
     public:
         explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
@@ -495,7 +493,6 @@ inline void to_msgpack_(const components::types::logical_value_t& value, msgpack
     }
 }
 
-// User defined class template specialization
 namespace msgpack {
     MSGPACK_API_VERSION_NAMESPACE(MSGPACK_DEFAULT_API_NS) {
         namespace adaptor {

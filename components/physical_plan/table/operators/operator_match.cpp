@@ -22,10 +22,6 @@ namespace components::table::operators {
         if (left_->output()) {
             const auto& chunk = left_->output()->data_chunk();
             auto types = chunk.types();
-            std::unordered_map<std::string, size_t> name_index_map;
-            for (size_t i = 0; i < types.size(); i++) {
-                name_index_map.emplace(types[i].alias(), i);
-            }
             output_ = base::operators::make_operator_data(left_->output()->resource(), types, chunk.size());
             auto& out_chunk = output_->data_chunk();
             auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),

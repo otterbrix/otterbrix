@@ -7,36 +7,21 @@
 
 #include <memory_resource>
 #include <set>
-#include <vector>
 
 namespace services::loader {
 
-    // Map: collection_full_name -> placeholder (documents removed, data_chunk persistence TBD)
-    using document_map_t = std::pmr::unordered_map<
-        collection_full_name_t,
-        std::pmr::vector<int>,  // placeholder - will be replaced with columnar data
-        collection_name_hash>;
+    using collection_set_t = std::pmr::set<collection_full_name_t>;
 
-    // Map: collection_full_name -> optional columnar schema
-    // For now, we don't persist schemas, so this is empty
-    using schema_map_t = std::pmr::unordered_map<
-        collection_full_name_t,
-        std::pmr::vector<std::string>,  // placeholder for column names
-        collection_name_hash>;
-
-    // Loaded state from disk - contains all data needed to initialize memory storage
     struct loaded_state_t {
         std::pmr::set<database_name_t> databases;
-        document_map_t documents;  // placeholder - will hold columnar data in future
-        schema_map_t schemas;  // optional columnar schemas (currently unused)
+        collection_set_t collections;
         std::pmr::vector<components::logical_plan::node_create_index_ptr> index_definitions;
-        std::vector<wal::record_t> wal_records;  // WAL records to replay
+        std::vector<wal::record_t> wal_records;
         wal::id_t last_wal_id{0};
 
         explicit loaded_state_t(std::pmr::memory_resource* resource)
             : databases(resource)
-            , documents(resource)
-            , schemas(resource)
+            , collections(resource)
             , index_definitions(resource)
             , wal_records()
             , last_wal_id(0) {}

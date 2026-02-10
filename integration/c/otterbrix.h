@@ -40,18 +40,14 @@ typedef struct error_message {
     char* message;
 } error_message;
 
-// Otterbrix instance management
 otterbrix_ptr otterbrix_create(config_t cfg);
 void otterbrix_destroy(otterbrix_ptr);
 
-// SQL execution
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);
 
-// Database and collection management
 cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
 cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
 
-// Cursor operations
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
 int32_t cursor_column_count(cursor_ptr ptr);
@@ -60,16 +56,12 @@ bool cursor_is_success(cursor_ptr ptr);
 bool cursor_is_error(cursor_ptr ptr);
 error_message cursor_get_error(cursor_ptr ptr);
 
-// Get column name by index
 char* cursor_column_name(cursor_ptr ptr, int32_t column_index);
 
-// Value access by row and column index
 value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index);
 
-// Value access by row index and column name
 value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name);
 
-// Value operations
 void release_value(value_ptr ptr);
 bool value_is_null(value_ptr ptr);
 bool value_is_bool(value_ptr ptr);
@@ -78,7 +70,6 @@ bool value_is_uint(value_ptr ptr);
 bool value_is_double(value_ptr ptr);
 bool value_is_string(value_ptr ptr);
 
-// Value getters
 bool value_get_bool(value_ptr ptr);
 int64_t value_get_int(value_ptr ptr);
 uint64_t value_get_uint(value_ptr ptr);

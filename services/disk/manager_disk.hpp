@@ -37,7 +37,6 @@ namespace services::disk {
 
         using address_pack = std::tuple<actor_zeta::address_t>;
 
-        // Yield function type for cooperative scheduling in SYNC actor spin-wait
         using run_fn_t = std::function<void()>;
 
         manager_disk_t(std::pmr::memory_resource*,
@@ -48,7 +47,6 @@ namespace services::disk {
                        run_fn_t run_fn = []{ std::this_thread::yield(); });
         ~manager_disk_t();
 
-        // Set run function for cooperative scheduling (used by tests)
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -56,12 +54,9 @@ namespace services::disk {
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        // Required by address_t concept has_enqueue_impl
         [[nodiscard]]
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Custom enqueue_impl for SYNC actor with coroutine behavior()
-        // This templated version is called by actor_zeta::send() via dispatch_method_impl
         template<typename ReturnType, typename... Args>
         [[nodiscard]]
         ReturnType enqueue_impl(
@@ -69,7 +64,6 @@ namespace services::disk {
             actor_zeta::mailbox::message_id cmd,
             Args&&... args);
 
-        // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
 
         unique_future<result_load_t> load(session_id_t session);
@@ -128,8 +122,6 @@ namespace services::disk {
                                                                  components::types::logical_value_t key,
                                                                  components::expressions::compare_type compare);
 
-        // dispatch_traits via implements<> - binds to disk_contract interface
-        // Note: sync and create_agent are NOT in dispatch_traits - called directly
         using dispatch_traits = actor_zeta::implements<
             disk_contract,
             &manager_disk_t::load,
@@ -155,9 +147,6 @@ namespace services::disk {
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
-        // Separate scheduler for disk index agents to prevent deadlock
-        // When concurrent SELECT uses disk index, main scheduler_ threads block in manager_disk_t polling loop
-        // while index_agent_disk_t waits in queue of the same scheduler - DEADLOCK
         actor_zeta::scheduler_raw scheduler_disk_;
         run_fn_t run_fn_;
         spin_lock lock_;
@@ -188,23 +177,17 @@ namespace services::disk {
         void remove_index_impl(const index_name_t& index_name);
         void remove_all_indexes_from_collection_impl(const collection_name_t& collection_name);
 
-        // Pending coroutines storage (CRITICAL per PROMISE_FUTURE_GUIDE.md!)
-        // Coroutines with co_await MUST be stored, otherwise refcount underflow
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<result_load_t>> pending_load_;
         std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;
 
-        // Poll and clean up completed coroutines
         void poll_pending();
 
-        // Protection against recursive poll_pending() calls during sync dispatch
         bool is_polling_{false};
 
-        // Stored behavior coroutine for SYNC actor polling
         actor_zeta::behavior_t current_behavior_;
     };
 
-    // Template implementation must be in header
     template<typename ReturnType, typename... Args>
     ReturnType manager_disk_t::enqueue_impl(
         actor_zeta::actor::address_t sender,
@@ -215,22 +198,16 @@ namespace services::disk {
                       "ReturnType must be unique_future<T>");
         using R = typename actor_zeta::type_traits::is_unique_future<ReturnType>::value_type;
 
-        // Create message with promise/future pair
         auto [msg, future] = actor_zeta::detail::make_message<R>(
             resource(),
             std::move(sender),
             cmd,
             std::forward<Args>(args)...);
 
-        // Call behavior() - this starts the coroutine
         current_behavior_ = behavior(msg.get());
 
-        // SYNC actor polling: wait for coroutine completion on THIS thread
-        // This is necessary because cross-actor futures don't auto-resume
-        // (producer doesn't call cont.resume() for thread safety)
         while (current_behavior_.is_busy()) {
             if (current_behavior_.is_awaited_ready()) {
-                // Awaited future is ready - resume coroutine on THIS thread
                 auto cont = current_behavior_.take_awaited_continuation();
                 if (cont) {
                     cont.resume();
@@ -258,11 +235,8 @@ namespace services::disk {
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
 
-        // Coroutine methods - must return unique_future<T>
-        // All methods from disk_contract must be present (no-op implementations)
         unique_future<result_load_t> load(session_id_t session);
         unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
 
@@ -295,7 +269,6 @@ namespace services::disk {
                                              services::collection::context_collection_t* collection);
         unique_future<void> drop_index_agent_success(session_id_t session);
 
-        // Index methods - no-op implementations for empty disk
         unique_future<void> index_insert_many(session_id_t session,
                                               index_name_t index_name,
                                               std::vector<std::pair<components::types::logical_value_t, size_t>> values);
@@ -321,8 +294,6 @@ namespace services::disk {
                                                                  components::types::logical_value_t key,
                                                                  components::expressions::compare_type compare);
 
-        // dispatch_traits via implements<> - binds to disk_contract interface
-        // Note: sync and create_agent are NOT in dispatch_traits - called directly
         using dispatch_traits = actor_zeta::implements<
             disk_contract,
             &manager_disk_empty_t::load,

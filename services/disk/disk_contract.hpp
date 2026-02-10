@@ -15,7 +15,6 @@
 #include <services/disk/index_disk.hpp>
 #include <services/wal/base.hpp>
 
-// Forward declarations
 namespace services::collection {
     class context_collection_t;
 }
@@ -26,23 +25,17 @@ namespace services::disk {
     using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
     using index_name_t = std::string;
 
-    /// Disk Manager Interface Contract
     struct disk_contract {
-        // unique_future type alias - required by actor_zeta::send() template
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Load all data from disk
         actor_zeta::unique_future<result_load_t> load(session_id_t session);
 
-        // Load indexes from disk
         actor_zeta::unique_future<void> load_indexes(session_id_t session, actor_zeta::address_t dispatcher_address);
 
-        // Database operations
         actor_zeta::unique_future<void> append_database(session_id_t session, database_name_t database);
         actor_zeta::unique_future<void> remove_database(session_id_t session, database_name_t database);
 
-        // Collection operations
         actor_zeta::unique_future<void> append_collection(session_id_t session,
                                               database_name_t database,
                                               collection_name_t collection);
@@ -50,7 +43,6 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        // Data operations
         actor_zeta::unique_future<void> write_data_chunk(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -60,10 +52,8 @@ namespace services::disk {
                                              collection_name_t collection,
                                              document_ids_t documents);
 
-        // Flush to disk (waits for all operations to complete - strict durability)
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
-        // Index agent operations
         actor_zeta::unique_future<actor_zeta::address_t> create_index_agent(
             session_id_t session,
             components::logical_plan::node_create_index_ptr index,
@@ -73,7 +63,6 @@ namespace services::disk {
                                              services::collection::context_collection_t* collection);
         actor_zeta::unique_future<void> drop_index_agent_success(session_id_t session);
 
-        // Index operations by name
         actor_zeta::unique_future<void> index_insert_many(
             session_id_t session,
             index_name_t index_name,
@@ -87,7 +76,6 @@ namespace services::disk {
                                          components::types::logical_value_t key,
                                          size_t row_id);
 
-        // Index operations by agent address
         actor_zeta::unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
@@ -123,7 +111,6 @@ namespace services::disk {
             &disk_contract::index_find_by_agent
         >;
 
-        // Interface - cannot be instantiated
         disk_contract() = delete;
     };
 

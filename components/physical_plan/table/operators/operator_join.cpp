@@ -21,7 +21,6 @@ namespace components::table::operators {
             const auto& chunk_left = left_->output()->data_chunk();
             const auto& chunk_right = right_->output()->data_chunk();
 
-            // Concatenate all columns from both tables (no dedup — SELECT * includes all)
             auto res_types = chunk_left.types();
             auto right_types = chunk_right.types();
             res_types.insert(res_types.end(), right_types.begin(), right_types.end());
@@ -33,7 +32,6 @@ namespace components::table::operators {
                 trace(context_->log(), "operator_join::right_size(): {}", chunk_right.size());
             }
 
-            // Positional mapping: left columns → [0..N), right columns → [N..N+M)
             indices_left_.clear();
             indices_right_.clear();
             indices_left_.reserve(chunk_left.column_count());

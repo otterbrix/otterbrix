@@ -12,7 +12,6 @@
 
 namespace py = pybind11;
 
-// Convert Python object to logical_value_t
 components::types::logical_value_t to_value(const py::handle& obj);
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list;

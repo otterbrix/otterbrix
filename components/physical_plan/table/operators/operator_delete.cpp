@@ -17,15 +17,6 @@ namespace components::table::operators {
             auto& chunk_right = right_->output()->data_chunk();
             auto types_left = chunk_left.types();
             auto types_right = chunk_right.types();
-            std::unordered_map<std::string, size_t> name_index_map_left;
-            for (size_t i = 0; i < types_left.size(); i++) {
-                name_index_map_left.emplace(types_left[i].alias(), i);
-            }
-            std::unordered_map<std::string, size_t> name_index_map_right;
-            for (size_t i = 0; i < types_right.size(); i++) {
-                name_index_map_right.emplace(types_right[i].alias(), i);
-            }
-
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, ids_capacity);
             auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),
@@ -62,10 +53,6 @@ namespace components::table::operators {
             modified_ = base::operators::make_operator_write_data(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
             auto types = chunk.types();
-            std::unordered_map<std::string, size_t> name_index_map;
-            for (size_t i = 0; i < types.size(); i++) {
-                name_index_map.emplace(types[i].alias(), i);
-            }
 
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
             auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),

@@ -17,7 +17,6 @@ namespace services::disk {
     auto agent_disk_t::make_type() const noexcept -> const char* { return "agent_disk"; }
 
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
-        // Clean up completed futures first
         std::erase_if(pending_void_, [](const auto& f) { return f.available(); });
         std::erase_if(pending_load_, [](const auto& f) { return f.available(); });
 

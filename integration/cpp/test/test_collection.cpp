@@ -76,7 +76,6 @@ TEST_CASE("integration::cpp::test_collection") {
     }
 
     INFO("insert non unique id") {
-        // Try to insert data with duplicate IDs - should not increase collection size
         auto chunk = gen_data_chunk(100, dispatcher->resource());
         auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),
                                                               {database_name, collection_name},

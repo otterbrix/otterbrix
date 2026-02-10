@@ -24,7 +24,6 @@ void work(benchmark::State& state) {
         auto types = gen_data_chunk(0, dispatcher->resource()).types();
         dispatcher->create_collection(session, db_name, col_name, types);
 
-        // insert_batch
         auto n_row = 0;
         for (int i_insert = 0; i_insert < count_insert_batch; ++i_insert) {
             auto chunk = gen_data_chunk(size_insert_batch, n_row, dispatcher->resource());

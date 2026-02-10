@@ -121,7 +121,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            // count is column 2 (_id=0, name=1, count=2)
             REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 0);
             REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 1);
             REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 2);
@@ -259,7 +258,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(GROUP BY name;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        // Columns: name=0, count_=1, sum_=2, avg_=3, min_=4, max_=5
         for (size_t number = 0; number < 10; ++number) {
             REQUIRE(cur->chunk_data().value(0, number).value<std::string_view>() ==
                     "Name " + std::to_string(number));
@@ -284,8 +282,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(ORDER BY name DESC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        // Columns: name=0, count_=1, sum_=2, avg_=3, min_=4, max_=5
-        // Results are ordered descending by name: Name 9, Name 8, ... Name 0
         for (size_t row = 0; row < 10; ++row) {
             int number = 9 - static_cast<int>(row);
             REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==

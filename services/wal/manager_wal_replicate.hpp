@@ -51,17 +51,11 @@ namespace services::wal {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        // Custom enqueue_impl for SYNC actor with coroutine behavior()
-        // Hides actor_mixin::enqueue_impl - stores behavior and spin-waits until done
         [[nodiscard]]
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Sync methods - called directly after constructor, before message processing
         void sync(address_pack pack);
-        // load() returns records via future (co_await on wal_replicate_t::load)
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        // WAL methods now return wal::id_t via future after writing
-        // co_await on wal_replicate_t and return id
         unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
         unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
         unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
@@ -82,8 +76,6 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
 
-        // dispatch_traits via implements<> - binds to wal_contract interface
-        // Note: sync and create_wal_worker are NOT in dispatch_traits - called directly
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_t::load,
@@ -114,15 +106,11 @@ namespace services::wal {
         std::vector<wal_replicate_ptr> dispatchers_;
         spin_lock lock_;
 
-        // Pending coroutines storage (CRITICAL per PROMISE_FUTURE_GUIDE.md!)
-        // Coroutines with co_await MUST be stored, otherwise refcount underflow
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
 
-        // Poll and clean up completed coroutines
         void poll_pending();
 
-        // Stored behavior coroutine for SYNC actor polling
         actor_zeta::behavior_t current_behavior_;
     };
 
@@ -141,13 +129,9 @@ namespace services::wal {
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        // Same interface as manager_wal_replicate_t for compatibility
-        // Sync methods - called directly after constructor
         using address_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
         void sync(address_pack pack);
 
-        // Coroutine methods - all return success immediately (id=0 for empty WAL)
-        // load() returns empty records via future
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
         unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
         unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
@@ -169,8 +153,6 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
 
-        // dispatch_traits via implements<> - binds to wal_contract interface
-        // Note: sync and create_wal_worker are NOT in dispatch_traits - called directly
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_empty_t::load,

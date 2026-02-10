@@ -401,16 +401,10 @@ TEST_CASE("services::wal::read_record") {
     REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }
 
-// ============================================================================
-// Tests for large WAL records (> 65KB)
-// These tests verify the fix for size_tt overflow (uint16_t -> uint32_t)
-// ============================================================================
-
 TEST_CASE("services::wal::large_insert_many_rows") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/large_insert_many_rows", &resource);
 
-    // Create 500 rows - should exceed 65KB
     constexpr int kRows = 500;
     auto chunk = gen_data_chunk(kRows, 0, &resource);
     auto data = components::logical_plan::make_node_insert(&resource,
@@ -419,12 +413,10 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     auto session = components::session::session_id_t();
     test_wal.wal->insert_many(session, data);
 
-    // Verify the record can be read back correctly
     wal_entry_t entry;
     entry.size_ = test_wal.wal->test_read_size(0);
 
     INFO("WAL record size: " << entry.size_ << " bytes");
-    // Size should be significant (may or may not exceed 65KB depending on data)
     REQUIRE(entry.size_ > 0);
 
     auto start = sizeof(size_tt);
@@ -446,7 +438,6 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
     REQUIRE(read_chunk.size() == kRows);
 
-    // Verify first and last rows
     REQUIRE(read_chunk.value(0, 0).value<int64_t>() == 1);
     REQUIRE(read_chunk.value(1, 0).value<std::string_view>() == gen_id(1, &resource));
     REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);

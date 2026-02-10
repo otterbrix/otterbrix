@@ -55,7 +55,6 @@ namespace services::disk {
         trace(log_, "index_agent_disk_t::drop, session: {}", session.data());
         index_disk_->drop();
         is_dropped_ = true;
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -66,7 +65,6 @@ namespace services::disk {
     ) {
         trace(log_, "index_agent_disk_t::insert row {}, session: {}", row_id, session.data());
         index_disk_->insert(key, row_id);
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -78,7 +76,6 @@ namespace services::disk {
         for (const auto& [key, row_id] : values) {
             index_disk_->insert(key, row_id);
         }
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -89,7 +86,6 @@ namespace services::disk {
     ) {
         trace(log_, "index_agent_disk_t::remove row {}, session: {}", row_id, session.data());
         index_disk_->remove(key, row_id);
-        // With futures, caller gets notified via co_await, no callback needed
         co_return;
     }
 
@@ -127,7 +123,6 @@ namespace services::disk {
             default:
                 break;
         }
-        // Return result via future, caller uses co_await to get it
         co_return res;
     }
 

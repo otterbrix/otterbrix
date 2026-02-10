@@ -6,7 +6,6 @@
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
 namespace {
-    // Convert logical_value_t to Python object
     py::object from_value(const components::types::logical_value_t& value) {
         using namespace components::types;
 
@@ -61,7 +60,6 @@ namespace {
         }
     }
 
-    // Convert a row from data_chunk to Python tuple (PEP 249 style)
     py::tuple row_to_tuple(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
         py::tuple result(chunk.column_count());
         for (uint64_t col = 0; col < chunk.column_count(); ++col) {
@@ -70,7 +68,6 @@ namespace {
         return result;
     }
 
-    // Convert a row from data_chunk to Python dict
     py::dict row_to_dict(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
         py::dict result;
         auto types = chunk.types();
@@ -171,7 +168,6 @@ py::tuple wrapper_cursor::get_error() const {
 }
 
 std::string wrapper_cursor::print() {
-    // Return JSON-like representation of current row
     if (ptr_->size() > 0) {
         auto dict = row_to_dict(ptr_->chunk_data(), 0);
         return py::str(dict).cast<std::string>();
@@ -180,9 +176,6 @@ std::string wrapper_cursor::print() {
 }
 
 wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) {
-    // Sorting is not directly supported on data_chunk based cursor
-    // This would require re-implementing sort logic for data_chunk
-    // For now, this is a no-op - sorting should be done via SQL ORDER BY
     return *this;
 }
 
@@ -209,14 +202,12 @@ py::object wrapper_cursor::get_(const std::string& key) const {
 }
 
 py::object wrapper_cursor::get_(std::size_t index) const {
-    // Get row by index as dict
     if (index >= ptr_->size()) {
         return py::none();
     }
     return row_to_dict(ptr_->chunk_data(), index);
 }
 
-// PEP 249
 
 py::object wrapper_cursor::fetch_current_row_() {
     const auto& chunk = ptr_->chunk_data();
@@ -262,7 +253,6 @@ py::object wrapper_cursor::description() const {
     for (uint64_t col = 0; col < types.size(); ++col) {
         auto name = std::string(types[col].alias());
         auto type_name = std::string(types[col].type_name());
-        // PEP 249: (name, type_code, display_size, internal_size, precision, scale, null_ok)
         desc.append(py::make_tuple(name, type_name, py::none(), py::none(), py::none(), py::none(), py::none()));
     }
     return desc;

@@ -54,8 +54,6 @@ namespace components::cursor {
         explicit cursor_t(std::pmr::memory_resource* resource,
                           std::pmr::vector<components::types::complex_logical_type>&& types);
 
-        bool uses_table_data() const;
-
         vector::data_chunk_t& chunk_data();
         const vector::data_chunk_t& chunk_data() const;
         std::pmr::vector<components::types::complex_logical_type>& type_data();
@@ -78,7 +76,6 @@ namespace components::cursor {
         std::pmr::vector<components::types::complex_logical_type> type_data_;
         error_t error_;
         bool success_{true};
-        bool uses_table_data_{true};
     };
 
     using cursor_t_ptr = boost::intrusive_ptr<cursor_t>;

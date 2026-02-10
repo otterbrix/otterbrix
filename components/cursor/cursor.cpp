@@ -33,8 +33,7 @@ namespace components::cursor {
         , table_data_(std::move(chunk))
         , type_data_(resource)
         , error_(error_code_t::none)
-        , success_(true)
-        , uses_table_data_(true) {}
+        , success_(true) {}
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource,
                        std::pmr::vector<components::types::complex_logical_type>&& types)
@@ -42,10 +41,8 @@ namespace components::cursor {
         , table_data_(resource, {})
         , type_data_(std::move(types))
         , error_(error_code_t::none)
-        , success_(true)
-        , uses_table_data_(true) {}
+        , success_(true) {}
 
-    bool cursor_t::uses_table_data() const { return uses_table_data_; }
     vector::data_chunk_t& cursor_t::chunk_data() { return table_data_; }
     const vector::data_chunk_t& cursor_t::chunk_data() const { return table_data_; }
     std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() { return type_data_; }

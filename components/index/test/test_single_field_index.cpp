@@ -125,7 +125,6 @@ TEST_CASE("single_field_index:engine") {
     }
     REQUIRE(count == 11);
 
-    // Test find for value 5
     components::types::logical_value_t value(5);
     auto find_range = idx->find(value);
     REQUIRE(find_range.first != find_range.second);

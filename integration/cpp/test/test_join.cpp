@@ -64,7 +64,6 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 26);
 
-            // Columns after JOIN: _id(0), name(1), key_1(2), key_2(3), _id(4), value(5), key(6)
             for (size_t num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
                 REQUIRE(cur->chunk_data().value(6, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
@@ -87,25 +86,20 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 101);
 
-            // First 50 rows: key_1 = 0..49, no match in right table
             for (size_t num = 0; num < 50; ++num) {
                 REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == static_cast<int64_t>(num));
-                // key and value are NULL (0 for int types)
                 REQUIRE(cur->chunk_data().value(6, num).is_null());
                 REQUIRE(cur->chunk_data().value(5, num).is_null());
                 REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() == "Name " + std::to_string(num));
             }
-            // Rows 50-100: alternating matched and unmatched
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                // Even rows have matches
                 REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == num + 50);
                 REQUIRE(cur->chunk_data().value(6, row).value<int64_t>() == num + 50);
                 REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (num + 50) * 10);
                 REQUIRE(cur->chunk_data().value(1, row).value<std::string_view>() ==
                         "Name " + std::to_string(num + 50));
                 ++row;
-                // Odd rows have no match
                 REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == num + 51);
                 REQUIRE(cur->chunk_data().value(6, row).is_null());
                 REQUIRE(cur->chunk_data().value(5, row).is_null());
@@ -113,7 +107,6 @@ TEST_CASE("integration::cpp::test_join") {
                         "Name " + std::to_string(num + 51));
                 ++row;
             }
-            // Last row: key_1 = 100, matches
             REQUIRE(cur->chunk_data().value(2, 100).value<int64_t>() == 100);
             REQUIRE(cur->chunk_data().value(6, 100).value<int64_t>() == 100);
             REQUIRE(cur->chunk_data().value(5, 100).value<int64_t>() == 1000);
@@ -133,7 +126,6 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
 
-            // First 26 rows: matched rows
             for (size_t num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
                 REQUIRE(cur->chunk_data().value(6, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
@@ -141,14 +133,11 @@ TEST_CASE("integration::cpp::test_join") {
                 REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() ==
                         "Name " + std::to_string(num * 2 + 50));
             }
-            // Remaining rows: no match in left table
             for (size_t num = 0; num < 74; ++num) {
                 size_t row = 26 + num;
-                // key_1 is NULL (0)
                 REQUIRE(cur->chunk_data().value(2, row).is_null());
                 REQUIRE(cur->chunk_data().value(6, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
                 REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
-                // name is NULL (empty string)
                 REQUIRE(cur->chunk_data().value(1, row).is_null());
             }
         }
@@ -166,24 +155,20 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 175);
 
-            // First 50 rows: left only (key_1 = 0..49, no match)
             for (size_t num = 0; num < 50; ++num) {
                 REQUIRE(cur->chunk_data().value(2, num).value<int64_t>() == static_cast<int64_t>(num));
                 REQUIRE(cur->chunk_data().value(6, num).is_null());
                 REQUIRE(cur->chunk_data().value(5, num).is_null());
                 REQUIRE(cur->chunk_data().value(1, num).value<std::string_view>() == "Name " + std::to_string(num));
             }
-            // Rows 50-100: alternating matched and unmatched from left
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                // Even: matched
                 REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == num + 50);
                 REQUIRE(cur->chunk_data().value(6, row).value<int64_t>() == num + 50);
                 REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (num + 50) * 10);
                 REQUIRE(cur->chunk_data().value(1, row).value<std::string_view>() ==
                         "Name " + std::to_string(num + 50));
                 ++row;
-                // Odd: no match
                 REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == num + 51);
                 REQUIRE(cur->chunk_data().value(6, row).is_null());
                 REQUIRE(cur->chunk_data().value(5, row).is_null());
@@ -191,12 +176,10 @@ TEST_CASE("integration::cpp::test_join") {
                         "Name " + std::to_string(num + 51));
                 ++row;
             }
-            // Row 100: key_1 = 100, matched
             REQUIRE(cur->chunk_data().value(2, 100).value<int64_t>() == 100);
             REQUIRE(cur->chunk_data().value(6, 100).value<int64_t>() == 100);
             REQUIRE(cur->chunk_data().value(5, 100).value<int64_t>() == 1000);
             REQUIRE(cur->chunk_data().value(1, 100).value<std::string_view>() == "Name 100");
-            // Rows 101-174: right only (no match in left)
             for (size_t num = 0; num < 74; ++num) {
                 row = 101 + num;
                 REQUIRE(cur->chunk_data().value(2, row).is_null());

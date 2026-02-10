@@ -21,8 +21,6 @@ namespace services::table::planner::impl {
 
             switch (expr->type()) {
                 case scalar_type::group_field:
-                    // group_field is added by SQL GROUP BY clause and is redundant
-                    // when the same field already appears in SELECT as get_field
                     break;
                 case scalar_type::get_field: {
                     auto field = expr->params().empty()

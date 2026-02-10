@@ -31,7 +31,6 @@ public:
     wrapper_cursor& sort(py::object sorter, py::object order);
     void execute(std::string& query);
 
-    // PEP 249
     py::object fetchone();
     py::list fetchmany(int size);
     py::list fetchall();

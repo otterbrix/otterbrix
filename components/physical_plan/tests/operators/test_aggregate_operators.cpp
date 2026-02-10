@@ -36,7 +36,7 @@ TEST_CASE("components::physical_plan::aggregate::count") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
+        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(&resource, 10));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::aggregate::operator_count_t count(d(table));
@@ -67,7 +67,7 @@ TEST_CASE("components::physical_plan::aggregate::min") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(80));
+        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(&resource, 80));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::aggregate::operator_min_t min_(d(table), key(&resource, "count"));
@@ -98,7 +98,7 @@ TEST_CASE("components::physical_plan::aggregate::max") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(20));
+        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(&resource, 20));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::aggregate::operator_max_t max_(d(table), key(&resource, "count"));
@@ -129,7 +129,7 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
+        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(&resource, 10));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::aggregate::operator_sum_t sum_(d(table), key(&resource, "count"));
@@ -160,7 +160,7 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(10));
+        add_parameter(parameters, core::parameter_id_t(1), logical_value_t(&resource, 10));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::aggregate::operator_avg_t avg_(d(table), key(&resource, "count"));

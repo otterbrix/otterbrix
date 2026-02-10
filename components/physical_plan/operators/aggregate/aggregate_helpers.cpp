@@ -19,7 +19,7 @@ namespace components::operators::aggregate::impl {
             for (size_t i = 0; i < count; i++) {
                 raw_sum = raw_sum + v.data<T>()[i];
             }
-            return types::logical_value_t{raw_sum};
+            return types::logical_value_t{v.resource(), raw_sum};
         }
         template<typename T, typename U>
         auto operator()(const vector::vector_t& v, size_t count) const {
@@ -27,7 +27,7 @@ namespace components::operators::aggregate::impl {
             for (size_t i = 0; i < count; i++) {
                 raw_sum += T(v.data<U>()[i]);
             }
-            return types::logical_value_t{raw_sum};
+            return types::logical_value_t{v.resource(), raw_sum};
         }
     };
 
@@ -35,11 +35,11 @@ namespace components::operators::aggregate::impl {
     struct min_operator_t<void> {
         template<typename T>
         auto operator()(const vector::vector_t& v, size_t count) const {
-            return types::logical_value_t{*std::min_element(v.data<T>(), v.data<T>() + count)};
+            return types::logical_value_t{v.resource(), *std::min_element(v.data<T>(), v.data<T>() + count)};
         }
         template<typename T, typename U>
         auto operator()(const vector::vector_t& v, size_t count) const {
-            return types::logical_value_t{T(*std::min_element(v.data<U>(), v.data<U>() + count))};
+            return types::logical_value_t{v.resource(), T(*std::min_element(v.data<U>(), v.data<U>() + count))};
         }
     };
 
@@ -47,11 +47,11 @@ namespace components::operators::aggregate::impl {
     struct max_operator_t<void> {
         template<typename T>
         auto operator()(const vector::vector_t& v, size_t count) const {
-            return types::logical_value_t{*std::max_element(v.data<T>(), v.data<T>() + count)};
+            return types::logical_value_t{v.resource(), *std::max_element(v.data<T>(), v.data<T>() + count)};
         }
         template<typename T, typename U>
         auto operator()(const vector::vector_t& v, size_t count) const {
-            return types::logical_value_t{T(*std::max_element(v.data<U>(), v.data<U>() + count))};
+            return types::logical_value_t{v.resource(), T(*std::max_element(v.data<U>(), v.data<U>() + count))};
         }
     };
 
@@ -93,7 +93,7 @@ namespace components::operators::aggregate::impl {
                 // stored as int64_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
                 auto int_sum = op.template operator()<int64_t>(v, count);
-                int_sum = types::logical_value_t::create_decimal(
+                int_sum = types::logical_value_t::create_decimal(v.resource(),
                     int_sum.template value<int64_t>(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->width(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->scale());
@@ -108,7 +108,7 @@ namespace components::operators::aggregate::impl {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return types::logical_value_t(nullptr);
+        return types::logical_value_t(v.resource(), types::complex_logical_type{types::logical_type::NA});
     }
 
     types::logical_value_t sum(const vector::vector_t& v, size_t count) {

@@ -95,20 +95,20 @@ TEST_CASE("integration::cpp::test_disk_index::scan_after_restart") {
         CREATE_INDEX("idx_count", "count");
         FILL_COLLECTION(kDocuments);
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(50), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 50), 1);
     }
 
     INFO("phase 2: restart and verify disk-based index scan") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(50), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(100), 1);
-        CHECK_FIND("count", compare_type::gt, logical_value_t(90), 10);
-        CHECK_FIND("count", compare_type::lt, logical_value_t(11), 10);
-        CHECK_FIND("count", compare_type::gte, logical_value_t(95), 6);
-        CHECK_FIND("count", compare_type::lte, logical_value_t(5), 5);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 1), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 50), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 100), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(dispatcher->resource(), 90), 10);
+        CHECK_FIND("count", compare_type::lt, logical_value_t(dispatcher->resource(), 11), 10);
+        CHECK_FIND("count", compare_type::gte, logical_value_t(dispatcher->resource(), 95), 6);
+        CHECK_FIND("count", compare_type::lte, logical_value_t(dispatcher->resource(), 5), 5);
     }
 }
 
@@ -208,7 +208,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_queries") {
                             {database_name, collection_name},
                             std::move(expr)));
                         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                        params->add_parameter(id_par{1}, logical_value_t(search_value));
+                        params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), search_value));
                         auto c = dispatcher->find(session, plan, params);
 
                         if (c->size() == 1) {
@@ -248,15 +248,15 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
         CREATE_INDEX("idx_countDouble", "count_double");
         FILL_COLLECTION(kDocuments);
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(50), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 50), 1);
     }
 
     INFO("phase 2: restart and query all indexes") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(25), 1);
-        CHECK_FIND("count", compare_type::gt, logical_value_t(95), 5);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 25), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(dispatcher->resource(), 95), 5);
 
         {
             auto session = otterbrix::session_id_t();
@@ -291,7 +291,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
                 {database_name, collection_name},
                 std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(50.1));
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50.1));
             auto c = dispatcher->find(session, plan, params);
             REQUIRE(c->size() == 1);
         }
@@ -312,19 +312,19 @@ TEST_CASE("integration::cpp::test_disk_index::large_dataset") {
         CREATE_INDEX("idx_count", "count");
         FILL_COLLECTION(kDocuments);
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(250), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 250), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), kDocuments), 1);
     }
 
     INFO("phase 2: restart and verify - this previously crashed with msgpack::insufficient_bytes") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(250), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
-        CHECK_FIND("count", compare_type::gt, logical_value_t(490), 10);
-        CHECK_FIND("count", compare_type::lt, logical_value_t(11), 10);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 1), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 250), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), kDocuments), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(dispatcher->resource(), 490), 10);
+        CHECK_FIND("count", compare_type::lt, logical_value_t(dispatcher->resource(), 11), 10);
     }
 }
 
@@ -342,17 +342,17 @@ TEST_CASE("integration::cpp::test_disk_index::very_large_dataset") {
         CREATE_INDEX("idx_count", "count");
         FILL_COLLECTION(kDocuments);
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(500), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 500), 1);
     }
 
     INFO("phase 2: restart and verify very large dataset") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND("count", compare_type::eq, logical_value_t(1), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(500), 1);
-        CHECK_FIND("count", compare_type::eq, logical_value_t(kDocuments), 1);
-        CHECK_FIND("count", compare_type::gt, logical_value_t(990), 10);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 1), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), 500), 1);
+        CHECK_FIND("count", compare_type::eq, logical_value_t(dispatcher->resource(), kDocuments), 1);
+        CHECK_FIND("count", compare_type::gt, logical_value_t(dispatcher->resource(), 990), 10);
     }
 }
 
@@ -399,7 +399,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
                             {database_name, collection_name},
                             std::move(expr)));
                         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-                        params->add_parameter(id_par{1}, logical_value_t(search_value));
+                        params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), search_value));
                         auto c = dispatcher->find(session, plan, params);
 
                         if (c->size() == 1) {
@@ -465,7 +465,7 @@ TEST_CASE("integration::cpp::test_disk_index::io_error_handling") {
             {database_name, collection_name},
             std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-        params->add_parameter(id_par{1}, logical_value_t(50));
+        params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
 
         try {
             auto c = dispatcher->find(session, plan, params);

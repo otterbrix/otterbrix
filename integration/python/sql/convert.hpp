@@ -12,7 +12,7 @@
 
 namespace py = pybind11;
 
-components::types::logical_value_t to_value(const py::handle& obj);
+components::types::logical_value_t to_value(std::pmr::memory_resource* resource, const py::handle& obj);
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list;
 

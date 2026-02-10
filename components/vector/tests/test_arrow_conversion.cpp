@@ -40,19 +40,19 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
 
     for (size_t i = 0; i < chunk_size; i++) {
         // fixed
-        { chunk.set_value(0, i, logical_value_t{int64_t(i)}); }
+        { chunk.set_value(0, i, logical_value_t{&resource, int64_t(i)}); }
         // string
         { chunk.set_value(1, i, logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}}); }
         // double
-        { chunk.set_value(2, i, logical_value_t{double(i) + 0.1}); }
+        { chunk.set_value(2, i, logical_value_t{&resource, double(i) + 0.1}); }
         // bool
-        { chunk.set_value(3, i, logical_value_t{i % 2 != 0}); }
+        { chunk.set_value(3, i, logical_value_t{&resource, i % 2 != 0}); }
         // array_fixed
         {
             std::vector<logical_value_t> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(uint64_t{i * array_size + j});
+                arr.emplace_back(&resource, uint64_t{i * array_size + j});
             }
             chunk.set_value(4, i, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
         }
@@ -71,7 +71,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
             // test that each list entry can be a different length
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
+                list.emplace_back(&resource, static_cast<uint32_t>(i * list_length(i) + j));
             }
             chunk.set_value(6, i, logical_value_t::create_list(&resource, logical_type::UINTEGER, list));
         }
@@ -90,11 +90,11 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
             std::vector<logical_value_t> arr;
             arr.reserve(i);
             for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(j);
+                arr.emplace_back(&resource, j);
             }
             std::vector<logical_value_t> value_fiels;
-            value_fiels.emplace_back(logical_value_t{i % 2 != 0});
-            value_fiels.emplace_back(logical_value_t{static_cast<int32_t>(i)});
+            value_fiels.emplace_back(&resource, i % 2 != 0);
+            value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
             value_fiels.emplace_back(logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
             value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
             logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);
@@ -146,19 +146,19 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
 
     for (size_t i = 0; i < chunk_size; i++) {
         // fixed
-        { chunk.set_value(0, i, logical_value_t{int64_t(i)}); }
+        { chunk.set_value(0, i, logical_value_t{&resource, int64_t(i)}); }
         // string
         { chunk.set_value(1, i, logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}}); }
         // double
-        { chunk.set_value(2, i, logical_value_t{double(i) + 0.1}); }
+        { chunk.set_value(2, i, logical_value_t{&resource, double(i) + 0.1}); }
         // bool
-        { chunk.set_value(3, i, logical_value_t{i % 2 != 0}); }
+        { chunk.set_value(3, i, logical_value_t{&resource, i % 2 != 0}); }
         // array_fixed
         {
             std::vector<logical_value_t> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(uint64_t{i * array_size + j});
+                arr.emplace_back(&resource, uint64_t{i * array_size + j});
             }
             chunk.set_value(4, i, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
         }
@@ -177,7 +177,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
             // test that each list entry can be a different length
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
+                list.emplace_back(&resource, static_cast<uint32_t>(i * list_length(i) + j));
             }
             chunk.set_value(6, i, logical_value_t::create_list(&resource, logical_type::UINTEGER, list));
         }
@@ -196,11 +196,11 @@ TEST_CASE("components::vector::data_chunk_to_arrow") { {
             std::vector<logical_value_t> arr;
             arr.reserve(i);
             for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(j);
+                arr.emplace_back(&resource, j);
             }
             std::vector<logical_value_t> value_fiels;
-            value_fiels.emplace_back(logical_value_t{i % 2 != 0});
-            value_fiels.emplace_back(logical_value_t{static_cast<int32_t>(i)});
+            value_fiels.emplace_back(&resource, i % 2 != 0);
+            value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
             value_fiels.emplace_back(logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
             value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
             logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);

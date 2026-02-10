@@ -15,7 +15,7 @@ namespace components::sql::transform {
             case T_TypeCast: {
                 auto value = pg_ptr_cast<TypeCast>(node);
                 bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(value->arg)->val)) == "t";
-                core::parameter_id_t id = params->add_parameter(types::logical_value_t(is_true));
+                core::parameter_id_t id = params->add_parameter(types::logical_value_t(resource_, is_true));
                 return {new update_expr_get_const_value_t(id)};
             }
             case T_A_Const: {
@@ -29,12 +29,12 @@ namespace components::sql::transform {
                     }
                     case T_Integer: {
                         int64_t int_value = intVal(value);
-                        id = params->add_parameter(types::logical_value_t(int_value));
+                        id = params->add_parameter(types::logical_value_t(resource_, int_value));
                         break;
                     }
                     case T_Float: {
                         float float_value = floatVal(value);
-                        id = params->add_parameter(types::logical_value_t(float_value));
+                        id = params->add_parameter(types::logical_value_t(resource_, float_value));
                         break;
                     }
                     default:

@@ -20,13 +20,13 @@ namespace components::operators::aggregate {
                 types::logical_value_t sum_ = impl::sum(*it, chunk.size());
                 sum_.set_alias(key_result_);
                 // possible bug here since not every type could be cast to double
-                auto result = types::logical_value_t(sum_.cast_as(types::logical_type::DOUBLE).value<double>() /
+                auto result = types::logical_value_t(left_->output()->resource(), sum_.cast_as(types::logical_type::DOUBLE).value<double>() /
                                                      double(chunk.size()));
                 result.set_alias(key_result_);
                 return result;
             }
         }
-        auto result = types::logical_value_t(nullptr);
+        auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::complex_logical_type{types::logical_type::NA});
         result.set_alias(key_result_);
         return result;
     }

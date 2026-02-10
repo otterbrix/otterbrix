@@ -110,7 +110,7 @@ TEST_CASE("components::serialization::logical_plan") {
                                                                       key{&resource, "count", side_t::left},
                                                                       core::parameter_id_t{1})));
     auto params = make_parameter_node(&resource);
-    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(90));
+    params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(&resource, 90));
     {
         msgpack_serializer_t serializer(&resource);
         serializer.start_array(2);

@@ -9,7 +9,7 @@ namespace components::operators {
         , rows_(context->resource(), types::logical_type::BIGINT) {}
 
     void primary_key_scan::append(size_t id) {
-        rows_.set_value(size_++, types::logical_value_t(static_cast<int64_t>(id)));
+        rows_.set_value(size_++, types::logical_value_t(context_->resource(), static_cast<int64_t>(id)));
     }
 
     void primary_key_scan::on_execute_impl(pipeline::context_t*) {

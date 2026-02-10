@@ -41,7 +41,7 @@ TEST_CASE("components::sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(10ul)}),
+                           vec({v(&resource, 10ul)}),
                            f);
     }
 
@@ -61,7 +61,7 @@ TEST_CASE("components::sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(true)}),
+                           vec({v(&resource, true)}),
                            f);
     }
 
@@ -75,7 +75,7 @@ TEST_CASE("components::sql::update") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(10ul), v(&resource, "new name"), v(true)}),
+                           vec({v(&resource, 10ul), v(&resource, "new name"), v(&resource, true)}),
                            f);
     }
 }
@@ -91,7 +91,7 @@ TEST_CASE("components::sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
                            R"_($update: {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
-                           vec({v(10ul), v(1ul)}),
+                           vec({v(&resource, 10ul), v(&resource, 1ul)}),
                            f);
     }
 
@@ -111,7 +111,7 @@ TEST_CASE("components::sql::update_where") {
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true WHERE is_doc = false;",
                            R"_($update: {$upsert: 0, $match: {"is_doc": {$eq: #1}}, $limit: -1})_",
-                           vec({v(true), v(false)}),
+                           vec({v(&resource, true), v(&resource, false)}),
                            f);
     }
 
@@ -127,7 +127,7 @@ TEST_CASE("components::sql::update_where") {
             "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true "
             "WHERE id > 10 AND name = 'old_name' AND is_doc = false;",
             R"_($update: {$upsert: 0, $match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}, $limit: -1})_",
-            vec({v(10ul), v(&resource, "new name"), v(true), v(10ul), v(&resource, "old_name"), v(false)}),
+            vec({v(&resource, 10ul), v(&resource, "new name"), v(&resource, true), v(&resource, 10ul), v(&resource, "old_name"), v(&resource, false)}),
             f);
     }
 }
@@ -147,7 +147,7 @@ TEST_CASE("components::sql::update_from") {
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(1.5f)}),
+                           vec({v(&resource, 1.5f)}),
                            f);
     }
 
@@ -188,7 +188,7 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET struct_type.field = (struct_type).field + 1;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(1ul)}),
+                           vec({v(&resource, 1ul)}),
                            f);
     }
 
@@ -200,7 +200,7 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
             "UPDATE TestDatabase.TestCollection SET array_type = ARRAY[1,2,3,4];",
             R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
             vec({components::types::logical_value_t::create_array(&arena_resource, components::types::logical_type::BIGINT,
-                                                                  {v(1l), v(2l), v(3l), v(4l)})}),
+                                                                  {v(&resource, 1l), v(&resource, 2l), v(&resource, 3l), v(&resource, 4l)})}),
             f);
     }
 
@@ -212,7 +212,7 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET array_type[4] = 196;",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(196l)}),
+                           vec({v(&resource, 196l)}),
                            f);
     }
 }

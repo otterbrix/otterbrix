@@ -30,7 +30,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -44,7 +44,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -58,7 +58,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -72,7 +72,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -86,7 +86,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -100,7 +100,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -114,7 +114,7 @@ TEST_CASE("components::physical_plan::full_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::full_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
@@ -134,7 +134,7 @@ TEST_CASE("components::physical_plan::delete") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
@@ -151,7 +151,7 @@ TEST_CASE("components::physical_plan::delete") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
@@ -168,7 +168,7 @@ TEST_CASE("components::physical_plan::delete") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
@@ -185,9 +185,9 @@ TEST_CASE("components::physical_plan::update") {
 
     SECTION("find::update") {
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(static_cast<int64_t>(9999)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -221,9 +221,9 @@ TEST_CASE("components::physical_plan::update") {
 
     SECTION("find::update_one") {
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(static_cast<int64_t>(9999)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -261,9 +261,9 @@ TEST_CASE("components::physical_plan::update") {
 
     SECTION("find::update_limit") {
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(static_cast<int64_t>(9999)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -315,7 +315,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -329,7 +329,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -343,7 +343,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -357,7 +357,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -371,7 +371,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -385,7 +385,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
@@ -399,7 +399,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
@@ -413,7 +413,7 @@ TEST_CASE("components::physical_plan::index_scan") {
                                             key(&resource, "count", side_t::left),
                                             core::parameter_id_t(1));
         logical_plan::storage_parameters parameters(&resource);
-        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
+        add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::index_scan scan(d(table), cond, logical_plan::limit_t(3));
@@ -460,7 +460,7 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                   key(&resource, "count", side_t::left),
                                                   core::parameter_id_t(1));
         logical_plan::storage_parameters parameters_check(&resource);
-        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(50)));
+        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(50)));
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {
@@ -474,7 +474,7 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                 key(&resource, "count", side_t::left),
                                                 core::parameter_id_t(1));
             logical_plan::storage_parameters parameters(&resource);
-            add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(60)));
+            add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(60)));
             pipeline::context_t pipeline_context(std::move(parameters));
             operators::operator_delete delete_(d(table));
             delete_.set_children(boost::intrusive_ptr(
@@ -494,8 +494,8 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                   key(&resource, "count", side_t::left),
                                                   core::parameter_id_t(1));
         logical_plan::storage_parameters parameters_check(&resource);
-        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(50)));
-        add_parameter(parameters_check, core::parameter_id_t(2), types::logical_value_t(static_cast<int64_t>(0)));
+        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(50)));
+        add_parameter(parameters_check, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(0)));
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {

@@ -12,7 +12,7 @@ namespace components::operators::aggregate {
     protected:
         explicit operator_aggregate_t(services::collection::context_collection_t* collection);
 
-        types::logical_value_t aggregate_result_;
+        types::logical_value_t aggregate_result_{std::pmr::null_memory_resource(), types::complex_logical_type{types::logical_type::NA}};
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) final;

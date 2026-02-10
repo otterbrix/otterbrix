@@ -25,20 +25,20 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 using namespace components::types;
 using components::types::logical_value_t;
 
-logical_value_t to_value(const py::handle& obj) {
+logical_value_t to_value(std::pmr::memory_resource* resource, const py::handle& obj) {
     if (py::isinstance<py::bool_>(obj)) {
-        return logical_value_t{obj.cast<bool>()};
+        return logical_value_t{resource, obj.cast<bool>()};
     } else if (py::isinstance<py::int_>(obj)) {
-        return logical_value_t{obj.cast<int64_t>()}; //TODO x64 long -> int64_t x32 long -> int32_t
+        return logical_value_t{resource, obj.cast<int64_t>()}; //TODO x64 long -> int64_t x32 long -> int32_t
     } else if (py::isinstance<py::float_>(obj)) {
-        return logical_value_t{obj.cast<double>()};
+        return logical_value_t{resource, obj.cast<double>()};
     } else if (py::isinstance<py::bytes>(obj)) {
         py::module base64 = py::module::import("base64");
-        return logical_value_t{base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>()};
+        return logical_value_t{resource, base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>()};
     } else if (py::isinstance<py::str>(obj)) {
-        return logical_value_t{obj.cast<std::string>()};
+        return logical_value_t{resource, obj.cast<std::string>()};
     }
-    return logical_value_t{};
+    return logical_value_t{resource, complex_logical_type{logical_type::NA}};
 }
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
@@ -135,7 +135,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
     } else if (py::isinstance<py::list>(condition) || py::isinstance<py::tuple>(condition)) {
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
-        auto value = params->add_parameter(to_value(condition));
+        auto value = params->add_parameter(to_value(resource, condition));
         auto sub_condition = make_compare_expression(resource, type, ex_key_t(resource, real_key, side_t::left), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
@@ -207,7 +207,7 @@ expression_ptr parse_find_condition_(std::pmr::memory_resource* resource,
 
 components::expressions::param_storage
 parse_param(std::pmr::memory_resource* resource, const py::handle& condition, parameter_node_t* params) {
-    auto value = to_value(condition);
+    auto value = to_value(resource, condition);
     if (value.type().to_physical_type() == components::types::physical_type::STRING &&
         !value.value<std::string_view>().empty() && value.value<std::string_view>().at(0) == '$') {
         return ex_key_t(resource, value.value<std::string_view>().substr(1));

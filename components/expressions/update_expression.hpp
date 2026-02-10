@@ -48,7 +48,7 @@ namespace components::expressions {
     class update_expr_t : public boost::intrusive_ref_counter<update_expr_t> {
         class expr_output_t {
         public:
-            expr_output_t() = default;
+            expr_output_t();
             // not explicit for easier use, since it is not visible outside anyway
             expr_output_t(types::logical_value_t value);
 

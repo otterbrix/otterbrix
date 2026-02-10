@@ -70,7 +70,7 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value{uint64_t(i)};
+                logical_value_t value{&resource, uint64_t(i)};
                 v.set_value(i, value);
             }
 
@@ -238,7 +238,7 @@ TEST_CASE("components::table::column") {
                 std::vector<logical_value_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(uint64_t{i * array_size + j});
+                    arr.emplace_back(&resource, uint64_t{i * array_size + j});
                 }
                 v.set_value(i, logical_value_t::create_array(v.resource(), logical_type::UBIGINT, arr));
             }
@@ -454,7 +454,7 @@ TEST_CASE("components::table::column") {
                 // test that each list entry can be a different length
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(uint64_t{i * list_length(i) + j});
+                    list.emplace_back(&resource, uint64_t{i * list_length(i) + j});
                 }
                 v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::UBIGINT, list));
             }
@@ -677,12 +677,12 @@ TEST_CASE("components::table::column") {
                 std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(uint16_t(j));
+                    arr.emplace_back(&resource, uint16_t(j));
                 }
                 std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(logical_value_t{i % 2 != 0});
-                value_fiels.emplace_back(logical_value_t{int32_t(i)});
-                value_fiels.emplace_back(logical_value_t{v.resource(), generate_string(i)});
+                value_fiels.emplace_back(&resource, i % 2 != 0);
+                value_fiels.emplace_back(&resource, int32_t(i));
+                value_fiels.emplace_back(v.resource(), generate_string(i));
                 value_fiels.emplace_back(logical_value_t::create_list(v.resource(), logical_type::USMALLINT, arr));
                 logical_value_t value = logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
                 v.set_value(i, value);

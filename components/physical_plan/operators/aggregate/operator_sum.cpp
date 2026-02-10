@@ -22,7 +22,7 @@ namespace components::operators::aggregate {
                 return sum_;
             }
         }
-        auto result = types::logical_value_t(nullptr);
+        auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::complex_logical_type{types::logical_type::NA});
         result.set_alias(key_result_);
         return result;
     }

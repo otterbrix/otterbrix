@@ -56,7 +56,7 @@ namespace services::disk {
 
     agent_disk_t::unique_future<result_load_t> agent_disk_t::load(session_id_t session) {
         trace(log_, "agent_disk::load , session : {}", session.data());
-        result_load_t result(disk_.databases(), disk_.wal_id());
+        result_load_t result(this->resource(), disk_.databases(), disk_.wal_id());
         for (auto& database : *result) {
             database.set_collection(disk_.collections(database.name));
         }

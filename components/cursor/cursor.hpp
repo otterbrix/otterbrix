@@ -65,6 +65,11 @@ namespace components::cursor {
         void advance();
         index_t current_index() const;
 
+        types::logical_value_t value(uint64_t col_idx) const;
+        types::logical_value_t value(uint64_t col_idx, uint64_t row_idx) const;
+        std::pmr::vector<types::logical_value_t> row() const;
+        std::pmr::vector<types::logical_value_t> row(uint64_t row_idx) const;
+
         bool is_success() const noexcept;
         bool is_error() const noexcept;
         error_t get_error() const;

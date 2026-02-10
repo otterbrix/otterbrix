@@ -13,11 +13,8 @@ namespace components::types {
 
     class logical_value_t {
     public:
-        logical_value_t(complex_logical_type type = logical_type::NA);
         logical_value_t(std::pmr::memory_resource* r, complex_logical_type type);
 
-        template<typename T>
-        explicit logical_value_t(T value);
         template<typename T>
         logical_value_t(std::pmr::memory_resource* r, T value);
         logical_value_t(const logical_value_t& other);
@@ -50,10 +47,10 @@ namespace components::types {
                                              const std::vector<logical_value_t>& struct_values);
         static logical_value_t create_array(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
                                             const std::vector<logical_value_t>& values);
-        static logical_value_t create_numeric(const complex_logical_type& type, int64_t value);
-        static logical_value_t create_enum(const complex_logical_type& enum_type, std::string_view key);
-        static logical_value_t create_enum(const complex_logical_type& enum_type, int32_t value);
-        static logical_value_t create_decimal(int64_t value, uint8_t width, uint8_t scale);
+        static logical_value_t create_numeric(std::pmr::memory_resource* r, const complex_logical_type& type, int64_t value);
+        static logical_value_t create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, std::string_view key);
+        static logical_value_t create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, int32_t value);
+        static logical_value_t create_decimal(std::pmr::memory_resource* r, int64_t value, uint8_t width, uint8_t scale);
         static logical_value_t create_map(std::pmr::memory_resource* r, const complex_logical_type& key_type,
                                           const complex_logical_type& value_type,
                                           const std::vector<logical_value_t>& keys,
@@ -119,11 +116,12 @@ namespace components::types {
         }
     };
 
-    static const logical_value_t NULL_LOGICAL_VALUE = logical_value_t{};
+    static const logical_value_t NULL_LOGICAL_VALUE = logical_value_t{std::pmr::null_memory_resource(), complex_logical_type{logical_type::NA}};
 
     template<typename T>
-    logical_value_t::logical_value_t(T value)
-        : type_(to_logical_type<T>()) {
+    logical_value_t::logical_value_t(std::pmr::memory_resource* r, T value)
+        : type_(to_logical_type<T>())
+        , resource_(r) {
         assert(type_ != logical_type::INVALID);
         if constexpr (std::is_floating_point_v<T>) {
             std::memcpy(&data_, &value, sizeof(value));
@@ -135,70 +133,82 @@ namespace components::types {
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::nullptr_t)
-        : type_(logical_type::NA) {}
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::nullptr_t)
+        : type_(logical_type::NA)
+        , resource_(r) {}
 
     template<>
-    inline logical_value_t::logical_value_t(std::chrono::nanoseconds value)
-        : type_(to_logical_type<std::chrono::nanoseconds>()) {
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::nanoseconds value)
+        : type_(to_logical_type<std::chrono::nanoseconds>())
+        , resource_(r) {
         assert(type_ != logical_type::INVALID);
         data_ = static_cast<uint64_t>(value.count());
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::chrono::microseconds value)
-        : type_(to_logical_type<std::chrono::microseconds>()) {
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::microseconds value)
+        : type_(to_logical_type<std::chrono::microseconds>())
+        , resource_(r) {
         assert(type_ != logical_type::INVALID);
         data_ = static_cast<uint64_t>(value.count());
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::chrono::milliseconds value)
-        : type_(to_logical_type<std::chrono::milliseconds>()) {
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::milliseconds value)
+        : type_(to_logical_type<std::chrono::milliseconds>())
+        , resource_(r) {
         assert(type_ != logical_type::INVALID);
         data_ = static_cast<uint64_t>(value.count());
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::chrono::seconds value)
-        : type_(to_logical_type<std::chrono::seconds>()) {
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::seconds value)
+        : type_(to_logical_type<std::chrono::seconds>())
+        , resource_(r) {
         assert(type_ != logical_type::INVALID);
         data_ = static_cast<uint64_t>(value.count());
     }
 
     template<>
-    inline logical_value_t::logical_value_t(int128_t value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, int128_t value)
         : type_(logical_type::HUGEINT)
+        , resource_(r)
         , data128_(value) {}
 
     template<>
-    inline logical_value_t::logical_value_t(uint128_t value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, uint128_t value)
         : type_(logical_type::UHUGEINT)
+        , resource_(r)
         , udata128_(value) {}
 
     template<>
-    inline logical_value_t::logical_value_t(std::string value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::string value)
         : type_(logical_type::STRING_LITERAL)
+        , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(std::move(value)))) {}
 
     template<>
-    inline logical_value_t::logical_value_t(std::pmr::string value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::pmr::string value)
         : type_(logical_type::STRING_LITERAL)
+        , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value.data(), value.size()))) {}
 
     template<>
-    inline logical_value_t::logical_value_t(std::string_view value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::string_view value)
         : type_(logical_type::STRING_LITERAL)
+        , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
 
     template<>
-    inline logical_value_t::logical_value_t(char* value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, char* value)
         : type_(logical_type::STRING_LITERAL)
+        , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
 
     template<>
-    inline logical_value_t::logical_value_t(const char* value)
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, const char* value)
         : type_(logical_type::STRING_LITERAL)
+        , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
 
     template<typename T>
@@ -354,100 +364,6 @@ namespace components::types {
     inline std::vector<logical_value_t>* logical_value_t::value<std::vector<logical_value_t>*>() const {
         return vec_ptr();
     }
-
-    // Resource-taking constructor implementations
-    template<typename T>
-    logical_value_t::logical_value_t(std::pmr::memory_resource* r, T value)
-        : type_(to_logical_type<T>())
-        , resource_(r) {
-        assert(type_ != logical_type::INVALID);
-        if constexpr (std::is_floating_point_v<T>) {
-            std::memcpy(&data_, &value, sizeof(value));
-        } else if constexpr (std::is_pointer_v<T>) {
-            data_ = reinterpret_cast<uint64_t>(value);
-        } else {
-            data_ = static_cast<uint64_t>(value);
-        }
-    }
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::nullptr_t)
-        : type_(logical_type::NA)
-        , resource_(r) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::nanoseconds value)
-        : type_(to_logical_type<std::chrono::nanoseconds>())
-        , resource_(r) {
-        assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
-    }
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::microseconds value)
-        : type_(to_logical_type<std::chrono::microseconds>())
-        , resource_(r) {
-        assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
-    }
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::milliseconds value)
-        : type_(to_logical_type<std::chrono::milliseconds>())
-        , resource_(r) {
-        assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
-    }
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::seconds value)
-        : type_(to_logical_type<std::chrono::seconds>())
-        , resource_(r) {
-        assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
-    }
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, int128_t value)
-        : type_(logical_type::HUGEINT)
-        , resource_(r)
-        , data128_(value) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, uint128_t value)
-        : type_(logical_type::UHUGEINT)
-        , resource_(r)
-        , udata128_(value) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::string value)
-        : type_(logical_type::STRING_LITERAL)
-        , resource_(r)
-        , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(std::move(value)))) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::pmr::string value)
-        : type_(logical_type::STRING_LITERAL)
-        , resource_(r)
-        , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value.data(), value.size()))) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::string_view value)
-        : type_(logical_type::STRING_LITERAL)
-        , resource_(r)
-        , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, char* value)
-        : type_(logical_type::STRING_LITERAL)
-        , resource_(r)
-        , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
-
-    template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, const char* value)
-        : type_(logical_type::STRING_LITERAL)
-        , resource_(r)
-        , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
 
     class enum_logical_type_extension : public logical_type_extension {
     public:

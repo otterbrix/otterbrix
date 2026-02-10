@@ -53,7 +53,7 @@ namespace components::operators {
                 if (!limit.check(static_cast<int>(count))) {
                     break;
                 }
-                row_ids.set_value(count, types::logical_value_t{it->row_index});
+                row_ids.set_value(count, types::logical_value_t{index->resource(), it->row_index});
                 ++count;
             }
         }

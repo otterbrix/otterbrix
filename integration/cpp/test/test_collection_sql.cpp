@@ -505,7 +505,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
             REQUIRE(cur->chunk_data().column_count() == 2);
-            REQUIRE(cur->chunk_data().value(0, 0).children()[0] == types::logical_value_t{91});
+            REQUIRE(cur->chunk_data().value(0, 0).children()[0] == types::logical_value_t{dispatcher->resource(), 91});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -518,7 +518,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
             REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
             REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
-            REQUIRE(cur->chunk_data().value(0, 0) == types::logical_value_t{91});
+            REQUIRE(cur->chunk_data().value(0, 0) == types::logical_value_t{dispatcher->resource(), 91});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -531,7 +531,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
             REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
             REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
-            REQUIRE(cur->chunk_data().value(2, 0).children()[1] == types::logical_value_t{92});
+            REQUIRE(cur->chunk_data().value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
         }
     }
     INFO("update") {

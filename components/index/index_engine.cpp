@@ -72,7 +72,7 @@ namespace components::index {
                 }
             }
         }
-        return types::logical_value_t{};
+        return types::logical_value_t{chunk.resource(), types::complex_logical_type{types::logical_type::NA}};
     }
 
     index_engine_t::index_engine_t(std::pmr::memory_resource* resource)

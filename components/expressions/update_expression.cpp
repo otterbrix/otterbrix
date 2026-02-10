@@ -6,6 +6,9 @@
 
 namespace components::expressions {
 
+    update_expr_t::expr_output_t::expr_output_t()
+        : output_(nullptr, false) {}
+
     update_expr_t::expr_output_t::expr_output_t(types::logical_value_t value)
         : output_(std::move(value)) {}
 

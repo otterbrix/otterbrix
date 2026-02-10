@@ -115,7 +115,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(90));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
@@ -133,7 +133,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(90.0));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90.0));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
@@ -171,7 +171,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(90));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
@@ -189,7 +189,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                             key{dispatcher->resource(), "count", side_t::left},
                                             id_par{1})));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(90));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(session, del, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(90));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
@@ -253,7 +253,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(20));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->size() == 19);
         }
@@ -274,8 +274,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                              match,
                                              {update_expr});
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(20));
-            params->add_parameter(id_par{2}, types::logical_value_t(1000));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
+            params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 1000));
             auto cur = dispatcher->execute_plan(session, upd, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
@@ -293,7 +293,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(20));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
@@ -311,7 +311,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                             {table_database_name, table_collection_name},
                                                             std::move(expr)));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(1000));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             auto cur = dispatcher->execute_plan(session, agg, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
@@ -329,7 +329,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto session = otterbrix::session_id_t();
 
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, types::logical_value_t(int64_t{2}));
+            params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), int64_t{2}));
 
             expressions::update_expr_ptr update_expr =
                 new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
@@ -383,15 +383,15 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             chunk_left.set_value(1,
                                  static_cast<size_t>(num),
                                  types::logical_value_t{dispatcher->resource(), "Name " + std::to_string(num)});
-            chunk_left.set_value(2, static_cast<size_t>(num), types::logical_value_t{num});
-            chunk_left.set_value(3, static_cast<size_t>(num), types::logical_value_t{reversed});
+            chunk_left.set_value(2, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), num});
+            chunk_left.set_value(3, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), reversed});
         }
         for (int64_t num = 0; num < 100; ++num) {
             chunk_right.set_value(0,
                                   static_cast<size_t>(num),
                                   types::logical_value_t{dispatcher->resource(), gen_id(static_cast<int>(num + 1001))});
-            chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2 * 10});
-            chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2});
+            chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), (num + 25) * 2 * 10});
+            chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), (num + 25) * 2});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -487,7 +487,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         INFO("both are raw data with complex join expr") {
             auto session = otterbrix::session_id_t();
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(core::parameter_id_t(1), types::logical_value_t(int64_t{75}));
+            params->add_parameter(core::parameter_id_t(1), types::logical_value_t(dispatcher->resource(), int64_t{75}));
             auto join = logical_plan::make_node_join(dispatcher->resource(), {}, logical_plan::join_type::inner);
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
             join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
@@ -581,7 +581,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                 key(dispatcher->resource(), "key_1", side_t::left),
                                                 core::parameter_id_t(1))));
                 }
-                params->add_parameter(core::parameter_id_t(1), types::logical_value_t(int64_t{75}));
+                params->add_parameter(core::parameter_id_t(1), types::logical_value_t(dispatcher->resource(), int64_t{75}));
             }
             {
                 auto join =

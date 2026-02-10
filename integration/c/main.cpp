@@ -21,7 +21,7 @@ namespace {
 
     struct value_storage_t {
         state_t state;
-        logical_value_t value;
+        logical_value_t value{std::pmr::null_memory_resource(), components::types::complex_logical_type{components::types::logical_type::NA}};
     };
 
     configuration::config create_config() { return configuration::config::default_config(); }

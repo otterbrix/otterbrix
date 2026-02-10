@@ -36,7 +36,7 @@ TEST_CASE("components::vector::vector") {
                                        components::types::logical_type::UBIGINT,
                                        test_size);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value{uint64_t(i)};
+            components::types::logical_value_t value{&resource, uint64_t(i)};
             v.set_value(i, value);
         }
 
@@ -71,7 +71,7 @@ TEST_CASE("components::vector::vector") {
             std::vector<components::types::logical_value_t> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(uint64_t{i * array_size + j});
+                arr.emplace_back(v.resource(), uint64_t{i * array_size + j});
             }
             v.set_value(
                 i,
@@ -124,7 +124,7 @@ TEST_CASE("components::vector::vector") {
             // test that each list entry can be a different length
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(uint64_t{i * list_length(i) + j});
+                list.emplace_back(v.resource(), uint64_t{i * list_length(i) + j});
             }
             v.set_value(
                 i,
@@ -186,11 +186,11 @@ TEST_CASE("components::vector::vector") {
             std::vector<components::types::logical_value_t> arr;
             arr.reserve(i);
             for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(test_data[i].array[j]);
+                arr.emplace_back(v.resource(), test_data[i].array[j]);
             }
             std::vector<components::types::logical_value_t> value_fiels;
-            value_fiels.emplace_back(components::types::logical_value_t{test_data[i].flag});
-            value_fiels.emplace_back(components::types::logical_value_t{test_data[i].number});
+            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].flag});
+            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].number});
             value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].name});
             value_fiels.emplace_back(
                 components::types::logical_value_t::create_list(v.resource(), components::types::logical_type::USMALLINT, arr));
@@ -276,7 +276,7 @@ TEST_CASE("components::vector::vector") {
                                                union_vector.resource(),
                                                union_fields,
                                                0,
-                                               components::types::logical_value_t{i % 2 == 0}));
+                                               components::types::logical_value_t{union_vector.resource(), i % 2 == 0}));
                     break;
                 case 1:
                     union_vector.set_value(i,
@@ -284,7 +284,7 @@ TEST_CASE("components::vector::vector") {
                                                union_vector.resource(),
                                                union_fields,
                                                1,
-                                               components::types::logical_value_t{static_cast<int32_t>(i)}));
+                                               components::types::logical_value_t{union_vector.resource(), static_cast<int32_t>(i)}));
                     break;
                 case 2:
                     union_vector.set_value(i,

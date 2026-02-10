@@ -175,9 +175,9 @@ namespace components::table {
         auto tuple_data = values();
         switch (type.type()) {
             case types::logical_type::VALIDITY:
-                return types::logical_value_t(reinterpret_cast<bool*>(tuple_data)[index]);
+                return types::logical_value_t(segment->column_data_->resource(), reinterpret_cast<bool*>(tuple_data)[index]);
             case types::logical_type::INTEGER:
-                return types::logical_value_t(reinterpret_cast<int32_t*>(tuple_data)[index]);
+                return types::logical_value_t(segment->column_data_->resource(), reinterpret_cast<int32_t*>(tuple_data)[index]);
             default:
                 throw std::logic_error("Unimplemented type for update_info_t::value");
         }

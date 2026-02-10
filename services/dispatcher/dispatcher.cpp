@@ -576,7 +576,7 @@ namespace services::dispatcher {
                                                                     *it, data_node->data_chunk().capacity());
                             for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
                                 auto val = column.data<std::string_view>()[i];
-                                auto enum_val = logical_value_t::create_enum(*it, val);
+                                auto enum_val = logical_value_t::create_enum(resource(), *it, val);
                                 if (enum_val.type().type() == logical_type::NA) {
                                     result = make_cursor(resource(), error_code_t::schema_error,
                                                     "enum: \'" + it->alias() + "\' does not contain value: \'" +

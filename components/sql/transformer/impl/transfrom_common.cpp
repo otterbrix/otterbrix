@@ -39,7 +39,7 @@ namespace components::sql::transform {
             if (auto it = parameter_map_.find(ref->number); it != parameter_map_.end()) {
                 return it->second;
             } else {
-                auto id = params->add_parameter(types::logical_value_t());
+                auto id = params->add_parameter(types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
                 parameter_map_.emplace(ref->number, id);
                 return id;
             }

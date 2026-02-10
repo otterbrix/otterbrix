@@ -18,12 +18,12 @@ TEST_CASE("single_field_index:base") {
         {0, 0}, {1, 1}, {10, 2}, {5, 3}, {6, 4}, {2, 5}, {8, 6}, {13, 7}};
 
     for (const auto& [value, row_idx] : data) {
-        components::types::logical_value_t val(value);
+        components::types::logical_value_t val(&resource, value);
         index.insert(val, row_idx);
     }
 
     SECTION("find existing value") {
-        components::types::logical_value_t value(10);
+        components::types::logical_value_t value(&resource, 10);
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(find_range.first->row_index == 2);  // Row index for value 10
@@ -31,13 +31,13 @@ TEST_CASE("single_field_index:base") {
     }
 
     SECTION("find non-existing value") {
-        components::types::logical_value_t value(11);
+        components::types::logical_value_t value(&resource, 11);
         auto find_range = index.find(value);
         REQUIRE(find_range.first == find_range.second);
     }
 
     SECTION("lower_bound query") {
-        components::types::logical_value_t value(4);
+        components::types::logical_value_t value(&resource, 4);
         auto find_range = index.lower_bound(value);
         REQUIRE(find_range.first == index.cbegin());
         // Values less than 4 are: 0, 1, 2 (sorted)
@@ -49,7 +49,7 @@ TEST_CASE("single_field_index:base") {
     }
 
     SECTION("lower_bound query at boundary") {
-        components::types::logical_value_t value(5);
+        components::types::logical_value_t value(&resource, 5);
         auto find_range = index.lower_bound(value);
         REQUIRE(find_range.first == index.cbegin());
         // Values less than 5 are: 0, 1, 2 (sorted)
@@ -60,7 +60,7 @@ TEST_CASE("single_field_index:base") {
     }
 
     SECTION("upper_bound query") {
-        components::types::logical_value_t value(6);
+        components::types::logical_value_t value(&resource, 6);
         auto find_range = index.upper_bound(value);
         REQUIRE(find_range.second == index.cend());
         // Values greater than 6 are: 8, 10, 13 (sorted)
@@ -72,7 +72,7 @@ TEST_CASE("single_field_index:base") {
     }
 
     SECTION("upper_bound query between values") {
-        components::types::logical_value_t value(7);
+        components::types::logical_value_t value(&resource, 7);
         auto find_range = index.upper_bound(value);
         REQUIRE(find_range.second == index.cend());
         // Values greater than 7 are: 8, 10, 13 (sorted)
@@ -85,10 +85,10 @@ TEST_CASE("single_field_index:base") {
     SECTION("duplicate values") {
         // Insert duplicate values with different row indices
         for (const auto& [value, row_idx] : data) {
-            components::types::logical_value_t val(value);
+            components::types::logical_value_t val(&resource, value);
             index.insert(val, row_idx + 100);  // Different row indices
         }
-        components::types::logical_value_t value(10);
+        components::types::logical_value_t value(&resource, 10);
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 2);
@@ -111,11 +111,11 @@ TEST_CASE("single_field_index:engine") {
     REQUIRE(idx != nullptr);
 
     // Insert row 0 with value 0
-    idx->insert(components::types::logical_value_t(0), int64_t(0));
+    idx->insert(components::types::logical_value_t(&resource, 0), int64_t(0));
 
     // Insert rows 1-10 with values 10, 9, 8, ..., 1
     for (int i = 10; i >= 1; --i) {
-        idx->insert(components::types::logical_value_t(i), int64_t(11 - i));
+        idx->insert(components::types::logical_value_t(&resource, i), int64_t(11 - i));
     }
 
     // Verify the index has 11 entries by iterating
@@ -125,7 +125,7 @@ TEST_CASE("single_field_index:engine") {
     }
     REQUIRE(count == 11);
 
-    components::types::logical_value_t value(5);
+    components::types::logical_value_t value(&resource, 5);
     auto find_range = idx->find(value);
     REQUIRE(find_range.first != find_range.second);
     REQUIRE(find_range.first->row_index == 6);  // Row 6 has value 5 (11-5=6)

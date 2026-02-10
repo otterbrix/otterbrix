@@ -141,16 +141,16 @@ TEST_CASE("integration::cpp::test_index::base") {
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(10));
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
             auto c = dispatcher->find(session, plan, params);
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
     }
 }
 
@@ -174,12 +174,12 @@ TEST_CASE("integration::cpp::test_index::save_load") {
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_ALL();
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
     }
 }
 

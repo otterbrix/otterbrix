@@ -44,36 +44,36 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' AND "count" = 2;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((((number = 10 AND name = 'doc 10'))));)_",
                        R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({v(10l), v(&resource, "doc 10")}));
+                       vec({v(&resource, 10l), v(&resource, "doc 10")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 OR name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE (number = 10 AND name = 'doc 10') OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND (name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, $or: ["name": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((number = 10 AND name = 'doc 10') OR "count" = 2) AND )_"
@@ -84,57 +84,57 @@ TEST_CASE("components::sql::select_from_where") {
         R"_($or: [$and: ["number": {$eq: #3}, "name": {$eq: #4}], "count": {$eq: #5}], )_"
         R"_($or: [$and: ["number": {$eq: #6}, "name": {$eq: #7}], "count": {$eq: #8}])_"
         R"_(]}})_",
-        vec({v(10l),
+        vec({v(&resource, 10l),
              v(&resource, "doc 10"),
-             v(2l),
-             v(10l),
+             v(&resource, 2l),
+             v(&resource, 10l),
              v(&resource, "doc 10"),
-             v(2l),
-             v(10l),
+             v(&resource, 2l),
+             v(&resource, 10l),
              v(&resource, "doc 10"),
-             v(2l)}));
+             v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number == 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number != 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <> 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number < 10;)_",
                        R"_($aggregate: {$match: {"number": {$lt: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <= 10;)_",
                        R"_($aggregate: {$match: {"number": {$lte: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10;)_",
                        R"_($aggregate: {$match: {"number": {$gt: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number >= 10;)_",
                        R"_($aggregate: {$match: {"number": {$gte: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT(number >= 10);)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT number >= 10;)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: [$not: ["number": {$eq: #0}], )_"
         R"_($not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
-        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
+        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
                        R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
@@ -142,7 +142,7 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
                        R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}})_",
-                       vec({v(9.99f)}));
+                       vec({v(&resource, 9.99f)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT ((column_name).sub_type).* FROM TestCollection WHERE ((column_name).sub_type).field1 > ((column_name).sub_type).field2;)_",
@@ -152,7 +152,7 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection WHERE array_field[1] = 10;)_",
                        R"_($aggregate: {$match: {"array_field/1": {$eq: #0}}})_",
-                       vec({v(10l)}));
+                       vec({v(&resource, 10l)}));
 }
 
 TEST_CASE("components::sql::select_from_order_by") {
@@ -191,7 +191,7 @@ TEST_CASE("components::sql::select_from_order_by") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10 ORDER BY number ASC, name DESC;)_",
         R"_($aggregate: {$match: {"number": {$gt: #0}}, $sort: {number: 1, name: -1}})_",
-        vec({v(10l)}));
+        vec({v(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection ORDER BY (struct_type).field1 DESC;)_",
                        R"_($aggregate: {$sort: {struct_type/field1: -1}})_",
@@ -213,7 +213,7 @@ TEST_CASE("components::sql::group_by") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
                        R"_($aggregate: {$group: {name, name1, 9.99: #0, group_by: name, group_by: name1}})_",
-                       vec({v(9.99f)}));
+                       vec({v(&resource, 9.99f)}));
 }
 
 TEST_CASE("components::sql::select_from_fields") {
@@ -252,5 +252,5 @@ TEST_CASE("components::sql::select_from_fields") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
         R"_($aggregate: {$group: {number, size: #0, title: #1, on: #2, off: #3}})_",
-        vec({v(10l), v(&resource, "title"), v(true), v(false)}));
+        vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
 }

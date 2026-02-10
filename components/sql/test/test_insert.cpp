@@ -25,9 +25,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1));
     }
 
     SECTION("insert into without TestDatabase") {
@@ -41,9 +41,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1));
     }
 
     SECTION("insert into with quoted") {
@@ -57,9 +57,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1));
     }
 
     SECTION("insert into struct") {
@@ -74,7 +74,7 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(43));
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 43));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "some text"));
     }
 
@@ -90,9 +90,9 @@ TEST_CASE("components::sql::insert_into") {
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
         auto arr = components::types::logical_value_t::create_array(&arena_resource, components::types::logical_type::BIGINT,
-                                                                    {components::types::logical_value_t{1l},
-                                                                     components::types::logical_value_t{2l},
-                                                                     components::types::logical_value_t{3l}});
+                                                                    {components::types::logical_value_t{&arena_resource, 1l},
+                                                                     components::types::logical_value_t{&arena_resource, 2l},
+                                                                     components::types::logical_value_t{&arena_resource, 3l}});
         REQUIRE(chunk.value(0, 0) == arr);
     }
 
@@ -112,12 +112,12 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 5);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(1));
+        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1));
         REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name1"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(1));
-        REQUIRE(chunk.value(0, 4) == components::types::logical_value_t(5));
+        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1));
+        REQUIRE(chunk.value(0, 4) == components::types::logical_value_t(&arena_resource, 5));
         REQUIRE(chunk.value(1, 4) == components::types::logical_value_t(&arena_resource, "Name5"));
-        REQUIRE(chunk.value(2, 4) == components::types::logical_value_t(5));
+        REQUIRE(chunk.value(2, 4) == components::types::logical_value_t(&arena_resource, 5));
     }
 
     SECTION("insert from select") {

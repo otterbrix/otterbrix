@@ -53,6 +53,27 @@ namespace components::cursor {
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }
 
+    types::logical_value_t cursor_t::value(uint64_t col_idx) const {
+        return table_data_.value(col_idx, static_cast<uint64_t>(current_index_));
+    }
+
+    types::logical_value_t cursor_t::value(uint64_t col_idx, uint64_t row_idx) const {
+        return table_data_.value(col_idx, row_idx);
+    }
+
+    std::pmr::vector<types::logical_value_t> cursor_t::row() const {
+        return row(static_cast<uint64_t>(current_index_));
+    }
+
+    std::pmr::vector<types::logical_value_t> cursor_t::row(uint64_t row_idx) const {
+        std::pmr::vector<types::logical_value_t> result(table_data_.resource());
+        result.reserve(table_data_.column_count());
+        for (uint64_t col = 0; col < table_data_.column_count(); ++col) {
+            result.push_back(table_data_.value(col, row_idx));
+        }
+        return result;
+    }
+
     bool cursor_t::is_success() const noexcept { return success_; }
 
     bool cursor_t::is_error() const noexcept { return !success_; }

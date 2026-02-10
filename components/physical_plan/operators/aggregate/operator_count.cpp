@@ -9,12 +9,12 @@ namespace components::operators::aggregate {
         : operator_aggregate_t(context) {}
 
     types::logical_value_t operator_count_t::aggregate_impl() {
-        types::logical_value_t result;
         if (left_ && left_->output()) {
-            result = types::logical_value_t(uint64_t(left_->output()->size()));
-        } else {
-            result = types::logical_value_t(uint64_t(0));
+            auto result = types::logical_value_t(left_->output()->resource(), uint64_t(left_->output()->size()));
+            result.set_alias(key_result_);
+            return result;
         }
+        auto result = types::logical_value_t(std::pmr::null_memory_resource(), uint64_t(0));
         result.set_alias(key_result_);
         return result;
     }

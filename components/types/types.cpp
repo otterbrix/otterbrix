@@ -768,7 +768,7 @@ namespace components::types {
         entries.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < entries.capacity(); i++) {
             deserializer->advance_array(i);
-            entries.emplace_back(complex_logical_type::deserialize(resource, deserializer));
+            entries.emplace_back(resource, complex_logical_type::deserialize(resource, deserializer));
             deserializer->pop_array();
         }
         deserializer->pop_array();

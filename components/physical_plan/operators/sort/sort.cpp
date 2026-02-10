@@ -11,15 +11,6 @@ namespace components::sort {
             auto k_order = static_cast<int>(order_ == order::ascending ? compare_t::more : compare_t::less);
             const auto& v1 = vec1.at(index);
             const auto& v2 = vec2.at(index);
-            if (v1.is_null() && v2.is_null()) {
-                return compare_t::equals;
-            }
-            if (v1.is_null()) {
-                return static_cast<compare_t>(k_order * static_cast<int>(compare_t::more));
-            }
-            if (v2.is_null()) {
-                return static_cast<compare_t>(k_order * static_cast<int>(compare_t::less));
-            }
             return static_cast<compare_t>(k_order * static_cast<int>(v1.compare(v2)));
         });
     }
@@ -43,15 +34,6 @@ namespace components::sort {
             }
             const auto& v1 = vec1.at(pos_1);
             const auto& v2 = vec2.at(pos_2);
-            if (v1.is_null() && v2.is_null()) {
-                return compare_t::equals;
-            }
-            if (v1.is_null()) {
-                return static_cast<compare_t>(k_order * static_cast<int>(compare_t::more));
-            }
-            if (v2.is_null()) {
-                return static_cast<compare_t>(k_order * static_cast<int>(compare_t::less));
-            }
             return static_cast<compare_t>(k_order * static_cast<int>(v1.compare(v2)));
         });
     }

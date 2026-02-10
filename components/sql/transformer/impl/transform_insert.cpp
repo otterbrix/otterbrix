@@ -53,7 +53,7 @@ namespace components::sql::transform {
                             parameter_insert_map_.emplace(ref->number, std::move(par));
                         }
                     } else {
-                        auto value = get_value(pg_ptr_cast<Node>(it_value->data));
+                        auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == it_field->first.as_string();

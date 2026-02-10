@@ -606,7 +606,7 @@ namespace components::vector {
         }
 
         if (!vector->validity_.row_is_valid(index)) {
-            return types::logical_value_t(vector->type_);
+            return types::logical_value_t(vector->resource(), vector->type_);
         }
 
         switch (vector->type_.type()) {
@@ -647,7 +647,7 @@ namespace components::vector {
             case types::logical_type::DOUBLE:
                 return types::logical_value_t(reinterpret_cast<double*>(vector->data_)[index]);
             case types::logical_type::STRING_LITERAL: {
-                return types::logical_value_t(std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
+                return types::logical_value_t(vector->resource(), std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
             }
             case types::logical_type::MAP: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
@@ -656,7 +656,7 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_map(vector->child().type_, std::move(children));
+                return types::logical_value_t::create_map(vector->resource(), vector->child().type_, std::move(children));
             }
             case types::logical_type::STRUCT: {
                 auto& child_entries = vector->entries();
@@ -668,7 +668,7 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
-                return types::logical_value_t::create_struct(vector->type_.type_name(), std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(), vector->type_.type_name(), std::move(children));
             }
             case types::logical_type::LIST: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
@@ -677,7 +677,7 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_list(vector->type_.child_type(), std::move(children));
+                return types::logical_value_t::create_list(vector->resource(), vector->type_.child_type(), std::move(children));
             }
             case types::logical_type::ARRAY: {
                 auto stride = static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
@@ -689,6 +689,7 @@ namespace components::vector {
                     children.push_back(child_vec.value(i));
                 }
                 return types::logical_value_t::create_array(
+                    vector->resource(),
                     types::complex_logical_type(
                         static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->internal_type()),
                     children);
@@ -703,9 +704,9 @@ namespace components::vector {
                     auto members = vector->type().child_types();
                     // remove tag
                     members.erase(members.begin());
-                    return types::logical_value_t::create_union(members, tag, std::move(value));
+                    return types::logical_value_t::create_union(vector->resource(), members, tag, std::move(value));
                 } else {
-                    return types::logical_value_t(vector->type());
+                    return types::logical_value_t(vector->resource(), vector->type());
                 }
             }
             case types::logical_type::VARIANT: {
@@ -715,7 +716,7 @@ namespace components::vector {
                 children.emplace_back(vector->entries()[1]->value(index));
                 children.emplace_back(vector->entries()[2]->value(index));
                 children.emplace_back(vector->entries()[3]->value(index));
-                return types::logical_value_t::create_variant(children);
+                return types::logical_value_t::create_variant(vector->resource(), children);
             }
             default:
                 throw std::runtime_error("Unimplemented type for value access");

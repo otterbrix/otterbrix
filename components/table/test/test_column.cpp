@@ -12,6 +12,8 @@ TEST_CASE("components::table::column") {
     using namespace components::vector;
     using namespace components::table;
 
+    auto resource = std::pmr::synchronized_pool_resource();
+
     struct test_struct {
         bool flag;
         int32_t number;
@@ -34,7 +36,7 @@ TEST_CASE("components::table::column") {
     constexpr size_t str_index_length = 10;
     auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
     auto generate_update = [&](std::unique_ptr<column_data_t>& column) {
-        vector_t v(std::pmr::get_default_resource(), column->type(), update_size);
+        vector_t v(&resource, column->type(), update_size);
         column_fetch_state state;
         for (size_t i = 0; i < update_size; i++) {
             column->fetch_row(state, static_cast<int64_t>(i), v, update_size - i - 1);
@@ -59,14 +61,14 @@ TEST_CASE("components::table::column") {
     INFO("fixed size") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
         auto column =
-            column_data_t::create_column(std::pmr::get_default_resource(), block_manager, 0, 0, logical_type::UBIGINT);
+            column_data_t::create_column(&resource, block_manager, 0, 0, logical_type::UBIGINT);
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::UBIGINT, test_size);
+            vector_t v(&resource, logical_type::UBIGINT, test_size);
             for (size_t i = 0; i < test_size; i++) {
                 logical_value_t value{uint64_t(i)};
                 v.set_value(i, value);
@@ -78,7 +80,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::UBIGINT, test_size);
+            vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
@@ -91,7 +93,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::UBIGINT, test_size);
+            vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_scan_state state;
             state.child_states.resize(1);
             column->initialize_scan(state);
@@ -114,7 +116,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::UBIGINT, test_size);
+            vector_t v(&resource, logical_type::UBIGINT, test_size);
             column_scan_state state;
             state.child_states.resize(1);
             column->initialize_scan(state);
@@ -135,19 +137,19 @@ TEST_CASE("components::table::column") {
     INFO("string") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
-        auto column = column_data_t::create_column(std::pmr::get_default_resource(),
+        auto column = column_data_t::create_column(&resource,
                                                    block_manager,
                                                    0,
                                                    0,
                                                    logical_type::STRING_LITERAL);
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value{generate_string(i)};
+                logical_value_t value{&resource, generate_string(i)};
                 v.set_value(i, value);
             }
 
@@ -157,7 +159,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
@@ -171,7 +173,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_scan_state state;
             state.child_states.resize(1);
             column->initialize_scan(state);
@@ -195,7 +197,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(), logical_type::STRING_LITERAL, test_size);
+            vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             column_scan_state state;
             state.child_states.resize(1);
             column->initialize_scan(state);
@@ -218,18 +220,18 @@ TEST_CASE("components::table::column") {
     INFO("array of fixed size") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
         auto column =
-            column_data_t::create_column(std::pmr::get_default_resource(),
+            column_data_t::create_column(&resource,
                                          block_manager,
                                          0,
                                          0,
                                          complex_logical_type::create_array(logical_type::UBIGINT, array_size));
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::UBIGINT, array_size),
                        test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -238,7 +240,7 @@ TEST_CASE("components::table::column") {
                 for (size_t j = 0; j < array_size; j++) {
                     arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                v.set_value(i, logical_value_t::create_array(logical_type::UBIGINT, arr));
+                v.set_value(i, logical_value_t::create_array(v.resource(), logical_type::UBIGINT, arr));
             }
 
             column_append_state state;
@@ -247,7 +249,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::UBIGINT, array_size),
                        test_size);
             column_fetch_state state;
@@ -265,7 +267,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::UBIGINT, array_size),
                        test_size);
             column_scan_state state;
@@ -294,7 +296,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::UBIGINT, array_size),
                        test_size);
             column_scan_state state;
@@ -324,27 +326,27 @@ TEST_CASE("components::table::column") {
     INFO("array of string") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
         auto column =
-            column_data_t::create_column(std::pmr::get_default_resource(),
+            column_data_t::create_column(&resource,
                                          block_manager,
                                          0,
                                          0,
                                          complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size));
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
                        test_size);
             for (size_t i = 0; i < test_size; i++) {
                 std::vector<logical_value_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(generate_string(i * array_size + j));
+                    arr.emplace_back(v.resource(), generate_string(i * array_size + j));
                 }
-                v.set_value(i, logical_value_t::create_array(logical_type::STRING_LITERAL, arr));
+                v.set_value(i, logical_value_t::create_array(v.resource(), logical_type::STRING_LITERAL, arr));
             }
 
             column_append_state state;
@@ -353,7 +355,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
                        test_size);
             column_fetch_state state;
@@ -372,7 +374,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
                        test_size);
             column_scan_state state;
@@ -402,7 +404,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
                        test_size);
             column_scan_state state;
@@ -434,17 +436,17 @@ TEST_CASE("components::table::column") {
     INFO("list of fixed size") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
-        auto column = column_data_t::create_column(std::pmr::get_default_resource(),
+        auto column = column_data_t::create_column(&resource,
                                                    block_manager,
                                                    0,
                                                    0,
                                                    complex_logical_type::create_list(logical_type::UBIGINT));
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::UBIGINT),
                        test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -454,7 +456,7 @@ TEST_CASE("components::table::column") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(uint64_t{i * list_length(i) + j});
                 }
-                v.set_value(i, logical_value_t::create_list(logical_type::UBIGINT, list));
+                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::UBIGINT, list));
             }
 
             column_append_state state;
@@ -463,7 +465,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::UBIGINT),
                        test_size);
             column_fetch_state state;
@@ -481,7 +483,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::UBIGINT),
                        test_size);
             column_scan_state state;
@@ -511,7 +513,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(), complex_logical_type::create_list(logical_type::UBIGINT), test_size);
+            vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             column_scan_state state;
             state.child_states.resize(2);
             state.child_states[1].child_states.resize(1);
@@ -540,17 +542,17 @@ TEST_CASE("components::table::column") {
     INFO("list of string") {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
-        auto column = column_data_t::create_column(std::pmr::get_default_resource(),
+        auto column = column_data_t::create_column(&resource,
                                                    block_manager,
                                                    0,
                                                    0,
                                                    complex_logical_type::create_list(logical_type::STRING_LITERAL));
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::STRING_LITERAL),
                        test_size);
             for (size_t i = 0; i < test_size; i++) {
@@ -558,9 +560,9 @@ TEST_CASE("components::table::column") {
                 // test that each list entry can be a different length
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(generate_string(i * list_length(i) + j));
+                    list.emplace_back(v.resource(), generate_string(i * list_length(i) + j));
                 }
-                v.set_value(i, logical_value_t::create_list(logical_type::STRING_LITERAL, list));
+                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::STRING_LITERAL, list));
             }
 
             column_append_state state;
@@ -569,7 +571,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::STRING_LITERAL),
                        test_size);
             column_fetch_state state;
@@ -588,7 +590,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(),
+            vector_t v(&resource,
                        complex_logical_type::create_list(logical_type::STRING_LITERAL),
                        test_size);
             column_scan_state state;
@@ -619,7 +621,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(), complex_logical_type::create_list(logical_type::UBIGINT), test_size);
+            vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             column_scan_state state;
             state.child_states.resize(2);
             state.child_states[1].child_states.resize(1);
@@ -662,14 +664,14 @@ TEST_CASE("components::table::column") {
 
         core::filesystem::local_file_system_t fs;
         auto buffer_pool =
-            storage::buffer_pool_t(std::pmr::get_default_resource(), uint64_t(1) << 32, false, uint64_t(1) << 24);
-        auto buffer_manager = storage::standard_buffer_manager_t(std::pmr::get_default_resource(), fs, buffer_pool);
+            storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+        auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
         auto block_manager = storage::in_memory_block_manager_t(buffer_manager, uint64_t(1) << 18);
-        auto column = column_data_t::create_column(std::pmr::get_default_resource(), block_manager, 0, 0, struct_type);
+        auto column = column_data_t::create_column(&resource, block_manager, 0, 0, struct_type);
 
         // Append
         {
-            vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
+            vector_t v(&resource, struct_type, test_size);
 
             for (size_t i = 0; i < test_size; i++) {
                 std::vector<logical_value_t> arr;
@@ -680,9 +682,9 @@ TEST_CASE("components::table::column") {
                 std::vector<logical_value_t> value_fiels;
                 value_fiels.emplace_back(logical_value_t{i % 2 != 0});
                 value_fiels.emplace_back(logical_value_t{int32_t(i)});
-                value_fiels.emplace_back(logical_value_t{generate_string(i)});
-                value_fiels.emplace_back(logical_value_t::create_list(logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(struct_type, value_fiels);
+                value_fiels.emplace_back(logical_value_t{v.resource(), generate_string(i)});
+                value_fiels.emplace_back(logical_value_t::create_list(v.resource(), logical_type::USMALLINT, arr));
+                logical_value_t value = logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
                 v.set_value(i, value);
             }
 
@@ -692,7 +694,7 @@ TEST_CASE("components::table::column") {
         }
         // Fetch
         {
-            vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
+            vector_t v(&resource, struct_type, test_size);
             column_fetch_state state;
             for (size_t i = 0; i < test_size; i++) {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
@@ -723,7 +725,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan
         {
-            vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
+            vector_t v(&resource, struct_type, test_size);
             column_scan_state state;
             state.child_states.resize(struct_type.child_types().size() + 1);
             state.scan_child_column.resize(struct_type.child_types().size());
@@ -774,7 +776,7 @@ TEST_CASE("components::table::column") {
         }
         // Scan after update
         {
-            vector_t v(std::pmr::get_default_resource(), struct_type, test_size);
+            vector_t v(&resource, struct_type, test_size);
             column_scan_state state;
             state.child_states.resize(struct_type.child_types().size() + 1);
             state.scan_child_column.resize(struct_type.child_types().size());

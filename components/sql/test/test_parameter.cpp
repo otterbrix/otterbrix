@@ -66,11 +66,11 @@ TEST_CASE("components::sql::select_bind") {
     TEST_PARAMS_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-        vec({v(10l), v(std::string("doc 10"))}));
+        vec({v(10l), v(&resource, std::string("doc 10"))}));
 
     TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 OR name = $2;)_",
                        R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({v(42l), v(std::string("abc"))}));
+                       vec({v(42l), v(&resource, std::string("abc"))}));
 
     TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE id > $1 AND flag = $2;)_",
                        R"_($aggregate: {$match: {$and: ["id": {$gt: #0}, "flag": {$eq: #1}]}})_",
@@ -103,7 +103,7 @@ TEST_CASE("components::sql::update_bind") {
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
                            R"_($update: {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
-                           vec({v(std::string("ok")), v(true), v(100l)}),
+                           vec({v(&resource, std::string("ok")), v(true), v(100l)}),
                            f);
     }
 
@@ -133,7 +133,7 @@ TEST_CASE("components::sql::insert_bind") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, v(42l));
-        binder.bind(2, v(std::string("inserted")));
+        binder.bind(2, v(&resource, std::string("inserted")));
         auto result = std::get<result_view>(binder.finalize());
         auto node = result.node;
         REQUIRE(node->database_name() == "testdatabase");
@@ -143,7 +143,7 @@ TEST_CASE("components::sql::insert_bind") {
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == v(42l));
-        REQUIRE(chunk.value(1, 0) == v("inserted"));
+        REQUIRE(chunk.value(1, 0) == v(&resource, "inserted"));
     }
 
     SECTION("insert with repeated param") {
@@ -171,10 +171,10 @@ TEST_CASE("components::sql::insert_bind") {
                                           "($1, $2, $3), ($4, $5, $6);"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         auto result = std::get<result_view>(binder.bind(1, v(1ul))
-                                                .bind(2, v("Name1"))
+                                                .bind(2, v(&resource, "Name1"))
                                                 .bind(3, v(10ul))
                                                 .bind(4, v(2ul))
-                                                .bind(5, v("Name2"))
+                                                .bind(5, v(&resource, "Name2"))
                                                 .bind(6, v(20ul))
                                                 .finalize());
         auto node = result.node;
@@ -184,10 +184,10 @@ TEST_CASE("components::sql::insert_bind") {
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);
         REQUIRE(chunk.value(0, 0) == v(1));
-        REQUIRE(chunk.value(1, 0) == v("Name1"));
+        REQUIRE(chunk.value(1, 0) == v(&resource, "Name1"));
         REQUIRE(chunk.value(2, 0) == v(10));
         REQUIRE(chunk.value(0, 1) == v(2));
-        REQUIRE(chunk.value(1, 1) == v("Name2"));
+        REQUIRE(chunk.value(1, 1) == v(&resource, "Name2"));
         REQUIRE(chunk.value(2, 1) == v(20));
     }
 }
@@ -211,13 +211,13 @@ TEST_CASE("components::sql::transform_result") {
         auto select = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                    vec({v(10l), v(std::string("doc 10"))}));
+                    vec({v(10l), v(&resource, std::string("doc 10"))}));
 
         TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                    vec({v(3.14), v(std::string("another doc 10"))}));
+                    vec({v(3.14), v(&resource, std::string("another doc 10"))}));
 
         TEST_PARAMS(R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                    vec({v(false), v(std::string("another another doc 10"))}));
+                    vec({v(false), v(&resource, std::string("another another doc 10"))}));
     }
 
     SECTION("intrusive ptr update") {
@@ -229,9 +229,9 @@ TEST_CASE("components::sql::transform_result") {
         auto select = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
 
-        binder.bind(1, v("doc"));
+        binder.bind(1, v(&resource, "doc"));
         auto agg = std::get<result_view>(binder.finalize()).params;
-        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v("doc"));
+        REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(&resource, "doc"));
 
         binder.bind(1, v(100l)).finalize();
         REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(0))) == v(100l));
@@ -245,13 +245,13 @@ TEST_CASE("components::sql::transform_result") {
         auto node = std::get<result_view>(binder.finalize()).node;
 
         const auto& keys = reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation();
-        binder.bind(1, v(true)).bind(2, v(std::string("doc 10"))).finalize();
+        binder.bind(1, v(true)).bind(2, v(&resource, std::string("doc 10"))).finalize();
 
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(chunk.value(0, 0) == v(true));
-        REQUIRE(chunk.value(1, 0) == v(std::string("doc 10")));
+        REQUIRE(chunk.value(1, 0) == v(&resource, std::string("doc 10")));
         REQUIRE(reinterpret_cast<logical_plan::node_insert_ptr&>(node)->key_translation() == keys);
     }
 }

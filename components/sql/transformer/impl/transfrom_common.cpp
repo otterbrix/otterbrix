@@ -45,7 +45,7 @@ namespace components::sql::transform {
             }
         }
 
-        return params->add_parameter(get_value(node));
+        return params->add_parameter(get_value(resource_, node));
     }
 
     expression_ptr transformer::transform_a_expr(A_Expr* node,

@@ -272,7 +272,7 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
                 {database_name, collection_name},
                 std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t("50"));
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), "50"));
             auto c = dispatcher->find(session, plan, params);
             REQUIRE(c->size() == 1);
         }

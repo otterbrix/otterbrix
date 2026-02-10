@@ -379,17 +379,17 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
             chunk_left.set_value(0,
                                  static_cast<size_t>(num),
-                                 types::logical_value_t{gen_id(static_cast<int>(num + 1))});
+                                 types::logical_value_t{dispatcher->resource(), gen_id(static_cast<int>(num + 1))});
             chunk_left.set_value(1,
                                  static_cast<size_t>(num),
-                                 types::logical_value_t{"Name " + std::to_string(num)});
+                                 types::logical_value_t{dispatcher->resource(), "Name " + std::to_string(num)});
             chunk_left.set_value(2, static_cast<size_t>(num), types::logical_value_t{num});
             chunk_left.set_value(3, static_cast<size_t>(num), types::logical_value_t{reversed});
         }
         for (int64_t num = 0; num < 100; ++num) {
             chunk_right.set_value(0,
                                   static_cast<size_t>(num),
-                                  types::logical_value_t{gen_id(static_cast<int>(num + 1001))});
+                                  types::logical_value_t{dispatcher->resource(), gen_id(static_cast<int>(num + 1001))});
             chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2 * 10});
             chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{(num + 25) * 2});
         }

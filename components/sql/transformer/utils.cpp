@@ -290,7 +290,7 @@ namespace components::sql::transform {
         return types;
     }
 
-    types::logical_value_t get_value(Node* node) {
+    types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
@@ -302,7 +302,7 @@ namespace components::sql::transform {
                 switch (nodeTag(value)) {
                     case T_String: {
                         std::string str = strVal(value);
-                        return types::logical_value_t(str);
+                        return types::logical_value_t(resource, str);
                     }
                     case T_Integer:
                         return types::logical_value_t(intVal(value));
@@ -317,29 +317,29 @@ namespace components::sql::transform {
             }
             case T_A_ArrayExpr: {
                 auto array = pg_ptr_cast<A_ArrayExpr>(node);
-                return get_array(array->elements);
+                return get_array(resource, array->elements);
             }
             case T_RowExpr: {
                 auto row = pg_ptr_cast<RowExpr>(node);
                 std::vector<types::logical_value_t> fields;
                 fields.reserve(row->args->lst.size());
                 for (auto& field : row->args->lst) {
-                    fields.emplace_back(get_value(pg_ptr_cast<Node>(field.data)));
+                    fields.emplace_back(get_value(resource, pg_ptr_cast<Node>(field.data)));
                 }
-                return types::logical_value_t::create_struct("", fields);
+                return types::logical_value_t::create_struct(resource, "", fields);
             }
             case T_ColumnRef:
                 assert(false);
-                return types::logical_value_t(strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
+                return types::logical_value_t(resource, strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
         }
         return types::logical_value_t(nullptr);
     }
 
-    types::logical_value_t get_array(PGList* list) {
+    types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list) {
         std::vector<types::logical_value_t> values;
         values.reserve(list->lst.size());
         for (auto& elem : list->lst) {
-            values.emplace_back(get_value(pg_ptr_cast<Node>(elem.data)));
+            values.emplace_back(get_value(resource, pg_ptr_cast<Node>(elem.data)));
         }
         assert(!values.empty());
         auto fist_type = values.front().type();
@@ -348,7 +348,7 @@ namespace components::sql::transform {
                 throw parser_exception_t{"array has inconsistent element types", {}};
             }
         }
-        return types::logical_value_t::create_array(fist_type, std::move(values));
+        return types::logical_value_t::create_array(resource, fist_type, std::move(values));
     }
 
 } // namespace components::sql::transform

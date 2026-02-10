@@ -44,7 +44,7 @@ TEST_CASE("components::sql::delete_from_where") {
     TEST_SIMPLE_DELETE(
         "DELETE FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR count = 2);",
         R"_($delete: {$match: {$and: [$not: ["number": {$eq: #0}], $not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}, $limit: -1})_",
-        vec({v(10l), v(std::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, std::string("doc 10")), v(2l)}));
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection USING TestDatabase.OtherTestCollection WHERE "
                        "TestCollection.number = OtherTestCollection.number;",

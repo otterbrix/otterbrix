@@ -49,31 +49,31 @@ TEST_CASE("components::sql::select_from_where") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' AND "count" = 2;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(10l), v(std::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((((number = 10 AND name = 'doc 10'))));)_",
                        R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({v(10l), v(std::pmr::string("doc 10"))}));
+                       vec({v(10l), v(&resource, "doc 10")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 OR name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE (number = 10 AND name = 'doc 10') OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND (name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, $or: ["name": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((number = 10 AND name = 'doc 10') OR "count" = 2) AND )_"
@@ -85,13 +85,13 @@ TEST_CASE("components::sql::select_from_where") {
         R"_($or: [$and: ["number": {$eq: #6}, "name": {$eq: #7}], "count": {$eq: #8}])_"
         R"_(]}})_",
         vec({v(10l),
-             v(std::pmr::string("doc 10")),
+             v(&resource, "doc 10"),
              v(2l),
              v(10l),
-             v(std::pmr::string("doc 10")),
+             v(&resource, "doc 10"),
              v(2l),
              v(10l),
-             v(std::pmr::string("doc 10")),
+             v(&resource, "doc 10"),
              v(2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number == 10;)_",
@@ -134,11 +134,11 @@ TEST_CASE("components::sql::select_from_where") {
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: [$not: ["number": {$eq: #0}], )_"
         R"_($not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
-        vec({v(10l), v(std::pmr::string("doc 10")), v(2l)}));
+        vec({v(10l), v(&resource, "doc 10"), v(2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
                        R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
-                       vec({v(std::pmr::string("pattern"))}));
+                       vec({v(&resource, "pattern")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
                        R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}})_",
@@ -252,5 +252,5 @@ TEST_CASE("components::sql::select_from_fields") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
         R"_($aggregate: {$group: {number, size: #0, title: #1, on: #2, off: #3}})_",
-        vec({v(10l), v(std::pmr::string("title")), v(true), v(false)}));
+        vec({v(10l), v(&resource, "title"), v(true), v(false)}));
 }

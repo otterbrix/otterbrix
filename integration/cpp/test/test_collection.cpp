@@ -132,7 +132,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t("9$"));
+            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "9$"));
             auto cur = dispatcher->find(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 10);
@@ -159,7 +159,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(std::string_view{"9$"}));
+            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
             auto cur = dispatcher->find(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 19);
@@ -195,7 +195,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          std::move(expr_and)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(std::string_view{"9$"}));
+            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
             params->add_parameter(id_par{3}, components::types::logical_value_t(30));
             auto cur = dispatcher->find(session, plan, params);
             REQUIRE(cur->is_success());
@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(gen_id(1, dispatcher->resource())));
+            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), gen_id(1, dispatcher->resource())));
             auto cur = dispatcher->find_one(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
@@ -271,7 +271,7 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, components::types::logical_value_t(90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(std::string_view{"9$"}));
+            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
             auto cur = dispatcher->find_one(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);

@@ -24,7 +24,7 @@ namespace components::sql::transform {
                 switch (nodeTag(value)) {
                     case T_String: {
                         std::string str = strVal(value);
-                        id = params->add_parameter(types::logical_value_t(str));
+                        id = params->add_parameter(types::logical_value_t(resource_, str));
                         break;
                     }
                     case T_Integer: {
@@ -44,7 +44,7 @@ namespace components::sql::transform {
             }
             case T_A_ArrayExpr: {
                 auto array = pg_ptr_cast<A_ArrayExpr>(node);
-                auto id = params->add_parameter(get_array(array->elements));
+                auto id = params->add_parameter(get_array(resource_, array->elements));
                 return {new update_expr_get_const_value_t(id)};
             }
             case T_ParamRef: {

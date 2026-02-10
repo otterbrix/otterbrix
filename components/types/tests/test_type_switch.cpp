@@ -83,6 +83,8 @@ struct double_bool_callback_t<void> {
 };
 
 TEST_CASE("components::types::test_type_switch") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
     SECTION("callback - void") {
         const bool check_v1{false};
         const int8_t check_v2{-46};
@@ -94,7 +96,7 @@ TEST_CASE("components::types::test_type_switch") {
         logical_value_t test_v2{check_v2};
         logical_value_t test_v3{check_v3};
         logical_value_t test_v4{check_v4};
-        logical_value_t test_v5{check_v5};
+        logical_value_t test_v5{&resource, check_v5};
 
         simple_physical_type_switch<void_callback_t>(test_v1.type().to_physical_type(), test_v1, check_v1);
         simple_physical_type_switch<void_callback_t>(test_v2.type().to_physical_type(), test_v2, check_v2);
@@ -114,7 +116,7 @@ TEST_CASE("components::types::test_type_switch") {
         logical_value_t test_v2{check_v2};
         logical_value_t test_v3{check_v3};
         logical_value_t test_v4{check_v4};
-        logical_value_t test_v5{check_v5};
+        logical_value_t test_v5{&resource, check_v5};
 
         REQUIRE(simple_physical_type_switch<bool_callback_t>(test_v1.type().to_physical_type(), test_v1, check_v1));
         REQUIRE(simple_physical_type_switch<bool_callback_t>(test_v2.type().to_physical_type(), test_v2, check_v2));

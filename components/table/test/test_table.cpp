@@ -95,7 +95,7 @@ TEST_CASE("components::table::data_table") {
             // UBIGINT
             { chunk.set_value(0, i, logical_value_t{uint64_t(i)}); }
             // STRING
-            { chunk.set_value(1, i, logical_value_t{generate_string(i)}); }
+            { chunk.set_value(1, i, logical_value_t{&resource, generate_string(i)}); }
             // ARRAY<UBIGINT>
             {
                 std::vector<logical_value_t> arr;
@@ -103,16 +103,16 @@ TEST_CASE("components::table::data_table") {
                 for (size_t j = 0; j < array_size; j++) {
                     arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                chunk.set_value(2, i, logical_value_t::create_array(logical_type::UBIGINT, arr));
+                chunk.set_value(2, i, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
             }
             // ARRAY<STRING>
             {
                 std::vector<logical_value_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(generate_string(i * array_size + j));
+                    arr.emplace_back(&resource, generate_string(i * array_size + j));
                 }
-                chunk.set_value(3, i, logical_value_t::create_array(logical_type::STRING_LITERAL, arr));
+                chunk.set_value(3, i, logical_value_t::create_array(&resource, logical_type::STRING_LITERAL, arr));
             }
             // LIST<UBIGINT>
             {
@@ -122,7 +122,7 @@ TEST_CASE("components::table::data_table") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(uint64_t{i * list_length(i) + j});
                 }
-                chunk.set_value(4, i, logical_value_t::create_list(logical_type::UBIGINT, list));
+                chunk.set_value(4, i, logical_value_t::create_list(&resource, logical_type::UBIGINT, list));
             }
             // LIST<STRING>
             {
@@ -130,9 +130,9 @@ TEST_CASE("components::table::data_table") {
                 // test that each list entry can be a different length
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(generate_string(i * list_length(i) + j));
+                    list.emplace_back(&resource, generate_string(i * list_length(i) + j));
                 }
-                chunk.set_value(5, i, logical_value_t::create_list(logical_type::STRING_LITERAL, list));
+                chunk.set_value(5, i, logical_value_t::create_list(&resource, logical_type::STRING_LITERAL, list));
             }
             // STRUCT
             {
@@ -144,9 +144,9 @@ TEST_CASE("components::table::data_table") {
                 std::vector<logical_value_t> value_fiels;
                 value_fiels.emplace_back(logical_value_t{test_data[i].flag});
                 value_fiels.emplace_back(logical_value_t{test_data[i].number});
-                value_fiels.emplace_back(logical_value_t{test_data[i].name});
-                value_fiels.emplace_back(logical_value_t::create_list(logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(struct_type, value_fiels);
+                value_fiels.emplace_back(logical_value_t{&resource, test_data[i].name});
+                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
+                logical_value_t value = logical_value_t::create_struct(&resource, struct_type, value_fiels);
                 chunk.set_value(6, i, value);
             }
             // UNION
@@ -155,22 +155,23 @@ TEST_CASE("components::table::data_table") {
                     case 0:
                         chunk.set_value(7,
                                         i,
-                                        logical_value_t::create_union(union_fields, 0, logical_value_t{i % 2 == 0}));
+                                        logical_value_t::create_union(&resource, union_fields, 0, logical_value_t{i % 2 == 0}));
                         break;
                     case 1:
                         chunk.set_value(
                             7,
                             i,
-                            logical_value_t::create_union(union_fields, 1, logical_value_t{static_cast<int32_t>(i)}));
+                            logical_value_t::create_union(&resource, union_fields, 1, logical_value_t{static_cast<int32_t>(i)}));
                         break;
                     case 2:
                         chunk.set_value(
                             7,
                             i,
                             logical_value_t::create_union(
+                                &resource,
                                 union_fields,
                                 2,
-                                logical_value_t{std::string{"long_string_with_index_" + std::to_string(i)}}));
+                                logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}}));
                         break;
                     default:
                         // unreachable
@@ -439,7 +440,7 @@ TEST_CASE("components::table::data_table") {
                                                 std::vector<uint64_t>{0}));
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
-                                                logical_value_t{generate_string(row_range.second)},
+                                                logical_value_t{&resource, generate_string(row_range.second)},
                                                 std::vector<uint64_t>{1}));
         data_chunk_t result(&resource, data_table->copy_types(), row_range.second - row_range.first);
         data_table->initialize_scan(state, column_indices, conj_and.get());

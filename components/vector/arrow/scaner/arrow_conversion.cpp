@@ -1045,7 +1045,7 @@ namespace components::vector::arrow::scaner {
                     const types::logical_value_t& value = children[tag].value(row_idx);
                     vector.set_value(row_idx,
                                      value.is_null() ? types::logical_value_t()
-                                                     : types::logical_value_t::create_union(members, tag, value));
+                                                     : types::logical_value_t::create_union(vector.resource(), members, tag, value));
                 }
 
                 break;

@@ -22,28 +22,28 @@ TEST_CASE("services::disk::index_disk::string") {
     auto index = index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        index.insert(logical_value_t(gen_id(i)), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, gen_id(i)), static_cast<size_t>(i));
     }
 
-    REQUIRE(index.find(logical_value_t(gen_id(1))).size() == 1);
-    REQUIRE(index.find(logical_value_t(gen_id(1))).front() == 1);
-    REQUIRE(index.find(logical_value_t(gen_id(10))).size() == 1);
-    REQUIRE(index.find(logical_value_t(gen_id(10))).front() == 10);
-    REQUIRE(index.find(logical_value_t(gen_id(100))).size() == 1);
-    REQUIRE(index.find(logical_value_t(gen_id(100))).front() == 100);
-    REQUIRE(index.find(logical_value_t(gen_id(101))).empty());
-    REQUIRE(index.find(logical_value_t(gen_id(0))).empty());
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(1))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(1))).front() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(10))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(10))).front() == 10);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(100))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(100))).front() == 100);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(101))).empty());
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(0))).empty());
 
-    REQUIRE(index.lower_bound(logical_value_t(gen_id(10))).size() == 9);
-    REQUIRE(index.upper_bound(logical_value_t(gen_id(90))).size() == 10);
+    REQUIRE(index.lower_bound(logical_value_t(&resource, gen_id(10))).size() == 9);
+    REQUIRE(index.upper_bound(logical_value_t(&resource, gen_id(90))).size() == 10);
 
     for (int i = 2; i <= 100; i += 2) {
-        index.remove(logical_value_t(gen_id(i)));
+        index.remove(logical_value_t(&resource, gen_id(i)));
     }
 
-    REQUIRE(index.find(logical_value_t(gen_id(2))).empty());
-    REQUIRE(index.lower_bound(logical_value_t(gen_id(10))).size() == 5);
-    REQUIRE(index.upper_bound(logical_value_t(gen_id(90))).size() == 5);
+    REQUIRE(index.find(logical_value_t(&resource, gen_id(2))).empty());
+    REQUIRE(index.lower_bound(logical_value_t(&resource, gen_id(10))).size() == 5);
+    REQUIRE(index.upper_bound(logical_value_t(&resource, gen_id(90))).size() == 5);
 }
 
 TEST_CASE("services::disk::index_disk::int32") {

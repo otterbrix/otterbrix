@@ -48,60 +48,12 @@ namespace std {
 
 namespace components::types {
 
-    logical_value_t::logical_value_t(complex_logical_type type)
-        : type_(std::move(type)) {
+    logical_value_t::~logical_value_t() { destroy_heap(); }
+
+    void logical_value_t::destroy_heap() {
         switch (type_.type()) {
-            case logical_type::NA:
-            case logical_type::POINTER:
-                value_ = nullptr;
-                break;
-            case logical_type::BOOLEAN:
-                value_ = false;
-                break;
-            case logical_type::TINYINT:
-                value_ = int8_t{0};
-                break;
-            case logical_type::SMALLINT:
-                value_ = int16_t{0};
-                break;
-            case logical_type::INTEGER:
-                value_ = int32_t{0};
-                break;
-            case logical_type::BIGINT:
-                value_ = int64_t{0};
-                break;
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
-                value_ = int64_t{0};
-                break;
-            case logical_type::FLOAT:
-                value_ = float{0};
-                break;
-            case logical_type::DOUBLE:
-                value_ = double{0};
-                break;
-            case logical_type::UTINYINT:
-                value_ = uint8_t{0};
-                break;
-            case logical_type::USMALLINT:
-                value_ = uint16_t{0};
-                break;
-            case logical_type::UINTEGER:
-                value_ = uint32_t{0};
-                break;
-            case logical_type::UBIGINT:
-                value_ = uint64_t{0};
-                break;
-            case logical_type::HUGEINT:
-                value_ = std::make_unique<int128_t>();
-                break;
-            case logical_type::UHUGEINT:
-                value_ = std::make_unique<uint128_t>();
-                break;
             case logical_type::STRING_LITERAL:
-                value_ = std::make_unique<std::string>();
+                heap_delete(str_ptr());
                 break;
             case logical_type::LIST:
             case logical_type::ARRAY:
@@ -109,68 +61,77 @@ namespace components::types {
             case logical_type::STRUCT:
             case logical_type::UNION:
             case logical_type::VARIANT:
-                value_ = std::make_unique<std::vector<logical_value_t>>();
+                heap_delete(vec_ptr());
                 break;
-            case logical_type::INVALID:
-                [[fallthrough]];
             default:
-                value_ = nullptr;
+                break;
+        }
+        data_ = 0;
+    }
+
+    logical_value_t::logical_value_t(complex_logical_type type)
+        : type_(std::move(type)) {
+        switch (type_.type()) {
+            case logical_type::HUGEINT:
+                data128_ = 0;
+                break;
+            case logical_type::UHUGEINT:
+                udata128_ = 0;
+                break;
+            case logical_type::STRING_LITERAL:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
+                break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>());
+                break;
+            default:
+                break;
+        }
+    }
+
+    logical_value_t::logical_value_t(std::pmr::memory_resource* r, complex_logical_type type)
+        : type_(std::move(type))
+        , resource_(r) {
+        switch (type_.type()) {
+            case logical_type::HUGEINT:
+                data128_ = 0;
+                break;
+            case logical_type::UHUGEINT:
+                udata128_ = 0;
+                break;
+            case logical_type::STRING_LITERAL:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
+                break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>());
+                break;
+            default:
+                break;
         }
     }
 
     logical_value_t::logical_value_t(const logical_value_t& other)
-        : type_(other.type_) {
+        : type_(other.type_)
+        , resource_(other.resource_) {
         switch (type_.type()) {
-            case logical_type::BOOLEAN:
-                value_ = std::get<bool>(other.value_);
-                break;
-            case logical_type::TINYINT:
-                value_ = std::get<int8_t>(other.value_);
-                break;
-            case logical_type::SMALLINT:
-                value_ = std::get<int16_t>(other.value_);
-                break;
-            case logical_type::INTEGER:
-                value_ = std::get<int32_t>(other.value_);
-                break;
-            case logical_type::BIGINT:
-                value_ = std::get<int64_t>(other.value_);
-                break;
-            case logical_type::FLOAT:
-                value_ = std::get<float>(other.value_);
-                break;
-            case logical_type::DOUBLE:
-                value_ = std::get<double>(other.value_);
-                break;
-            case logical_type::UTINYINT:
-                value_ = std::get<uint8_t>(other.value_);
-                break;
-            case logical_type::USMALLINT:
-                value_ = std::get<uint16_t>(other.value_);
-                break;
-            case logical_type::UINTEGER:
-                value_ = std::get<uint32_t>(other.value_);
-                break;
-            case logical_type::UBIGINT:
-                value_ = std::get<uint64_t>(other.value_);
-                break;
             case logical_type::HUGEINT:
-                value_ = std::make_unique<int128_t>(*std::get<std::unique_ptr<int128_t>>(other.value_));
+                data128_ = other.data128_;
                 break;
             case logical_type::UHUGEINT:
-                value_ = std::make_unique<uint128_t>(*std::get<std::unique_ptr<uint128_t>>(other.value_));
-                break;
-            case logical_type::TIMESTAMP_NS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_SEC:
-                value_ = std::get<int64_t>(other.value_);
+                udata128_ = other.udata128_;
                 break;
             case logical_type::STRING_LITERAL:
-                value_ = std::make_unique<std::string>(*std::get<std::unique_ptr<std::string>>(other.value_));
-                break;
-            case logical_type::POINTER:
-                value_ = std::get<void*>(other.value_);
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
             case logical_type::LIST:
             case logical_type::ARRAY:
@@ -178,140 +139,54 @@ namespace components::types {
             case logical_type::STRUCT:
             case logical_type::UNION:
             case logical_type::VARIANT:
-                value_ = std::make_unique<std::vector<logical_value_t>>(
-                    *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
-                break;
-            case logical_type::ENUM:
-                value_ = std::get<int32_t>(other.value_);
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
                 break;
             default:
-                value_ = nullptr;
+                data_ = other.data_;
+                break;
         }
     }
 
     logical_value_t::logical_value_t(logical_value_t&& other) noexcept
-        : type_(std::move(other.type_)) {
+        : type_(std::move(other.type_))
+        , resource_(other.resource_) {
         switch (type_.type()) {
-            case logical_type::BOOLEAN:
-                value_ = std::get<bool>(other.value_);
-                break;
-            case logical_type::TINYINT:
-                value_ = std::get<int8_t>(other.value_);
-                break;
-            case logical_type::SMALLINT:
-                value_ = std::get<int16_t>(other.value_);
-                break;
-            case logical_type::INTEGER:
-                value_ = std::get<int32_t>(other.value_);
-                break;
-            case logical_type::BIGINT:
-                value_ = std::get<int64_t>(other.value_);
-                break;
-            case logical_type::FLOAT:
-                value_ = std::get<float>(other.value_);
-                break;
-            case logical_type::DOUBLE:
-                value_ = std::get<double>(other.value_);
-                break;
-            case logical_type::UTINYINT:
-                value_ = std::get<uint8_t>(other.value_);
-                break;
-            case logical_type::USMALLINT:
-                value_ = std::get<uint16_t>(other.value_);
-                break;
-            case logical_type::UINTEGER:
-                value_ = std::get<uint32_t>(other.value_);
-                break;
-            case logical_type::UBIGINT:
-                value_ = std::get<uint64_t>(other.value_);
-                break;
             case logical_type::HUGEINT:
-                value_ = std::move(std::get<std::unique_ptr<int128_t>>(other.value_));
+                data128_ = other.data128_;
                 break;
             case logical_type::UHUGEINT:
-                value_ = std::move(std::get<std::unique_ptr<uint128_t>>(other.value_));
-                break;
-            case logical_type::TIMESTAMP_NS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_SEC:
-                value_ = std::get<int64_t>(other.value_);
+                udata128_ = other.udata128_;
                 break;
             case logical_type::STRING_LITERAL:
-                value_ = std::move(std::get<std::unique_ptr<std::string>>(other.value_));
-                break;
-            case logical_type::POINTER:
-                value_ = std::get<void*>(other.value_);
-                break;
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
             case logical_type::UNION:
             case logical_type::VARIANT:
-                value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
-                break;
-            case logical_type::ENUM:
-                value_ = std::get<int32_t>(other.value_);
+                data_ = other.data_;
+                other.data_ = 0;
                 break;
             default:
-                value_ = nullptr;
+                data_ = other.data_;
+                break;
         }
     }
 
     logical_value_t& logical_value_t::operator=(const logical_value_t& other) {
+        if (this == &other) return *this;
+        destroy_heap();
         type_ = other.type_;
+        resource_ = other.resource_;
         switch (type_.type()) {
-            case logical_type::BOOLEAN:
-                value_ = std::get<bool>(other.value_);
-                break;
-            case logical_type::TINYINT:
-                value_ = std::get<int8_t>(other.value_);
-                break;
-            case logical_type::SMALLINT:
-                value_ = std::get<int16_t>(other.value_);
-                break;
-            case logical_type::INTEGER:
-                value_ = std::get<int32_t>(other.value_);
-                break;
-            case logical_type::BIGINT:
-                value_ = std::get<int64_t>(other.value_);
-                break;
-            case logical_type::FLOAT:
-                value_ = std::get<float>(other.value_);
-                break;
-            case logical_type::DOUBLE:
-                value_ = std::get<double>(other.value_);
-                break;
-            case logical_type::UTINYINT:
-                value_ = std::get<uint8_t>(other.value_);
-                break;
-            case logical_type::USMALLINT:
-                value_ = std::get<uint16_t>(other.value_);
-                break;
-            case logical_type::UINTEGER:
-                value_ = std::get<uint32_t>(other.value_);
-                break;
-            case logical_type::UBIGINT:
-                value_ = std::get<uint64_t>(other.value_);
-                break;
             case logical_type::HUGEINT:
-                value_ = std::make_unique<int128_t>(*std::get<std::unique_ptr<int128_t>>(other.value_));
+                data128_ = other.data128_;
                 break;
             case logical_type::UHUGEINT:
-                value_ = std::make_unique<uint128_t>(*std::get<std::unique_ptr<uint128_t>>(other.value_));
-                break;
-            case logical_type::TIMESTAMP_NS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_SEC:
-                value_ = std::get<int64_t>(other.value_);
+                udata128_ = other.udata128_;
                 break;
             case logical_type::STRING_LITERAL:
-                value_ = std::make_unique<std::string>(*std::get<std::unique_ptr<std::string>>(other.value_));
-                break;
-            case logical_type::POINTER:
-                value_ = std::get<void*>(other.value_);
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
             case logical_type::LIST:
             case logical_type::ARRAY:
@@ -319,85 +194,40 @@ namespace components::types {
             case logical_type::STRUCT:
             case logical_type::UNION:
             case logical_type::VARIANT:
-                value_ = std::make_unique<std::vector<logical_value_t>>(
-                    *std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
-                break;
-            case logical_type::ENUM:
-                value_ = std::get<int32_t>(other.value_);
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
                 break;
             default:
-                value_ = nullptr;
+                data_ = other.data_;
+                break;
         }
         return *this;
     }
 
     logical_value_t& logical_value_t::operator=(logical_value_t&& other) noexcept {
+        if (this == &other) return *this;
+        destroy_heap();
         type_ = std::move(other.type_);
+        resource_ = other.resource_;
         switch (type_.type()) {
-            case logical_type::BOOLEAN:
-                value_ = std::get<bool>(other.value_);
-                break;
-            case logical_type::TINYINT:
-                value_ = std::get<int8_t>(other.value_);
-                break;
-            case logical_type::SMALLINT:
-                value_ = std::get<int16_t>(other.value_);
-                break;
-            case logical_type::INTEGER:
-                value_ = std::get<int32_t>(other.value_);
-                break;
-            case logical_type::BIGINT:
-                value_ = std::get<int64_t>(other.value_);
-                break;
-            case logical_type::FLOAT:
-                value_ = std::get<float>(other.value_);
-                break;
-            case logical_type::DOUBLE:
-                value_ = std::get<double>(other.value_);
-                break;
-            case logical_type::UTINYINT:
-                value_ = std::get<uint8_t>(other.value_);
-                break;
-            case logical_type::USMALLINT:
-                value_ = std::get<uint16_t>(other.value_);
-                break;
-            case logical_type::UINTEGER:
-                value_ = std::get<uint32_t>(other.value_);
-                break;
-            case logical_type::UBIGINT:
-                value_ = std::get<uint64_t>(other.value_);
-                break;
             case logical_type::HUGEINT:
-                value_ = std::move(std::get<std::unique_ptr<int128_t>>(other.value_));
+                data128_ = other.data128_;
                 break;
             case logical_type::UHUGEINT:
-                value_ = std::move(std::get<std::unique_ptr<uint128_t>>(other.value_));
-                break;
-            case logical_type::TIMESTAMP_NS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_SEC:
-                value_ = std::get<int64_t>(other.value_);
+                udata128_ = other.udata128_;
                 break;
             case logical_type::STRING_LITERAL:
-                value_ = std::move(std::get<std::unique_ptr<std::string>>(other.value_));
-                break;
-            case logical_type::POINTER:
-                value_ = std::get<void*>(other.value_);
-                break;
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
             case logical_type::UNION:
             case logical_type::VARIANT:
-                value_ = std::move(std::get<std::unique_ptr<std::vector<logical_value_t>>>(other.value_));
-                break;
-            case logical_type::ENUM:
-                value_ = std::get<int32_t>(other.value_);
+                data_ = other.data_;
+                other.data_ = 0;
                 break;
             default:
-                value_ = nullptr;
+                data_ = other.data_;
+                break;
         }
         return *this;
     }
@@ -491,7 +321,7 @@ namespace components::types {
                 fields.emplace_back(children()[i].cast_as(type.child_types()[i]));
             }
 
-            return create_struct(type, fields);
+            return create_struct(resource_, type, fields);
         }
         assert(false && "cast to value is not implemented");
         return logical_value_t{};
@@ -506,11 +336,11 @@ namespace components::types {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());
 
                 if (promoted_type == logical_type::FLOAT) {
-                    return core::is_equals(std::get<float>(cast_as(promoted_type).value_),
-                                           std::get<float>(rhs.cast_as(promoted_type).value_));
+                    return core::is_equals(cast_as(promoted_type).value<float>(),
+                                           rhs.cast_as(promoted_type).value<float>());
                 } else if (promoted_type == logical_type::DOUBLE) {
-                    return core::is_equals(std::get<double>(cast_as(promoted_type).value_),
-                                           std::get<double>(rhs.cast_as(promoted_type).value_));
+                    return core::is_equals(cast_as(promoted_type).value<double>(),
+                                           rhs.cast_as(promoted_type).value<double>());
                 } else {
                     return cast_as(promoted_type) == rhs.cast_as(promoted_type);
                 }
@@ -519,40 +349,29 @@ namespace components::types {
         } else {
             switch (type_.type()) {
                 case logical_type::BOOLEAN:
-                    return std::get<bool>(value_) == std::get<bool>(rhs.value_);
                 case logical_type::TINYINT:
-                    return std::get<int8_t>(value_) == std::get<int8_t>(rhs.value_);
                 case logical_type::SMALLINT:
-                    return std::get<int16_t>(value_) == std::get<int16_t>(rhs.value_);
                 case logical_type::INTEGER:
-                    return std::get<int32_t>(value_) == std::get<int32_t>(rhs.value_);
                 case logical_type::BIGINT:
-                    return std::get<int64_t>(value_) == std::get<int64_t>(rhs.value_);
-                case logical_type::FLOAT:
-                    return core::is_equals(std::get<float>(value_), std::get<float>(rhs.value_));
-                case logical_type::DOUBLE:
-                    return core::is_equals(std::get<double>(value_), std::get<double>(rhs.value_));
                 case logical_type::UTINYINT:
-                    return std::get<uint8_t>(value_) == std::get<uint8_t>(rhs.value_);
                 case logical_type::USMALLINT:
-                    return std::get<uint16_t>(value_) == std::get<uint16_t>(rhs.value_);
                 case logical_type::UINTEGER:
-                    return std::get<uint32_t>(value_) == std::get<uint32_t>(rhs.value_);
                 case logical_type::UBIGINT:
-                    return std::get<uint64_t>(value_) == std::get<uint64_t>(rhs.value_);
-                case logical_type::STRING_LITERAL:
-                    return *std::get<std::unique_ptr<std::string>>(value_) ==
-                           *std::get<std::unique_ptr<std::string>>(rhs.value_);
                 case logical_type::POINTER:
-                    return std::get<void*>(value_) == std::get<void*>(rhs.value_);
+                    return data_ == rhs.data_;
+                case logical_type::FLOAT:
+                    return core::is_equals(value<float>(), rhs.value<float>());
+                case logical_type::DOUBLE:
+                    return core::is_equals(value<double>(), rhs.value<double>());
+                case logical_type::STRING_LITERAL:
+                    return *str_ptr() == *rhs.str_ptr();
                 case logical_type::LIST:
                 case logical_type::ARRAY:
                 case logical_type::MAP:
                 case logical_type::STRUCT:
                 case logical_type::UNION:
                 case logical_type::VARIANT:
-                    return *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_) ==
-                           *std::get<std::unique_ptr<std::vector<logical_value_t>>>(rhs.value_);
+                    return *vec_ptr() == *rhs.vec_ptr();
                 default:
                     return false;
             }
@@ -572,30 +391,29 @@ namespace components::types {
         } else {
             switch (type_.type()) {
                 case logical_type::BOOLEAN:
-                    return std::get<bool>(value_) < std::get<bool>(rhs.value_);
+                    return static_cast<bool>(data_) < static_cast<bool>(rhs.data_);
                 case logical_type::TINYINT:
-                    return std::get<int8_t>(value_) < std::get<int8_t>(rhs.value_);
+                    return static_cast<int8_t>(data_) < static_cast<int8_t>(rhs.data_);
                 case logical_type::SMALLINT:
-                    return std::get<int16_t>(value_) < std::get<int16_t>(rhs.value_);
+                    return static_cast<int16_t>(data_) < static_cast<int16_t>(rhs.data_);
                 case logical_type::INTEGER:
-                    return std::get<int32_t>(value_) < std::get<int32_t>(rhs.value_);
+                    return static_cast<int32_t>(data_) < static_cast<int32_t>(rhs.data_);
                 case logical_type::BIGINT:
-                    return std::get<int64_t>(value_) < std::get<int64_t>(rhs.value_);
+                    return static_cast<int64_t>(data_) < static_cast<int64_t>(rhs.data_);
                 case logical_type::FLOAT:
-                    return std::get<float>(value_) < std::get<float>(rhs.value_);
+                    return value<float>() < rhs.value<float>();
                 case logical_type::DOUBLE:
-                    return std::get<double>(value_) < std::get<double>(rhs.value_);
+                    return value<double>() < rhs.value<double>();
                 case logical_type::UTINYINT:
-                    return std::get<uint8_t>(value_) < std::get<uint8_t>(rhs.value_);
+                    return static_cast<uint8_t>(data_) < static_cast<uint8_t>(rhs.data_);
                 case logical_type::USMALLINT:
-                    return std::get<uint16_t>(value_) < std::get<uint16_t>(rhs.value_);
+                    return static_cast<uint16_t>(data_) < static_cast<uint16_t>(rhs.data_);
                 case logical_type::UINTEGER:
-                    return std::get<uint32_t>(value_) < std::get<uint32_t>(rhs.value_);
+                    return static_cast<uint32_t>(data_) < static_cast<uint32_t>(rhs.data_);
                 case logical_type::UBIGINT:
-                    return std::get<uint64_t>(value_) < std::get<uint64_t>(rhs.value_);
+                    return data_ < rhs.data_;
                 case logical_type::STRING_LITERAL:
-                    return *std::get<std::unique_ptr<std::string>>(value_) <
-                           *std::get<std::unique_ptr<std::string>>(rhs.value_);
+                    return *str_ptr() < *rhs.str_ptr();
                 default:
                     return false;
             }
@@ -619,29 +437,30 @@ namespace components::types {
     }
 
     const std::vector<logical_value_t>& logical_value_t::children() const {
-        return *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_);
+        return *vec_ptr();
     }
 
-    logical_value_t logical_value_t::create_struct(const complex_logical_type& type,
+    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r, const complex_logical_type& type,
                                                    const std::vector<logical_value_t>& struct_values) {
         logical_value_t result;
-        result.value_ = std::make_unique<std::vector<logical_value_t>>(struct_values);
+        result.resource_ = r;
+        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(struct_values));
         result.type_ = type;
         return result;
     }
 
-    logical_value_t logical_value_t::create_struct(std::string name, const std::vector<logical_value_t>& fields) {
+    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r, std::string name, const std::vector<logical_value_t>& fields) {
         std::vector<complex_logical_type> child_types;
         for (auto& child : fields) {
             child_types.push_back(child.type());
         }
-        return create_struct(complex_logical_type::create_struct(std::move(name), child_types), fields);
+        return create_struct(r, complex_logical_type::create_struct(std::move(name), child_types), fields);
     }
 
-    logical_value_t logical_value_t::create_array(const complex_logical_type& internal_type,
+    logical_value_t logical_value_t::create_array(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
                                                   const std::vector<logical_value_t>& values) {
-        auto result = logical_value_t(complex_logical_type::create_array(internal_type, values.size()));
-        result.value_ = std::make_unique<std::vector<logical_value_t>>(values);
+        auto result = logical_value_t(r, complex_logical_type::create_array(internal_type, values.size()));
+        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(values));
         return result;
     }
 
@@ -702,7 +521,7 @@ namespace components::types {
             return logical_value_t{};
         } else {
             logical_value_t result(enum_type);
-            result.value_ = it->value<int32_t>();
+            result.data_ = static_cast<uint64_t>(it->value<int32_t>());
             return result;
         }
     }
@@ -710,31 +529,30 @@ namespace components::types {
     logical_value_t logical_value_t::create_enum(const complex_logical_type& enum_type, int32_t value) {
         // TODO?: check that value is contained in enum?
         logical_value_t result(enum_type);
-        result.value_ = value;
+        result.data_ = static_cast<uint64_t>(value);
         return result;
     }
 
     logical_value_t logical_value_t::create_decimal(int64_t value, uint8_t width, uint8_t scale) {
         auto decimal_type = complex_logical_type::create_decimal(width, scale);
         logical_value_t result(decimal_type);
-        result.value_ = value;
+        result.data_ = static_cast<uint64_t>(value);
         return result;
     }
 
-    logical_value_t logical_value_t::create_map(const complex_logical_type& key_type,
+    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r, const complex_logical_type& key_type,
                                                 const complex_logical_type& value_type,
                                                 const std::vector<logical_value_t>& keys,
                                                 const std::vector<logical_value_t>& values) {
         assert(keys.size() == values.size());
-        logical_value_t result(complex_logical_type::create_map(key_type, value_type));
-        auto keys_value = create_array(key_type, keys);
-        auto values_value = create_array(value_type, values);
-        result.value_ =
-            std::make_unique<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)});
+        logical_value_t result(r, complex_logical_type::create_map(key_type, value_type));
+        auto keys_value = create_array(r, key_type, keys);
+        auto values_value = create_array(r, value_type, values);
+        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)}));
         return result;
     }
 
-    logical_value_t logical_value_t::create_map(const complex_logical_type& type,
+    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r, const complex_logical_type& type,
                                                 const std::vector<logical_value_t>& values) {
         std::vector<logical_value_t> map_keys;
         std::vector<logical_value_t> map_values;
@@ -747,48 +565,49 @@ namespace components::types {
         }
         auto& key_type = type.child_types()[0];
         auto& value_type = type.child_types()[1];
-        return create_map(key_type, value_type, std::move(map_keys), std::move(map_values));
+        return create_map(r, key_type, value_type, std::move(map_keys), std::move(map_values));
     }
 
-    logical_value_t logical_value_t::create_list(const complex_logical_type& internal_type,
+    logical_value_t logical_value_t::create_list(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
                                                  const std::vector<logical_value_t>& values) {
         logical_value_t result;
+        result.resource_ = r;
         result.type_ = complex_logical_type::create_list(internal_type);
-        result.value_ = std::make_unique<std::vector<logical_value_t>>(values);
+        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(values));
         return result;
     }
 
     logical_value_t
-    logical_value_t::create_union(std::vector<complex_logical_type> types, uint8_t tag, logical_value_t value) {
+    logical_value_t::create_union(std::pmr::memory_resource* r, std::vector<complex_logical_type> types, uint8_t tag, logical_value_t value) {
         assert(!types.empty());
         assert(types.size() > tag);
 
         assert(value.type() == types[tag]);
 
         logical_value_t result;
-        // add the tag to the front of the struct
-        auto union_values = std::make_unique<std::vector<logical_value_t>>();
+        result.resource_ = r;
+        auto union_values = result.heap_new<std::vector<logical_value_t>>();
         union_values->emplace_back(tag);
         for (size_t i = 0; i < types.size(); i++) {
             if (i != tag) {
-                union_values->emplace_back(types[i]);
+                union_values->emplace_back(r, types[i]);
             } else {
                 union_values->emplace_back(nullptr);
             }
         }
         (*union_values)[static_cast<size_t>(tag) + 1] = std::move(value);
-        result.value_ = std::move(union_values);
+        result.data_ = reinterpret_cast<uint64_t>(union_values);
         result.type_ = complex_logical_type::create_union(std::move(types));
         return result;
     }
 
-    logical_value_t logical_value_t::create_variant(std::vector<logical_value_t> values) {
+    logical_value_t logical_value_t::create_variant(std::pmr::memory_resource* r, std::vector<logical_value_t> values) {
         assert(values.size() == 4);
         assert(values[0].type().type() == logical_type::LIST);
         assert(values[1].type().type() == logical_type::LIST);
         assert(values[2].type().type() == logical_type::LIST);
         assert(values[3].type().type() == logical_type::BLOB);
-        return create_struct(complex_logical_type::create_variant(), std::move(values));
+        return create_struct(r, complex_logical_type::create_variant(), std::move(values));
     }
 
     /*
@@ -1399,65 +1218,64 @@ namespace components::types {
         type_.serialize(serializer);
         switch (type_.type()) {
             case logical_type::BOOLEAN:
-                serializer->append(std::get<bool>(value_));
+                serializer->append(value<bool>());
                 break;
             case logical_type::TINYINT:
-                serializer->append(static_cast<int64_t>(std::get<int8_t>(value_)));
+                serializer->append(static_cast<int64_t>(value<int8_t>()));
                 break;
             case logical_type::SMALLINT:
-                serializer->append(static_cast<int64_t>(std::get<int16_t>(value_)));
+                serializer->append(static_cast<int64_t>(value<int16_t>()));
                 break;
             case logical_type::INTEGER:
-                serializer->append(static_cast<int64_t>(std::get<int32_t>(value_)));
+                serializer->append(static_cast<int64_t>(value<int32_t>()));
                 break;
             case logical_type::BIGINT:
-                serializer->append(std::get<int64_t>(value_));
+                serializer->append(value<int64_t>());
                 break;
             case logical_type::FLOAT:
-                serializer->append(std::get<float>(value_));
+                serializer->append(value<float>());
                 break;
             case logical_type::DOUBLE:
-                serializer->append(std::get<double>(value_));
+                serializer->append(value<double>());
                 break;
             case logical_type::UTINYINT:
-                serializer->append(static_cast<uint64_t>(std::get<uint8_t>(value_)));
+                serializer->append(static_cast<uint64_t>(value<uint8_t>()));
                 break;
             case logical_type::USMALLINT:
-                serializer->append(static_cast<uint64_t>(std::get<uint16_t>(value_)));
+                serializer->append(static_cast<uint64_t>(value<uint16_t>()));
                 break;
             case logical_type::UINTEGER:
-                serializer->append(static_cast<uint64_t>(std::get<uint32_t>(value_)));
+                serializer->append(static_cast<uint64_t>(value<uint32_t>()));
                 break;
             case logical_type::UBIGINT:
-                serializer->append(std::get<uint64_t>(value_));
+                serializer->append(value<uint64_t>());
                 break;
             case logical_type::HUGEINT:
-                serializer->append(*std::get<std::unique_ptr<int128_t>>(value_));
+                serializer->append(value<int128_t>());
                 break;
             case logical_type::UHUGEINT:
-                serializer->append(*std::get<std::unique_ptr<uint128_t>>(value_));
+                serializer->append(value<uint128_t>());
                 break;
             case logical_type::TIMESTAMP_NS:
             case logical_type::TIMESTAMP_US:
             case logical_type::TIMESTAMP_MS:
             case logical_type::TIMESTAMP_SEC:
-                serializer->append(std::get<int64_t>(value_));
+                serializer->append(value<int64_t>());
                 break;
             case logical_type::STRING_LITERAL:
-                serializer->append(*std::get<std::unique_ptr<std::string>>(value_));
+                serializer->append(*str_ptr());
                 break;
             case logical_type::POINTER:
                 assert(false && "not safe to serialize a pointer");
-                //serializer->append(std::get<void*>(value_));
                 break;
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT: {
-                const auto& nested_values = *std::get<std::unique_ptr<std::vector<logical_value_t>>>(value_);
+                const auto& nested_values = *vec_ptr();
                 serializer->start_array(nested_values.size());
-                for (const auto& value : nested_values) {
-                    value.serialize(serializer);
+                for (const auto& val : nested_values) {
+                    val.serialize(serializer);
                 }
                 serializer->end_array();
                 break;
@@ -1468,10 +1286,10 @@ namespace components::types {
         }
     }
 
-    logical_value_t logical_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    logical_value_t logical_value_t::deserialize(std::pmr::memory_resource* r, serializer::msgpack_deserializer_t* deserializer) {
         logical_value_t result;
         deserializer->advance_array(0);
-        auto type = complex_logical_type::deserialize(deserializer);
+        auto type = complex_logical_type::deserialize(r, deserializer);
         deserializer->pop_array();
         switch (type.type()) {
             case logical_type::BOOLEAN:
@@ -1526,11 +1344,10 @@ namespace components::types {
                 result = logical_value_t(std::chrono::seconds(deserializer->deserialize_int64(1)));
                 break;
             case logical_type::STRING_LITERAL:
-                result = logical_value_t(deserializer->deserialize_string(1));
+                result = logical_value_t(r, deserializer->deserialize_string(1));
                 break;
             case logical_type::POINTER:
                 assert(false && "not safe to deserialize a pointer");
-                //result = logical_value_t(deserializer->deserialize_pointer(1));
                 break;
             case logical_type::LIST: {
                 std::vector<logical_value_t> nested_values;
@@ -1538,11 +1355,11 @@ namespace components::types {
                 nested_values.reserve(deserializer->current_array_size());
                 for (size_t i = 0; i < nested_values.capacity(); i++) {
                     deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(deserializer));
+                    nested_values.emplace_back(deserialize(r, deserializer));
                     deserializer->pop_array();
                 }
                 deserializer->pop_array();
-                result = create_list(type, std::move(nested_values));
+                result = create_list(r, type, std::move(nested_values));
                 break;
             }
             case logical_type::ARRAY: {
@@ -1551,11 +1368,11 @@ namespace components::types {
                 nested_values.reserve(deserializer->current_array_size());
                 for (size_t i = 0; i < nested_values.capacity(); i++) {
                     deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(deserializer));
+                    nested_values.emplace_back(deserialize(r, deserializer));
                     deserializer->pop_array();
                 }
                 deserializer->pop_array();
-                result = create_struct(type, std::move(nested_values));
+                result = create_struct(r, type, std::move(nested_values));
                 break;
             }
             case logical_type::MAP: {
@@ -1564,11 +1381,11 @@ namespace components::types {
                 nested_values.reserve(deserializer->current_array_size());
                 for (size_t i = 0; i < nested_values.capacity(); i++) {
                     deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(deserializer));
+                    nested_values.emplace_back(deserialize(r, deserializer));
                     deserializer->pop_array();
                 }
                 deserializer->pop_array();
-                result = create_map(type, std::move(nested_values));
+                result = create_map(r, type, std::move(nested_values));
                 break;
             }
             case logical_type::STRUCT: {
@@ -1577,18 +1394,17 @@ namespace components::types {
                 nested_values.reserve(deserializer->current_array_size());
                 for (size_t i = 0; i < nested_values.capacity(); i++) {
                     deserializer->advance_array(i);
-                    nested_values.emplace_back(deserialize(deserializer));
+                    nested_values.emplace_back(deserialize(r, deserializer));
                     deserializer->pop_array();
                 }
                 deserializer->pop_array();
-                result = create_struct(type, std::move(nested_values));
+                result = create_struct(r, type, std::move(nested_values));
                 break;
             }
             default:
                 assert(false);
                 return logical_value_t{};
         }
-        // for simple types we skipped alias
         if (type.has_alias()) {
             result.set_alias(type.alias());
         }

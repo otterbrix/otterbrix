@@ -38,8 +38,8 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
 
     for (size_t i = 1; i <= size; i++) {
         chunk.set_value(0, i - 1, logical_value_t{static_cast<int64_t>(i) + num});
-        chunk.set_value(1, i - 1, logical_value_t{gen_id(static_cast<int>(i) + num)});
-        chunk.set_value(2, i - 1, logical_value_t{std::to_string(static_cast<int64_t>(i) + num)});
+        chunk.set_value(1, i - 1, logical_value_t{resource, gen_id(static_cast<int>(i) + num)});
+        chunk.set_value(2, i - 1, logical_value_t{resource, std::to_string(static_cast<int64_t>(i) + num)});
         chunk.set_value(3, i - 1, logical_value_t{static_cast<double>(static_cast<int64_t>(i) + num) + 0.1});
         chunk.set_value(4, i - 1, logical_value_t{(static_cast<int64_t>(i) + num) % 2 != 0});
         {
@@ -48,7 +48,7 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::
             for (size_t j = 0; j < array_size; j++) {
                 arr.emplace_back(uint64_t{j + 1});
             }
-            chunk.set_value(5, i - 1, logical_value_t::create_array(logical_type::UBIGINT, arr));
+            chunk.set_value(5, i - 1, logical_value_t::create_array(resource, logical_type::UBIGINT, arr));
         }
     }
 

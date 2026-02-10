@@ -19,8 +19,6 @@
 
 namespace services::dispatcher {
 
-    // TODO: add errors explanations
-
     using namespace components::types;
     using namespace components::expressions;
     using namespace components::logical_plan;
@@ -112,13 +110,19 @@ namespace services::dispatcher {
 
             // if result contains multiple types, then we have an ambiguous key, which is an error
             if (result.size() > 1) {
-                return schema_result<type_paths>(resource,
-                                                 components::cursor::error_t(error_code_t::ambiguous_name, ""));
+                return schema_result<type_paths>(
+                    resource,
+                    components::cursor::error_t(error_code_t::ambiguous_name,
+                                                "path: \'" + truncated_key.as_string() +
+                                                    "\' is ambiguous. Use aliases or full path"));
             } else {
                 if (key.storage().back() == "*") {
                     if (!result.front().type.is_nested()) {
-                        return schema_result<type_paths>(resource,
-                                                         components::cursor::error_t(error_code_t::schema_error, ""));
+                        return schema_result<type_paths>(
+                            resource,
+                            components::cursor::error_t(error_code_t::schema_error,
+                                                        "path: \'" + truncated_key.as_string() +
+                                                            "\' is not nested, and \'*\' can not be applied"));
                     }
 
                     auto parent_type = std::move(result[0]);
@@ -133,7 +137,10 @@ namespace services::dispatcher {
             }
 
             if (result.empty()) {
-                return schema_result<type_paths>(resource, components::cursor::error_t(error_code_t::schema_error, ""));
+                return schema_result<type_paths>(
+                    resource,
+                    components::cursor::error_t(error_code_t::schema_error,
+                                                "path: \'" + key.as_string() + "\' was not found"));
             }
             // Store path inside a key, since we will need it later
             key.set_path(result.front().path);
@@ -154,12 +161,17 @@ namespace services::dispatcher {
                 auto column_path_left = find_types(resource, key, schema_left);
                 auto column_path_right = find_types(resource, key, schema_right);
                 if (column_path_left.is_error() && column_path_right.is_error()) {
-                    return schema_result<type_paths>{resource,
-                                                     components::cursor::error_t{error_code_t::field_not_exists, ""}};
+                    return schema_result<type_paths>{
+                        resource,
+                        components::cursor::error_t{error_code_t::field_not_exists,
+                                                    "path: \'" + key.as_string() + "\' was not found"}};
                 }
                 if (!same_schema && !column_path_left.is_error() && !column_path_right.is_error()) {
-                    return schema_result<type_paths>{resource,
-                                                     components::cursor::error_t{error_code_t::ambiguous_name, ""}};
+                    return schema_result<type_paths>{
+                        resource,
+                        components::cursor::error_t{error_code_t::ambiguous_name,
+                                                    "path: \'" + key.as_string() +
+                                                        "\' is ambiguous. Use aliases or full path"}};
                 }
                 if (column_path_left.is_error()) {
                     key.set_side(side_t::right);
@@ -217,7 +229,8 @@ namespace services::dispatcher {
             if (!catalog.function_name_exists(expr->name())) {
                 return schema_result<named_schema>{
                     resource,
-                    components::cursor::error_t{error_code_t::unrecognized_function, ""}};
+                    components::cursor::error_t{error_code_t::unrecognized_function,
+                                                "function: \'" + expr->name() + "(...)\' was not found by the name"}};
             } else if (catalog.function_exists(expr->name(), function_input_types)) {
                 auto func = catalog.get_function(expr->name(), function_input_types);
                 std::vector<complex_logical_type> function_output_types;
@@ -225,11 +238,12 @@ namespace services::dispatcher {
                 for (const auto& output_type : func.second.output_types) {
                     auto res = output_type.resolve(function_input_types);
                     if (res.status() != components::compute::compute_status::ok()) {
-                        // This is a wierd error, because incoming types are as requested
-                        // but output types couldn't be calculated properly
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                            components::cursor::error_t{
+                                error_code_t::incorrect_function_argument,
+                                "function: \'" + expr->name() +
+                                    "(...)\' was found but there is an error, resolving output types"}};
                     }
                     function_output_types.emplace_back(res.value());
                 }
@@ -242,9 +256,12 @@ namespace services::dispatcher {
                 expr->add_function_uid(func.first);
             } else {
                 // function does exist, but can not take this set of arguments
+                // TODO: given arg number and types to error
                 return schema_result<named_schema>{
                     resource,
-                    components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                    components::cursor::error_t{error_code_t::incorrect_function_argument,
+                                                "function: \'" + expr->name() +
+                                                    "(...)\' was found but do not except given set of arguments"}};
             }
 
             return schema_result{std::move(result)};
@@ -449,12 +466,16 @@ namespace services::dispatcher {
                     } else {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::incorrect_function_return_type, ""}};
+                            components::cursor::error_t{error_code_t::incorrect_function_return_type,
+                                                        "function: \'" + expr->name() +
+                                                            "(...)\' was found but can not be used in WHERE clause, "
+                                                            "because return type is not a boolean"}};
                     }
                 } else {
                     assert(false);
-                    return schema_result<named_schema>{resource,
-                                                       components::cursor::error_t{error_code_t::schema_error, ""}};
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{error_code_t::schema_error, "incorrect expr type in node_group"}};
                 }
             }
         }
@@ -504,7 +525,9 @@ namespace services::dispatcher {
     check_type_exists(std::pmr::memory_resource* resource, const catalog& catalog, const std::string& alias) {
         cursor_t_ptr error;
         if (!catalog.type_exists(alias)) {
-            error = make_cursor(resource, error_code_t::schema_error, "type: \'" + alias + "\' does not exists");
+            error = make_cursor(resource,
+                                error_code_t::schema_error,
+                                "type: \'" + alias + "\' is not registered in catalog");
         }
         return error;
     }
@@ -712,8 +735,10 @@ namespace services::dispatcher {
                     same_schema = true;
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
-                    return schema_result<named_schema>{resource,
-                                                       components::cursor::error_t{error_code_t::schema_error, ""}};
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{error_code_t::schema_error,
+                                                    "invalid aggregate node, that contains no fields"}};
                 }
                 if (node_match) {
                     auto res = impl::validate_schema(resource,
@@ -771,7 +796,9 @@ namespace services::dispatcher {
                             if (!catalog.function_name_exists(agg_expr->function_name())) {
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{error_code_t::unrecognized_function, ""}};
+                                    components::cursor::error_t{error_code_t::unrecognized_function,
+                                                                "function: \'" + agg_expr->function_name() +
+                                                                    "(...)\' was not found by the name"}};
                             } else if (catalog.function_exists(agg_expr->function_name(), function_input_types)) {
                                 auto func = catalog.get_function(agg_expr->function_name(), function_input_types);
                                 std::vector<complex_logical_type> function_output_types;
@@ -779,11 +806,12 @@ namespace services::dispatcher {
                                 for (const auto& output_type : func.second.output_types) {
                                     auto res = output_type.resolve(function_input_types);
                                     if (res.status() != components::compute::compute_status::ok()) {
-                                        // This is a wierd error, because incoming types are as requested
-                                        // but output types couldn't be calculated properly
                                         return schema_result<named_schema>{
                                             resource,
-                                            components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                                            components::cursor::error_t{
+                                                error_code_t::incorrect_function_argument,
+                                                "function: \'" + agg_expr->function_name() +
+                                                    "(...)\' was found but there is an error, resolving output types"}};
                                     }
                                     function_output_types.emplace_back(res.value());
                                 }
@@ -802,10 +830,12 @@ namespace services::dispatcher {
                                 }
                                 agg_expr->add_function_uid(func.first);
                             } else {
-                                // function does exist, but can not take this set of arguments
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                                    components::cursor::error_t{
+                                        error_code_t::incorrect_function_argument,
+                                        "function: \'" + agg_expr->function_name() +
+                                            "(...)\' was found but do not except given set of arguments"}};
                             }
                         } else {
                             // TODO: add check to validate schema, if assert is triggered
@@ -846,27 +876,31 @@ namespace services::dispatcher {
                 if (!catalog.function_name_exists(function_node->name())) {
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::unrecognized_function, ""}};
+                        components::cursor::error_t{error_code_t::unrecognized_function,
+                                                    "function: \'" + function_node->name() +
+                                                        "(...)\' was not found by the name"}};
                 } else if (catalog.function_exists(function_node->name(), function_input)) {
                     auto func = catalog.get_function(function_node->name(), function_input);
                     result.reserve(func.second.output_types.size());
                     for (const auto& output_type : func.second.output_types) {
                         auto res = output_type.resolve(function_input);
                         if (res.status() != components::compute::compute_status::ok()) {
-                            // This is a wierd error, because incoming types are as requested
-                            // but output types couldn't be calculated properly
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                                components::cursor::error_t{
+                                    error_code_t::incorrect_function_argument,
+                                    "function: \'" + function_node->name() +
+                                        "(...)\' was found but there is an error, resolving output types"}};
                         }
                         result.emplace_back(type_from_t{node->result_alias(), res.value()});
                         function_node->add_function_uid(func.first);
                     }
                 } else {
-                    // function does exist, but can not take this set of arguments
                     return schema_result<named_schema>{
                         resource,
-                        components::cursor::error_t{error_code_t::incorrect_function_argument, ""}};
+                        components::cursor::error_t{error_code_t::incorrect_function_argument,
+                                                    "function: \'" + function_node->name() +
+                                                        "(...)\' was found but do not except given set of arguments"}};
                 }
                 break;
             }
@@ -909,13 +943,16 @@ namespace services::dispatcher {
                                 if (table_schema[i].alias() != incoming_schema.value()[i].type.alias()) {
                                     return schema_result<named_schema>{
                                         resource,
-                                        components::cursor::error_t{error_code_t::schema_error, ""}};
+                                        components::cursor::error_t{error_code_t::schema_error,
+                                                                    "insert_node: field name missmatch"}};
                                 }
                             }
                         } else {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::schema_error, ""}};
+                                components::cursor::error_t{
+                                    error_code_t::schema_error,
+                                    "insert_node: number of data columns does not match the table one"}};
                         }
                     } else {
                         return schema_result<named_schema>{
@@ -959,15 +996,19 @@ namespace services::dispatcher {
                     }
                     incoming_schema = std::move(node_data_res.value());
                     if (incoming_schema.size() != table_schema.size()) {
-                        return schema_result<named_schema>{resource,
-                                                           components::cursor::error_t{error_code_t::schema_error, ""}};
+                        return schema_result<named_schema>{
+                            resource,
+                            components::cursor::error_t{error_code_t::schema_error,
+                                                        "update_node: computed schema and table schema missmatch"}};
                     }
                     for (size_t i = 0; i < table_schema.size(); i++) {
                         // ignore aliases, since they do not matter here
                         if (incoming_schema[i].type != table_schema[i].type) {
                             return schema_result<named_schema>{
                                 resource,
-                                components::cursor::error_t{error_code_t::schema_error, ""}};
+                                components::cursor::error_t{
+                                    error_code_t::schema_error,
+                                    "update_node: computed schema and table schema name missmatch"}};
                         }
                     }
                 } else {
@@ -986,8 +1027,10 @@ namespace services::dispatcher {
                         return schema_result<named_schema>{resource, node_match_res.error()};
                     }
                 } else {
-                    return schema_result<named_schema>{resource,
-                                                       components::cursor::error_t{error_code_t::schema_error, ""}};
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{error_code_t::schema_error,
+                                                    "update_node: invalid node, node_match is not present"}};
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);

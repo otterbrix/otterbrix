@@ -337,6 +337,8 @@ namespace components::types {
             return false;
         } else {
             switch (type_.type()) {
+                case logical_type::NA:
+                    return true;
                 case logical_type::BOOLEAN:
                 case logical_type::TINYINT:
                 case logical_type::SMALLINT:
@@ -419,15 +421,6 @@ namespace components::types {
     bool logical_value_t::operator>=(const logical_value_t& rhs) const { return !(*this < rhs); }
 
     compare_t logical_value_t::compare(const logical_value_t& rhs) const {
-        if (is_null() && rhs.is_null()) {
-            return compare_t::equals;
-        }
-        if (is_null()) {
-            return compare_t::more;
-        }
-        if (rhs.is_null()) {
-            return compare_t::less;
-        }
         if (*this == rhs) {
             return compare_t::equals;
         } else if (*this < rhs) {
@@ -459,7 +452,8 @@ namespace components::types {
 
     logical_value_t logical_value_t::create_array(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
                                                   const std::vector<logical_value_t>& values) {
-        auto result = logical_value_t(r, complex_logical_type::create_array(internal_type, values.size()));
+        logical_value_t result(r, complex_logical_type{logical_type::NA});
+        result.type_ = complex_logical_type::create_array(internal_type, values.size());
         result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(values));
         return result;
     }
@@ -544,7 +538,8 @@ namespace components::types {
                                                 const std::vector<logical_value_t>& keys,
                                                 const std::vector<logical_value_t>& values) {
         assert(keys.size() == values.size());
-        logical_value_t result(r, complex_logical_type::create_map(key_type, value_type));
+        logical_value_t result(r, complex_logical_type{logical_type::NA});
+        result.type_ = complex_logical_type::create_map(key_type, value_type);
         auto keys_value = create_array(r, key_type, keys);
         auto values_value = create_array(r, value_type, values);
         result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)}));

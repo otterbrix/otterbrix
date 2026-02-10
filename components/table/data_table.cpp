@@ -91,7 +91,7 @@ namespace components::table {
         for (const auto& type : types) {
             column_definitions_.emplace_back(type.alias(), type);
         }
-        row_groups_->adopt_types(copy_types());
+        row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
     }
 
     void data_table_t::initialize_scan(table_scan_state& state,

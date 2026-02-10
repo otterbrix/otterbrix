@@ -1,28 +1,17 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <memory_resource>
 #include <services/wal/base.hpp>
 #include <vector>
 
 namespace services::disk {
 
-    struct result_collection_t {
-        collection_name_t name;
-
-
-        result_collection_t() = default;
-        explicit result_collection_t(std::pmr::memory_resource* /*resource*/) {}
-        result_collection_t(std::pmr::memory_resource* /*resource*/, collection_name_t n)
-            : name(std::move(n)) {}
-    };
-
     struct result_database_t {
         database_name_t name;
-        std::vector<result_collection_t> collections;
+        std::vector<collection_name_t> collections;
 
-        std::vector<collection_name_t> name_collections() const;
-        void set_collection(std::pmr::memory_resource* resource, const std::vector<collection_name_t>& names);
+        const std::vector<collection_name_t>& name_collections() const { return collections; }
+        void set_collection(const std::vector<collection_name_t>& names) { collections = names; }
     };
 
     class result_load_t {

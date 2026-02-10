@@ -6,7 +6,7 @@
 #include "disk_contract.hpp"
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <actor-zeta/actor/basic_actor.hpp>
@@ -28,7 +28,7 @@ namespace services::collection {
 namespace services::disk {
 
     using session_id_t = ::components::session::session_id_t;
-    using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
+    using document_ids_t = components::operators::operator_write_data_t::ids_t;
 
     class manager_disk_t final : public actor_zeta::actor::actor_mixin<manager_disk_t> {
     public:

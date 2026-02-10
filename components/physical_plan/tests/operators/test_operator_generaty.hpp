@@ -1,12 +1,11 @@
 #pragma once
 
-#include <components/physical_plan/base/operators/operator_raw_data.hpp>
-#include <components/physical_plan/table/operators/operator_insert.hpp>
+#include <components/physical_plan/operators/operator_raw_data.hpp>
+#include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/tests/generaty.hpp>
 #include <services/collection/collection.hpp>
 
 using namespace components;
-using namespace components::collection;
 
 struct context_t final {
     context_t(log_t& log, std::pmr::memory_resource* resource)
@@ -66,8 +65,8 @@ inline context_ptr create_table(std::pmr::memory_resource* resource) {
 
 inline void fill_table(context_ptr& table) {
     auto chunk = gen_data_chunk(100, table->resource_);
-    table::operators::operator_insert insert(table->collection_.get());
-    insert.set_children({new base::operators::operator_raw_data_t(std::move(chunk))});
+    operators::operator_insert insert(table->collection_.get());
+    insert.set_children({new operators::operator_raw_data_t(std::move(chunk))});
     insert.on_execute(nullptr);
 }
 

@@ -58,7 +58,7 @@ namespace services::disk {
         trace(log_, "agent_disk::load , session : {}", session.data());
         result_load_t result(disk_.databases(), disk_.wal_id());
         for (auto& database : *result) {
-            database.set_collection(resource(), disk_.collections(database.name));
+            database.set_collection(disk_.collections(database.name));
         }
         co_return result;
     }

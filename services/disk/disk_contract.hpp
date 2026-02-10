@@ -7,7 +7,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_create_index.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -22,7 +22,7 @@ namespace services::collection {
 namespace services::disk {
 
     using session_id_t = components::session::session_id_t;
-    using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
+    using document_ids_t = components::operators::operator_write_data_t::ids_t;
     using index_name_t = std::string;
 
     struct disk_contract {

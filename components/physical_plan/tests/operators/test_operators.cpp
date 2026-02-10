@@ -3,11 +3,11 @@
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/index/single_field_index.hpp>
-#include <components/physical_plan/table/operators/operator_delete.hpp>
-#include <components/physical_plan/table/operators/operator_update.hpp>
-#include <components/physical_plan/table/operators/scan/full_scan.hpp>
-#include <components/physical_plan/table/operators/scan/index_scan.hpp>
-#include <components/physical_plan/table/operators/scan/transfer_scan.hpp>
+#include <components/physical_plan/operators/operator_delete.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
+#include <components/physical_plan/operators/scan/full_scan.hpp>
+#include <components/physical_plan/operators/scan/index_scan.hpp>
+#include <components/physical_plan/operators/scan/transfer_scan.hpp>
 
 using namespace components;
 using namespace components::expressions;
@@ -33,7 +33,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 1);
     }
@@ -47,7 +47,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 99);
     }
@@ -61,7 +61,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 10);
     }
@@ -75,7 +75,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 11);
     }
@@ -89,7 +89,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 89);
     }
@@ -103,7 +103,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 90);
     }
@@ -117,7 +117,7 @@ TEST_CASE("components::physical_plan::full_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::full_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
+        operators::full_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 1);
     }
@@ -137,9 +137,9 @@ TEST_CASE("components::physical_plan::delete") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::operator_delete delete_(d(table));
+        operators::operator_delete delete_(d(table));
         delete_.set_children(boost::intrusive_ptr(
-            new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+            new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 90);
     }
@@ -154,9 +154,9 @@ TEST_CASE("components::physical_plan::delete") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::operator_delete delete_(d(table));
+        operators::operator_delete delete_(d(table));
         delete_.set_children(boost::intrusive_ptr(
-            new table::operators::full_scan(d(table), cond, logical_plan::limit_t::limit_one())));
+            new operators::full_scan(d(table), cond, logical_plan::limit_t::limit_one())));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 99);
     }
@@ -171,9 +171,9 @@ TEST_CASE("components::physical_plan::delete") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::operator_delete delete_(d(table));
+        operators::operator_delete delete_(d(table));
         delete_.set_children(
-            boost::intrusive_ptr(new table::operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 95);
     }
@@ -203,17 +203,17 @@ TEST_CASE("components::physical_plan::update") {
         script_update_1->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
 
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 0);
         }
 
-        table::operators::operator_update update_(d(table), {script_update_1}, false);
+        operators::operator_update update_(d(table), {script_update_1}, false);
         update_.set_children(boost::intrusive_ptr(
-            new table::operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+            new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
         update_.on_execute(&pipeline_context);
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 10);
         }
@@ -241,17 +241,17 @@ TEST_CASE("components::physical_plan::update") {
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 0);
         }
 
-        table::operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
+        operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
         update_.set_children(
-            boost::intrusive_ptr(new table::operators::full_scan(d(table), cond, logical_plan::limit_t(1))));
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(1))));
         update_.on_execute(&pipeline_context);
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 1);
             REQUIRE(scan.output()->data_chunk().value(5, 0).children()[0] ==
@@ -281,17 +281,17 @@ TEST_CASE("components::physical_plan::update") {
         script_update_2->left() = new update_expr_get_const_value_t(core::parameter_id_t(3));
 
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 0);
         }
 
-        table::operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
+        operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
         update_.set_children(
-            boost::intrusive_ptr(new table::operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
         update_.on_execute(&pipeline_context);
         {
-            table::operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context);
             REQUIRE(scan.output()->size() == 5);
             REQUIRE(scan.output()->data_chunk().value(5, 0).children()[0] ==
@@ -318,7 +318,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 1);
     }
@@ -332,7 +332,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 99);
     }
@@ -346,7 +346,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 10);
     }
@@ -360,7 +360,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 11);
     }
@@ -374,7 +374,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 89);
     }
@@ -388,7 +388,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::unlimit());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 90);
     }
@@ -402,7 +402,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t::limit_one());
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 1);
     }
@@ -416,7 +416,7 @@ TEST_CASE("components::physical_plan::index_scan") {
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(90)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
-        table::operators::index_scan scan(d(table), cond, logical_plan::limit_t(3));
+        operators::index_scan scan(d(table), cond, logical_plan::limit_t(3));
         scan.on_execute(&pipeline_context);
         REQUIRE(scan.output()->size() == 3);
     }
@@ -427,19 +427,19 @@ TEST_CASE("components::physical_plan::transfer_scan") {
     auto table = init_table(&resource);
 
     SECTION("all") {
-        table::operators::transfer_scan scan(d(table), logical_plan::limit_t::unlimit());
+        operators::transfer_scan scan(d(table), logical_plan::limit_t::unlimit());
         scan.on_execute(nullptr);
         REQUIRE(scan.output()->size() == 100);
     }
 
     SECTION("limit") {
-        table::operators::transfer_scan scan(d(table), logical_plan::limit_t(50));
+        operators::transfer_scan scan(d(table), logical_plan::limit_t(50));
         scan.on_execute(nullptr);
         REQUIRE(scan.output()->size() == 50);
     }
 
     SECTION("one") {
-        table::operators::transfer_scan scan(d(table), logical_plan::limit_t(1));
+        operators::transfer_scan scan(d(table), logical_plan::limit_t(1));
         scan.on_execute(nullptr);
         REQUIRE(scan.output()->size() == 1);
     }
@@ -464,7 +464,7 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {
-            table::operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context_check);
             REQUIRE(scan.output()->size() == 50);
         }
@@ -476,13 +476,13 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
             logical_plan::storage_parameters parameters(&resource);
             add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(static_cast<int64_t>(60)));
             pipeline::context_t pipeline_context(std::move(parameters));
-            table::operators::operator_delete delete_(d(table));
+            operators::operator_delete delete_(d(table));
             delete_.set_children(boost::intrusive_ptr(
-                new table::operators::index_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+                new operators::index_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             delete_.on_execute(&pipeline_context);
             REQUIRE(delete_.modified()->size() == 40);
 
-            table::operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context_check);
             REQUIRE(scan.output()->size() == 10);
         }
@@ -499,19 +499,19 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {
-            table::operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context_check);
             REQUIRE(scan.output()->size() == 1);
         }
         {
             update_expr_ptr script_update = new update_expr_set_t(expressions::key_t{&resource, "count"});
             script_update->left() = new update_expr_get_const_value_t(core::parameter_id_t(2));
-            table::operators::operator_update update(d(table), {script_update}, false);
+            operators::operator_update update(d(table), {script_update}, false);
             update.set_children(boost::intrusive_ptr(
-                new table::operators::index_scan(d(table), cond_check, logical_plan::limit_t::unlimit())));
+                new operators::index_scan(d(table), cond_check, logical_plan::limit_t::unlimit())));
             update.on_execute(&pipeline_context_check);
 
-            table::operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
+            operators::index_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
             scan.on_execute(&pipeline_context_check);
             REQUIRE(scan.output()->size() == 0);
         }

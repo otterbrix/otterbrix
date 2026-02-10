@@ -2,7 +2,7 @@
 
 #include <actor-zeta.hpp>
 #include <components/base/collection_full_name.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <variant>
 
@@ -27,7 +27,7 @@ namespace services::disk {
     };
 
     struct command_remove_documents_t {
-        using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
+        using document_ids_t = components::operators::operator_write_data_t::ids_t;
         database_name_t database;
         collection_name_t collection;
         document_ids_t documents;

@@ -3,19 +3,19 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 
-#include <components/physical_plan/table/operators/aggregate/operator_avg.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_count.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_max.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_min.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_sum.hpp>
-#include <components/physical_plan/table/operators/get/simple_value.hpp>
-#include <components/physical_plan/table/operators/operator_group.hpp>
+#include <components/physical_plan/operators/aggregate/operator_avg.hpp>
+#include <components/physical_plan/operators/aggregate/operator_count.hpp>
+#include <components/physical_plan/operators/aggregate/operator_max.hpp>
+#include <components/physical_plan/operators/aggregate/operator_min.hpp>
+#include <components/physical_plan/operators/aggregate/operator_sum.hpp>
+#include <components/physical_plan/operators/get/simple_value.hpp>
+#include <components/physical_plan/operators/operator_group.hpp>
 
-namespace services::table::planner::impl {
+namespace services::planner::impl {
 
     namespace {
 
-        void add_group_scalar(boost::intrusive_ptr<components::table::operators::operator_group_t>& group,
+        void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr) {
             using components::expressions::scalar_type;
 
@@ -27,7 +27,7 @@ namespace services::table::planner::impl {
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
                     group->add_key(expr->key().storage().back(),
-                                   components::table::operators::get::simple_value_t::create(field));
+                                   components::operators::get::simple_value_t::create(field));
                     break;
                 }
                 default:
@@ -37,7 +37,7 @@ namespace services::table::planner::impl {
         }
 
         void add_group_aggregate(collection::context_collection_t* context,
-                                 boost::intrusive_ptr<components::table::operators::operator_group_t>& group,
+                                 boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             using components::expressions::aggregate_type;
 
@@ -45,7 +45,7 @@ namespace services::table::planner::impl {
                 case aggregate_type::count: {
                     group->add_value(
                         expr->key().as_pmr_string(),
-                        boost::intrusive_ptr(new components::table::operators::aggregate::operator_count_t(context)));
+                        boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(context)));
                     break;
                 }
                 case aggregate_type::sum: {
@@ -55,7 +55,7 @@ namespace services::table::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::table::operators::aggregate::operator_sum_t(context, field)));
+                                         new components::operators::aggregate::operator_sum_t(context, field)));
                     break;
                 }
                 case aggregate_type::avg: {
@@ -65,7 +65,7 @@ namespace services::table::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::table::operators::aggregate::operator_avg_t(context, field)));
+                                         new components::operators::aggregate::operator_avg_t(context, field)));
                     break;
                 }
                 case aggregate_type::min: {
@@ -75,7 +75,7 @@ namespace services::table::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::table::operators::aggregate::operator_min_t(context, field)));
+                                         new components::operators::aggregate::operator_min_t(context, field)));
                     break;
                 }
                 case aggregate_type::max: {
@@ -85,7 +85,7 @@ namespace services::table::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::table::operators::aggregate::operator_max_t(context, field)));
+                                         new components::operators::aggregate::operator_max_t(context, field)));
                     break;
                 }
                 default:
@@ -96,14 +96,14 @@ namespace services::table::planner::impl {
 
     } // namespace
 
-    components::base::operators::operator_ptr create_plan_group(const context_storage_t& context,
+    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
                                                                 const components::logical_plan::node_ptr& node) {
-        boost::intrusive_ptr<components::table::operators::operator_group_t> group;
+        boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto collection_context = context.at(node->collection_full_name());
         if (collection_context) {
-            group = new components::table::operators::operator_group_t(collection_context);
+            group = new components::operators::operator_group_t(collection_context);
         } else {
-            group = new components::table::operators::operator_group_t(node->resource());
+            group = new components::operators::operator_group_t(node->resource());
         }
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
@@ -122,4 +122,4 @@ namespace services::table::planner::impl {
         return group;
     }
 
-} // namespace services::table::planner::impl
+} // namespace services::planner::impl

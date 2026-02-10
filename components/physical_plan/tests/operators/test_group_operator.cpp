@@ -2,13 +2,13 @@
 
 #include "test_operator_generaty.hpp"
 
-#include <components/physical_plan/table/operators/aggregate/operator_avg.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_count.hpp>
-#include <components/physical_plan/table/operators/aggregate/operator_sum.hpp>
-#include <components/physical_plan/table/operators/get/simple_value.hpp>
-#include <components/physical_plan/table/operators/operator_group.hpp>
-#include <components/physical_plan/table/operators/operator_sort.hpp>
-#include <components/physical_plan/table/operators/scan/transfer_scan.hpp>
+#include <components/physical_plan/operators/aggregate/operator_avg.hpp>
+#include <components/physical_plan/operators/aggregate/operator_count.hpp>
+#include <components/physical_plan/operators/aggregate/operator_sum.hpp>
+#include <components/physical_plan/operators/get/simple_value.hpp>
+#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_sort.hpp>
+#include <components/physical_plan/operators/scan/transfer_scan.hpp>
 
 using namespace components;
 using namespace components::expressions;
@@ -20,28 +20,28 @@ TEST_CASE("components::physical_plan::group::base") {
     auto table = init_table(&resource);
 
     SECTION("base::all::no_valid") {
-        table::operators::operator_group_t group(d(table));
+        operators::operator_group_t group(d(table));
         group.set_children(
-            boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-        group.add_key("id_", table::operators::get::simple_value_t::create(key(&resource, "id_")));
+            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        group.add_key("id_", operators::get::simple_value_t::create(key(&resource, "id_")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 0);
     }
 
     SECTION("base::all::id") {
-        table::operators::operator_group_t group(d(table));
+        operators::operator_group_t group(d(table));
         group.set_children(
-            boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-        group.add_key("_id", table::operators::get::simple_value_t::create(key(&resource, "_id")));
+            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        group.add_key("_id", operators::get::simple_value_t::create(key(&resource, "_id")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 100);
     }
 
     SECTION("base::all::count_bool") {
-        table::operators::operator_group_t group(d(table));
+        operators::operator_group_t group(d(table));
         group.set_children(
-            boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-        group.add_key("count_bool", table::operators::get::simple_value_t::create(key(&resource, "count_bool")));
+            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        group.add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 2);
     }
@@ -52,11 +52,11 @@ TEST_CASE("components::physical_plan::group::sort") {
     auto table = init_table(&resource);
 
     SECTION("sort::all") {
-        auto group = boost::intrusive_ptr(new table::operators::operator_group_t(d(table)));
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(d(table)));
         group->set_children(
-            boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-        group->add_key("count_bool", table::operators::get::simple_value_t::create(key(&resource, "count_bool")));
-        auto sort = boost::intrusive_ptr(new table::operators::operator_sort_t(d(table)));
+            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(d(table)));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);
@@ -75,20 +75,20 @@ TEST_CASE("components::physical_plan::group::all") {
     auto table = init_table(&resource);
 
     SECTION("aggregate::all") {
-        auto group = boost::intrusive_ptr(new table::operators::operator_group_t(d(table)));
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(d(table)));
         group->set_children(
-            boost::intrusive_ptr(new table::operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
-        group->add_key("count_bool", table::operators::get::simple_value_t::create(key(&resource, "count_bool")));
+            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
 
-        group->add_value("cnt", boost::intrusive_ptr(new table::operators::aggregate::operator_count_t(d(table))));
+        group->add_value("cnt", boost::intrusive_ptr(new operators::aggregate::operator_count_t(d(table))));
         group->add_value(
             "sum",
-            boost::intrusive_ptr(new table::operators::aggregate::operator_sum_t(d(table), key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_sum_t(d(table), key(&resource, "count"))));
         group->add_value(
             "avg",
-            boost::intrusive_ptr(new table::operators::aggregate::operator_avg_t(d(table), key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_avg_t(d(table), key(&resource, "count"))));
 
-        auto sort = boost::intrusive_ptr(new table::operators::operator_sort_t(d(table)));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(d(table)));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);

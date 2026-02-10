@@ -12,11 +12,11 @@
 #include "impl/create_plan_sort.hpp"
 #include "impl/create_plan_update.hpp"
 
-namespace services::table::planner {
+namespace services::planner {
 
     using components::logical_plan::node_type;
 
-    components::base::operators::operator_ptr create_plan(const context_storage_t& context,
+    components::operators::operator_ptr create_plan(const context_storage_t& context,
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit) {
         switch (node->type()) {
@@ -48,4 +48,4 @@ namespace services::table::planner {
         return nullptr;
     }
 
-} // namespace services::table::planner
+} // namespace services::planner

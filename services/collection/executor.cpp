@@ -8,12 +8,12 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/physical_plan/base/operators/operator_add_index.hpp>
-#include <components/physical_plan/base/operators/operator_drop_index.hpp>
-#include <components/physical_plan/table/operators/operator_delete.hpp>
-#include <components/physical_plan/table/operators/operator_insert.hpp>
-#include <components/physical_plan/table/operators/operator_update.hpp>
-#include <components/physical_plan/table/operators/scan/primary_key_scan.hpp>
+#include <components/physical_plan/operators/operator_add_index.hpp>
+#include <components/physical_plan/operators/operator_drop_index.hpp>
+#include <components/physical_plan/operators/operator_delete.hpp>
+#include <components/physical_plan/operators/operator_insert.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
+#include <components/physical_plan/operators/scan/primary_key_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
 #include <services/disk/index_agent_disk.hpp>
@@ -23,7 +23,7 @@ using namespace components::cursor;
 
 namespace services::collection::executor {
 
-    plan_t::plan_t(std::stack<components::base::operators::operator_ptr>&& sub_plans,
+    plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                    components::logical_plan::storage_parameters parameters,
                    services::context_storage_t&& context_storage)
         : sub_plans(std::move(sub_plans))
@@ -80,8 +80,7 @@ namespace services::collection::executor {
         components::session::session_id_t session,
         components::logical_plan::node_ptr logical_plan,
         components::logical_plan::storage_parameters parameters,
-        services::context_storage_t context_storage,
-        components::catalog::used_format_t /*data_format*/
+        services::context_storage_t context_storage
     ) {
         trace(log_, "executor::execute_plan, session: {}", session.data());
 
@@ -92,7 +91,7 @@ namespace services::collection::executor {
             }
         }
 
-        components::base::operators::operator_ptr plan = table::planner::create_plan(context_storage, logical_plan, limit);
+        components::operators::operator_ptr plan = planner::create_plan(context_storage, logical_plan, limit);
 
         if (!plan) {
             co_return execute_result_t{
@@ -156,11 +155,11 @@ namespace services::collection::executor {
 
 
     void executor_t::traverse_plan_(const components::session::session_id_t& session,
-                                    components::base::operators::operator_ptr&& plan,
+                                    components::operators::operator_ptr&& plan,
                                     components::logical_plan::storage_parameters&& parameters,
                                     services::context_storage_t&& context_storage) {
-        std::stack<components::base::operators::operator_ptr> look_up;
-        std::stack<components::base::operators::operator_ptr> sub_plans;
+        std::stack<components::operators::operator_ptr> look_up;
+        std::stack<components::operators::operator_ptr> sub_plans;
         look_up.push(plan);
         while (!look_up.empty()) {
             auto check_op = look_up.top();
@@ -188,7 +187,7 @@ namespace services::collection::executor {
 
         auto& plan_data = plans_.at(session);
         cursor_t_ptr cursor;
-        components::base::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
+        components::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();
@@ -230,8 +229,8 @@ namespace services::collection::executor {
             }
 
             switch (plan->type()) {
-                case components::base::operators::operator_type::add_index: {
-                    auto* add_op = static_cast<components::base::operators::operator_add_index*>(plan.get());
+                case components::operators::operator_type::add_index: {
+                    auto* add_op = static_cast<components::operators::operator_add_index*>(plan.get());
 
                     auto disk_address = co_await std::move(add_op->disk_future());
 
@@ -250,19 +249,19 @@ namespace services::collection::executor {
                     break;
                 }
 
-                case components::base::operators::operator_type::drop_index: {
-                    auto* drop_op = static_cast<components::base::operators::operator_drop_index*>(plan.get());
+                case components::operators::operator_type::drop_index: {
+                    auto* drop_op = static_cast<components::operators::operator_drop_index*>(plan.get());
                     cursor = drop_op->error_cursor()
                         ? drop_op->error_cursor()
                         : make_cursor(resource(), operation_status_t::success);
                     break;
                 }
 
-                case components::base::operators::operator_type::insert:
+                case components::operators::operator_type::insert:
                     cursor = co_await insert_document_impl_(session, collection, std::move(plan));
                     break;
 
-                case components::base::operators::operator_type::remove: {
+                case components::operators::operator_type::remove: {
                     if (plan->modified()) {
                         for (auto& [key, val] : plan->modified()->updated_types_map()) {
                             accumulated_updates[key] += val;
@@ -272,13 +271,13 @@ namespace services::collection::executor {
                     break;
                 }
 
-                case components::base::operators::operator_type::update:
+                case components::operators::operator_type::update:
                     cursor = co_await update_document_impl_(session, collection, std::move(plan));
                     break;
 
-                case components::base::operators::operator_type::raw_data:
-                case components::base::operators::operator_type::join:
-                case components::base::operators::operator_type::aggregate:
+                case components::operators::operator_type::raw_data:
+                case components::operators::operator_type::join:
+                case components::operators::operator_type::aggregate:
                     cursor = co_await aggregate_document_impl_(session, collection, std::move(plan));
                     break;
 
@@ -307,11 +306,11 @@ namespace services::collection::executor {
     executor_t::unique_future<cursor_t_ptr> executor_t::aggregate_document_impl_(
         const components::session::session_id_t& session,
         context_collection_t* collection,
-        components::base::operators::operator_ptr plan) {
+        components::operators::operator_ptr plan) {
 
-        if (plan->type() == components::base::operators::operator_type::aggregate) {
+        if (plan->type() == components::operators::operator_type::aggregate) {
             trace(log_, "executor::execute_plan : operators::operator_type::agreggate, session: {}", session.data());
-        } else if (plan->type() == components::base::operators::operator_type::join) {
+        } else if (plan->type() == components::operators::operator_type::join) {
             trace(log_, "executor::execute_plan : operators::operator_type::join, session: {}", session.data());
         } else {
             trace(log_, "executor::execute_plan : operators::operator_type::raw_data, session: {}", session.data());
@@ -335,7 +334,7 @@ namespace services::collection::executor {
     executor_t::unique_future<cursor_t_ptr> executor_t::update_document_impl_(
         const components::session::session_id_t& session,
         context_collection_t* collection,
-        components::base::operators::operator_ptr plan) {
+        components::operators::operator_ptr plan) {
 
         trace(log_, "executor::execute_plan : operators::operator_type::update");
 
@@ -385,7 +384,7 @@ namespace services::collection::executor {
     executor_t::unique_future<cursor_t_ptr> executor_t::insert_document_impl_(
         const components::session::session_id_t& session,
         context_collection_t* collection,
-        components::base::operators::operator_ptr plan) {
+        components::operators::operator_ptr plan) {
 
 
         auto output = plan->output();
@@ -419,7 +418,7 @@ namespace services::collection::executor {
     executor_t::unique_future<cursor_t_ptr> executor_t::delete_document_impl_(
         const components::session::session_id_t& session,
         context_collection_t* collection,
-        components::base::operators::operator_ptr plan) {
+        components::operators::operator_ptr plan) {
 
         trace(log_, "executor::execute_plan : operators::operator_type::remove");
 

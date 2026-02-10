@@ -49,17 +49,17 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
     return res;
 }
 
-auto to_sorter(const py::handle& sort_dict) -> components::table::sort::sorter_t {
-    components::table::sort::sorter_t sorter;
+auto to_sorter(const py::handle& sort_dict) -> components::sort::sorter_t {
+    components::sort::sorter_t sorter;
     for (const py::handle key : sort_dict) {
         sorter.add(py::str(key).cast<std::string>(), to_order(sort_dict[key]));
     }
     return sorter;
 }
 
-auto to_order(const py::object& order) -> components::table::sort::order {
-    return py::int_(order).cast<int>() < 0 ? components::table::sort::order::descending
-                                           : components::table::sort::order::ascending;
+auto to_order(const py::object& order) -> components::sort::order {
+    return py::int_(order).cast<int>() < 0 ? components::sort::order::descending
+                                           : components::sort::order::ascending;
 }
 
 using components::logical_plan::node_aggregate_t;

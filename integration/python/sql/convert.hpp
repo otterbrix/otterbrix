@@ -4,7 +4,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
 
-#include <components/physical_plan/table/operators/sort/sort.hpp>
+#include <components/physical_plan/operators/sort/sort.hpp>
 
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -16,8 +16,8 @@ components::types::logical_value_t to_value(const py::handle& obj);
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list;
 
-auto to_sorter(const py::handle& sort_dict) -> components::table::sort::sorter_t;
-auto to_order(const py::object& order) -> components::table::sort::order;
+auto to_sorter(const py::handle& sort_dict) -> components::sort::sorter_t;
+auto to_order(const py::object& order) -> components::sort::order;
 
 auto to_statement(std::pmr::memory_resource* resource,
                   const py::handle& source,

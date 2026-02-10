@@ -732,7 +732,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    decimal_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
+    decimal_logical_type_extension::deserialize(std::pmr::memory_resource* /*resource*/, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto width = static_cast<uint8_t>(deserializer->deserialize_uint64(2));
         auto scale = static_cast<uint8_t>(deserializer->deserialize_uint64(3));
@@ -868,7 +868,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    unknown_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
+    unknown_logical_type_extension::deserialize(std::pmr::memory_resource* /*resource*/, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto type_name = deserializer->deserialize_string(2);
         auto res = std::make_unique<unknown_logical_type_extension>(std::move(type_name));

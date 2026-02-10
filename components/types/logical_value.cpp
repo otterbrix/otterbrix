@@ -376,6 +376,8 @@ namespace components::types {
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
         if (type_ != rhs.type_) {
+            if (type_.type() == logical_type::NA) return false;
+            if (rhs.type_.type() == logical_type::NA) return true;
             if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
                 (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());

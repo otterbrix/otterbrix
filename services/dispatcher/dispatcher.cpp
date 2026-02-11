@@ -55,6 +55,7 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -72,7 +73,6 @@ namespace services::dispatcher {
     }
 
     actor_zeta::behavior_t manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
-        std::lock_guard<spin_lock> guard(lock_);
         poll_pending();
 
         switch (msg->command()) {

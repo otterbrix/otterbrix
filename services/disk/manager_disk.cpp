@@ -114,6 +114,7 @@ namespace services::disk {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -131,8 +132,6 @@ namespace services::disk {
     }
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
-        std::lock_guard<spin_lock> guard(lock_);
-
         poll_pending();
 
         switch (msg->command()) {

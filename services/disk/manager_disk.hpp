@@ -204,6 +204,7 @@ namespace services::disk {
             cmd,
             std::forward<Args>(args)...);
 
+        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {

@@ -4,8 +4,6 @@ add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
         test_b_plus_tree.cpp
-        test_msgpack_reader.cpp
-        test_with_documents.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

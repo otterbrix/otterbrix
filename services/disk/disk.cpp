@@ -1,5 +1,4 @@
 #include "disk.hpp"
-#include <components/document/msgpack/msgpack_encoder.hpp>
 
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 
@@ -37,70 +36,6 @@ namespace services::disk {
                 db_[{database, collection}]->load();
             }
         }
-    }
-
-    void disk_t::save_document(const database_name_t& database,
-                               const collection_name_t& collection,
-                               const document_ptr& document) {
-        msgpack::sbuffer sbuf;
-        msgpack::pack(sbuf, document);
-        if (db_.find({database, collection}) == db_.end()) {
-            metadata_->append_database(database);
-            metadata_->append_collection(database, collection);
-            db_[{database, collection}] =
-                std::make_unique<core::b_plus_tree::btree_t>(resource_,
-                                                             fs_,
-                                                             path_ / database / collection / base_index_name,
-                                                             key_getter);
-        }
-        db_[{database, collection}]->append(core::b_plus_tree::data_ptr_t(sbuf.data()),
-                                            static_cast<uint32_t>(sbuf.size()));
-        db_[{database, collection}]->flush();
-    }
-
-    document_ptr disk_t::load_document(const database_name_t& database,
-                                       const collection_name_t& collection,
-                                       const document_id_t& id) const {
-        auto item = db_.at({database, collection})->get_item(core::b_plus_tree::btree_t::index_t(id.to_string()), 0);
-
-        if (item.data) {
-            msgpack::unpacked msg;
-            msgpack::unpack(msg, item.data, item.size);
-            msgpack::object obj = msg.get();
-            return components::document::to_document(obj, resource_);
-        }
-        return nullptr;
-    }
-
-    void disk_t::remove_document(const database_name_t& database,
-                                 const collection_name_t& collection,
-                                 const document_id_t& id) {
-        db_.at({database, collection})->remove_index(core::b_plus_tree::btree_t::index_t(id.to_string()));
-        db_.at({database, collection})->flush();
-    }
-
-    std::pmr::vector<document_id_t> disk_t::load_list_documents(const database_name_t& database,
-                                                                const collection_name_t& collection) const {
-        std::pmr::vector<document_id_t> id_documents;
-        db_.at({database, collection})->full_scan(&id_documents, [](void* data, size_t size) {
-            auto key = key_getter(core::b_plus_tree::btree_t::item_data{core::b_plus_tree::data_ptr_t(data),
-                                                                        static_cast<uint32_t>(size)});
-            return document_id_t{key.value<components::types::physical_type::STRING>()};
-        });
-
-        return id_documents;
-    }
-
-    void disk_t::load_documents(const database_name_t& database,
-                                const collection_name_t& collection,
-                                std::pmr::vector<document_ptr>& result) const {
-        result.reserve(db_.at({database, collection})->size());
-        db_.at({database, collection})->full_scan(&result, [&](void* data, size_t size) {
-            msgpack::unpacked msg;
-            msgpack::unpack(msg, static_cast<char*>(data), size);
-            msgpack::object obj = msg.get();
-            return components::document::to_document(obj, resource_);
-        });
     }
 
     std::vector<database_name_t> disk_t::databases() const { return metadata_->databases(); }

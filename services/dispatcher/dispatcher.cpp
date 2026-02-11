@@ -9,7 +9,6 @@
 #include <thread>
 #include <chrono>
 
-#include <components/document/document.hpp>
 #include <components/planner/planner.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
@@ -143,31 +142,22 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::init_from_state(
         std::pmr::set<database_name_t> databases,
-        loader::document_map_t documents,
-        loader::schema_map_t /*schemas*/) {
+        loader::collection_set_t collections) {
         trace(log_, "manager_dispatcher_t::init_from_state: populating storage");
 
         databases_ = std::move(databases);
         trace(log_, "manager_dispatcher_t::init_from_state: initialized {} databases", databases_.size());
 
-        for (auto& [full_name, docs] : documents) {
+        for (const auto& full_name : collections) {
             debug(log_, "manager_dispatcher_t::init_from_state: creating collection {}.{}",
                   full_name.database, full_name.collection);
 
             auto* context = new collection::context_collection_t(
                 resource(), full_name, disk_address_, log_.clone());
 
-            auto& storage = context->document_storage();
-            for (auto& doc : docs) {
-                if (doc) {
-                    auto doc_id = components::document::get_document_id(doc);
-                    storage.emplace(doc_id, std::move(doc));
-                }
-            }
-
             collections_.emplace(full_name, context);
-            debug(log_, "manager_dispatcher_t::init_from_state: collection {}.{} initialized with {} documents",
-                  full_name.database, full_name.collection, storage.size());
+            debug(log_, "manager_dispatcher_t::init_from_state: collection {}.{} initialized",
+                  full_name.database, full_name.collection);
         }
 
         trace(log_, "manager_dispatcher_t::init_from_state: complete - {} collections", collections_.size());
@@ -185,8 +175,6 @@ namespace services::dispatcher {
         auto logic_plan = create_logic_plan(plan);
         table_id id(resource(), logic_plan->collection_full_name());
         cursor_t_ptr error;
-        used_format_t used_format = used_format_t::undefined;
-
         switch (logic_plan->type()) {
             case node_type::create_database_t:
                 if (!check_namespace_exists(id)) {
@@ -258,8 +246,6 @@ namespace services::dispatcher {
                 auto check_result = check_collections_format_(plan);
                 if (check_result->is_error()) {
                     error = std::move(check_result);
-                } else {
-                    used_format = check_result->uses_table_data() ? used_format_t::columns : used_format_t::documents;
                 }
             }
         }
@@ -285,7 +271,7 @@ namespace services::dispatcher {
                 break;
             default:
                 exec_result = co_await execute_plan_impl(session, std::move(logic_plan),
-                                                          params->take_parameters(), used_format);
+                                                          params->take_parameters());
                 break;
         }
 
@@ -391,11 +377,7 @@ namespace services::dispatcher {
         if (coll->dropped()) {
             co_return size_t(0);
         }
-        if (coll->uses_datatable()) {
-            co_return coll->table_storage().table().calculate_size();
-        } else {
-            co_return coll->document_storage().size();
-        }
+        co_return coll->table_storage().table().calculate_size();
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::get_schema(
@@ -486,17 +468,9 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan_impl(
         components::session::session_id_t session,
         node_ptr logical_plan,
-        storage_parameters parameters,
-        used_format_t used_format) {
+        storage_parameters parameters) {
         trace(log_, "manager_dispatcher_t:execute_plan_impl: collection: {}, session: {}",
               logical_plan->collection_full_name().to_string(), session.data());
-
-        if (used_format == used_format_t::undefined) {
-            co_return collection::executor::execute_result_t{
-                make_cursor(resource(), error_code_t::other_error, "undefined format"),
-                {}
-            };
-        }
 
         auto dependency_tree_collections_names = logical_plan->collection_dependencies();
         context_storage_t collections_context_storage;
@@ -516,8 +490,7 @@ namespace services::dispatcher {
                                                            session,
                                                            logical_plan,
                                                            parameters,
-                                                           std::move(collections_context_storage),
-                                                           used_format);
+                                                           std::move(collections_context_storage));
         if (needs_sched && executor_) {
             scheduler_->enqueue(executor_.get());
         }
@@ -560,15 +533,12 @@ namespace services::dispatcher {
     }
 
     cursor_t_ptr manager_dispatcher_t::check_collections_format_(node_ptr& logical_plan) const {
-        used_format_t used_format = used_format_t::undefined;
         std::pmr::vector<complex_logical_type> encountered_types{resource()};
         cursor_t_ptr result = make_cursor(resource(), operation_status_t::success);
-        auto check_format = [&](node_t* node) {
-            used_format_t check = used_format_t::undefined;
+        auto validate_types = [&](node_t* node) {
             if (!node->collection_full_name().empty()) {
                 table_id id(resource(), node->collection_full_name());
                 if (auto res = check_collection_exists(id); !res) {
-                    check = catalog_.get_table_format(id);
                     if (!catalog_.table_computes(id)) {
                         for (const auto& type : catalog_.get_table_schema(id).columns()) {
                             encountered_types.emplace_back(type);
@@ -581,82 +551,56 @@ namespace services::dispatcher {
             }
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
-                if (check == used_format_t::undefined) {
-                    check = static_cast<used_format_t>(data_node->uses_data_chunk());
-                } else if (check != static_cast<used_format_t>(data_node->uses_data_chunk())) {
-                    result = make_cursor(resource(), error_code_t::incompatible_storage_types,
-                                    "logical plan data format is not the same as referenced collection data format");
-                    return false;
-                }
-
-                if (used_format == used_format_t::documents && check == used_format_t::columns) {
-                    data_node->convert_to_documents();
-                    check = used_format_t::documents;
-                }
-
-                if (data_node->uses_data_chunk()) {
-                    for (auto& column : data_node->data_chunk().data) {
-                        auto it = std::find_if(encountered_types.begin(), encountered_types.end(),
-                                               [&column](const complex_logical_type& type) {
-                                                   return type.alias() == column.type().alias();
-                                               });
-                        if (it != encountered_types.end() && catalog_.type_exists(it->type_name())) {
-                            if (it->type() == logical_type::STRUCT) {
-                                components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        *it, data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(*it);
-                                    if (val.type().type() == logical_type::NA) {
-                                        result = make_cursor(resource(), error_code_t::schema_error,
-                                                        "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, val);
-                                    }
+                for (auto& column : data_node->data_chunk().data) {
+                    auto it = std::find_if(encountered_types.begin(), encountered_types.end(),
+                                           [&column](const complex_logical_type& type) {
+                                               return type.alias() == column.type().alias();
+                                           });
+                    if (it != encountered_types.end() && catalog_.type_exists(it->type_name())) {
+                        if (it->type() == logical_type::STRUCT) {
+                            components::vector::vector_t new_column(data_node->data_chunk().resource(),
+                                                                    *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.value(i).cast_as(*it);
+                                if (val.type().type() == logical_type::NA) {
+                                    result = make_cursor(resource(), error_code_t::schema_error,
+                                                    "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
+                                    return false;
+                                } else {
+                                    new_column.set_value(i, val);
                                 }
-                                column = std::move(new_column);
-                            } else if (it->type() == logical_type::ENUM) {
-                                components::vector::vector_t new_column(data_node->data_chunk().resource(),
-                                                                        *it, data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.data<std::string_view>()[i];
-                                    auto enum_val = logical_value_t::create_enum(*it, val);
-                                    if (enum_val.type().type() == logical_type::NA) {
-                                        result = make_cursor(resource(), error_code_t::schema_error,
-                                                        "enum: \'" + it->alias() + "\' does not contain value: \'" +
-                                                            std::string(val) + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, enum_val);
-                                    }
-                                }
-                                column = std::move(new_column);
-                            } else {
-                                assert(false && "missing type conversion");
                             }
+                            column = std::move(new_column);
+                        } else if (it->type() == logical_type::ENUM) {
+                            components::vector::vector_t new_column(data_node->data_chunk().resource(),
+                                                                    *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.data<std::string_view>()[i];
+                                auto enum_val = logical_value_t::create_enum(resource(), *it, val);
+                                if (enum_val.type().type() == logical_type::NA) {
+                                    result = make_cursor(resource(), error_code_t::schema_error,
+                                                    "enum: \'" + it->alias() + "\' does not contain value: \'" +
+                                                        std::string(val) + "\'");
+                                    return false;
+                                } else {
+                                    new_column.set_value(i, enum_val);
+                                }
+                            }
+                            column = std::move(new_column);
+                        } else {
+                            assert(false && "missing type conversion");
                         }
                     }
                 }
             }
-
-            if (used_format == check) {
-                return true;
-            } else if (used_format == used_format_t::undefined) {
-                used_format = check;
-                return true;
-            } else if (check == used_format_t::undefined) {
-                return true;
-            }
-            result = make_cursor(resource(), error_code_t::incompatible_storage_types,
-                                 "logical plan data format is not the same as referenced collection data format");
-            return false;
+            return true;
         };
 
         std::queue<node_t*> look_up;
         look_up.emplace(logical_plan.get());
         while (!look_up.empty()) {
             auto plan_node = look_up.front();
-            if (check_format(plan_node)) {
+            if (validate_types(plan_node)) {
                 for (const auto& child : plan_node->children()) {
                     look_up.emplace(child.get());
                 }
@@ -666,14 +610,7 @@ namespace services::dispatcher {
             }
         }
 
-        switch (used_format) {
-            case used_format_t::documents:
-                return make_cursor(resource(), std::pmr::vector<components::document::document_ptr>{resource()});
-            case used_format_t::columns:
-                return make_cursor(resource(), components::vector::data_chunk_t{resource(), {}, 0});
-            default:
-                return make_cursor(resource(), error_code_t::incompatible_storage_types, "undefined storage format");
-        }
+        return make_cursor(resource(), components::vector::data_chunk_t{resource(), {}, 0});
     }
 
     node_ptr manager_dispatcher_t::create_logic_plan(node_ptr plan) {
@@ -719,23 +656,16 @@ namespace services::dispatcher {
                 }
                 break;
             case node_type::insert_t: {
-                if (!node->children().size() || node->children().back()->type() != node_type::data_t) {
-                    break;
-                }
-
-                std::optional<std::reference_wrapper<computed_schema>> comp_sch;
                 if (catalog_.table_computes(id)) {
-                    comp_sch = catalog_.get_computing_table_schema(id);
-                }
-
-                auto node_info = reinterpret_cast<node_data_ptr&>(node->children().back());
-                if (node_info->uses_documents()) {
-                    for (const auto& doc : node_info->documents()) {
-                        for (const auto& [key, value] : *doc->json_trie()->as_object()) {
-                            auto key_val = key->get_mut()->get_string().value();
-                            auto log_type = components::base::operators::type_from_json(value.get());
-                            if (comp_sch.has_value()) {
-                                comp_sch.value().get().append(std::pmr::string(key_val), log_type);
+                    auto& sch = catalog_.get_computing_table_schema(id);
+                    for (const auto& child : node->children()) {
+                        if (child->type() == node_type::data_t) {
+                            auto* data_node = static_cast<const node_data_t*>(child.get());
+                            auto& chunk = data_node->data_chunk();
+                            for (const auto& col : chunk.data) {
+                                for (size_t i = 0; i < chunk.size(); i++) {
+                                    sch.append(std::pmr::string(col.type().alias(), resource()), col.type());
+                                }
                             }
                         }
                     }

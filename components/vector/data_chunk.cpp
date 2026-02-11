@@ -301,7 +301,7 @@ namespace components::vector {
         for (size_t i = 0; i < types.capacity(); i++) {
             deserializer->advance_array(i);
             deserializer->advance_array(0);
-            types.emplace_back(types::complex_logical_type::deserialize(deserializer));
+            types.emplace_back(types::complex_logical_type::deserialize(deserializer->resource(), deserializer));
             deserializer->pop_array();
             deserializer->advance_array(1);
             size = std::max(size, deserializer->current_array_size());
@@ -320,7 +320,7 @@ namespace components::vector {
             deserializer->advance_array(1);
             for (size_t j = 0; j < size; j++) {
                 deserializer->advance_array(j);
-                res.set_value(i, j, types::logical_value_t::deserialize(deserializer));
+                res.set_value(i, j, types::logical_value_t::deserialize(deserializer->resource(), deserializer));
                 deserializer->pop_array();
             }
             deserializer->pop_array();

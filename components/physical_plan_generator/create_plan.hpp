@@ -2,21 +2,13 @@
 
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>
-#include <components/physical_plan/base/operators/operator.hpp>
+#include <components/physical_plan/operators/operator.hpp>
 #include <services/collection/context_storage.hpp>
 
-namespace services::collection::planner {
+namespace services::planner {
 
-    components::base::operators::operator_ptr create_plan(const context_storage_t& context,
+    components::operators::operator_ptr create_plan(const context_storage_t& context,
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit);
 
-} // namespace services::collection::planner
-
-namespace services::table::planner {
-
-    components::table::operators::operator_ptr create_plan(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node,
-                                                           components::logical_plan::limit_t limit);
-
-} // namespace services::table::planner
+} // namespace services::planner

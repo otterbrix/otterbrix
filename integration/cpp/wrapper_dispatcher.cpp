@@ -16,11 +16,11 @@ using namespace components::cursor;
 
 namespace otterbrix {
 
-    wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* mr,
+    wrapper_dispatcher_t::wrapper_dispatcher_t(std::pmr::memory_resource* resource,
                                                actor_zeta::address_t manager_dispatcher,
                                                log_t& log)
         : actor_zeta::actor::actor_mixin<wrapper_dispatcher_t>()
-        , resource_(mr)
+        , resource_(resource)
         , manager_dispatcher_(manager_dispatcher)
         , log_(log.clone()) {}
 
@@ -73,24 +73,6 @@ namespace otterbrix {
                                                const collection_name_t& collection) -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_drop_collection(resource(), {database, collection});
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
-    }
-
-    auto wrapper_dispatcher_t::insert_one(const session_id_t& session,
-                                          const database_name_t& database,
-                                          const collection_name_t& collection,
-                                          document_ptr document) -> cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::insert_one session: {}, collection name: {} ", session.data(), collection);
-        auto plan = components::logical_plan::make_node_insert(resource(), {database, collection}, {document});
-        return send_plan(session, std::move(plan), components::logical_plan::make_parameter_node(resource()));
-    }
-
-    auto wrapper_dispatcher_t::insert_many(const session_id_t& session,
-                                           const database_name_t& database,
-                                           const collection_name_t& collection,
-                                           const std::pmr::vector<document_ptr>& documents) -> cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::insert_many session: {}, collection name: {} ", session.data(), collection);
-        auto plan = components::logical_plan::make_node_insert(resource(), {database, collection}, documents);
-        return send_plan(session, std::move(plan), components::logical_plan::make_parameter_node(resource()));
     }
 
     auto wrapper_dispatcher_t::find(const session_id_t& session,

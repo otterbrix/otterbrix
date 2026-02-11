@@ -41,10 +41,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::remove_collection, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::write_documents>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::write_documents, msg);
-                break;
-            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::remove_documents, msg);
                 break;
@@ -60,12 +56,9 @@ namespace services::disk {
 
     agent_disk_t::unique_future<result_load_t> agent_disk_t::load(session_id_t session) {
         trace(log_, "agent_disk::load , session : {}", session.data());
-        result_load_t result(disk_.databases(), disk_.wal_id());
+        result_load_t result(this->resource(), disk_.databases(), disk_.wal_id());
         for (auto& database : *result) {
-            database.set_collection(resource(), disk_.collections(database.name));
-            for (auto& collection : database.collections) {
-                disk_.load_documents(database.name, collection.name, collection.documents);
-            }
+            database.set_collection(disk_.collections(database.name));
         }
         co_return result;
     }
@@ -98,33 +91,15 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::write_documents(command_t command) {
-        auto& write_command = command.get<command_write_documents_t>();
-        trace(log_,
-              "agent_disk::write_documents , database : {} , collection : {} , {} documents",
-              write_command.database,
-              write_command.collection,
-              write_command.documents.size());
-        for (const auto& document : write_command.documents) {
-            auto id = components::document::get_document_id(document);
-            if (!id.is_null()) {
-                disk_.save_document(write_command.database, write_command.collection, document);
-            }
-        }
-        co_return;
-    }
-
     agent_disk_t::unique_future<void> agent_disk_t::remove_documents(command_t command) {
         auto& remove_command = command.get<command_remove_documents_t>();
-        auto& ids = std::get<std::pmr::vector<components::document::document_id_t>>(remove_command.documents);
+        auto& ids = remove_command.documents;
         trace(log_,
-              "agent_disk::remove_documents , database : {} , collection : {} , {} documents",
+              "agent_disk::remove_documents , database : {} , collection : {} , {} rows",
               remove_command.database,
               remove_command.collection,
               ids.size());
-        for (const auto& id : ids) {
-            disk_.remove_document(remove_command.database, remove_command.collection, id);
-        }
+        // TODO: Implement row removal for columnar storage
         co_return;
     }
 

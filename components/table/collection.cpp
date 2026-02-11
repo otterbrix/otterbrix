@@ -33,6 +33,14 @@ namespace components::table {
 
     const std::pmr::vector<types::complex_logical_type>& collection_t::types() const { return types_; }
 
+    void collection_t::adopt_types(std::pmr::vector<types::complex_logical_type> types) {
+        assert(types_.empty() && "adopt_types can only be called on schema-less collection");
+        if (!types_.empty()) {
+            return;
+        }
+        types_ = std::move(types);
+    }
+
     void collection_t::append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row) {
         assert(start_row >= row_start_);
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);
@@ -44,7 +52,9 @@ namespace components::table {
 
     void collection_t::initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>&) {
         auto row_group = row_groups_->root_segment();
-        assert(row_group);
+        if (!row_group) {
+            return;
+        }
         state.row_groups = row_groups_.get();
         state.max_row = row_start_ + static_cast<int64_t>(total_rows_.load());
         state.initialize(types_);
@@ -150,7 +160,6 @@ namespace components::table {
     uint64_t collection_t::calculate_size() {
         uint64_t res = 0;
         auto row_group = row_groups_->root_segment();
-        assert(row_group);
         while (row_group) {
             res += row_group->calculate_size();
             row_group = row_groups_->next_segment(row_group);

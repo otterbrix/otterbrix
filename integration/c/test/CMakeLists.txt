@@ -18,7 +18,6 @@ target_link_libraries(
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk

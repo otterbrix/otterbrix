@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
+#include <components/tests/generaty.hpp>
 #include <integration/cpp/connection.hpp>
 
 static const database_name_t database_name = "testdatabase";

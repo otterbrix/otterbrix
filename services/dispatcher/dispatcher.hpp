@@ -17,10 +17,9 @@
 
 #include <components/catalog/catalog.hpp>
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <services/disk/result.hpp>
 #include <services/disk/disk_contract.hpp>
 #include <services/wal/base.hpp>
@@ -42,7 +41,7 @@ namespace services::dispatcher {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        using recomputed_types = components::base::operators::operator_write_data_t::updated_types_map_t;
+        using recomputed_types = components::operators::operator_write_data_t::updated_types_map_t;
 
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
 
@@ -65,8 +64,7 @@ namespace services::dispatcher {
 
         void init_from_state(
             std::pmr::set<database_name_t> databases,
-            loader::document_map_t documents,
-            loader::schema_map_t schemas);
+            loader::collection_set_t collections);
 
         components::catalog::catalog& mutable_catalog() { return catalog_; }
 
@@ -95,7 +93,7 @@ namespace services::dispatcher {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
-        run_fn_t run_fn_;
+        run_fn_t run_fn_;  // Yield function for cooperative scheduling
         components::catalog::catalog catalog_;
 
         database_storage_t databases_;
@@ -130,8 +128,7 @@ namespace services::dispatcher {
         unique_future<services::collection::executor::execute_result_t> execute_plan_impl(
             components::session::session_id_t session,
             components::logical_plan::node_ptr logical_plan,
-            components::logical_plan::storage_parameters parameters,
-            components::catalog::used_format_t used_format);
+            components::logical_plan::storage_parameters parameters);
 
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;

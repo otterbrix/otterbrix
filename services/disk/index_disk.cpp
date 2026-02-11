@@ -1,12 +1,12 @@
 #include "index_disk.hpp"
 
-#include <msgpack/msgpack_encoder.hpp>
-
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
+#include <msgpack.hpp>
 
 namespace services::disk {
 
     using namespace core::b_plus_tree;
+    using components::types::logical_type;
 
     auto item_key_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
         msgpack::unpacked msg;
@@ -68,7 +68,7 @@ namespace services::disk {
 
     index_disk_t::~index_disk_t() = default;
 
-    void index_disk_t::insert(const value_t& key, const document_id_t& value) {
+    void index_disk_t::insert(const value_t& key, size_t value) {
         auto values = find(key);
         if (std::find(values.begin(), values.end(), value) == values.end()) {
             values.push_back(value);
@@ -76,7 +76,7 @@ namespace services::disk {
             msgpack::packer packer(sbuf);
             packer.pack_array(2);
             packer.pack(key);
-            packer.pack(value.to_string());
+            packer.pack(value);
             db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
             db_->flush();
         }
@@ -87,15 +87,15 @@ namespace services::disk {
         db_->flush();
     }
 
-    void index_disk_t::remove(const value_t& key, const document_id_t& doc) {
+    void index_disk_t::remove(const value_t& key, size_t row_id) {
         auto values = find(key);
         if (!values.empty()) {
-            values.erase(std::remove(values.begin(), values.end(), doc), values.end());
+            values.erase(std::remove(values.begin(), values.end(), row_id), values.end());
             msgpack::sbuffer sbuf;
             msgpack::packer packer(sbuf);
             packer.pack_array(2);
             packer.pack(key);
-            packer.pack(doc.to_string());
+            packer.pack(row_id);
             db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
             db_->flush();
         }
@@ -106,7 +106,7 @@ namespace services::disk {
         size_t count = db_->item_count(index);
         res.reserve(count);
         for (size_t i = 0; i < count; i++) {
-            res.emplace_back(id_getter(db_->get_item(index, i)).value<components::types::physical_type::STRING>());
+            res.emplace_back(id_getter(db_->get_item(index, i)).value<components::types::physical_type::UINT64>());
         }
     }
 
@@ -123,10 +123,9 @@ namespace services::disk {
             max_index,
             size_t(-1),
             &res,
-            [](void* data, size_t size) {
-                return document_id_t(
-                    id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                        .value<components::types::physical_type::STRING>());
+            [](void* data, size_t size) -> size_t {
+                return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
+                        .value<components::types::physical_type::UINT64>();
             },
             [&max_index](const auto& index, const auto&) { return index != max_index; });
     }
@@ -144,10 +143,9 @@ namespace services::disk {
             std::numeric_limits<btree_t::index_t>::max(),
             size_t(-1),
             &res,
-            [](void* data, size_t size) {
-                return document_id_t(
-                    id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                        .value<components::types::physical_type::STRING>());
+            [](void* data, size_t size) -> size_t {
+                return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
+                        .value<components::types::physical_type::UINT64>();
             },
             [&min_index](const auto& index, const auto&) { return index != min_index; });
     }

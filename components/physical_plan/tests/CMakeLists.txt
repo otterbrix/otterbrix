@@ -6,8 +6,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/test_aggregate_operators.cpp
         operators/test_group_operator.cpp
         operators/test_operators.cpp
-        operators/test_get_operators.cpp
-        operators/test_merge_operators.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

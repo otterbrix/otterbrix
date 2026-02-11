@@ -16,7 +16,6 @@
 
 #include <components/catalog/table_id.hpp>
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
 #include <components/expressions/update_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -28,7 +27,6 @@
 
 namespace otterbrix {
 
-    using components::document::document_ptr;
     using components::session::session_id_t;
 
     class wrapper_dispatcher_t final : public actor_zeta::actor::actor_mixin<wrapper_dispatcher_t> {
@@ -58,14 +56,6 @@ namespace otterbrix {
         auto drop_collection(const session_id_t& session,
                              const database_name_t& database,
                              const collection_name_t& collection) -> components::cursor::cursor_t_ptr;
-        auto insert_one(const session_id_t& session,
-                        const database_name_t& database,
-                        const collection_name_t& collection,
-                        document_ptr document) -> components::cursor::cursor_t_ptr;
-        auto insert_many(const session_id_t& session,
-                         const database_name_t& database,
-                         const collection_name_t& collection,
-                         const std::pmr::vector<document_ptr>& documents) -> components::cursor::cursor_t_ptr;
         auto find(const session_id_t& session,
                   components::logical_plan::node_aggregate_ptr condition,
                   components::logical_plan::parameter_node_ptr params) -> components::cursor::cursor_t_ptr;

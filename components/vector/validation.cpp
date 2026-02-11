@@ -97,6 +97,9 @@ namespace components::vector {
         if (count == 0) {
             return;
         }
+        if (!validity_mask_) {
+            resize(resource_, count);
+        }
         auto last_entry_index = validity_data_t::entry_count(count) - 1;
         for (uint64_t i = 0; i < last_entry_index; i++) {
             validity_mask_[i] = 0;

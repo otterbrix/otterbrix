@@ -2,6 +2,7 @@
 #include <absl/numeric/int128.h>
 #include <chrono>
 #include <memory>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -417,7 +418,7 @@ namespace components::types {
         static complex_logical_type create_unknown(std::string type_name, std::string alias = "");
 
         void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static complex_logical_type deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static complex_logical_type deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         logical_type type_ = logical_type::NA;
@@ -480,7 +481,7 @@ namespace components::types {
         void set_alias(const std::string& alias);
 
         virtual void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     protected:
         extension_type type_ = extension_type::GENERIC;
@@ -495,7 +496,7 @@ namespace components::types {
         size_t size() const noexcept { return size_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         complex_logical_type items_type_;
@@ -518,7 +519,7 @@ namespace components::types {
         bool value_required() const { return value_required_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         complex_logical_type key_;
@@ -538,7 +539,7 @@ namespace components::types {
         bool required() const noexcept { return required_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         complex_logical_type items_type_;
@@ -561,7 +562,7 @@ namespace components::types {
         const std::vector<field_description>& descriptions() const { return descriptions_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         std::string type_name_;
@@ -577,7 +578,7 @@ namespace components::types {
         uint8_t scale() const noexcept { return scale_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         uint8_t width_;
@@ -591,7 +592,7 @@ namespace components::types {
                                                  std::vector<complex_logical_type> arguments);
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         complex_logical_type return_type_;
@@ -605,7 +606,7 @@ namespace components::types {
         const std::string& type_name() const;
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
-        static std::unique_ptr<logical_type_extension> deserialize(serializer::msgpack_deserializer_t* deserializer);
+        static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer);
 
     private:
         std::string type_name_;

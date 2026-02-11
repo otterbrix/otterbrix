@@ -86,7 +86,7 @@ namespace services::loader {
 
         trace(log_, "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records",
               state.databases.size(),
-              state.documents.size(),
+              state.collections.size(),
               state.index_definitions.size(),
               state.wal_records.size());
 
@@ -105,19 +105,14 @@ namespace services::loader {
             for (const auto& coll_name : collections) {
                 debug(log_, "loader_t: found collection: {}.{}", db_name, coll_name);
                 collection_full_name_t full_name(db_name, coll_name);
-                state.documents.emplace(full_name, std::pmr::vector<document_ptr>(resource_));
+                state.collections.insert(full_name);
             }
         }
     }
 
-    void loader_t::read_documents(loaded_state_t& state) {
-        trace(log_, "loader_t: reading documents");
-
-        for (auto& [full_name, docs] : state.documents) {
-            debug(log_, "loader_t: loading documents for {}.{}", full_name.database, full_name.collection);
-            disk_->load_documents(full_name.database, full_name.collection, docs);
-            debug(log_, "loader_t: loaded {} documents for {}.{}", docs.size(), full_name.database, full_name.collection);
-        }
+    void loader_t::read_documents(loaded_state_t& /*state*/) {
+        trace(log_, "loader_t: reading documents - placeholder (columnar persistence TBD)");
+        // TODO: Implement columnar data persistence
     }
 
     void loader_t::read_index_definitions(loaded_state_t& state) {
@@ -315,7 +310,7 @@ namespace services::loader {
         for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
             if (entry.is_regular_file() && entry.path().filename() != "metadata") {
                 if (std::filesystem::file_size(entry.path()) == 0) {
-                    return false;
+                    return false;  // Corrupted segment file
                 }
             }
         }

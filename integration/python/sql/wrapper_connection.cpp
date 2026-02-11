@@ -21,5 +21,7 @@ namespace otterbrix {
         client_->ptr_ = nullptr;
         cursor_store_ = nullptr;
     }
+    void wrapper_connection::commit() {}
+    void wrapper_connection::rollback() {}
 
 } // namespace otterbrix

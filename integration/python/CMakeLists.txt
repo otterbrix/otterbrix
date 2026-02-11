@@ -5,11 +5,7 @@ set(${PROJECT_NAME}_sql_sources
         sql/spaces.cpp
         sql/wrapper_client.cpp
         sql/wrapper_connection.cpp
-        sql/wrapper_collection.cpp
-        sql/wrapper_database.cpp
         sql/wrapper_cursor.cpp
-        sql/wrapper_document.cpp
-        sql/wrapper_document_id.cpp
 )
 
 set(otterbrix_LIBS
@@ -17,7 +13,6 @@ set(otterbrix_LIBS
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk

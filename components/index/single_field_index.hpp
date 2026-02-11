@@ -33,7 +33,6 @@ namespace components::index {
         };
 
         auto insert_impl(value_t, index_value_t value) -> void final;
-        auto insert_impl(document::document_ptr doc) -> void final;
         auto remove_impl(value_t key) -> void final;
         range find_impl(const value_t& value) const final;
         range lower_bound_impl(const value_t& value) const final;

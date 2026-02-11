@@ -34,7 +34,6 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
-        otterbrix::document
         otterbrix::types
         otterbrix::expressions
         otterbrix::serialization

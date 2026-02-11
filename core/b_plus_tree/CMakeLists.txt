@@ -27,7 +27,6 @@ target_link_libraries(
         absl::crc32c
         msgpackc-cxx
         otterbrix::types
-        otterbrix::document
         otterbrix::file
 )
 

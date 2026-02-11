@@ -24,16 +24,16 @@ namespace core {
         scalar& operator=(scalar const&) = delete;
         scalar() = delete;
 
-        explicit scalar(std::pmr::memory_resource* mr)
-            : _storage{mr, 1} {}
+        explicit scalar(std::pmr::memory_resource* resource)
+            : _storage{resource, 1} {}
 
-        explicit scalar(std::pmr::memory_resource* mr, value_type const& initial_value)
-            : _storage{mr, 1} {
+        explicit scalar(std::pmr::memory_resource* resource, value_type const& initial_value)
+            : _storage{resource, 1} {
             set_value(initial_value);
         }
 
-        scalar(std::pmr::memory_resource* mr, scalar const& other)
-            : _storage{mr, other._storage} {}
+        scalar(std::pmr::memory_resource* resource, scalar const& other)
+            : _storage{resource, other._storage} {}
 
         [[nodiscard]] value_type value() const { return _storage.front_element(); }
 

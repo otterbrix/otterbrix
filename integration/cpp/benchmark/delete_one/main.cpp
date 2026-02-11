@@ -14,7 +14,7 @@ void delete_one(benchmark::State& state) {
                     {database_name, collection_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{&resource, "_id"},
+                                                                     components::expressions::key_t{dispatcher->resource(), "_id"},
                                                                      core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, std::to_string(i));
                 dispatcher->delete_one(session, match, params);
@@ -25,7 +25,7 @@ void delete_one(benchmark::State& state) {
                     {database_name, collection_name},
                     components::expressions::make_compare_expression(dispatcher->resource(),
                                                                      compare_type::eq,
-                                                                     components::expressions::key_t{&resource, "_id"},
+                                                                     components::expressions::key_t{dispatcher->resource(), "_id"},
                                                                      core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, std::to_string(size_collection - i));
                 dispatcher->delete_one(session, match, params);

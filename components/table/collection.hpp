@@ -78,6 +78,7 @@ namespace components::table {
 
         std::vector<column_segment_info> get_column_segment_info();
         const std::pmr::vector<types::complex_logical_type>& types() const;
+        void adopt_types(std::pmr::vector<types::complex_logical_type> types);
 
         std::shared_ptr<collection_t> add_column(column_definition_t& new_column);
         std::shared_ptr<collection_t> remove_column(uint64_t col_idx);

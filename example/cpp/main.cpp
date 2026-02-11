@@ -63,29 +63,32 @@ TEST_CASE("example::sql::base") {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count;");
             REQUIRE(c->size() == 100);
-            REQUIRE(c->next_document()->get_long("count") == 0);
-            REQUIRE(c->next_document()->get_long("count") == 1);
-            REQUIRE(c->next_document()->get_long("count") == 2);
-            REQUIRE(c->next_document()->get_long("count") == 3);
-            REQUIRE(c->next_document()->get_long("count") == 4);
+            auto col = c->chunk_data().column_index("count");
+            REQUIRE(c->chunk_data().value(col, 0).value<int64_t>() == 0);
+            REQUIRE(c->chunk_data().value(col, 1).value<int64_t>() == 1);
+            REQUIRE(c->chunk_data().value(col, 2).value<int64_t>() == 2);
+            REQUIRE(c->chunk_data().value(col, 3).value<int64_t>() == 3);
+            REQUIRE(c->chunk_data().value(col, 4).value<int64_t>() == 4);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count DESC;");
             REQUIRE(c->size() == 100);
-            REQUIRE(c->next_document()->get_long("count") == 99);
-            REQUIRE(c->next_document()->get_long("count") == 98);
-            REQUIRE(c->next_document()->get_long("count") == 97);
-            REQUIRE(c->next_document()->get_long("count") == 96);
-            REQUIRE(c->next_document()->get_long("count") == 95);
+            auto col = c->chunk_data().column_index("count");
+            REQUIRE(c->chunk_data().value(col, 0).value<int64_t>() == 99);
+            REQUIRE(c->chunk_data().value(col, 1).value<int64_t>() == 98);
+            REQUIRE(c->chunk_data().value(col, 2).value<int64_t>() == 97);
+            REQUIRE(c->chunk_data().value(col, 3).value<int64_t>() == 96);
+            REQUIRE(c->chunk_data().value(col, 4).value<int64_t>() == 95);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY name;");
             REQUIRE(c->size() == 100);
-            REQUIRE(c->next_document()->get_long("count") == 0);
-            REQUIRE(c->next_document()->get_long("count") == 1);
-            REQUIRE(c->next_document()->get_long("count") == 10);
-            REQUIRE(c->next_document()->get_long("count") == 11);
-            REQUIRE(c->next_document()->get_long("count") == 12);
+            auto col = c->chunk_data().column_index("count");
+            REQUIRE(c->chunk_data().value(col, 0).value<int64_t>() == 0);
+            REQUIRE(c->chunk_data().value(col, 1).value<int64_t>() == 1);
+            REQUIRE(c->chunk_data().value(col, 2).value<int64_t>() == 10);
+            REQUIRE(c->chunk_data().value(col, 3).value<int64_t>() == 11);
+            REQUIRE(c->chunk_data().value(col, 4).value<int64_t>() == 12);
         }
     }
 
@@ -154,15 +157,14 @@ TEST_CASE("example::sql::group_by") {
                              R"_(FROM TestDatabase.TestCollection )_"
                              R"_(GROUP BY name;)_");
         REQUIRE(c->size() == 10);
-        int number = 0;
-        while (auto doc = c->next_document()) {
-            REQUIRE(doc->get_string("name") == std::pmr::string("Name " + std::to_string(number)));
-            REQUIRE(doc->get_long("count_") == 10);
-            REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(doc->get_long("min_") == number % 20);
-            REQUIRE(doc->get_long("max_") == (number + 10) % 20);
-            ++number;
+        for (size_t number = 0; number < c->size(); ++number) {
+            auto name = std::string(c->chunk_data().value(c->chunk_data().column_index("name"), number).value<std::string_view>());
+            REQUIRE(name == "Name " + std::to_string(number));
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("count_"), number).value<uint64_t>() == 10);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), number).value<int64_t>() == 5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
+            REQUIRE(static_cast<int64_t>(c->chunk_data().value(c->chunk_data().column_index("avg_"), number).value<double>()) == (static_cast<int64_t>(number) % 20 + (static_cast<int64_t>(number) + 10) % 20) / 2);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("min_"), number).value<int64_t>() == static_cast<int64_t>(number) % 20);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -175,15 +177,15 @@ TEST_CASE("example::sql::group_by") {
                              R"_(GROUP BY name )_"
                              R"_(ORDER BY name DESC;)_");
         REQUIRE(c->size() == 10);
-        int number = 9;
-        while (auto doc = c->next_document()) {
-            REQUIRE(doc->get_string("name") == std::pmr::string("Name " + std::to_string(number)));
-            REQUIRE(doc->get_long("count_") == 10);
-            REQUIRE(doc->get_long("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(doc->get_long("avg_") == (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(doc->get_long("min_") == number % 20);
-            REQUIRE(doc->get_long("max_") == (number + 10) % 20);
-            --number;
+        for (size_t i = 0; i < c->size(); ++i) {
+            int number = 9 - static_cast<int>(i);
+            auto name = std::string(c->chunk_data().value(c->chunk_data().column_index("name"), i).value<std::string_view>());
+            REQUIRE(name == "Name " + std::to_string(number));
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("count_"), i).value<uint64_t>() == 10);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), i).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(static_cast<int64_t>(c->chunk_data().value(c->chunk_data().column_index("avg_"), i).value<double>()) == (number % 20 + (number + 10) % 20) / 2);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("min_"), i).value<int64_t>() == number % 20);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), i).value<int64_t>() == (number + 10) % 20);
         }
     }
 }

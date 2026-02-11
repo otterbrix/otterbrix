@@ -13,6 +13,7 @@ add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES} ${${PROJECT_NAME}_HEAD
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
+        benchmark::benchmark
         cpp_otterbrix
         otterbrix::test_generaty
 )

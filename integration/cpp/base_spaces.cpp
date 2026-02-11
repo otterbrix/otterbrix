@@ -36,15 +36,10 @@ namespace otterbrix {
         }
 
 
-        trace(log_, "spaces::PHASE 1 - Loading data from disk WITHOUT actors");
         services::loader::loader_t loader(config.disk, config.wal, &resource, log_);
         auto state = loader.load();
-        auto index_definitions = std::move(state.index_definitions);
-        auto wal_records = std::move(state.wal_records);
-        trace(log_, "spaces::PHASE 1 complete - loaded {} databases, {} collections, {} indexes, {} WAL records",
-              state.databases.size(), state.documents.size(), index_definitions.size(), wal_records.size());
-
-        trace(log_, "spaces::PHASE 2 - Creating actors");
+        auto index_definitions = std::move(state.index_definitions);  // save before move
+        auto wal_records = std::move(state.wal_records);  // save WAL records before move
 
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
@@ -97,10 +92,12 @@ namespace otterbrix {
                                                                                      log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
-        wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+        wrapper_dispatcher_ =
+            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_address,manager_disk_address));
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_address,
+                                                   manager_disk_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
@@ -114,8 +111,7 @@ namespace otterbrix {
             disk_empty_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
         }
 
-        trace(log_, "spaces::PHASE 2.2 - Populating catalog");
-        if (!state.databases.empty() || !state.documents.empty()) {
+        if (!state.databases.empty() || !state.collections.empty()) {
             auto& catalog = manager_dispatcher_->mutable_catalog();
             for (const auto& db_name : state.databases) {
                 trace(log_, "spaces::creating namespace: {}", db_name);
@@ -123,7 +119,7 @@ namespace otterbrix {
                 ns.push_back(std::pmr::string(db_name.c_str(), &resource));
                 catalog.create_namespace(ns);
             }
-            for (const auto& [coll_name, _] : state.documents) {
+            for (const auto& coll_name : state.collections) {
                 trace(log_, "spaces::creating computing table: {}.{}", coll_name.database, coll_name.collection);
                 components::catalog::table_id table_id(&resource, coll_name);
                 auto err = catalog.create_computing_table(table_id);
@@ -137,15 +133,12 @@ namespace otterbrix {
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
         manager_dispatcher_->init_from_state(
             std::move(state.databases),
-            std::move(state.documents),
-            std::move(state.schemas));
+            std::move(state.collections));
 
-        trace(log_, "spaces::PHASE 2.4 - Starting schedulers");
         scheduler_dispatcher_->start();
         scheduler_->start();
         scheduler_disk_->start();
 
-        trace(log_, "spaces::PHASE 2.5 - Replaying {} WAL records", wal_records.size());
         if (!wal_records.empty()) {
             auto session = components::session::session_id_t();
             for (auto& record : wal_records) {
@@ -162,8 +155,9 @@ namespace otterbrix {
         }
         trace(log_, "spaces::PHASE 2.5 complete");
 
-        trace(log_, "spaces::PHASE 3 - Creating {} indexes", index_definitions.size());
-        if (!index_definitions.empty()) {
+        if (!wal_records.empty()) {
+            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
+        } else if (!index_definitions.empty()) {
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {
@@ -196,4 +190,4 @@ namespace otterbrix {
         paths_.erase(main_path_);
     }
 
-}
+} // namespace otterbrix

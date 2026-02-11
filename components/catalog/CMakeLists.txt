@@ -32,7 +32,6 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::cursor
         otterbrix::vector
-        otterbrix::document
         otterbrix::types
         absl::int128
         Boost::boost

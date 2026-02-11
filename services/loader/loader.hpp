@@ -56,4 +56,4 @@ namespace services::loader {
         std::unique_ptr<core::filesystem::file_handle_t> wal_file_;
     };
 
-}
+} // namespace services::loader

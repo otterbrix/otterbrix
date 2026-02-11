@@ -15,22 +15,22 @@ namespace core {
         buffer& operator=(buffer const& other) = delete;
         buffer() = delete;
 
-        explicit buffer(std::pmr::memory_resource* mr)
-            : mr_{mr} {}
+        explicit buffer(std::pmr::memory_resource* resource)
+            : mr_{resource} {}
 
-        explicit buffer(std::pmr::memory_resource* mr, std::size_t size)
-            : mr_{mr} {
+        explicit buffer(std::pmr::memory_resource* resource, std::size_t size)
+            : mr_{resource} {
             allocate(size);
         }
 
-        buffer(std::pmr::memory_resource* mr, void const* source_data, std::size_t size)
-            : mr_{mr} {
+        buffer(std::pmr::memory_resource* resource, void const* source_data, std::size_t size)
+            : mr_{resource} {
             allocate(size);
             copy(source_data, size);
         }
 
-        buffer(std::pmr::memory_resource* mr, buffer const& other)
-            : buffer{mr, other.data(), other.size()} {}
+        buffer(std::pmr::memory_resource* resource, buffer const& other)
+            : buffer{resource, other.data(), other.size()} {}
 
         buffer(buffer&& other) noexcept
             : data_{other.data_}

@@ -4,11 +4,10 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/address.hpp>
 
-#include <components/document/document.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_create_index.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -23,7 +22,7 @@ namespace services::collection {
 namespace services::disk {
 
     using session_id_t = components::session::session_id_t;
-    using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
+    using document_ids_t = components::operators::operator_write_data_t::ids_t;
     using index_name_t = std::string;
 
     struct disk_contract {
@@ -44,11 +43,10 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        actor_zeta::unique_future<void> write_documents(session_id_t session,
-                                            database_name_t database,
-                                            collection_name_t collection,
-                                            std::pmr::vector<components::document::document_ptr> documents);
-
+        actor_zeta::unique_future<void> write_data_chunk(session_id_t session,
+                                             database_name_t database,
+                                             collection_name_t collection,
+                                             std::unique_ptr<components::vector::data_chunk_t> data);
         actor_zeta::unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -68,24 +66,24 @@ namespace services::disk {
         actor_zeta::unique_future<void> index_insert_many(
             session_id_t session,
             index_name_t index_name,
-            std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+            std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         actor_zeta::unique_future<void> index_insert(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
         actor_zeta::unique_future<void> index_remove(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
 
         actor_zeta::unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         actor_zeta::unique_future<void> index_remove_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         actor_zeta::unique_future<index_disk_t::result> index_find_by_agent(
             session_id_t session,
             actor_zeta::address_t agent_address,
@@ -99,7 +97,7 @@ namespace services::disk {
             &disk_contract::remove_database,
             &disk_contract::append_collection,
             &disk_contract::remove_collection,
-            &disk_contract::write_documents,
+            &disk_contract::write_data_chunk,
             &disk_contract::remove_documents,
             &disk_contract::flush,
             &disk_contract::create_index_agent,
@@ -116,4 +114,4 @@ namespace services::disk {
         disk_contract() = delete;
     };
 
-}
+} // namespace services::disk

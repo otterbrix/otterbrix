@@ -15,7 +15,7 @@ namespace components::logical_plan {
 
     node_create_type_ptr node_create_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         deserializer->advance_array(1);
-        auto type = types::complex_logical_type::deserialize(deserializer);
+        auto type = types::complex_logical_type::deserialize(deserializer->resource(), deserializer);
         deserializer->pop_array();
         return make_node_create_type(deserializer->resource(), std::move(type));
     }

@@ -15,7 +15,6 @@ add_library(${PROJECT_NAME}
 )
 
 target_link_libraries(${PROJECT_NAME} PUBLIC
-    otterbrix_document
     otterbrix_log
     otterbrix_logical_plan
     otterbrix_serialization

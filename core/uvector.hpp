@@ -36,8 +36,8 @@ namespace core {
         uvector(std::pmr::memory_resource* resource, std::size_t size)
             : storage_{resource, elements_to_bytes(size)} {}
 
-        uvector(std::pmr::memory_resource* mr, uvector const& other)
-            : storage_{mr, other.storage_} {}
+        uvector(std::pmr::memory_resource* resource, uvector const& other)
+            : storage_{resource, other.storage_} {}
 
         [[nodiscard]] pointer element_ptr(std::size_t element_index) noexcept {
             assertion_exception(element_index < size());

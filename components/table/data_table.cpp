@@ -85,6 +85,15 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
+    void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
+        assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
+        column_definitions_.reserve(types.size());
+        for (const auto& type : types) {
+            column_definitions_.emplace_back(type.alias(), type);
+        }
+        row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
+    }
+
     void data_table_t::initialize_scan(table_scan_state& state,
                                        const std::vector<storage_index_t>& column_ids,
                                        const table_filter_t* filter) {
@@ -265,7 +274,7 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        vector::vector_t max_row_id_vec(resource_, types::logical_value_t(static_cast<int64_t>(MAX_ROW_ID)), count);
+        vector::vector_t max_row_id_vec(resource_, types::logical_value_t(resource_, static_cast<int64_t>(MAX_ROW_ID)), count);
         vector::vector_t row_ids_slice(resource_, types::logical_type::BIGINT, count);
         vector::data_chunk_t updates_slice(resource_, data.types(), count);
         vector::indexing_vector_t sel_local_update(resource_, count);

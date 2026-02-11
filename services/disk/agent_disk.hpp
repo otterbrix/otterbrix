@@ -39,7 +39,6 @@ namespace services::disk {
         unique_future<void> append_collection(command_t command);
         unique_future<void> remove_collection(command_t command);
 
-        unique_future<void> write_documents(command_t command);
         unique_future<void> remove_documents(command_t command);
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
@@ -50,7 +49,6 @@ namespace services::disk {
             &agent_disk_t::remove_database,
             &agent_disk_t::append_collection,
             &agent_disk_t::remove_collection,
-            &agent_disk_t::write_documents,
             &agent_disk_t::remove_documents,
             &agent_disk_t::fix_wal_id
         >;

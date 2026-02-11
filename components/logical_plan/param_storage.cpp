@@ -54,7 +54,7 @@ namespace components::logical_plan {
             deserilizer->advance_array(i);
             auto param_id = deserilizer->deserialize_param_id(0);
             deserilizer->advance_array(1);
-            auto value = types::logical_value_t::deserialize(deserilizer);
+            auto value = types::logical_value_t::deserialize(deserilizer->resource(), deserilizer);
             deserilizer->pop_array();
             deserilizer->pop_array();
             res->add_parameter(param_id, value);

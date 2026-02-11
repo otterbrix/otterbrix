@@ -28,11 +28,11 @@ namespace components::pipeline {
         void add_pending_disk_future(disk_future_t&& future) {
             pending_disk_futures_.push_back(std::move(future));
         }
-
+        
         std::vector<disk_future_t> take_pending_disk_futures() {
             return std::move(pending_disk_futures_);
         }
-
+        
         bool has_pending_disk_futures() const noexcept {
             return !pending_disk_futures_.empty();
         }

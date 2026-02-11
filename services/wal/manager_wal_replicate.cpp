@@ -5,17 +5,17 @@
 
 namespace services::wal {
 
-    manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* mr,
+    manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
                                                      log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
-        , resource_(mr)
+        , resource_(resource)
         , scheduler_(scheduler)
         , config_(std::move(config))
         , log_(log.clone())
-        , pending_void_(mr)
-        , pending_load_(mr) {
+        , pending_void_(resource)
+        , pending_load_(resource) {
         create_wal_worker(config_.agent);
         trace(log_, "manager_wal_replicate_t start thread pool");
     }
@@ -43,6 +43,7 @@ namespace services::wal {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -60,7 +61,6 @@ namespace services::wal {
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
-        std::lock_guard<spin_lock> guard(lock_);
 
         poll_pending();
 
@@ -123,8 +123,8 @@ namespace services::wal {
         manager_dispatcher_ = std::get<static_cast<uint64_t>(unpack_rules::manager_dispatcher)>(pack);
     }
 
-    void manager_wal_replicate_t::create_wal_worker(int count_agent) {
-        for (int i = 0; i < count_agent; ++i) {
+    void manager_wal_replicate_t::create_wal_worker(int count_worker) {
+        for (int i = 0; i < count_worker; ++i) {
             if (config_.sync_to_disk) {
                 trace(log_, "manager_wal_replicate_t::create_wal_worker");
                 auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_);
@@ -277,14 +277,13 @@ namespace services::wal {
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* mr,
-                                                                 actor_zeta::scheduler::sharing_scheduler* scheduler,
+    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* resource,
+                                                                 actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
                                                                  log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
-        , resource_(mr)
-        , scheduler_(scheduler)
+        , resource_(resource)
         , log_(log)
-        , pending_void_(mr) {
+        , pending_void_(resource) {
         trace(log, "manager_wal_replicate_empty_t");
     }
 
@@ -351,6 +350,10 @@ namespace services::wal {
 
     void manager_wal_replicate_empty_t::sync(address_pack /*pack*/) {
         trace(log_, "manager_wal_replicate_empty_t::sync - no-op");
+    }
+
+    void manager_wal_replicate_empty_t::create_wal_worker(int) {
+        trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
     }
 
     manager_wal_replicate_empty_t::unique_future<std::vector<record_t>> manager_wal_replicate_empty_t::load(

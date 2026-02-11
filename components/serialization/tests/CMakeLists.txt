@@ -12,7 +12,6 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::serialization
         otterbrix::logical_plan
-        otterbrix::document
         otterbrix::types
         otterbrix::test_generaty
         otterbrix::expressions

@@ -709,7 +709,7 @@ namespace components::vector::arrow::scaner {
         }
         switch (vector.type().type()) {
             case types::logical_type::NA:
-                vector.reference(types::logical_value_t());
+                vector.reference(types::logical_value_t(vector.resource(), types::complex_logical_type{types::logical_type::NA}));
                 break;
             case types::logical_type::BOOLEAN: {
                 auto effective_offset =
@@ -1044,8 +1044,8 @@ namespace components::vector::arrow::scaner {
 
                     const types::logical_value_t& value = children[tag].value(row_idx);
                     vector.set_value(row_idx,
-                                     value.is_null() ? types::logical_value_t()
-                                                     : types::logical_value_t::create_union(members, tag, value));
+                                     value.is_null() ? types::logical_value_t(vector.resource(), types::complex_logical_type{types::logical_type::NA})
+                                                     : types::logical_value_t::create_union(vector.resource(), members, tag, value));
                 }
 
                 break;

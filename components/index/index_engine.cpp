@@ -23,51 +23,6 @@ namespace components::index {
 
     void drop_index(const index_engine_ptr& ptr, index_t::pointer index) { ptr->drop_index(index); }
 
-    void insert(const index_engine_ptr& ptr, id_index id, std::pmr::vector<document_ptr>& docs) {
-        auto* index = search_index(ptr, id);
-        for (const auto& i : docs) {
-            auto range = index->keys();
-            for (auto j = range.first; j != range.second; ++j) {
-                const auto& key_tmp = *j;
-                const std::string& key = key_tmp.as_string(); // hack
-                if (!(i->is_null(key))) {
-                    auto data = i->get_value(key).as_logical_value();
-                    index->insert(data, i);
-                }
-            }
-        }
-    }
-
-    void insert(const index_engine_ptr& ptr,
-                id_index id,
-                core::pmr::btree::btree_t<document::document_id_t, document_ptr>& docs) {
-        auto* index = search_index(ptr, id);
-        for (auto& doc : docs) {
-            auto range = index->keys();
-            for (auto j = range.first; j != range.second; ++j) {
-                const auto& key_tmp = *j;
-                const std::string& key = key_tmp.as_string(); // hack
-                if (!(doc.second->is_null(key))) {
-                    auto data = doc.second->get_value(key).as_logical_value();
-                    index->insert(data, {doc.first, doc.second, -1});
-                }
-            }
-        }
-    }
-
-    void insert_one(const index_engine_ptr& ptr, id_index id, document_ptr doc) {
-        auto* index = search_index(ptr, id);
-        auto range = index->keys();
-        for (auto j = range.first; j != range.second; ++j) {
-            const auto& key_tmp = *j;
-            const std::string& key = key_tmp.as_string(); // hack
-            if (!(doc->is_null(key))) {
-                auto data = doc->get_value(key).as_logical_value();
-                index->insert(data, doc);
-            }
-        }
-    }
-
     auto search_index(const index_engine_ptr& ptr, id_index id) -> index_t::pointer { return ptr->matching(id); }
 
     auto search_index(const index_engine_ptr& ptr, const keys_base_storage_t& query) -> index_t::pointer {
@@ -90,16 +45,6 @@ namespace components::index {
         return {index_engine, core::pmr::deleter_t(resource)};
     }
 
-    bool is_match_document(const index_ptr& index, const document_ptr& document) {
-        auto keys = index->keys();
-        for (auto key = keys.first; key != keys.second; ++key) {
-            if (!document->is_exists(key->as_string())) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     bool is_match_column(const index_ptr& index, const components::vector::data_chunk_t& chunk) {
         auto keys = index->keys();
         for (auto key = keys.first; key != keys.second; ++key) {
@@ -117,15 +62,6 @@ namespace components::index {
         return true;
     }
 
-    value_t get_value_by_index(const index_ptr& index, const document_ptr& document) {
-        auto keys = index->keys();
-        if (keys.first != keys.second) {
-            return document->get_value(keys.first->as_string()).as_logical_value();
-            //todo: multi values index
-        }
-        return value_t{};
-    }
-
     value_t get_value_by_index(const index_ptr& index, const vector::data_chunk_t& chunk, size_t row) {
         auto keys = index->keys();
         if (keys.first != keys.second) {
@@ -136,7 +72,7 @@ namespace components::index {
                 }
             }
         }
-        return types::logical_value_t{};
+        return types::logical_value_t{chunk.resource(), types::complex_logical_type{types::logical_type::NA}};
     }
 
     index_engine_t::index_engine_t(std::pmr::memory_resource* resource)
@@ -204,48 +140,6 @@ namespace components::index {
 
     auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
 
-    void index_engine_t::insert_document(const document_ptr& document, pipeline::context_t* pipeline_context) {
-        for (auto& index : storage_) {
-            if (is_match_document(index, document)) {
-                auto key = get_value_by_index(index, document);
-                index->insert(key, document);
-                if (index->is_disk() && pipeline_context && index->disk_manager()) {
-                    auto session_copy = pipeline_context->session;
-                    auto agent_copy = index->disk_agent();
-                    auto key_copy = key;
-                    auto [_, future] = actor_zeta::send(index->disk_manager(),
-                                                   &services::disk::manager_disk_t::index_insert_by_agent,
-                                                   std::move(session_copy),
-                                                   std::move(agent_copy),
-                                                   std::move(key_copy),
-                                                   document::get_document_id(document));
-                    pipeline_context->add_pending_disk_future(std::move(future));
-                }
-            }
-        }
-    }
-
-    void index_engine_t::delete_document(const document_ptr& document, pipeline::context_t* pipeline_context) {
-        for (auto& index : storage_) {
-            if (is_match_document(index, document)) {
-                auto key = get_value_by_index(index, document);
-                index->remove(key); //todo: bug
-                if (index->is_disk() && pipeline_context && index->disk_manager()) {
-                    auto session_copy = pipeline_context->session;
-                    auto agent_copy = index->disk_agent();
-                    auto key_copy = key;
-                    auto [_, future] = actor_zeta::send(index->disk_manager(),
-                                                   &services::disk::manager_disk_t::index_remove_by_agent,
-                                                   std::move(session_copy),
-                                                   std::move(agent_copy),
-                                                   std::move(key_copy),
-                                                   document::get_document_id(document));
-                    pipeline_context->add_pending_disk_future(std::move(future));
-                }
-            }
-        }
-    }
-
     void
     index_engine_t::insert_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context) {
         for (auto& index : storage_) {
@@ -256,12 +150,13 @@ namespace components::index {
                     auto session_copy = pipeline_context->session;
                     auto agent_copy = index->disk_agent();
                     auto key_copy = key;
+
                     auto [_, future] = actor_zeta::send(index->disk_manager(),
                                                    &services::disk::manager_disk_t::index_insert_by_agent,
                                                    std::move(session_copy),
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
-                                                   components::document::document_id_t(row));
+                                                   row);
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -283,7 +178,8 @@ namespace components::index {
                                                    std::move(session_copy),
                                                    std::move(agent_copy),
                                                    std::move(key_copy),
-                                                   components::document::document_id_t(row));
+                                                   row);
+
                     pipeline_context->add_pending_disk_future(std::move(future));
                 }
             }
@@ -303,23 +199,9 @@ namespace components::index {
                         actor_zeta::address_t agent, actor_zeta::address_t manager) {
         auto* index = search_index(ptr, id);
         if (index) {
-            auto agent_copy = agent;
+            auto agent_copy = agent;  // copy for add_disk_agent
             index->set_disk_agent(std::move(agent), std::move(manager));
             ptr->add_disk_agent(id, std::move(agent_copy));
-        }
-    }
-
-    void sync_index_from_disk(const index_engine_ptr& ptr,
-                              const actor_zeta::address_t& index_address,
-                              const std::pmr::vector<document::document_id_t>& ids,
-                              const core::pmr::btree::btree_t<document::document_id_t, document_ptr>& storage) {
-        auto* index = search_index(ptr, index_address);
-        if (index) {
-            index->clean_memory_to_new_elements(ids.size());
-            for (const auto& id : ids) {
-                assert(storage.find(id) != storage.end());
-                index->insert(storage.find(id)->second);
-            }
         }
     }
 

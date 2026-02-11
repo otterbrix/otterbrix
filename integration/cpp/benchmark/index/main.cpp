@@ -25,7 +25,7 @@ void only_find_all(benchmark::State& state) {
     state.ResumeTiming();
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
-            auto p = create_aggregate(database_name, collection_name);
+            auto p = create_aggregate(dispatcher->resource(), database_name, collection_name);
             dispatcher->find(session, p.first, p.second);
         }
     }
@@ -40,7 +40,7 @@ void only_find_eq(benchmark::State& state) {
     state.ResumeTiming();
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
-            auto p = create_aggregate(database_name, collection_name, compare_type::eq, "count", 115);
+            auto p = create_aggregate(dispatcher->resource(), database_name, collection_name, compare_type::eq, "count", 115);
             dispatcher->find(session, p.first, p.second);
         }
     }
@@ -55,60 +55,22 @@ void only_find_gt(benchmark::State& state) {
     state.ResumeTiming();
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
-            auto p = create_aggregate(database_name, collection_name, compare_type::gt, "count", size_collection - 100);
+            auto p = create_aggregate(dispatcher->resource(), database_name, collection_name, compare_type::gt, "count", size_collection - 100);
             dispatcher->find(session, p.first, p.second);
         }
     }
 }
 
-template<bool on_wal, bool on_disk, bool on_index>
-void delete_insert_update_one(benchmark::State& state) {
-    state.PauseTiming();
-    auto* dispatcher = wr_dispatcher<on_wal, on_disk>();
-    collection_name_t collection_name = get_collection_name<on_index>();
-    auto session = otterbrix::session_id_t();
-    state.ResumeTiming();
-    for (auto _ : state) {
-        for (int i = 1; i <= 50; ++i) {
-            auto p = create_aggregate(database_name, collection_name, compare_type::gt, "count", i);
-            dispatcher->delte_one(session, p.first, p.second);
-        }
-        for (int i = 1; i <= 50; ++i) {
-            auto doc = gen_doc(i, dispatcher->resource());
-            dispatcher->insert_one(session, database_name, collection_name, doc);
-        }
-        for (int i = 1; i <= 50; ++i) {
-            auto p = create_aggregate(database_name, collection_name, compare_type::gt, "count", i);
-            dispatcher->update_one(
-                session,
-                p.first,
-                p.second,
-                document_t::document_from_json("{\"$set\": {\"count\": " + std::to_string(size_collection + i) + "}}",
-                                               dispatcher->resource()),
-                false);
-        }
-        for (int i = 1; i <= 50; ++i) {
-            auto p = create_aggregate(database_name, collection_name, compare_type::gt, "count", i);
-            dispatcher->update_one(session,
-                                   p.first,
-                                   p.second,
-                                   document_t::document_from_json("{\"$set\": {\"count\": " + std::to_string(i) + "}}",
-                                                                  dispatcher->resource()),
-                                   false);
-        }
-    }
-}
+// TODO: delete_insert_update_one uses removed document_t API, needs rewrite
 
 BENCHMARK_FUNC(only_find_all, wal_off, disk_off);
 BENCHMARK_FUNC(only_find_eq, wal_off, disk_off);
 BENCHMARK_FUNC(only_find_gt, wal_off, disk_off);
-BENCHMARK_FUNC(delete_insert_update_one, wal_off, disk_off);
 
 #ifdef test_with_disk
 BENCHMARK_FUNC(only_find_all, wal_on, disk_on);
 BENCHMARK_FUNC(only_find_eq, wal_on, disk_on);
 BENCHMARK_FUNC(only_find_gt, wal_on, disk_on);
-BENCHMARK_FUNC(delete_insert_update_one, wal_on, disk_on);
 #endif
 
 int main(int argc, char** argv) {

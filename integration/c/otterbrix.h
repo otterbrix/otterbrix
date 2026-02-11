@@ -1,7 +1,6 @@
 #ifndef otterbrix_otterbrix_H
 #define otterbrix_otterbrix_H
 
-#include <components/cursor/cursor.hpp>
 #include <cstdint>
 #include <cstdlib>
 
@@ -34,7 +33,7 @@ typedef enum state_t
 
 typedef void* otterbrix_ptr;
 typedef void* cursor_ptr;
-typedef void* doc_ptr;
+typedef void* value_ptr;
 
 typedef struct error_message {
     int32_t code;
@@ -42,108 +41,40 @@ typedef struct error_message {
 } error_message;
 
 otterbrix_ptr otterbrix_create(config_t cfg);
-
 void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);
 
 cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
-
 cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
 
 void release_cursor(cursor_ptr ptr);
-
 int32_t cursor_size(cursor_ptr ptr);
-
+int32_t cursor_column_count(cursor_ptr ptr);
 bool cursor_has_next(cursor_ptr ptr);
-
-doc_ptr cursor_next(cursor_ptr ptr);
-
-doc_ptr cursor_get(cursor_ptr ptr);
-
-doc_ptr cursor_get_by_index(cursor_ptr ptr, int index);
-
-bool cursor_Is_success(cursor_ptr ptr);
-
+bool cursor_is_success(cursor_ptr ptr);
 bool cursor_is_error(cursor_ptr ptr);
-
 error_message cursor_get_error(cursor_ptr ptr);
 
-void release_document(doc_ptr ptr);
+char* cursor_column_name(cursor_ptr ptr, int32_t column_index);
 
-char* document_id(doc_ptr ptr);
+value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index);
 
-bool document_is_valid(doc_ptr ptr);
+value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name);
 
-bool document_is_array(doc_ptr ptr);
+void release_value(value_ptr ptr);
+bool value_is_null(value_ptr ptr);
+bool value_is_bool(value_ptr ptr);
+bool value_is_int(value_ptr ptr);
+bool value_is_uint(value_ptr ptr);
+bool value_is_double(value_ptr ptr);
+bool value_is_string(value_ptr ptr);
 
-bool document_is_dict(doc_ptr ptr);
-
-int32_t document_count(doc_ptr ptr);
-
-bool document_is_exist_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_exist_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_null_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_null_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_bool_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_bool_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_ulong_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_ulong_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_long_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_long_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_double_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_double_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_string_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_string_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_array_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_array_by_index(doc_ptr ptr, int32_t index);
-
-bool document_is_dict_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_is_dict_by_index(doc_ptr ptr, int32_t index);
-
-bool document_get_bool_by_key(doc_ptr ptr, string_view_t key_raw);
-
-bool document_get_bool_by_index(doc_ptr ptr, int32_t index);
-
-uint64_t document_get_ulong_by_key(doc_ptr ptr, string_view_t key_raw);
-
-uint64_t document_get_ulong_by_index(doc_ptr ptr, int32_t index);
-
-int64_t document_get_long_by_key(doc_ptr ptr, string_view_t key_raw);
-
-int64_t document_get_long_by_index(doc_ptr ptr, int32_t index);
-
-double document_get_double_by_key(doc_ptr ptr, string_view_t key_raw);
-
-double document_get_double_by_index(doc_ptr ptr, int32_t index);
-
-char* document_get_string_by_key(doc_ptr ptr, string_view_t key_raw);
-
-char* document_get_string_by_index(doc_ptr ptr, int32_t index);
-
-doc_ptr document_get_array_by_key(doc_ptr ptr, string_view_t key_raw);
-
-doc_ptr document_get_array_by_index(doc_ptr ptr, int32_t index);
-
-doc_ptr document_get_dict_by_key(doc_ptr ptr, string_view_t key_raw);
-
-doc_ptr document_get_dict_by_index(doc_ptr ptr, int32_t index);
+bool value_get_bool(value_ptr ptr);
+int64_t value_get_int(value_ptr ptr);
+uint64_t value_get_uint(value_ptr ptr);
+double value_get_double(value_ptr ptr);
+char* value_get_string(value_ptr ptr);
 
 #ifdef __cplusplus
 }

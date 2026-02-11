@@ -21,6 +21,8 @@ namespace otterbrix {
         wrapper_cursor_ptr execute(const std::string& query);
         wrapper_cursor_ptr cursor() const;
         void close();
+        void commit();
+        void rollback();
 
     private:
         wrapper_client* client_{nullptr};

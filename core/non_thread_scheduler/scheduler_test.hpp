@@ -15,12 +15,10 @@ namespace core::non_thread_scheduler {
         using job_ptr_type = std::unique_ptr<actor_zeta::scheduler::job_ptr>;
 
         scheduler_test_t(std::size_t num_worker_threads, std::size_t max_throughput);
-
         bool run_once();
         size_t run(size_t max_count = std::numeric_limits<size_t>::max());
         size_t advance_time(clock_test::duration_type);
         clock_test& clock() noexcept;
-
         void start();
         void stop();
 

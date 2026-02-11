@@ -7,17 +7,17 @@ namespace core::non_thread_scheduler {
 
     clock_test& scheduler_test_t::clock() noexcept { return clock_; }
 
-    void scheduler_test_t::start() {
-    }
+    void scheduler_test_t::start() {}
 
     void scheduler_test_t::stop() {
         while (run() > 0) {
             clock_.trigger_timeouts();
         }
+        
         auto& queue = data().queue;
         std::unique_lock<std::mutex> guard(data().lock);
         while (!queue.empty()) {
-            queue.pop_front();
+            queue.pop_front(); // unique_ptr auto-deletes the job
         }
     }
 

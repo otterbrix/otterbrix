@@ -6,7 +6,7 @@
 #include "disk_contract.hpp"
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
-#include <components/physical_plan/base/operators/operator_write_data.hpp>
+#include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <actor-zeta/actor/basic_actor.hpp>
@@ -28,7 +28,7 @@ namespace services::collection {
 namespace services::disk {
 
     using session_id_t = ::components::session::session_id_t;
-    using document_ids_t = components::base::operators::operator_write_data_t::ids_t;
+    using document_ids_t = components::operators::operator_write_data_t::ids_t;
 
     class manager_disk_t final : public actor_zeta::actor::actor_mixin<manager_disk_t> {
     public:
@@ -79,11 +79,10 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        unique_future<void> write_documents(session_id_t session,
-                                            database_name_t database,
-                                            collection_name_t collection,
-                                            std::pmr::vector<document_ptr> documents);
-
+        unique_future<void> write_data_chunk(session_id_t session,
+                                             database_name_t database,
+                                             collection_name_t collection,
+                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -100,24 +99,24 @@ namespace services::disk {
         unique_future<void> drop_index_agent_success(session_id_t session);
         unique_future<void> index_insert_many(session_id_t session,
                                               index_name_t index_name,
-                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+                                              std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         unique_future<void> index_insert(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
         unique_future<void> index_remove(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
 
         unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<void> index_remove_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
                                                                  actor_zeta::address_t agent_address,
                                                                  components::types::logical_value_t key,
@@ -131,7 +130,7 @@ namespace services::disk {
             &manager_disk_t::remove_database,
             &manager_disk_t::append_collection,
             &manager_disk_t::remove_collection,
-            &manager_disk_t::write_documents,
+            &manager_disk_t::write_data_chunk,
             &manager_disk_t::remove_documents,
             &manager_disk_t::flush,
             &manager_disk_t::create_index_agent,
@@ -205,6 +204,7 @@ namespace services::disk {
             cmd,
             std::forward<Args>(args)...);
 
+        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -251,11 +251,10 @@ namespace services::disk {
                                               database_name_t database,
                                               collection_name_t collection);
 
-        unique_future<void> write_documents(session_id_t session,
-                                            database_name_t database,
-                                            collection_name_t collection,
-                                            std::pmr::vector<document_ptr> documents);
-
+        unique_future<void> write_data_chunk(session_id_t session,
+                                             database_name_t database,
+                                             collection_name_t collection,
+                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<void> remove_documents(session_id_t session,
                                              database_name_t database,
                                              collection_name_t collection,
@@ -273,24 +272,24 @@ namespace services::disk {
 
         unique_future<void> index_insert_many(session_id_t session,
                                               index_name_t index_name,
-                                              std::vector<std::pair<components::document::value_t, components::document::document_id_t>> values);
+                                              std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         unique_future<void> index_insert(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
         unique_future<void> index_remove(session_id_t session,
                                          index_name_t index_name,
                                          components::types::logical_value_t key,
-                                         components::document::document_id_t doc_id);
+                                         size_t row_id);
 
         unique_future<void> index_insert_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<void> index_remove_by_agent(session_id_t session,
                                                   actor_zeta::address_t agent_address,
                                                   components::types::logical_value_t key,
-                                                  components::document::document_id_t doc_id);
+                                                  size_t row_id);
         unique_future<index_disk_t::result> index_find_by_agent(session_id_t session,
                                                                  actor_zeta::address_t agent_address,
                                                                  components::types::logical_value_t key,
@@ -304,7 +303,7 @@ namespace services::disk {
             &manager_disk_empty_t::remove_database,
             &manager_disk_empty_t::append_collection,
             &manager_disk_empty_t::remove_collection,
-            &manager_disk_empty_t::write_documents,
+            &manager_disk_empty_t::write_data_chunk,
             &manager_disk_empty_t::remove_documents,
             &manager_disk_empty_t::flush,
             &manager_disk_empty_t::create_index_agent,
@@ -319,8 +318,9 @@ namespace services::disk {
         >;
 
     private:
+        void create_agent(int count_agents);
+
         std::pmr::memory_resource* resource_;
-        actor_zeta::scheduler::sharing_scheduler* scheduler_;
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<result_load_t>> pending_load_;
         std::pmr::vector<unique_future<index_disk_t::result>> pending_find_;

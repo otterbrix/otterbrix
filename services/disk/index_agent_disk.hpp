@@ -31,9 +31,8 @@ namespace services::disk {
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;
-        using document_id_t = components::document::document_id_t;
         using value_t = components::types::logical_value_t;
-        using doc_value_t = components::document::value_t;
+
 
     public:
         template<typename T>
@@ -52,10 +51,11 @@ namespace services::disk {
         bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
-        unique_future<void> insert(session_id_t session, value_t key, document_id_t value);
-        unique_future<void> insert_many(session_id_t session, std::vector<std::pair<doc_value_t, document_id_t>> values);
-        unique_future<void> remove(session_id_t session, value_t key, document_id_t value);
+        unique_future<void> insert(session_id_t session, value_t key, size_t row_id);
+        unique_future<void> insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
+        unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
         unique_future<index_disk_t::result> find(session_id_t session, value_t value, components::expressions::compare_type compare);
+
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &index_agent_disk_t::drop,

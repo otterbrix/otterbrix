@@ -12,7 +12,6 @@ add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::log
-        otterbrix::document
         otterbrix::test_generaty
         Boost::boost
         Catch2::Catch2

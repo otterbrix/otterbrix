@@ -4,14 +4,6 @@ using Duckstax.Otterbrix;
 
 public class Tests
 {
-    private string GenerateID(int num) {
-        string res = num.ToString();
-        while (res.Length < 24) {
-            res = "0" + res;
-        }
-        return res;
-    }
-
     // [Test]
     public void Base() {
         OtterbrixWrapper otterbrix = new OtterbrixWrapper(Config.CreateConfig(System.Environment.CurrentDirectory + "/Base"));
@@ -20,9 +12,9 @@ public class Tests
             Assert.IsTrue(otterbrix.CreateCollection("TestDatabase", "TestCollection").IsSuccess());
         }
         {
-            string query = "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            string query = "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query += ("('" + GenerateID(num + 1) + "', " + "'Name " + num + "', " + num + ")" +
+                query += ("('Name " + num + "', " + num + ")" +
                           (num == 99 ? ";" : ", "));
             }
             CursorWrapper cursor = otterbrix.Execute(query);
@@ -52,14 +44,12 @@ public class Tests
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
 
-            int index = 0;
-            do
-            {
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetLong("count") == index);
-                Assert.IsTrue(doc.GetString("name") == "Name " + index.ToString());
-                ++index;
-            } while (index <= 99);
+            for (int index = 0; index < 100; ++index) {
+                using ValueWrapper countVal = cursor.GetValue(index, "count");
+                using ValueWrapper nameVal = cursor.GetValue(index, "name");
+                Assert.IsTrue(countVal.GetInt() == index);
+                Assert.IsTrue(nameVal.GetString() == "Name " + index.ToString());
+            }
         }
         {
             string query = "SELECT * FROM TestDatabase.TestCollection ORDER BY count DESC;";
@@ -68,34 +58,31 @@ public class Tests
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
 
-            int index = 99;
-            do
-            {
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetLong("count") == index);
-                Assert.IsTrue(doc.GetString("name") == "Name " + index.ToString());
-                --index;
-            } while (index >= 0);
+            for (int i = 0; i < 100; ++i) {
+                int index = 99 - i;
+                using ValueWrapper countVal = cursor.GetValue(i, "count");
+                using ValueWrapper nameVal = cursor.GetValue(i, "name");
+                Assert.IsTrue(countVal.GetInt() == index);
+                Assert.IsTrue(nameVal.GetString() == "Name " + index.ToString());
+            }
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection  ORDER BY name;";
+            string query = "SELECT * FROM TestDatabase.TestCollection ORDER BY name;";
             CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
             Assert.IsTrue(cursor.Size() == 100);
 
             List<int> counts = new List<int>(){0, 1, 10, 11, 12};
-            int index = 0;
-            do
-            {
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetLong("count") == counts[index]);
-                Assert.IsTrue(doc.GetString("name") == "Name " + counts[index].ToString());
-                ++index;
-            } while (index < counts.Count);
+            for (int index = 0; index < counts.Count; ++index) {
+                using ValueWrapper countVal = cursor.GetValue(index, "count");
+                using ValueWrapper nameVal = cursor.GetValue(index, "name");
+                Assert.IsTrue(countVal.GetInt() == counts[index]);
+                Assert.IsTrue(nameVal.GetString() == "Name " + counts[index].ToString());
+            }
         }
         {
-            string query = "SELECT * FROM TestDatabase.TestCollection  WHERE count > 90;";
+            string query = "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;";
             CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsFalse(cursor.IsError());
@@ -153,9 +140,9 @@ public class Tests
             Assert.IsTrue(otterbrix.CreateCollection("TestDatabase", "TestCollection").IsSuccess());
         }
         {
-            string query = "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            string query = "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query += "('" + GenerateID(num + 1) + "', " + "'Name " + (num % 10) + "', " + (num % 20) + ")" +
+                query += "('Name " + (num % 10) + "', " + (num % 20) + ")" +
                          (num == 99 ? ";" : ", ");
             }
             CursorWrapper cursor = otterbrix.Execute(query);
@@ -170,17 +157,20 @@ public class Tests
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.Size() == 10);
 
-            int number = 0;
-            do {
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetString("name") == "Name " + number.ToString());
-                Assert.IsTrue(doc.GetLong("count_") == 10);
-                Assert.IsTrue(doc.GetLong("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-                Assert.IsTrue(doc.GetDouble("avg_") == (number % 20 + (number + 10) % 20) / 2);
-                Assert.IsTrue(doc.GetLong("min_") == number % 20);
-                Assert.IsTrue(doc.GetLong("max_") == (number + 10) % 20);
-                number++;
-            } while (cursor.HasNext());
+            for (int number = 0; number < 10; ++number) {
+                using ValueWrapper nameVal = cursor.GetValue(number, "name");
+                using ValueWrapper countVal = cursor.GetValue(number, "count_");
+                using ValueWrapper sumVal = cursor.GetValue(number, "sum_");
+                using ValueWrapper avgVal = cursor.GetValue(number, "avg_");
+                using ValueWrapper minVal = cursor.GetValue(number, "min_");
+                using ValueWrapper maxVal = cursor.GetValue(number, "max_");
+                Assert.IsTrue(nameVal.GetString() == "Name " + number.ToString());
+                Assert.IsTrue(countVal.GetInt() == 10);
+                Assert.IsTrue(sumVal.GetInt() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+                Assert.IsTrue(avgVal.GetDouble() == (number % 20 + (number + 10) % 20) / 2);
+                Assert.IsTrue(minVal.GetInt() == number % 20);
+                Assert.IsTrue(maxVal.GetInt() == (number + 10) % 20);
+            }
         }
         {
             string query = "SELECT name, COUNT(count) AS count_, " + "SUM(count) AS sum_, AVG(count) AS avg_, " +
@@ -190,17 +180,21 @@ public class Tests
             Assert.IsTrue(cursor.IsSuccess());
             Assert.IsTrue(cursor.Size() == 10);
 
-            int number = 9;
-            do {
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetString("name") == "Name " + number.ToString());
-                Assert.IsTrue(doc.GetLong("count_") == 10);
-                Assert.IsTrue(doc.GetLong("sum_") == 5 * (number % 20) + 5 * ((number + 10) % 20));
-                Assert.IsTrue(doc.GetDouble("avg_") == (number % 20 + (number + 10) % 20) / 2);
-                Assert.IsTrue(doc.GetLong("min_") == number % 20);
-                Assert.IsTrue(doc.GetLong("max_") == (number + 10) % 20);
-                number--;
-            } while (cursor.HasNext());
+            for (int i = 0; i < 10; ++i) {
+                int number = 9 - i;
+                using ValueWrapper nameVal = cursor.GetValue(i, "name");
+                using ValueWrapper countVal = cursor.GetValue(i, "count_");
+                using ValueWrapper sumVal = cursor.GetValue(i, "sum_");
+                using ValueWrapper avgVal = cursor.GetValue(i, "avg_");
+                using ValueWrapper minVal = cursor.GetValue(i, "min_");
+                using ValueWrapper maxVal = cursor.GetValue(i, "max_");
+                Assert.IsTrue(nameVal.GetString() == "Name " + number.ToString());
+                Assert.IsTrue(countVal.GetInt() == 10);
+                Assert.IsTrue(sumVal.GetInt() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+                Assert.IsTrue(avgVal.GetDouble() == (number % 20 + (number + 10) % 20) / 2);
+                Assert.IsTrue(minVal.GetInt() == number % 20);
+                Assert.IsTrue(maxVal.GetInt() == (number + 10) % 20);
+            }
         }
     }
 
@@ -236,10 +230,9 @@ public class Tests
         {
             string query = "";
             query += "INSERT INTO " + databaseName + "." + collectionName1
-                  + " (_id, name, key_1, key_2) VALUES ";
+                  + " (name, key_1, key_2) VALUES ";
             for (int num = 0, reversed = 100; num < 101; ++num, --reversed) {
-                query += "('" + GenerateID(num + 1) + "', "
-                      + "'Name " + num.ToString() + "', " + num.ToString() + ", " + reversed.ToString() + ")" + (reversed == 0 ? ";" : ", ");
+                query += "('Name " + num.ToString() + "', " + num.ToString() + ", " + reversed.ToString() + ")" + (reversed == 0 ? ";" : ", ");
             }
             CursorWrapper cursor = otterbrix.Execute(query);
             Assert.IsTrue(cursor.IsSuccess());
@@ -247,9 +240,9 @@ public class Tests
         }
         {
             string query = "";
-            query += "INSERT INTO " + databaseName + "." + collectionName2 + " (_id, value, key) VALUES ";
+            query += "INSERT INTO " + databaseName + "." + collectionName2 + " (value, key) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query += "('" + GenerateID(num + 1001) + "', " + ((num + 25) * 2 * 10).ToString() + ", " + ((num + 25) * 2).ToString() + ")"
+                query += "(" + ((num + 25) * 2 * 10).ToString() + ", " + ((num + 25) * 2).ToString() + ")"
                       + (num == 99 ? ";" : ", ");
             }
             CursorWrapper cursor = otterbrix.Execute(query);
@@ -267,12 +260,14 @@ public class Tests
             Assert.IsTrue(cursor.Size() == 26);
 
             for (int num = 0; num < 26; ++num) {
-                Assert.IsTrue(cursor.HasNext());
-                DocumentWrapper doc = cursor.Next();
-                Assert.IsTrue(doc.GetLong("key_1") == (num + 25) * 2);
-                Assert.IsTrue(doc.GetLong("key") == (num + 25) * 2);
-                Assert.IsTrue(doc.GetLong("value") == (num + 25) * 2 * 10);
-                Assert.IsTrue(doc.GetString("name") == "Name " + ((num + 25) * 2).ToString());
+                using ValueWrapper key1Val = cursor.GetValue(num, "key_1");
+                using ValueWrapper keyVal = cursor.GetValue(num, "key");
+                using ValueWrapper valueVal = cursor.GetValue(num, "value");
+                using ValueWrapper nameVal = cursor.GetValue(num, "name");
+                Assert.IsTrue(key1Val.GetInt() == (num + 25) * 2);
+                Assert.IsTrue(keyVal.GetInt() == (num + 25) * 2);
+                Assert.IsTrue(valueVal.GetInt() == (num + 25) * 2 * 10);
+                Assert.IsTrue(nameVal.GetString() == "Name " + ((num + 25) * 2).ToString());
             }
         }
     }

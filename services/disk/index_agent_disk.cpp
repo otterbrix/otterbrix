@@ -7,7 +7,7 @@
 namespace services::disk {
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
-                                           manager_disk_t* /*manager*/, //TODO: need change signatures
+                                           manager_disk_t* /*manager*/,
                                            const path_t& path_db,
                                            collection::context_collection_t* collection,
                                            const index_name_t& index_name,
@@ -61,20 +61,20 @@ namespace services::disk {
     index_agent_disk_t::unique_future<void> index_agent_disk_t::insert(
         session_id_t session,
         value_t key,
-        document_id_t value
+        size_t row_id
     ) {
-        trace(log_, "index_agent_disk_t::insert {}, session: {}", value.to_string(), session.data());
-        index_disk_->insert(key, value);
+        trace(log_, "index_agent_disk_t::insert row {}, session: {}", row_id, session.data());
+        index_disk_->insert(key, row_id);
         co_return;
     }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::insert_many(
         session_id_t session,
-        std::vector<std::pair<doc_value_t, document_id_t>> values
+        std::vector<std::pair<value_t, size_t>> values
     ) {
         trace(log_, "index_agent_disk_t::insert_many: {}, session: {}", values.size(), session.data());
-        for (const auto& [key, value] : values) {
-            index_disk_->insert(key.as_logical_value(), value);
+        for (const auto& [key, row_id] : values) {
+            index_disk_->insert(key, row_id);
         }
         co_return;
     }
@@ -82,10 +82,10 @@ namespace services::disk {
     index_agent_disk_t::unique_future<void> index_agent_disk_t::remove(
         session_id_t session,
         value_t key,
-        document_id_t value
+        size_t row_id
     ) {
-        trace(log_, "index_agent_disk_t::remove {}, session: {}", value.to_string(), session.data());
-        index_disk_->remove(key, value);
+        trace(log_, "index_agent_disk_t::remove row {}, session: {}", row_id, session.data());
+        index_disk_->remove(key, row_id);
         co_return;
     }
 

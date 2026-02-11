@@ -1,13 +1,11 @@
 #pragma once
 
-#include <components/physical_plan/base/operators/operator_raw_data.hpp>
-#include <components/physical_plan/collection/operators/operator_insert.hpp>
-#include <components/physical_plan/table/operators/operator_insert.hpp>
+#include <components/physical_plan/operators/operator_raw_data.hpp>
+#include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/tests/generaty.hpp>
 #include <services/collection/collection.hpp>
 
 using namespace components;
-using namespace components::collection;
 
 struct context_t final {
     context_t(log_t& log, std::pmr::memory_resource* resource)
@@ -52,29 +50,6 @@ make_context(log_t& log, std::vector<table::column_definition_t> columns, std::p
 
 inline services::collection::context_collection_t* d(context_ptr& ptr) { return ptr->collection_.get(); }
 
-inline context_ptr create_collection(std::pmr::memory_resource* resource) {
-    static auto log = initialization_logger("python", "/tmp/docker_logs/");
-    log.set_level(log_t::level::trace);
-    return make_context(log, resource);
-}
-
-inline void fill_collection(context_ptr& collection) {
-    std::pmr::vector<document_ptr> documents(collection->resource_);
-    documents.reserve(100);
-    for (int i = 1; i <= 100; ++i) {
-        documents.emplace_back(gen_doc(i, collection->resource_));
-    }
-    operators::operator_insert insert(collection->collection_.get());
-    insert.set_children({new base::operators::operator_raw_data_t(std::move(documents))});
-    insert.on_execute(nullptr);
-}
-
-inline context_ptr init_collection(std::pmr::memory_resource* resource) {
-    auto collection = create_collection(resource);
-    fill_collection(collection);
-    return collection;
-}
-
 inline context_ptr create_table(std::pmr::memory_resource* resource) {
     static auto log = initialization_logger("python", "/tmp/docker_logs/");
     log.set_level(log_t::level::trace);
@@ -90,8 +65,8 @@ inline context_ptr create_table(std::pmr::memory_resource* resource) {
 
 inline void fill_table(context_ptr& table) {
     auto chunk = gen_data_chunk(100, table->resource_);
-    table::operators::operator_insert insert(table->collection_.get());
-    insert.set_children({new base::operators::operator_raw_data_t(std::move(chunk))});
+    operators::operator_insert insert(table->collection_.get());
+    insert.set_children({new operators::operator_raw_data_t(std::move(chunk))});
     insert.on_execute(nullptr);
 }
 
@@ -99,4 +74,16 @@ inline context_ptr init_table(std::pmr::memory_resource* resource) {
     auto table = create_table(resource);
     fill_table(table);
     return table;
+}
+
+inline context_ptr create_collection(std::pmr::memory_resource* resource) {
+    return create_table(resource);
+}
+
+inline void fill_collection(context_ptr& collection) {
+    fill_table(collection);
+}
+
+inline context_ptr init_collection(std::pmr::memory_resource* resource) {
+    return init_table(resource);
 }

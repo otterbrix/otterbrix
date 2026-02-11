@@ -3,7 +3,6 @@
 #include <vector>
 
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/types/logical_value.hpp>
@@ -11,8 +10,6 @@
 namespace components::index {
 
     using components::logical_plan::index_type;
-    using document_ptr = components::document::document_ptr;
-    using doc_t = components::document::document_ptr;
     using key_t = expressions::key_t;
     using components::logical_plan::keys_base_storage_t;
     using id_index = uint32_t;

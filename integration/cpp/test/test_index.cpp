@@ -1,5 +1,7 @@
 #include "test_config.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_insert.hpp>
+#include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
 #include <unistd.h>
@@ -23,33 +25,20 @@ constexpr int kDocuments = 100;
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_collection(session, database_name, collection_name);                                    \
+            auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
+            dispatcher->create_collection(session, database_name, collection_name, types);                             \
         }                                                                                                              \
     } while (false)
 
 #define FILL_COLLECTION()                                                                                              \
     do {                                                                                                               \
-        std::pmr::vector<components::document::document_ptr> documents(dispatcher->resource());                        \
-        for (int num = 1; num <= kDocuments; ++num) {                                                                  \
-            documents.push_back(gen_doc(num, dispatcher->resource()));                                                 \
-        }                                                                                                              \
+        auto chunk = gen_data_chunk(kDocuments, dispatcher->resource());                                               \
+        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),                                  \
+                                                              {database_name, collection_name},                        \
+                                                              std::move(chunk));                                       \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->insert_many(session, database_name, collection_name, documents);                               \
-        }                                                                                                              \
-    } while (false)
-
-#define FILL_COLLECTION_INSERT_ONE()                                                                                   \
-    do {                                                                                                               \
-        std::pmr::vector<components::document::document_ptr> documents(dispatcher->resource());                        \
-        for (int num = 1; num <= kDocuments; ++num) {                                                                  \
-            documents.push_back(gen_doc(num));                                                                         \
-        }                                                                                                              \
-        {                                                                                                              \
-            auto session = otterbrix::session_id_t();                                                                  \
-            for (size_t num = 0; num < documents.size(); ++num) {                                                      \
-                dispatcher->insert_one(session, database_name, collection_name, documents.at(num));                    \
-            }                                                                                                          \
+            dispatcher->execute_plan(session, ins);                                                                    \
         }                                                                                                              \
     } while (false)
 
@@ -152,16 +141,16 @@ TEST_CASE("integration::cpp::test_index::base") {
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(10));
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
             auto c = dispatcher->find(session, plan, params);
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
     }
 }
 
@@ -185,12 +174,12 @@ TEST_CASE("integration::cpp::test_index::save_load") {
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_ALL();
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
     }
 }
 

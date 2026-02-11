@@ -714,6 +714,7 @@ namespace components::table {
     bool column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
+                return impl::fixed_size_check_row<bool>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::INT8:
                 return impl::fixed_size_check_row<int8_t>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::INT16:

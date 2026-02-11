@@ -1,9 +1,6 @@
 #pragma once
 
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <unordered_set>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
@@ -25,14 +22,11 @@ namespace otterbrix {
     public:
         wrapper_client(spaces_ptr space);
         ~wrapper_client();
-        wrapper_database_ptr get_or_create(const std::string& name);
-        auto database_names() -> py::list;
         auto execute(const std::string& query) -> wrapper_cursor_ptr;
 
     private:
         friend class wrapper_connection;
 
-        std::unordered_map<std::string, wrapper_database_ptr> names_;
         const std::string name_;
         spaces_ptr ptr_;
         mutable log_t log_;

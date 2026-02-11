@@ -1,1 +1,1 @@
-from .otterbrix import ObjectId, Client, DataBase, Collection, Connection, Cursor, to_aggregate, TypeIndex
+from .otterbrix import Client, Connection, Cursor, connect, to_aggregate

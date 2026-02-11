@@ -39,7 +39,6 @@ namespace services::collection::executor {
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
         , disk_address_(std::move(disk_address))
-        , plans_(this->resource())
         , log_(log)
         , pending_void_(resource)
         , pending_execute_(resource) {}
@@ -105,9 +104,9 @@ namespace services::collection::executor {
         auto wal_params = components::logical_plan::make_parameter_node(resource());
         wal_params->set_parameters(parameters);
 
-        traverse_plan_(session, std::move(plan), std::move(parameters), std::move(context_storage));
+        auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
 
-        auto result = co_await execute_sub_plan_(session);
+        auto result = co_await execute_sub_plan_(session, std::move(plan_data));
 
         if (result.cursor->is_success() && wal_address_ != actor_zeta::address_t::empty_address()) {
             using namespace components::logical_plan;
@@ -154,10 +153,9 @@ namespace services::collection::executor {
     }
 
 
-    void executor_t::traverse_plan_(const components::session::session_id_t& session,
-                                    components::operators::operator_ptr&& plan,
-                                    components::logical_plan::storage_parameters&& parameters,
-                                    services::context_storage_t&& context_storage) {
+    plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
+                                      components::logical_plan::storage_parameters&& parameters,
+                                      services::context_storage_t&& context_storage) {
         std::stack<components::operators::operator_ptr> look_up;
         std::stack<components::operators::operator_ptr> sub_plans;
         look_up.push(plan);
@@ -179,13 +177,13 @@ namespace services::collection::executor {
 
         trace(log_, "executor::subplans count {}", sub_plans.size());
 
-        plans_.emplace(session, plan_t{std::move(sub_plans), parameters, std::move(context_storage)});
+        return plan_t{std::move(sub_plans), parameters, std::move(context_storage)};
     }
 
     executor_t::unique_future<execute_result_t> executor_t::execute_sub_plan_(
-        const components::session::session_id_t& session) {
+        components::session::session_id_t session,
+        plan_t plan_data) {
 
-        auto& plan_data = plans_.at(session);
         cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
 
@@ -299,7 +297,6 @@ namespace services::collection::executor {
         }
 
         trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());
-        plans_.erase(session);
         co_return execute_result_t{std::move(cursor), std::move(accumulated_updates)};
     }
 

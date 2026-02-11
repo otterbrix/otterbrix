@@ -56,12 +56,12 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        void traverse_plan_(const components::session::session_id_t& session,
-                            components::operators::operator_ptr&& plan,
-                            components::logical_plan::storage_parameters&& parameters,
-                            services::context_storage_t&& context_storage);
+        plan_t traverse_plan_(components::operators::operator_ptr&& plan,
+                              components::logical_plan::storage_parameters&& parameters,
+                              services::context_storage_t&& context_storage);
 
-        unique_future<execute_result_t> execute_sub_plan_(const components::session::session_id_t& session);
+        unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session,
+                                                          plan_t plan_data);
 
         unique_future<components::cursor::cursor_t_ptr> aggregate_document_impl_(
             const components::session::session_id_t& session,
@@ -84,7 +84,6 @@ namespace services::collection::executor {
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
-        plan_storage_t plans_;
         log_t log_;
 
         std::pmr::vector<unique_future<void>> pending_void_;

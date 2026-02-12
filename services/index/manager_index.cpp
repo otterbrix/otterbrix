@@ -35,7 +35,7 @@ namespace services::index {
         }
     }
 
-    void manager_index_t::register_collection_sync(session_id_t session, const collection_full_name_t& name) {
+    void manager_index_t::register_collection_sync(session_id_t /*session*/, const collection_full_name_t& name) {
         trace(log_, "manager_index_t::register_collection_sync: {}", name.to_string());
         auto it = engines_.find(name);
         if (it == engines_.end()) {
@@ -127,7 +127,7 @@ namespace services::index {
     // --- Collection lifecycle ---
 
     manager_index_t::unique_future<void> manager_index_t::register_collection(
-        session_id_t session, collection_full_name_t name) {
+        session_id_t /*session*/, collection_full_name_t name) {
         trace(log_, "manager_index_t::register_collection: {}", name.to_string());
 
         auto it = engines_.find(name);
@@ -138,7 +138,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::unregister_collection(
-        session_id_t session, collection_full_name_t name) {
+        session_id_t /*session*/, collection_full_name_t name) {
         trace(log_, "manager_index_t::unregister_collection: {}", name.to_string());
 
         engines_.erase(name);
@@ -151,7 +151,7 @@ namespace services::index {
     // (in-memory only; disk agent persistence will be added when agents are moved here)
 
     manager_index_t::unique_future<void> manager_index_t::insert_rows(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data,
         uint64_t start_row_id,
@@ -172,7 +172,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::delete_rows(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data,
         std::pmr::vector<size_t> row_ids) {
@@ -191,7 +191,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::update_rows(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> old_data,
         std::unique_ptr<components::vector::data_chunk_t> new_data,
@@ -288,7 +288,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::drop_index(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         index_name_t index_name) {
 
@@ -320,7 +320,7 @@ namespace services::index {
     // --- Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>> manager_index_t::search(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         components::index::keys_base_storage_t keys,
         components::types::logical_value_t value,
@@ -396,7 +396,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<bool> manager_index_t::has_index(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         index_name_t index_name) {
 

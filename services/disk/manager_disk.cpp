@@ -17,16 +17,6 @@ namespace services::disk {
     using namespace core::filesystem;
 
     namespace {
-        std::vector<components::logical_plan::node_create_index_ptr>
-        make_unique(std::vector<components::logical_plan::node_create_index_ptr> indexes) {
-            std::vector<components::logical_plan::node_create_index_ptr> result;
-            result.reserve(indexes.size());
-
-            for (auto&& index : indexes) {
-                result.emplace_back(std::move(index));
-            }
-            return result;
-        }
     } // namespace
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,
@@ -464,28 +454,28 @@ namespace services::disk {
     // --- Storage queries ---
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
-    manager_disk_t::storage_types(session_id_t session, collection_full_name_t name) {
+    manager_disk_t::storage_types(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
         if (!s) co_return std::pmr::vector<components::types::complex_logical_type>(resource());
         co_return s->types();
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(
-        session_id_t session, collection_full_name_t name) {
+        session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
         if (!s) co_return 0;
         co_return s->total_rows();
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_calculate_size(
-        session_id_t session, collection_full_name_t name) {
+        session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
         if (!s) co_return 0;
         co_return s->calculate_size();
     }
 
     manager_disk_t::unique_future<std::vector<components::table::column_definition_t>>
-    manager_disk_t::storage_columns(session_id_t session, collection_full_name_t name) {
+    manager_disk_t::storage_columns(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
         if (!s) co_return std::vector<components::table::column_definition_t>{};
         const auto& cols = s->columns();
@@ -498,14 +488,14 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<bool> manager_disk_t::storage_has_schema(
-        session_id_t session, collection_full_name_t name) {
+        session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
         if (!s) co_return false;
         co_return s->has_schema();
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_adopt_schema(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         std::pmr::vector<components::types::complex_logical_type> types) {
         auto* s = get_storage(name);
         if (s) s->adopt_schema(types);
@@ -516,7 +506,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         std::unique_ptr<components::table::table_filter_t> filter, int limit) {
         auto* s = get_storage(name);
         if (!s) co_return nullptr;
@@ -528,7 +518,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         components::vector::vector_t row_ids, uint64_t count) {
         auto* s = get_storage(name);
         if (!s) co_return nullptr;
@@ -540,7 +530,7 @@ namespace services::disk {
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan_segment(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         int64_t start, uint64_t count) {
         auto* s = get_storage(name);
         if (!s) co_return nullptr;
@@ -553,7 +543,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_append(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
         if (!s || !data || data->size() == 0) co_return 0;
@@ -622,7 +612,7 @@ namespace services::disk {
                     // Build set of existing ids
                     std::unordered_set<std::string> existing_ids;
                     for (uint64_t i = 0; i < existing->size(); i++) {
-                        auto val = existing->data[existing_id_col].value(i);
+                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
                         if (!val.is_null()) {
                             auto sv = val.value<std::string_view>();
                             existing_ids.emplace(sv);
@@ -633,7 +623,7 @@ namespace services::disk {
                     std::vector<uint64_t> keep_rows;
                     keep_rows.reserve(data->size());
                     for (uint64_t i = 0; i < data->size(); i++) {
-                        auto val = data->data[id_col].value(i);
+                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
                         if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
                             keep_rows.push_back(i);
                         }
@@ -664,7 +654,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_update(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         components::vector::vector_t row_ids,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
@@ -673,7 +663,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(
-        session_id_t session, collection_full_name_t name,
+        session_id_t /*session*/, collection_full_name_t name,
         components::vector::vector_t row_ids, uint64_t count) {
         auto* s = get_storage(name);
         if (!s) co_return 0;
@@ -1038,7 +1028,7 @@ namespace services::disk {
                 if (existing_id_col >= 0 && existing->size() > 0) {
                     std::unordered_set<std::string> existing_ids;
                     for (uint64_t i = 0; i < existing->size(); i++) {
-                        auto val = existing->data[existing_id_col].value(i);
+                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
                         if (!val.is_null()) {
                             existing_ids.emplace(val.value<std::string_view>());
                         }
@@ -1046,7 +1036,7 @@ namespace services::disk {
                     std::vector<uint64_t> keep_rows;
                     keep_rows.reserve(data->size());
                     for (uint64_t i = 0; i < data->size(); i++) {
-                        auto val = data->data[id_col].value(i);
+                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
                         if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
                             keep_rows.push_back(i);
                         }

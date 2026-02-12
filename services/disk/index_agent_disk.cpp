@@ -1,23 +1,18 @@
 #include "index_agent_disk.hpp"
-#include "manager_disk.hpp"
-#include "result.hpp"
-#include <services/collection/collection.hpp>
-#include <services/collection/executor.hpp>
 
 namespace services::disk {
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
-                                           manager_disk_t* /*manager*/,
                                            const path_t& path_db,
-                                           collection::context_collection_t* collection,
+                                           collection_full_name_t collection_name,
                                            const index_name_t& index_name,
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(std::make_unique<index_disk_t>(path_db / collection->name().database /
-                                                         collection->name().collection / index_name,
+        , index_disk_(std::make_unique<index_disk_t>(path_db / collection_name.database /
+                                                         collection_name.collection / index_name,
                                                      this->resource()))
-        , collection_(collection) {
+        , collection_name_(std::move(collection_name)) {
         trace(log_, "index_agent_disk::create {}", index_name);
     }
 
@@ -47,8 +42,6 @@ namespace services::disk {
 
     auto index_agent_disk_t::make_type() const noexcept -> const char* { return "index_agent_disk"; }
 
-    const collection_name_t& index_agent_disk_t::collection_name() const { return collection_->name().collection; }
-    collection::context_collection_t* index_agent_disk_t::collection() const { return collection_; }
     bool index_agent_disk_t::is_dropped() const { return is_dropped_; }
 
     index_agent_disk_t::unique_future<void> index_agent_disk_t::drop(session_id_t session) {

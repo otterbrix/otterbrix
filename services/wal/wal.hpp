@@ -24,6 +24,7 @@
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_update.hpp>
 
 namespace services::wal {
@@ -67,6 +68,8 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session,
                                          components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session,
+                                        components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_replicate_t::load,
@@ -80,7 +83,8 @@ namespace services::wal {
             &wal_replicate_t::delete_many,
             &wal_replicate_t::update_one,
             &wal_replicate_t::update_many,
-            &wal_replicate_t::create_index
+            &wal_replicate_t::create_index,
+            &wal_replicate_t::drop_index
         >;
 
         auto make_type() const noexcept -> const char*;

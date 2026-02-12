@@ -4,8 +4,8 @@
 
 namespace components::operators {
 
-    aggregation::aggregation(services::collection::context_collection_t* context)
-        : read_only_operator_t(context, operator_type::aggregate) {}
+    aggregation::aggregation(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name)
+        : read_only_operator_t(resource, log, std::move(name), operator_type::aggregate) {}
 
     void aggregation::set_match(operator_ptr&& match) { match_ = std::move(match); }
 
@@ -26,7 +26,7 @@ namespace components::operators {
         } else {
             executor = match_ ? std::move(match_)
                               : static_cast<operator_ptr>(boost::intrusive_ptr(
-                                    new transfer_scan(context_, logical_plan::limit_t::unlimit())));
+                                    new transfer_scan(resource_, name_, logical_plan::limit_t::unlimit())));
         }
         if (group_) {
             group_->set_children(std::move(executor));

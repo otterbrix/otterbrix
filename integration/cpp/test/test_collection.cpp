@@ -12,8 +12,6 @@ using components::expressions::compare_type;
 using components::expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
-using services::collection::context_collection_t;
-
 template<typename T>
 using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
 

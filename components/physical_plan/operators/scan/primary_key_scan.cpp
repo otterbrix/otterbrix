@@ -1,27 +1,20 @@
 #include "primary_key_scan.hpp"
 
-#include <services/collection/collection.hpp>
-
 namespace components::operators {
 
-    primary_key_scan::primary_key_scan(services::collection::context_collection_t* context)
-        : read_only_operator_t(context, operator_type::match)
-        , rows_(context->resource(), types::logical_type::BIGINT) {}
+    primary_key_scan::primary_key_scan(std::pmr::memory_resource* resource,
+                                       collection_full_name_t name)
+        : read_only_operator_t(resource, nullptr, std::move(name), operator_type::match)
+        , rows_(resource, types::logical_type::BIGINT) {}
 
     void primary_key_scan::append(size_t id) {
-        rows_.set_value(size_++, types::logical_value_t(context_->resource(), static_cast<int64_t>(id)));
+        rows_.set_value(size_++, types::logical_value_t(resource(), static_cast<int64_t>(id)));
     }
 
-    void primary_key_scan::on_execute_impl(pipeline::context_t*) {
-        auto types = context_->table_storage().table().copy_types();
-        output_ = operators::make_operator_data(context_->resource(), types);
-        table::column_fetch_state state;
-        std::vector<table::storage_index_t> column_indices;
-        column_indices.reserve(context_->table_storage().table().column_count());
-        for (size_t i = 0; i < context_->table_storage().table().column_count(); i++) {
-            column_indices.emplace_back(static_cast<int64_t>(i));
-        }
-        context_->table_storage().table().fetch(output_->data_chunk(), column_indices, rows_, rows_.size(), state);
+    void primary_key_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
+        // Primary key scan is now handled by executor via:
+        //   send(disk_address_, &manager_disk_t::storage_fetch) → data_chunk
+        // This operator is a no-op; data is injected via inject_output().
     }
 
 } // namespace components::operators

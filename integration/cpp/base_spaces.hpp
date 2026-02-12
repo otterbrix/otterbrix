@@ -24,6 +24,11 @@ namespace services {
         using manager_disk_empty_ptr = std::unique_ptr<manager_disk_empty_t, actor_zeta::pmr::deleter_t>;
     } // namespace disk
 
+    namespace index {
+        class manager_index_t;
+        using manager_index_ptr = std::unique_ptr<manager_index_t, actor_zeta::pmr::deleter_t>;
+    } // namespace index
+
     namespace wal {
         class manager_wal_replicate_t;
         class manager_wal_replicate_empty_t;
@@ -55,6 +60,7 @@ namespace otterbrix {
         std::variant<std::monostate, services::disk::manager_disk_empty_ptr, services::disk::manager_disk_ptr>
             manager_disk_;
         std::variant<std::monostate, services::wal::manager_wal_empty_ptr, services::wal::manager_wal_ptr> manager_wal_;
+        services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
 

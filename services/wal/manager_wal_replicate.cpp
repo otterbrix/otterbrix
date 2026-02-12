@@ -113,6 +113,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_index, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_index, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -277,6 +281,17 @@ namespace services::wal {
         co_return co_await std::move(future);
     }
 
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::drop_index(
+        session_id_t session,
+        components::logical_plan::node_drop_index_ptr data) {
+        trace(log_, "manager_wal_replicate_t::drop_index");
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_index, session, std::move(data));
+        if (needs_sched) {
+            scheduler_->enqueue(dispatchers_[0].get());
+        }
+        co_return co_await std::move(future);
+    }
+
     manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* resource,
                                                                  actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
                                                                  log_t& log)
@@ -341,6 +356,10 @@ namespace services::wal {
             }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_index>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_index, msg);
                 break;
             }
             default:
@@ -433,6 +452,12 @@ namespace services::wal {
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_index(
         session_id_t /*session*/, components::logical_plan::node_create_index_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_index - return success");
+        co_return services::wal::id_t{0};
+    }
+
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_index(
+        session_id_t /*session*/, components::logical_plan::node_drop_index_ptr /*data*/) {
+        trace(log_, "manager_wal_replicate_empty_t::drop_index - return success");
         co_return services::wal::id_t{0};
     }
 

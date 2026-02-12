@@ -2,6 +2,7 @@
 
 #include <components/base/collection_full_name.hpp>
 #include <components/context/context.hpp>
+#include <components/log/log.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <actor-zeta/detail/future.hpp>
@@ -9,10 +10,6 @@
 namespace components::expressions {
     class key_t;
 }
-
-namespace services::collection {
-    class context_collection_t;
-} // namespace services::collection
 
 namespace components::operators {
 
@@ -27,9 +24,7 @@ namespace components::operators {
         sort,
         join,
         aggregate,
-        raw_data,
-        add_index,
-        drop_index
+        raw_data
     };
 
     enum class operator_state
@@ -50,8 +45,14 @@ namespace components::operators {
         operator_t(operator_t&&) = default;
         operator_t& operator=(const operator_t&) = delete;
         operator_t& operator=(operator_t&&) = default;
-        operator_t(services::collection::context_collection_t* collection, operator_type type);
+
+        operator_t(std::pmr::memory_resource* resource, log_t* log,
+                   collection_full_name_t name, operator_type type);
+
         virtual ~operator_t() = default;
+
+        // Prepare the operator tree (connects children) without executing
+        void prepare();
 
         // TODO fwd
         void on_execute(pipeline::context_t* pipeline_context);
@@ -68,9 +69,9 @@ namespace components::operators {
         ptr find_waiting_operator();
 
         const collection_full_name_t& collection_name() const noexcept;
-        services::collection::context_collection_t* context() noexcept;
 
         virtual std::pmr::memory_resource* resource() const noexcept;
+        log_t& log() noexcept;
 
         [[nodiscard]] ptr left() const noexcept;
         [[nodiscard]] ptr right() const noexcept;
@@ -81,10 +82,14 @@ namespace components::operators {
         const operator_write_data_ptr& no_modified() const;
         void set_children(ptr left, ptr right = nullptr);
         void take_output(ptr& src);
+        void inject_output(operator_data_ptr data);
         void clear(); //todo: replace by copy
 
     protected:
-        services::collection::context_collection_t* context_;
+        std::pmr::memory_resource* resource_;
+        log_t* log_;
+        collection_full_name_t name_;
+
         ptr left_{nullptr};
         ptr right_{nullptr};
         operator_data_ptr output_{nullptr};
@@ -99,11 +104,13 @@ namespace components::operators {
         operator_type type_;
         operator_state state_{operator_state::created};
         bool root{false};
+        bool prepared_{false};
     };
 
     class read_only_operator_t : public operator_t {
     public:
-        read_only_operator_t(services::collection::context_collection_t* collection, operator_type type);
+        read_only_operator_t(std::pmr::memory_resource* resource, log_t* log,
+                             collection_full_name_t name, operator_type type);
     };
 
     enum class read_write_operator_state
@@ -117,7 +124,8 @@ namespace components::operators {
 
     class read_write_operator_t : public operator_t {
     public:
-        read_write_operator_t(services::collection::context_collection_t* collection, operator_type type);
+        read_write_operator_t(std::pmr::memory_resource* resource, log_t* log,
+                              collection_full_name_t name, operator_type type);
         //todo:
         //void commit();
         //void rollback();

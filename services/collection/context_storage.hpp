@@ -1,15 +1,19 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <unordered_map>
+#include <components/log/log.hpp>
+#include <unordered_set>
 
 namespace services {
 
-    namespace collection {
-        class context_collection_t;
-    }
+    struct context_storage_t {
+        std::pmr::memory_resource* resource = nullptr;
+        log_t* log = nullptr;
+        std::unordered_set<collection_full_name_t, collection_name_hash> known_collections;
 
-    using context_storage_t =
-        std::unordered_map<collection_full_name_t, collection::context_collection_t*, collection_name_hash>;
+        bool has_collection(const collection_full_name_t& name) const {
+            return known_collections.count(name) > 0;
+        }
+    };
 
 } //namespace services

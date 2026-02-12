@@ -2,39 +2,31 @@
 
 #include <components/physical_plan/operators/operator_raw_data.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/tests/generaty.hpp>
-#include <services/collection/collection.hpp>
+#include <components/base/collection_full_name.hpp>
+#include <components/log/log.hpp>
 
 using namespace components;
 
 struct context_t final {
     context_t(log_t& log, std::pmr::memory_resource* resource)
-        : context_t(log, std::vector<table::column_definition_t>{}, resource) {}
-
-    context_t(log_t& log, std::vector<table::column_definition_t> columns, std::pmr::memory_resource* resource)
         : resource_(resource)
-        , collection_([this](auto& log, auto&& columns) {
-            collection_full_name_t name;
-            name.database = "TestDatabase";
-            name.collection = "TestCollection";
-            auto allocate_byte = sizeof(services::collection::context_collection_t);
-            auto allocate_byte_alignof = alignof(services::collection::context_collection_t);
-            void* buffer = resource_->allocate(allocate_byte, allocate_byte_alignof);
-            auto* collection = new (buffer) services::collection::context_collection_t(
-                resource_,
-                name,
-                std::forward<std::vector<table::column_definition_t>>(columns),
-                actor_zeta::address_t::empty_address(),
-                log);
-            return std::unique_ptr<services::collection::context_collection_t, actor_zeta::pmr::deleter_t>(
-                collection,
-                actor_zeta::pmr::deleter_t(resource_));
-        }(log, std::move(columns))) {}
+        , log_(log) {
+        name_.database = "TestDatabase";
+        name_.collection = "TestCollection";
+    }
 
     ~context_t() = default;
 
     std::pmr::memory_resource* resource_;
-    std::unique_ptr<services::collection::context_collection_t, actor_zeta::pmr::deleter_t> collection_;
+    log_t& log_;
+    collection_full_name_t name_;
+
+    /// Data chunk that serves as the "table" for operator unit tests.
+    /// Since operators are now pure logic (no table access), we store data here
+    /// and inject it into scan operators before execution.
+    std::unique_ptr<vector::data_chunk_t> stored_data_;
 };
 
 using context_ptr = std::unique_ptr<context_t>;
@@ -43,31 +35,35 @@ inline context_ptr make_context(log_t& log, std::pmr::memory_resource* resource)
     return std::make_unique<context_t>(log, resource);
 }
 
-inline context_ptr
-make_context(log_t& log, std::vector<table::column_definition_t> columns, std::pmr::memory_resource* resource) {
-    return std::make_unique<context_t>(log, std::move(columns), resource);
-}
-
-inline services::collection::context_collection_t* d(context_ptr& ptr) { return ptr->collection_.get(); }
-
 inline context_ptr create_table(std::pmr::memory_resource* resource) {
     static auto log = initialization_logger("python", "/tmp/docker_logs/");
     log.set_level(log_t::level::trace);
-    auto temp_chunk = gen_data_chunk(0, resource);
-    auto types = temp_chunk.types();
-    std::vector<table::column_definition_t> columns;
-    columns.reserve(types.size());
-    for (size_t i = 0; i < types.size(); i++) {
-        columns.emplace_back(types[i].alias(), types[i]);
-    }
-    return make_context(log, std::move(columns), resource);
+    return make_context(log, resource);
 }
 
 inline void fill_table(context_ptr& table) {
     auto chunk = gen_data_chunk(100, table->resource_);
-    operators::operator_insert insert(table->collection_.get());
-    insert.set_children({new operators::operator_raw_data_t(std::move(chunk))});
-    insert.on_execute(nullptr);
+    // Store data for later injection into scan operators
+    table->stored_data_ = std::make_unique<vector::data_chunk_t>(
+        table->resource_, chunk.types(), chunk.size());
+    chunk.copy(*table->stored_data_, 0);
+}
+
+/// Inject the stored data into an operator as if it came from a scan.
+/// This simulates what executor::intercept_scan_ does.
+inline void inject_scan_data(context_ptr& table, operators::operator_t& scan_op) {
+    if (table->stored_data_) {
+        auto data_copy = std::make_unique<vector::data_chunk_t>(
+            table->resource_, table->stored_data_->types(), table->stored_data_->size());
+        table->stored_data_->copy(*data_copy, 0);
+        scan_op.inject_output(
+            operators::make_operator_data(table->resource_, std::move(*data_copy)));
+    }
+}
+
+/// Get the size of the stored data (replaces table_storage().table().calculate_size()).
+inline size_t stored_data_size(context_ptr& table) {
+    return table->stored_data_ ? table->stored_data_->size() : 0;
 }
 
 inline context_ptr init_table(std::pmr::memory_resource* resource) {

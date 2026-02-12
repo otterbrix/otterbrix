@@ -17,6 +17,7 @@ add_subdirectory(sql)
 add_subdirectory(types)
 add_subdirectory(vector)
 add_subdirectory(table)
+add_subdirectory(storage)
 
 if (DEV_MODE)
     add_subdirectory(tests)

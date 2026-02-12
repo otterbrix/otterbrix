@@ -75,6 +75,7 @@ namespace services::wal {
                                         components::logical_plan::node_update_ptr data,
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -89,7 +90,8 @@ namespace services::wal {
             &manager_wal_replicate_t::delete_many,
             &manager_wal_replicate_t::update_one,
             &manager_wal_replicate_t::update_many,
-            &manager_wal_replicate_t::create_index
+            &manager_wal_replicate_t::create_index,
+            &manager_wal_replicate_t::drop_index
         >;
 
     private:
@@ -152,6 +154,7 @@ namespace services::wal {
                                         components::logical_plan::node_update_ptr data,
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -166,7 +169,8 @@ namespace services::wal {
             &manager_wal_replicate_empty_t::delete_many,
             &manager_wal_replicate_empty_t::update_one,
             &manager_wal_replicate_empty_t::update_many,
-            &manager_wal_replicate_empty_t::create_index
+            &manager_wal_replicate_empty_t::create_index,
+            &manager_wal_replicate_empty_t::drop_index
         >;
 
     private:

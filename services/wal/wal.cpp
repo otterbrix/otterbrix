@@ -13,6 +13,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -115,6 +116,10 @@ namespace services::wal {
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_index>: {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_index, msg);
                 break;
             }
             default:
@@ -316,6 +321,19 @@ namespace services::wal {
     ) {
         trace(log_,
               "wal_replicate_t::create_index {}::{}, session: {}",
+              data->collection_full_name().database,
+              data->collection_full_name().collection,
+              session.data());
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
+        co_return services::wal::id_t(id_);
+    }
+
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_index(
+        session_id_t session,
+        components::logical_plan::node_drop_index_ptr data
+    ) {
+        trace(log_,
+              "wal_replicate_t::drop_index {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());

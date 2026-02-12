@@ -13,9 +13,8 @@ namespace services::planner::impl {
                                                                  components::logical_plan::limit_t limit) {
         // TODO: figure out key translation
         auto plan = boost::intrusive_ptr(
-            //new components::operators::operator_insert(context.at(node->collection_full_name()),
-            //                                                       insert->key_translation()));
-            new components::operators::operator_insert(context.at(node->collection_full_name())));
+            new components::operators::operator_insert(
+                context.resource, context.log, node->collection_full_name()));
         plan->set_children(create_plan(context, node->children().front(), std::move(limit)));
 
         return plan;

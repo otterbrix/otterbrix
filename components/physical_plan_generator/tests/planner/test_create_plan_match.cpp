@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/physical_plan/tests/operators/test_operator_generaty.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <services/collection/context_storage.hpp>
 
 using namespace components::logical_plan;
 using namespace components::expressions;
@@ -21,9 +22,12 @@ TEST_CASE("components::physical_plan_generator::match") {
     {
         auto node_match = make_node_match(&resource, get_name(), nullptr);
         services::context_storage_t context;
-        context.emplace(get_name(), d(collection));
+        context.resource = &resource;
+        context.log = &collection->log_;
+        context.known_collections.insert(get_name());
         auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
-        plan->on_execute(nullptr);
+        // transfer_scan is a no-op; inject data to simulate executor behavior
+        inject_scan_data(collection, *plan);
         REQUIRE(plan->output()->size() == 100);
     }
     {
@@ -34,7 +38,9 @@ TEST_CASE("components::physical_plan_generator::match") {
                                                                   key(&resource, "key", side_t::left),
                                                                   core::parameter_id_t(1)));
         services::context_storage_t context;
-        context.emplace(get_name(), d(collection));
+        context.resource = &resource;
+        context.log = &collection->log_;
+        context.known_collections.insert(get_name());
         auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
         REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
     }

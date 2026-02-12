@@ -7,8 +7,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
-        operators/operator_add_index.cpp
-        operators/operator_drop_index.cpp
 
         operators/aggregate/aggregate_helpers.cpp
         operators/aggregate/operator_aggregate.cpp

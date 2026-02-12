@@ -1,16 +1,17 @@
 #include "operator_delete.hpp"
 #include "predicates/predicate.hpp"
-#include <services/collection/collection.hpp>
 
 namespace components::operators {
 
-    operator_delete::operator_delete(services::collection::context_collection_t* context,
+    operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t* log,
+                                     collection_full_name_t name,
                                      expressions::compare_expression_ptr expr)
-        : read_write_operator_t(context, operator_type::remove)
+        : read_write_operator_t(resource, log, std::move(name), operator_type::remove)
         , compare_expression_(std::move(expr)) {}
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // TODO: worth to create separate update_join operator or mutable_join with callback
+        // Predicate matching only — table.delete_rows() is now handled by executor via
+        // send(disk_address_, &manager_disk_t::storage_delete_rows).
         if (left_ && left_->output() && right_ && right_->output()) {
             modified_ = operators::make_operator_write_data(left_->output()->resource());
             auto& chunk_left = left_->output()->data_chunk();
@@ -24,7 +25,7 @@ namespace components::operators {
                                                                                 types_left,
                                                                                 types_right,
                                                                                 &pipeline_context->parameters)
-                                                 : predicates::create_all_true_predicate(output_->resource());
+                                                 : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -38,12 +39,9 @@ namespace components::operators {
                     }
                 }
             }
-            auto state = context_->table_storage().table().initialize_delete({});
-            context_->table_storage().table().delete_rows(*state, ids, index);
             for (size_t i = 0; i < index; i++) {
                 size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
                 modified_->append(id);
-                context_->index_engine()->delete_row(chunk_left, id, pipeline_context);
             }
             for (const auto& type : types_left) {
                 modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
@@ -73,12 +71,9 @@ namespace components::operators {
                 }
             }
             ids.resize(chunk.size(), index);
-            auto state = context_->table_storage().table().initialize_delete({});
-            context_->table_storage().table().delete_rows(*state, ids, index);
             for (size_t i = 0; i < index; i++) {
                 size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
                 modified_->append(id);
-                context_->index_engine()->delete_row(chunk, i, pipeline_context);
             }
             for (const auto& type : types) {
                 modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=

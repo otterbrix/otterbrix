@@ -6,7 +6,7 @@ namespace components::operators {
 
     class aggregation final : public read_only_operator_t {
     public:
-        explicit aggregation(services::collection::context_collection_t* context);
+        aggregation(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name);
 
         void set_match(operator_ptr&& match);
         void set_group(operator_ptr&& group);

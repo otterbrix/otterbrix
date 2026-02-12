@@ -1,154 +1,123 @@
 #include "index_scan.hpp"
-#include <services/disk/index_agent_disk.hpp>
-#include <services/disk/manager_disk.hpp>
-#include <services/collection/collection.hpp>
-#include <core/executor.hpp>
+
+#include <components/index/index.hpp>
+#include <components/index/index_engine.hpp>
 
 namespace components::operators {
 
-    using range = index::index_t::range;
-
-    std::vector<range> search_range_by_index(index::index_t* index,
-                                             const expressions::compare_expression_ptr& expr,
-                                             const logical_plan::storage_parameters* parameters) {
-        using expressions::compare_type;
-        using logical_plan::get_parameter;
-        auto value = get_parameter(parameters, expr->value());
-        switch (expr->type()) {
-            case compare_type::eq:
-                return {index->find(value)};
-            case compare_type::ne:
-                return {index->lower_bound(value), index->upper_bound(value)};
-            case compare_type::gt:
-                return {index->upper_bound(value)};
-            case compare_type::lt:
-                return {index->lower_bound(value)};
-            case compare_type::gte:
-                return {index->find(value), index->upper_bound(value)};
-            case compare_type::lte:
-                return {index->lower_bound(value), index->find(value)};
-            default:
-                //todo: error
-                return {{index->cend(), index->cend()}, {index->cend(), index->cend()}};
-        }
-    }
-
-    operators::operator_data_ptr search_by_index(index::index_t* index,
-                                                       const expressions::compare_expression_ptr& expr,
-                                                       const logical_plan::limit_t& limit,
-                                                       const logical_plan::storage_parameters* parameters,
-                                                       table::data_table_t& table) {
-        auto ranges = search_range_by_index(index, expr, parameters);
-        size_t rows = 0;
-        for (const auto& range : ranges) {
-            rows += static_cast<size_t>(std::distance(range.first, range.second));
-        }
-        size_t count = 0;
-        rows = limit.limit() == logical_plan::limit_t::unlimit().limit()
-                   ? rows
-                   : std::min(rows, static_cast<size_t>(limit.limit()));
-        vector::vector_t row_ids(index->resource(), types::logical_type::BIGINT, rows);
-        for (const auto& range : ranges) {
-            for (auto it = range.first; it != range.second; ++it) {
-                if (!limit.check(static_cast<int>(count))) {
-                    break;
-                }
-                row_ids.set_value(count, types::logical_value_t{index->resource(), it->row_index});
-                ++count;
-            }
-        }
-
-        table::column_fetch_state state;
-        std::vector<table::storage_index_t> column_indices;
-        column_indices.reserve(table.column_count());
-        for (size_t i = 0; i < table.column_count(); i++) {
-            column_indices.emplace_back(static_cast<int64_t>(i));
-        }
-
-        auto result = operators::make_operator_data(index->resource(), table.copy_types(), rows);
-        table.fetch(result->data_chunk(), column_indices, row_ids, rows, state);
-        result->data_chunk().row_ids = row_ids;
-        return result;
-    }
-
-    index_scan::index_scan(services::collection::context_collection_t* context,
-                           expressions::compare_expression_ptr expr,
+    index_scan::index_scan(std::pmr::memory_resource* resource, log_t* log,
+                           collection_full_name_t name,
+                           index::index_engine_ptr& index_engine,
+                           const expressions::compare_expression_ptr& expr,
                            logical_plan::limit_t limit)
-        : read_only_operator_t(context, operator_type::match)
-        , expr_(std::move(expr))
+        : read_only_operator_t(resource, log, std::move(name), operator_type::match)
+        , index_engine_(&index_engine)
+        , expr_(expr)
         , limit_(limit) {}
 
     void index_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
-        trace(context_->log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
-        auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
-        context_->table_storage().table();
-        if (index && index->is_disk() && index->disk_manager()) {
-            trace(context_->log(), "index_scan: send query into disk (future-based)");
-            auto value = logical_plan::get_parameter(&pipeline_context->parameters, expr_->value());
-            auto session_copy = pipeline_context->session;
-            auto agent_copy = index->disk_agent();
-            auto value_copy = value;
-            auto [_, future] = actor_zeta::send(index->disk_manager(),
-                                           &services::disk::manager_disk_t::index_find_by_agent,
-                                           std::move(session_copy),
-                                           std::move(agent_copy),
-                                           std::move(value_copy),
-                                           expr_->type());
+        if (log_) {
+            trace(log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
+        }
 
-            bool tmp_disk_future_ready_ = future.available();
-            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
-            disk_future_ready_ = tmp_disk_future_ready_;
-            async_wait();
-        } else {
-            trace(context_->log(), "index_scan: prepare result");
-            if (!limit_.check(0)) {
-                return; //limit = 0
+        // In production, executor intercepts scans via intercept_scan_() and injects data
+        // before on_execute_impl runs, so output_ is already set.
+        // For unit tests (no executor), do local index lookup when index_engine_ is available
+        // and left_ child provides the full table data.
+        if (!index_engine_ || !*index_engine_ || !left_ || !left_->output()) {
+            return;
+        }
+
+        auto* idx = index::search_index(*index_engine_, {expr_->primary_key()});
+        if (!idx) return;
+
+        // Get compare value from parameters
+        auto& value = pipeline_context->parameters.parameters.at(expr_->value());
+
+        // Search index based on compare type
+        std::vector<int64_t> row_ids;
+        using expressions::compare_type;
+        switch (expr_->type()) {
+            case compare_type::eq: {
+                auto range = idx->find(value);
+                for (auto it = range.first; it != range.second; ++it) {
+                    row_ids.push_back(it->row_index);
+                }
+                break;
             }
-            if (index) {
-                output_ = search_by_index(index,
-                                          expr_,
-                                          limit_,
-                                          &pipeline_context->parameters,
-                                          context_->table_storage().table());
-            } else {
-                output_ = operators::make_operator_data(context_->resource(),
-                                                              context_->table_storage().table().copy_types());
+            case compare_type::lt: {
+                // lower_bound returns (cbegin, first_>=_value), iterate the range for < value
+                auto range = idx->lower_bound(value);
+                for (auto it = range.first; it != range.second; ++it) {
+                    row_ids.push_back(it->row_index);
+                }
+                break;
             }
+            case compare_type::lte: {
+                // upper_bound returns (first_>_value, cend), iterate from cbegin to first_>_value for <= value
+                auto ub = idx->upper_bound(value);
+                for (auto it = idx->cbegin(); it != ub.first; ++it) {
+                    row_ids.push_back(it->row_index);
+                }
+                break;
+            }
+            case compare_type::gt: {
+                // upper_bound returns (first_>_value, cend), iterate the range for > value
+                auto range = idx->upper_bound(value);
+                for (auto it = range.first; it != range.second; ++it) {
+                    row_ids.push_back(it->row_index);
+                }
+                break;
+            }
+            case compare_type::gte: {
+                // lower_bound returns (cbegin, first_>=_value), iterate from first_>=_value to cend for >= value
+                auto lb = idx->lower_bound(value);
+                for (auto it = lb.second; it != idx->cend(); ++it) {
+                    row_ids.push_back(it->row_index);
+                }
+                break;
+            }
+            case compare_type::ne: {
+                auto eq_range = idx->find(value);
+                for (auto it = idx->cbegin(); it != idx->cend(); ++it) {
+                    bool in_eq = false;
+                    for (auto eq_it = eq_range.first; eq_it != eq_range.second; ++eq_it) {
+                        if (eq_it->row_index == it->row_index) {
+                            in_eq = true;
+                            break;
+                        }
+                    }
+                    if (!in_eq) {
+                        row_ids.push_back(it->row_index);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
         }
-    }
 
-    void index_scan::on_resume_impl(pipeline::context_t* pipeline_context) {
-        trace(context_->log(), "resume index_scan by field \"{}\"", expr_->primary_key().as_string());
-        auto* index = index::search_index(context_->index_engine(), {expr_->primary_key()});
-
-        if (index && index->is_disk() && !disk_result_.empty()) {
-            trace(context_->log(), "index_scan: disk result received, size: {}", disk_result_.size());
+        // Apply limit
+        size_t count = row_ids.size();
+        int limit_val = limit_.limit();
+        if (limit_val >= 0) {
+            count = std::min(count, static_cast<size_t>(limit_val));
         }
 
-        trace(context_->log(), "index_scan: prepare result");
-        if (!limit_.check(0)) {
-            return; //limit = 0
-        }
-        if (index) {
-            output_ = search_by_index(index,
-                                      expr_,
-                                      limit_,
-                                      &pipeline_context->parameters,
-                                      context_->table_storage().table());
-        } else {
-            output_ = operators::make_operator_data(context_->resource(),
-                                                          context_->table_storage().table().copy_types());
-        }
-    }
+        // Build output from source data
+        auto& source_chunk = left_->output()->data_chunk();
+        auto types = source_chunk.types();
+        output_ = operators::make_operator_data(resource_, types, count);
+        auto& out_chunk = output_->data_chunk();
 
-    actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (disk_future_) {
-            trace(context_->log(), "index_scan: await disk future (unique_future)");
-            disk_result_ = co_await std::move(*disk_future_);
-            trace(context_->log(), "index_scan: disk future resolved, result size: {}", disk_result_.size());
+        for (size_t i = 0; i < count; i++) {
+            auto row_id = static_cast<size_t>(row_ids[i]);
+            for (size_t j = 0; j < source_chunk.column_count(); j++) {
+                out_chunk.set_value(j, i, source_chunk.value(j, row_id));
+            }
+            out_chunk.row_ids.data<int64_t>()[i] = row_ids[i];
         }
-        on_resume(ctx);
-        co_return;
+        out_chunk.set_cardinality(count);
     }
 
 } // namespace components::operators

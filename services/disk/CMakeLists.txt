@@ -35,6 +35,7 @@ target_link_libraries(
     otterbrix_${PROJECT_NAME} PUBLIC
     otterbrix::file
     otterbrix::collection
+    otterbrix::storage
     otterbrix::b_plus_tree
     otterbrix::locks
     spdlog::spdlog

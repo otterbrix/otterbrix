@@ -18,29 +18,38 @@ using components::logical_plan::add_parameter;
 TEST_CASE("components::physical_plan::group::base") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto table = init_table(&resource);
+    auto* res = table->resource_;
+    auto* lg = &table->log_;
+    auto& name = table->name_;
 
     SECTION("base::all::no_valid") {
-        operators::operator_group_t group(d(table));
-        group.set_children(
-            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
+        inject_scan_data(table, *scan_ptr);
+
+        operators::operator_group_t group(res, lg, name);
+        group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("id_", operators::get::simple_value_t::create(key(&resource, "id_")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 0);
     }
 
     SECTION("base::all::id") {
-        operators::operator_group_t group(d(table));
-        group.set_children(
-            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
+        inject_scan_data(table, *scan_ptr);
+
+        operators::operator_group_t group(res, lg, name);
+        group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("_id", operators::get::simple_value_t::create(key(&resource, "_id")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 100);
     }
 
     SECTION("base::all::count_bool") {
-        operators::operator_group_t group(d(table));
-        group.set_children(
-            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
+        inject_scan_data(table, *scan_ptr);
+
+        operators::operator_group_t group(res, lg, name);
+        group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
         group.on_execute(nullptr);
         REQUIRE(group.output()->size() == 2);
@@ -50,21 +59,26 @@ TEST_CASE("components::physical_plan::group::base") {
 TEST_CASE("components::physical_plan::group::sort") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto table = init_table(&resource);
+    auto* res = table->resource_;
+    auto* lg = &table->log_;
+    auto& name = table->name_;
 
     SECTION("sort::all") {
-        auto group = boost::intrusive_ptr(new operators::operator_group_t(d(table)));
-        group->set_children(
-            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
+        inject_scan_data(table, *scan_ptr);
+
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg, name));
+        group->set_children(boost::intrusive_ptr(scan_ptr));
         group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
-        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(d(table)));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg, name));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);
         REQUIRE(sort->output()->size() == 2);
 
         const auto& chunk = sort->output()->data_chunk();
-        auto val0 = chunk.value(0, 0);  // First row, first column (count_bool)
-        auto val1 = chunk.value(0, 1);  // Second row, first column (count_bool)
+        auto val0 = chunk.value(0, 0);
+        auto val1 = chunk.value(0, 1);
         REQUIRE(val0.value<bool>() == false);
         REQUIRE(val1.value<bool>() == true);
     }
@@ -73,22 +87,27 @@ TEST_CASE("components::physical_plan::group::sort") {
 TEST_CASE("components::physical_plan::group::all") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto table = init_table(&resource);
+    auto* res = table->resource_;
+    auto* lg = &table->log_;
+    auto& name = table->name_;
 
     SECTION("aggregate::all") {
-        auto group = boost::intrusive_ptr(new operators::operator_group_t(d(table)));
-        group->set_children(
-            boost::intrusive_ptr(new operators::transfer_scan(d(table), logical_plan::limit_t::unlimit())));
+        auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
+        inject_scan_data(table, *scan_ptr);
+
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg, name));
+        group->set_children(boost::intrusive_ptr(scan_ptr));
         group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
 
-        group->add_value("cnt", boost::intrusive_ptr(new operators::aggregate::operator_count_t(d(table))));
+        group->add_value("cnt", boost::intrusive_ptr(new operators::aggregate::operator_count_t(res, lg, name)));
         group->add_value(
             "sum",
-            boost::intrusive_ptr(new operators::aggregate::operator_sum_t(d(table), key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_sum_t(res, lg, name, key(&resource, "count"))));
         group->add_value(
             "avg",
-            boost::intrusive_ptr(new operators::aggregate::operator_avg_t(d(table), key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_avg_t(res, lg, name, key(&resource, "count"))));
 
-        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(d(table)));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg, name));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);

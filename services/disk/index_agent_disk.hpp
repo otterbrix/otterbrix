@@ -17,16 +17,9 @@
 #include <core/btree/btree.hpp>
 #include <filesystem>
 
-namespace services::collection {
-    class context_collection_t;
-}
-
 namespace services::disk {
 
-    class manager_disk_t;
     using index_name_t = std::string;
-
-    class base_manager_disk_t;
 
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
@@ -39,15 +32,13 @@ namespace services::disk {
         using unique_future = actor_zeta::unique_future<T>;
 
         index_agent_disk_t(std::pmr::memory_resource* resource,
-                           manager_disk_t* manager,
                            const path_t& path_db,
-                           collection::context_collection_t* collection,
+                           collection_full_name_t collection_name,
                            const index_name_t& index_name,
                            log_t& log);
         ~index_agent_disk_t();
 
-        const collection_name_t& collection_name() const;
-        collection::context_collection_t* collection() const;
+        const collection_full_name_t& collection_name() const { return collection_name_; }
         bool is_dropped() const;
 
         unique_future<void> drop(session_id_t session);
@@ -71,7 +62,7 @@ namespace services::disk {
     private:
         log_t log_;
         std::unique_ptr<index_disk_t> index_disk_;
-        collection::context_collection_t* collection_;
+        collection_full_name_t collection_name_;
         bool is_dropped_{false};
     };
 

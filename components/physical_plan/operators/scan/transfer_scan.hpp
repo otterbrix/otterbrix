@@ -7,7 +7,10 @@ namespace components::operators {
 
     class transfer_scan final : public read_only_operator_t {
     public:
-        transfer_scan(services::collection::context_collection_t* collection, logical_plan::limit_t limit);
+        transfer_scan(std::pmr::memory_resource* resource, collection_full_name_t name,
+                      logical_plan::limit_t limit);
+
+        const logical_plan::limit_t& limit() const { return limit_; }
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;

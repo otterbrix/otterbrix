@@ -1,7 +1,6 @@
 #include "full_scan.hpp"
 
 #include <components/physical_plan/operators/transformation.hpp>
-#include <services/collection/collection.hpp>
 
 namespace components::operators {
 
@@ -73,37 +72,17 @@ namespace components::operators {
         }
     }
 
-    full_scan::full_scan(services::collection::context_collection_t* context,
+    full_scan::full_scan(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
-        : read_only_operator_t(context, operator_type::match)
+        : read_only_operator_t(resource, log, std::move(name), operator_type::match)
         , expression_(expression)
         , limit_(limit) {}
 
-    void full_scan::on_execute_impl(pipeline::context_t* pipeline_context) {
-        trace(context_->log(), "full_scan");
-        int count = 0;
-        if (!limit_.check(count)) {
-            return; //limit = 0
-        }
-
-        auto types = context_->table_storage().table().copy_types();
-        output_ = operators::make_operator_data(context_->resource(), types);
-        std::vector<table::storage_index_t> column_indices;
-        column_indices.reserve(context_->table_storage().table().column_count());
-        for (size_t i = 0; i < context_->table_storage().table().column_count(); i++) {
-            column_indices.emplace_back(static_cast<int64_t>(i));
-        }
-        table::table_scan_state state(context_->resource());
-        auto filter =
-            transform_predicate(expression_, types, pipeline_context ? &pipeline_context->parameters : nullptr);
-        context_->table_storage().table().initialize_scan(state, column_indices, filter.get());
-        // TODO: check limit inside scan
-        context_->table_storage().table().scan(output_->data_chunk(), state);
-        if (limit_.limit() >= 0) {
-            output_->data_chunk().set_cardinality(
-                std::min(output_->data_chunk().size(), static_cast<uint64_t>(limit_.limit())));
-        }
+    void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
+        // Full scan is now handled by executor via:
+        //   send(disk_address_, &manager_disk_t::storage_scan) → data_chunk
+        // This operator is a no-op; data is injected via inject_output().
     }
 
 } // namespace components::operators

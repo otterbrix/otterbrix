@@ -4,7 +4,9 @@
 #include <components/catalog/catalog.hpp>
 #include <core/executor.hpp>
 #include <memory>
+#include <thread>
 #include <services/disk/manager_disk.hpp>
+#include <services/index/manager_index.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/loader/loader.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -21,6 +23,7 @@ namespace otterbrix {
         , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_disk_()
         , manager_wal_()
+        , manager_index_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , scheduler_disk_(new actor_zeta::shared_work(3, 1000)) {
         log_ = initialization_logger("python", config.log.path.c_str());
@@ -85,6 +88,12 @@ namespace otterbrix {
         }
         trace(log_, "spaces::manager_disk finish");
 
+        trace(log_, "spaces::manager_index start");
+        manager_index_ = actor_zeta::spawn<services::index::manager_index_t>(
+            &resource, scheduler_.get(), log_, config.disk.path);
+        auto manager_index_address = manager_index_->address();
+        trace(log_, "spaces::manager_index finish");
+
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
             actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
@@ -97,7 +106,8 @@ namespace otterbrix {
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
         manager_dispatcher_->sync(std::make_tuple(manager_wal_address,
-                                                   manager_disk_address));
+                                                   manager_disk_address,
+                                                   manager_index_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
@@ -110,6 +120,8 @@ namespace otterbrix {
         } else {
             disk_empty_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
         }
+
+        manager_index_->sync(std::make_tuple(manager_disk_address));
 
         if (!state.databases.empty() || !state.collections.empty()) {
             auto& catalog = manager_dispatcher_->mutable_catalog();
@@ -130,6 +142,19 @@ namespace otterbrix {
             }
         }
 
+        // Create storages in manager_disk_t for loaded collections
+        if (disk_ptr) {
+            for (const auto& full_name : state.collections) {
+                disk_ptr->create_storage_sync(full_name);
+            }
+        }
+
+        // Register loaded collections in manager_index_t
+        for (const auto& full_name : state.collections) {
+            auto session = components::session::session_id_t();
+            manager_index_->register_collection_sync(session, full_name);
+        }
+
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
         manager_dispatcher_->init_from_state(
             std::move(state.databases),
@@ -140,17 +165,37 @@ namespace otterbrix {
         scheduler_disk_->start();
 
         if (!wal_records.empty()) {
-            auto session = components::session::session_id_t();
+            // Group WAL records by collection for parallel replay
+            std::unordered_map<collection_full_name_t,
+                               std::vector<services::wal::record_t*>,
+                               collection_name_hash> grouped_records;
             for (auto& record : wal_records) {
                 if (record.data) {
-                    trace(log_, "spaces::replaying WAL record id {} type {}",
-                          record.id, record.data->to_string());
-                    auto cursor = wrapper_dispatcher_->execute_plan(session, record.data, record.params);
-                    if (cursor->is_error()) {
-                        warn(log_, "spaces::failed to replay WAL record {}: {}",
-                             record.id, cursor->get_error().what);
-                    }
+                    grouped_records[record.data->collection_full_name()].push_back(&record);
                 }
+            }
+            trace(log_, "spaces::replaying {} WAL records across {} collection groups",
+                  wal_records.size(), grouped_records.size());
+
+            std::vector<std::thread> replay_threads;
+            replay_threads.reserve(grouped_records.size());
+            for (auto& [coll_name, records] : grouped_records) {
+                replay_threads.emplace_back([this, &records, &coll_name] {
+                    auto session = components::session::session_id_t();
+                    for (auto* record : records) {
+                        trace(log_, "spaces::replaying WAL record id {} type {} (collection {})",
+                              record->id, record->data->to_string(), coll_name.to_string());
+                        auto cursor = wrapper_dispatcher_->execute_plan(
+                            session, record->data, record->params);
+                        if (cursor->is_error()) {
+                            warn(log_, "spaces::failed to replay WAL record {}: {}",
+                                 record->id, cursor->get_error().what);
+                        }
+                    }
+                });
+            }
+            for (auto& t : replay_threads) {
+                t.join();
             }
         }
         trace(log_, "spaces::PHASE 2.5 complete");

@@ -10,8 +10,12 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_aggregate(const context_storage_t& context,
                                                                     const components::logical_plan::node_ptr& node,
                                                                     components::logical_plan::limit_t limit) {
-        auto op = boost::intrusive_ptr(
-            new components::operators::aggregation(context.at(node->collection_full_name())));
+        auto coll_name = node->collection_full_name();
+        auto op = context.has_collection(coll_name)
+            ? boost::intrusive_ptr(
+                new components::operators::aggregation(context.resource, context.log, coll_name))
+            : boost::intrusive_ptr(
+                new components::operators::aggregation(node->resource(), nullptr, coll_name));
         for (const components::logical_plan::node_ptr& child : node->children()) {
             switch (child->type()) {
                 case node_type::match_t:

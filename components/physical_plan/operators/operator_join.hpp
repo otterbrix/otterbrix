@@ -11,7 +11,7 @@ namespace components::operators {
     public:
         using type = logical_plan::join_type;
 
-        explicit operator_join_t(services::collection::context_collection_t* context,
+        operator_join_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
                                  type join_type,
                                  const expressions::compare_expression_ptr& expression);
 

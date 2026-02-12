@@ -16,6 +16,7 @@ set(otterbrix_LIBS
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk
+        otterbrix::index_service
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree

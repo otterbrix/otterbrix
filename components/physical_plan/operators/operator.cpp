@@ -1,18 +1,36 @@
 #include "operator.hpp"
 #include <cassert>
-#include <services/collection/collection.hpp>
 
 namespace components::operators {
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
-    operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_(context)
+    operator_t::operator_t(std::pmr::memory_resource* resource, log_t* log,
+                           collection_full_name_t name, operator_type type)
+        : resource_(resource)
+        , log_(log)
+        , name_(std::move(name))
         , type_(type) {}
+
+    void operator_t::prepare() {
+        if (!prepared_) {
+            on_prepare_impl();
+            prepared_ = true;
+        }
+        if (left_) {
+            left_->prepare();
+        }
+        if (right_) {
+            right_->prepare();
+        }
+    }
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
         if (state_ == operator_state::created || state_ == operator_state::running) {
-            on_prepare_impl();
+            if (!prepared_) {
+                on_prepare_impl();
+                prepared_ = true;
+            }
             state_ = operator_state::running;
             if (left_) {
                 left_->on_execute(pipeline_context);
@@ -65,15 +83,16 @@ namespace components::operators {
     }
 
     const collection_full_name_t& operator_t::collection_name() const noexcept {
-        assert(context_ && "collection_name() requires non-null context");
-        return context_->name();
+        return name_;
     }
 
-    services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
-
     std::pmr::memory_resource* operator_t::resource() const noexcept {
-        assert(context_ && "resource() requires non-null context");
-        return context_->resource();
+        return resource_;
+    }
+
+    log_t& operator_t::log() noexcept {
+        assert(log_ && "log() requires non-null log");
+        return *log_;
     }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
@@ -97,6 +116,11 @@ namespace components::operators {
 
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
 
+    void operator_t::inject_output(operator_data_ptr data) {
+        output_ = std::move(data);
+        state_ = operator_state::executed;
+    }
+
     void operator_t::clear() {
         state_ = operator_state::created;
         left_ = nullptr;
@@ -112,13 +136,13 @@ namespace components::operators {
         co_return;
     }
 
-    read_only_operator_t::read_only_operator_t(services::collection::context_collection_t* collection,
-                                               operator_type type)
-        : operator_t(collection, type) {}
+    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t* log,
+                                               collection_full_name_t name, operator_type type)
+        : operator_t(resource, log, std::move(name), type) {}
 
-    read_write_operator_t::read_write_operator_t(services::collection::context_collection_t* collection,
-                                                 operator_type type)
-        : operator_t(collection, type)
+    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t* log,
+                                                 collection_full_name_t name, operator_type type)
+        : operator_t(resource, log, std::move(name), type)
         , state_(read_write_operator_state::pending) {}
 
 } // namespace components::operators

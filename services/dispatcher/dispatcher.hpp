@@ -28,14 +28,12 @@
 #include <services/collection/executor.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/loader/loaded_state.hpp>
-#include <core/btree/btree.hpp>
 
 namespace services::dispatcher {
 
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
         using database_storage_t = std::pmr::set<database_name_t>;
-        using collection_storage_t =
-            core::pmr::btree::btree_t<collection_full_name_t, std::unique_ptr<services::collection::context_collection_t>>;
+        using collection_storage_t = std::pmr::set<collection_full_name_t>;
 
     public:
         template<typename T>
@@ -43,7 +41,7 @@ namespace services::dispatcher {
 
         using recomputed_types = components::operators::operator_write_data_t::updated_types_map_t;
 
-        using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t>;
+        using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
         using run_fn_t = std::function<void()>;
 
@@ -96,14 +94,16 @@ namespace services::dispatcher {
         run_fn_t run_fn_;  // Yield function for cooperative scheduling
         components::catalog::catalog catalog_;
 
+        static constexpr std::size_t executor_pool_size_ = 4;
+
         database_storage_t databases_;
         collection_storage_t collections_;
-        services::collection::executor::executor_ptr executor_{nullptr,
-                                                               actor_zeta::pmr::deleter_t(std::pmr::null_memory_resource())};
-        actor_zeta::address_t executor_address_{actor_zeta::address_t::empty_address()};
+        std::pmr::vector<services::collection::executor::executor_ptr> executors_;
+        std::pmr::vector<actor_zeta::address_t> executor_addresses_;
 
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
 
         spin_lock lock_;
 

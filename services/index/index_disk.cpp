@@ -3,7 +3,7 @@
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <msgpack.hpp>
 
-namespace services::disk {
+namespace services::index {
 
     using namespace core::b_plus_tree;
     using components::types::logical_type;
@@ -161,4 +161,4 @@ namespace services::disk {
         core::filesystem::remove_directory(fs_, path_);
     }
 
-} // namespace services::disk
+} // namespace services::index

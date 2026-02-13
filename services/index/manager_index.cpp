@@ -5,7 +5,6 @@
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/serialization/serializer.hpp>
 #include <components/serialization/deserializer.hpp>
-#include <services/disk/index_disk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace services::index {
@@ -271,7 +270,7 @@ namespace services::index {
             // Create disk index for persistent storage
             if (!path_db_.empty()) {
                 auto disk_path = path_db_ / name.database / name.collection / index_name;
-                auto index_disk = std::make_unique<disk::index_disk_t>(disk_path, resource_);
+                auto index_disk = std::make_unique<index_disk_t>(disk_path, resource_);
                 index_disks_.try_emplace(std::string(index_name), std::move(index_disk));
             }
 

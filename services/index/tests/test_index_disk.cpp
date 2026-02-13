@@ -1,9 +1,9 @@
 #include <catch2/catch.hpp>
 #include <components/tests/generaty.hpp>
-#include <services/disk/index_disk.hpp>
+#include <services/index/index_disk.hpp>
 
 using components::types::logical_value_t;
-using services::disk::index_disk_t;
+using services::index::index_disk_t;
 
 std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
     auto s = std::to_string(i);
@@ -13,7 +13,7 @@ std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
     return s;
 }
 
-TEST_CASE("services::disk::index_disk::string") {
+TEST_CASE("services::index::index_disk::string") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     std::filesystem::path path{"/tmp/index_disk/string"};
@@ -46,7 +46,7 @@ TEST_CASE("services::disk::index_disk::string") {
     REQUIRE(index.upper_bound(logical_value_t(&resource, gen_id(90))).size() == 5);
 }
 
-TEST_CASE("services::disk::index_disk::int32") {
+TEST_CASE("services::index::index_disk::int32") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     std::filesystem::path path{"/tmp/index_disk/int32"};
@@ -79,7 +79,7 @@ TEST_CASE("services::disk::index_disk::int32") {
     REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
 }
 
-TEST_CASE("services::disk::index_disk::uint32") {
+TEST_CASE("services::index::index_disk::uint32") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     std::filesystem::path path{"/tmp/index_disk/uint32"};
@@ -112,7 +112,7 @@ TEST_CASE("services::disk::index_disk::uint32") {
     REQUIRE(index.upper_bound(logical_value_t(&resource, 90ul)).size() == 5);
 }
 
-TEST_CASE("services::disk::index_disk::double") {
+TEST_CASE("services::index::index_disk::double") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     std::filesystem::path path{"/tmp/index_disk/double"};
@@ -145,7 +145,7 @@ TEST_CASE("services::disk::index_disk::double") {
     REQUIRE(index.upper_bound(logical_value_t(&resource, 90.)).size() == 5);
 }
 
-TEST_CASE("services::disk::index_disk::multi_values::int32") {
+TEST_CASE("services::index::index_disk::multi_values::int32") {
     auto resource = std::pmr::synchronized_pool_resource();
 
     std::filesystem::path path{"/tmp/index_disk/int32_multi"};

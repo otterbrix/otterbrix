@@ -16,7 +16,7 @@
 #include <components/index/index_engine.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/log/log.hpp>
-#include <services/disk/index_disk.hpp>
+#include "index_disk.hpp"
 
 namespace services::index {
 
@@ -116,7 +116,7 @@ namespace services::index {
         std::pmr::unordered_map<collection_full_name_t, components::index::index_engine_ptr,collection_name_hash> engines_;
 
         // Per-index disk persistence (direct, non-actor)
-        std::unordered_map<std::string, std::unique_ptr<disk::index_disk_t>> index_disks_;
+        std::unordered_map<std::string, std::unique_ptr<index_disk_t>> index_disks_;
 
         // Index metadata persistence (indexes_METADATA file)
         using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;

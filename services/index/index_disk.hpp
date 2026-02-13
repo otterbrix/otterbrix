@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <memory_resource>
 
-namespace services::disk {
+namespace services::index {
 
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class index_disk_t {
@@ -38,4 +38,4 @@ namespace services::disk {
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
     };
 
-} // namespace services::disk
+} // namespace services::index

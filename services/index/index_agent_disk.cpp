@@ -1,6 +1,6 @@
 #include "index_agent_disk.hpp"
 
-namespace services::disk {
+namespace services::index {
 
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
                                            const path_t& path_db,
@@ -119,4 +119,4 @@ namespace services::disk {
         co_return res;
     }
 
-} //namespace services::disk
+} //namespace services::index

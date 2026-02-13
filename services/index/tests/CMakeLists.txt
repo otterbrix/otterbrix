@@ -1,17 +1,15 @@
-project(test_disk)
+project(test_index_service)
 
 set(${PROJECT_NAME}_SOURCES
     main.cpp
-    test_disk_database.cpp
-    test_disk_collection.cpp
-    test_metadata.cpp
+    test_index_disk.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
     ${PROJECT_NAME} PRIVATE
-    otterbrix::disk
+    otterbrix::index_service
     otterbrix::test_generaty
     Boost::boost
     Catch2::Catch2

@@ -17,7 +17,7 @@
 #include <core/btree/btree.hpp>
 #include <filesystem>
 
-namespace services::disk {
+namespace services::index {
 
     using index_name_t = std::string;
 
@@ -69,4 +69,4 @@ namespace services::disk {
     using index_agent_disk_ptr = std::unique_ptr<index_agent_disk_t, actor_zeta::pmr::deleter_t>;
     using index_agent_disk_storage_t = core::pmr::btree::btree_t<index_name_t, index_agent_disk_ptr>;
 
-} //namespace services::disk
+} //namespace services::index

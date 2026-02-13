@@ -247,7 +247,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::load_indexes(session_id_t session,
-                                                                      actor_zeta::address_t dispatcher_address) {
+                                                                      actor_zeta::address_t /*dispatcher_address*/) {
         trace(log_, "manager_disk_t::load_indexes , session : {} (no-op, indexes handled by manager_index_t)", session.data());
         co_return;
     }

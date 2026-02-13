@@ -36,7 +36,7 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM some_udf(5, 10);)_",
                          R"_($aggregate: {$function: {name: {"some_udf"}, args: {#0, #1}}})_",
-                         vec({v(5), v(10)}));
+                         vec({v(&resource, 5), v(&resource, 10)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM users WHERE is_active_user(id);)_",
                          R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {"id"}}}})_",
@@ -53,11 +53,11 @@ TEST_CASE("components::sql::functions") {
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT *, some_udf_1(foo_name) FROM some_udf_2(1) AS some_alias;)_",
         R"_($aggregate: {$function: {name: {"some_udf_2"}, args: {#0}}, $group: {some_udf_1: {$some_udf_1: "foo_name"}}})_",
-        vec({v(1)}));
+        vec({v(&resource, 1)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT some_udf(5, 10);)_",
                          R"_($aggregate: {$group: {some_udf: {$some_udf: [#0, #1]}}})_",
-                         vec({v(5), v(10)}));
+                         vec({v(&resource, 5), v(&resource, 10)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
                          R"_($aggregate: {$group: {name, some_alias: {$some_udf: ["name", "number"]}}})_",

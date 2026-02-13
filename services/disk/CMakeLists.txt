@@ -8,7 +8,6 @@ set(${PROJECT_NAME}_HEADERS
         index_agent_disk.hpp
         manager_disk.hpp
         metadata.hpp
-        route.hpp
         result.hpp
 )
 
@@ -35,9 +34,9 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
     otterbrix_${PROJECT_NAME} PUBLIC
     otterbrix::file
-    otterbrix::document
     otterbrix::collection
     otterbrix::b_plus_tree
+    otterbrix::locks
     spdlog::spdlog
     Boost::boost
     actor-zeta::actor-zeta

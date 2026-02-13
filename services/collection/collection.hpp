@@ -7,7 +7,6 @@
 #include <core/pmr.hpp>
 
 #include <components/cursor/cursor.hpp>
-#include <components/document/document.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
@@ -19,18 +18,9 @@
 #include <utility>
 
 #include "forward.hpp"
-#include "route.hpp"
-#include "session/session.hpp"
-
-namespace services {
-    class memory_storage_t;
-}
 
 namespace services::collection {
 
-    using document_id_t = components::document::document_id_t;
-    using document_ptr = components::document::document_ptr;
-    using document_storage_t = core::pmr::btree::btree_t<document_id_t, document_ptr>;
     using cursor_storage_t = std::pmr::unordered_map<session_id_t, components::cursor::cursor_t>;
 
     class table_storage_t {
@@ -72,13 +62,11 @@ namespace services::collection {
                                       const actor_zeta::address_t& mdisk,
                                       const log_t& log)
             : resource_(resource)
-            , document_storage_(resource_)
             , table_storage_(resource_)
             , index_engine_(core::pmr::make_unique<components::index::index_engine_t>(resource_))
             , name_(name)
             , mdisk_(mdisk)
-            , log_(log)
-            , uses_datatable_(false) {
+            , log_(log) {
             assert(resource != nullptr);
         }
 
@@ -88,19 +76,14 @@ namespace services::collection {
                                       const actor_zeta::address_t& mdisk,
                                       const log_t& log)
             : resource_(resource)
-            , document_storage_(resource_)
             , table_storage_(resource_, std::move(columns))
             , index_engine_(core::pmr::make_unique<components::index::index_engine_t>(resource_))
             , name_(name)
             , mdisk_(mdisk)
-            , log_(log)
-            , uses_datatable_(true) {
+            , log_(log) {
             assert(resource != nullptr);
         }
 
-        // they are both accessable for now
-        // TODO: only one should exist at all times for a given context_collection_t
-        document_storage_t& document_storage() noexcept { return document_storage_; }
         table_storage_t& table_storage() noexcept { return table_storage_; }
 
         components::index::index_engine_ptr& index_engine() noexcept { return index_engine_; }
@@ -110,8 +93,6 @@ namespace services::collection {
         log_t& log() noexcept { return log_; }
 
         const collection_full_name_t& name() const noexcept { return name_; }
-
-        sessions::sessions_storage_t& sessions() noexcept { return sessions_; }
 
         bool drop() noexcept {
             if (dropped_) {
@@ -123,25 +104,17 @@ namespace services::collection {
 
         bool dropped() const noexcept { return dropped_; }
 
-        bool uses_datatable() const noexcept { return uses_datatable_; }
-
         actor_zeta::address_t disk() noexcept { return mdisk_; }
 
     private:
         std::pmr::memory_resource* resource_;
-        document_storage_t document_storage_;
         table_storage_t table_storage_;
         components::index::index_engine_ptr index_engine_;
 
         collection_full_name_t name_;
-        /**
-         * @brief Index create/drop context
-         */
-        sessions::sessions_storage_t sessions_;
         actor_zeta::address_t mdisk_;
         log_t log_;
 
-        bool uses_datatable_;
         bool dropped_{false};
     };
 

@@ -35,25 +35,21 @@ TEST_CASE("components::cursor::construction") {
     }
 }
 
-TEST_CASE("components::cursor::sort") {
+TEST_CASE("components::cursor::data_chunk") {
     auto resource = std::pmr::synchronized_pool_resource();
-    std::pmr::vector<components::document::document_ptr> docs(&resource);
-    for (int i = 0; i < 10; ++i) {
-        for (int j = 0; j < 10; ++j) {
-            docs.emplace_back(gen_doc(10 * i + j + 1, &resource));
-        }
+
+    SECTION("cursor with data_chunk") {
+        auto chunk = gen_data_chunk(100, &resource);
+        auto cursor = components::cursor::make_cursor(&resource, std::move(chunk));
+        REQUIRE(cursor->is_success());
+        REQUIRE_FALSE(cursor->is_error());
+        REQUIRE(cursor->size() == 100);
     }
 
-    components::cursor::cursor_t cursor(&resource, std::move(docs));
-    REQUIRE(cursor.size() == 100);
-    cursor.sort([](components::document::document_ptr doc1, components::document::document_ptr doc2) {
-        return doc1->get_long("count") > doc2->get_long("count");
-    });
-    REQUIRE(cursor.get_document(0)->get_long("count") == 100);
-    REQUIRE(cursor.get_document(99)->get_long("count") == 1);
-    cursor.sort([](components::document::document_ptr doc1, components::document::document_ptr doc2) {
-        return doc1->get_long("count") < doc2->get_long("count");
-    });
-    REQUIRE(cursor.get_document(0)->get_long("count") == 1);
-    REQUIRE(cursor.get_document(99)->get_long("count") == 100);
+    SECTION("cursor with empty data_chunk") {
+        auto chunk = gen_data_chunk(0, &resource);
+        auto cursor = components::cursor::make_cursor(&resource, std::move(chunk));
+        REQUIRE(cursor->is_success());
+        REQUIRE(cursor->size() == 0);
+    }
 }

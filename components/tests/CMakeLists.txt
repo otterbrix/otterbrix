@@ -17,6 +17,5 @@ target_link_libraries(
         absl::numeric
         absl::int128
         #Boost::json
-        otterbrix::document
         otterbrix::vector
 )

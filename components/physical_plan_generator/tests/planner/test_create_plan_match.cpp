@@ -7,7 +7,7 @@
 
 using namespace components::logical_plan;
 using namespace components::expressions;
-using namespace services::collection::planner;
+using namespace services::planner;
 using key = components::expressions::key_t;
 
 constexpr auto database_name = "database";

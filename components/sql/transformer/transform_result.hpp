@@ -1,6 +1,5 @@
 #pragma once
 
-#include <components/document/document.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -43,7 +42,7 @@ namespace components::sql::transform {
 
         template<typename T>
         transform_result& bind(size_t id, T&& value) {
-            return bind(id, types::logical_value_t(std::forward<T>(value)));
+            return bind(id, types::logical_value_t(taken_params_.resource(), std::forward<T>(value)));
         }
 
         transform_result& bind(size_t id, types::logical_value_t value) {

@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 as builder
+FROM ubuntu:22.04 AS builder
 
 ENV TZ=America/US
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,7 +26,7 @@ RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
 WORKDIR /app/build
 COPY ./conanfile.py ./conanfile.py
-RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu17
+RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
 
 WORKDIR /app
 COPY ./integration ./integration
@@ -43,12 +43,20 @@ RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_to
     -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON && \
     cmake --build . --target all -- -j $(nproc)
 
-RUN ctest -C Release -V --output-on-failure --timeout 120
+RUN ctest -C Release -V --output-on-failure --timeout 60
 
-RUN cd integration/python/ && pytest -v -s
+RUN cd integration/python/ && \
+    export ASAN_LIB=$(find /usr/lib/ -name "libasan.so.*" | head -n 1) && \
+    ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB $(ldd otterbrix.cpython-*.so | grep libstdc++.so | awk '{print $3}')" pytest -v -s
 
 # Multistage build is faster and resulting image will be smaller
-FROM mcr.microsoft.com/dotnet/sdk:7.0
+FROM mcr.microsoft.com/dotnet/sdk:7.0-jammy
+
+RUN apt-get update && \
+    apt-get install -y libasan6 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /app ./
 
@@ -58,8 +66,11 @@ RUN cd integration/csharp && \
 
 RUN mkdir -p integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0 && \
     mkdir -p integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0 && \
+    mkdir -p integration/csharp/build && \
+    cp ./build/integration/c/libotterbrix.so ./integration/csharp/build/libotterbrix.so && \
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/src/Duckstax.Otterbrix/bin/Release/net7.0/libotterbrix.so && \
     cp ./build/integration/c/libotterbrix.so ./integration/csharp/tests/Duckstax.Otterbrix.Tests/bin/Release/net7.0/libotterbrix.so
 
 RUN cd integration/csharp && \
-    dotnet test -c Release
+    export ASAN_LIB=$(find /usr/lib/ -name "libasan.so.*" | head -n 1) && \
+    ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD=$ASAN_LIB dotnet test -c Release

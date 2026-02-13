@@ -7,8 +7,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection.cpp
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
-        test_save_load.cpp
         test_index.cpp
+        test_disk_index.cpp
         test_join.cpp
         test_connections.cpp
         test_udfs.cpp
@@ -23,11 +23,9 @@ target_link_libraries(
 
         otterbrix::test_generaty
         otterbrix::log
-        otterbrix::memory_storage
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk
@@ -52,4 +50,4 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME})
+catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 1800)

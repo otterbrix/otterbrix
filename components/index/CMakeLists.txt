@@ -17,10 +17,10 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
-        otterbrix::document
         otterbrix::cursor
         otterbrix::context
         otterbrix::logical_plan
+        otterbrix::log
         dl
         Boost::boost
         magic_enum::magic_enum

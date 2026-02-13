@@ -108,7 +108,7 @@ namespace components::table {
     template<typename T>
     bool constant_filter_t::compare(T value) const {
         // TODO: do a proper template here:
-        return compare(types::logical_value_t(value));
+        return compare(types::logical_value_t(constant.resource(), value));
     }
 
     class conjunction_filter_t : public table_filter_t {

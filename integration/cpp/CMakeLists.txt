@@ -6,22 +6,21 @@ set(${PROJECT_NAME}_sources
       wrapper_dispatcher.cpp
       otterbrix.cpp
       connection.cpp
-      impl/session_blocker.cpp
 )
 
 set(otterbrix_LIBS
         otterbrix::log
-        otterbrix::memory_storage
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree
+        otterbrix_loader
+        otterbrix_catalog
 )
 
 

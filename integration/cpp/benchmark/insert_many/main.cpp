@@ -5,14 +5,15 @@ void insert_many(benchmark::State& state) {
     auto* dispatcher = unique_spaces::get().dispatcher();
     auto session = otterbrix::session_id_t();
     dispatcher->create_database(session, database_name);
-    dispatcher->create_collection(session, database_name, collection_name);
+    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    dispatcher->create_collection(session, database_name, collection_name, types);
     state.ResumeTiming();
+    int n_row = 0;
     for (auto _ : state) {
-        std::pmr::vector<document_ptr> docs;
-        for (int i = 0; i < state.range(0); ++i) {
-            docs.push_back(gen_doc(int(10000 * state.range(0) + i), dispatcher->resource()));
-        }
-        dispatcher->insert_many(session, database_name, collection_name, docs);
+        auto chunk = gen_data_chunk(static_cast<size_t>(state.range(0)), n_row, dispatcher->resource());
+        n_row += state.range(0);
+        auto ins = make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        dispatcher->execute_plan(session, ins);
     }
 }
 BENCHMARK(insert_many)->Arg(1)->Arg(10)->Arg(20)->Arg(100)->Arg(500)->Arg(1000);

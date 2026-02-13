@@ -81,22 +81,6 @@ namespace components::logical_plan {
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
                                      const collection_full_name_t& collection,
-                                     const std::pmr::vector<components::document::document_ptr>& documents) {
-        auto res = make_node_insert(resource, collection);
-        res->append_child(make_node_raw_data(resource, documents));
-        return res;
-    }
-
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
-                                     std::pmr::vector<components::document::document_ptr>&& documents) {
-        auto res = make_node_insert(resource, collection);
-        res->append_child(make_node_raw_data(resource, std::move(documents)));
-        return res;
-    }
-
-    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection,
                                      const components::vector::data_chunk_t& chunk) {
         auto res = make_node_insert(resource, collection);
         res->append_child(make_node_raw_data(resource, chunk));
@@ -108,17 +92,6 @@ namespace components::logical_plan {
                                      components::vector::data_chunk_t&& chunk) {
         auto res = make_node_insert(resource, collection);
         res->append_child(make_node_raw_data(resource, std::move(chunk)));
-        return res;
-    }
-
-    node_insert_ptr
-    make_node_insert(std::pmr::memory_resource* resource,
-                     const collection_full_name_t& collection,
-                     std::pmr::vector<components::document::document_ptr>&& documents,
-                     std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>&& key_translation) {
-        auto res = make_node_insert(resource, collection);
-        res->append_child(make_node_raw_data(resource, std::move(documents)));
-        res->key_translation() = key_translation;
         return res;
     }
 

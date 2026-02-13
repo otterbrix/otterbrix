@@ -51,25 +51,6 @@ namespace components::catalog {
         return it->second.current_schema();
     }
 
-    used_format_t catalog::get_table_format(const table_id& id) const {
-        {
-            const auto& info = namespaces_.get_namespace_info(id.get_namespace()).tables;
-            auto it = info.find(id.table_name());
-            if (it != info.end()) {
-                return used_format_t::columns;
-            }
-        }
-        {
-            const auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
-            auto it = info.find(id.table_name());
-            if (it != info.end()) {
-                return used_format_t::documents;
-            }
-        }
-
-        return used_format_t::undefined;
-    }
-
     computed_schema& catalog::get_computing_table_schema(const table_id& id) {
         auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
         auto it = info.find(id.table_name());

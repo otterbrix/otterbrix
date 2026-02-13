@@ -420,7 +420,7 @@ namespace components::table {
                     uint64_t block;
                     int32_t current_offset;
                     write_string(segment, source_data[source_idx], block, current_offset);
-                    *dictionary_size += BIG_STRING_MARKER_BASE_SIZE;
+                    *dictionary_size += static_cast<uint32_t>(BIG_STRING_MARKER_BASE_SIZE);
                     remaining -= BIG_STRING_MARKER_BASE_SIZE;
                     auto dict_pos = end - *dictionary_size;
 
@@ -714,6 +714,7 @@ namespace components::table {
     bool column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
+                return impl::fixed_size_check_row<bool>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::INT8:
                 return impl::fixed_size_check_row<int8_t>(*this, static_cast<int64_t>(row_id - start), filter);
             case types::physical_type::INT16:

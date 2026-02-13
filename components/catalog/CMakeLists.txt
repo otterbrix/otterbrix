@@ -33,7 +33,6 @@ target_link_libraries(
         otterbrix::compute
         otterbrix::cursor
         otterbrix::vector
-        otterbrix::document
         otterbrix::types
         absl::int128
         Boost::boost

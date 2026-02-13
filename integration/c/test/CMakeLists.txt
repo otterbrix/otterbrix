@@ -15,11 +15,9 @@ target_link_libraries(
 
         otterbrix::test_generaty
         otterbrix::log
-        otterbrix::memory_storage
         otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::document
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk

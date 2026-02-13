@@ -3,7 +3,6 @@
 #include "forward.hpp"
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
-#include <components/document/document.hpp>
 #include <components/vector/data_chunk.hpp>
 
 #include "key.hpp"
@@ -49,7 +48,7 @@ namespace components::expressions {
     class update_expr_t : public boost::intrusive_ref_counter<update_expr_t> {
         class expr_output_t {
         public:
-            expr_output_t() = default;
+            expr_output_t();
             // not explicit for easier use, since it is not visible outside anyway
             expr_output_t(types::logical_value_t value);
 
@@ -64,9 +63,6 @@ namespace components::expressions {
         explicit update_expr_t(update_expr_type type);
         virtual ~update_expr_t() = default;
 
-        bool execute(document::document_ptr& to,
-                     const document::document_ptr& from,
-                     const logical_plan::storage_parameters* parameters);
         bool execute(vector::data_chunk_t& to,
                      const vector::data_chunk_t& from,
                      size_t row_to,
@@ -85,9 +81,6 @@ namespace components::expressions {
         static update_expr_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
-        virtual bool execute_impl(document::document_ptr& to,
-                                  const document::document_ptr& from,
-                                  const logical_plan::storage_parameters* parameters) = 0;
         virtual bool execute_impl(vector::data_chunk_t& to,
                                   const vector::data_chunk_t& from,
                                   size_t row_to,
@@ -115,9 +108,6 @@ namespace components::expressions {
         static update_expr_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
-        bool execute_impl(document::document_ptr& to,
-                          const document::document_ptr& from,
-                          const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
                           size_t row_to,
@@ -143,9 +133,6 @@ namespace components::expressions {
         static update_expr_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
-        bool execute_impl(document::document_ptr& to,
-                          const document::document_ptr& from,
-                          const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
                           size_t row_to,
@@ -170,9 +157,6 @@ namespace components::expressions {
         static update_expr_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
-        bool execute_impl(document::document_ptr& to,
-                          const document::document_ptr& from,
-                          const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
                           size_t row_to,
@@ -195,9 +179,6 @@ namespace components::expressions {
         static update_expr_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     protected:
-        bool execute_impl(document::document_ptr& to,
-                          const document::document_ptr& from,
-                          const logical_plan::storage_parameters* parameters) override;
         bool execute_impl(vector::data_chunk_t& to,
                           const vector::data_chunk_t& from,
                           size_t row_to,

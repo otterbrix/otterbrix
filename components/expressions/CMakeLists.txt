@@ -21,7 +21,6 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::compute
-        otterbrix::document
         otterbrix::vector
         otterbrix::serialization
         Boost::boost

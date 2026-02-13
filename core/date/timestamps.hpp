@@ -8,7 +8,7 @@ namespace core::date {
 
     namespace detail {
         template<class Duration>
-        using time_point = std::chrono::time_point<std::chrono::system_clock, Duration>; /// С++ 20
+        using time_point = std::chrono::time_point<std::chrono::system_clock, Duration>; /// C++ 20
 
         template<class Duration>
         using timestamp = std::chrono::time_point<Duration>;

@@ -422,5 +422,6 @@ conaninfo.txt
 **/.#session.*
 build
 .vscode
+.opencode
 *.wal
 *.txt.user

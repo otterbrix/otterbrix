@@ -3,7 +3,8 @@ import pytest
 from otterbrix import Client
 
 client = Client(os.getcwd() + "/test_collection_sql")
-client["schema"]["table"] # todo: create collection
+client.execute("CREATE DATABASE schema;")
+client.execute("CREATE TABLE schema.table();")
 
 
 def gen_id(num):

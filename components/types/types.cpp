@@ -399,9 +399,9 @@ namespace components::types {
         serializer->end_array();
     }
 
-    complex_logical_type complex_logical_type::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    complex_logical_type complex_logical_type::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto type = deserializer->deserialize_enum<logical_type>(1);
-        auto extension = logical_type_extension::deserialize(deserializer);
+        auto extension = logical_type_extension::deserialize(resource, deserializer);
         return {type, std::move(extension)};
     }
 
@@ -435,7 +435,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         std::unique_ptr<logical_type_extension> result = nullptr;
         auto has_extension = deserializer->deserialize_bool(2);
 
@@ -452,31 +452,31 @@ namespace components::types {
                 break;
             }
             case extension_type::ARRAY:
-                result = array_logical_type_extension::deserialize(deserializer);
+                result = array_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::MAP:
-                result = map_logical_type_extension::deserialize(deserializer);
+                result = map_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::LIST:
-                result = list_logical_type_extension::deserialize(deserializer);
+                result = list_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::STRUCT:
-                result = struct_logical_type_extension::deserialize(deserializer);
+                result = struct_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::DECIMAL:
-                result = decimal_logical_type_extension::deserialize(deserializer);
+                result = decimal_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::ENUM:
-                result = enum_logical_type_extension::deserialize(deserializer);
+                result = enum_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::USER:
-                result = user_logical_type_extension::deserialize(deserializer);
+                result = user_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::FUNCTION:
-                result = function_logical_type_extension::deserialize(deserializer);
+                result = function_logical_type_extension::deserialize(resource, deserializer);
                 break;
             case extension_type::UNKNOWN:
-                result = unknown_logical_type_extension::deserialize(deserializer);
+                result = unknown_logical_type_extension::deserialize(resource, deserializer);
                 break;
         }
         deserializer->pop_array();
@@ -498,10 +498,10 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    array_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    array_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         deserializer->advance_array(2);
-        auto items_type = complex_logical_type::deserialize(deserializer);
+        auto items_type = complex_logical_type::deserialize(resource, deserializer);
         deserializer->pop_array();
         auto size = deserializer->deserialize_uint64(3);
         auto res = std::make_unique<array_logical_type_extension>(std::move(items_type), size);
@@ -544,15 +544,15 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    map_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    map_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto key_id = deserializer->deserialize_uint64(2);
         deserializer->advance_array(3);
-        auto key = complex_logical_type::deserialize(deserializer);
+        auto key = complex_logical_type::deserialize(resource, deserializer);
         deserializer->pop_array();
         auto value_id = deserializer->deserialize_uint64(4);
         deserializer->advance_array(5);
-        auto value = complex_logical_type::deserialize(deserializer);
+        auto value = complex_logical_type::deserialize(resource, deserializer);
         deserializer->pop_array();
         auto value_required = deserializer->deserialize_bool(6);
         auto res = std::make_unique<map_logical_type_extension>(key_id,
@@ -589,10 +589,10 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    list_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    list_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         deserializer->advance_array(2);
-        auto type = complex_logical_type::deserialize(deserializer);
+        auto type = complex_logical_type::deserialize(resource, deserializer);
         deserializer->pop_array();
         auto field_id = deserializer->deserialize_uint64(3);
         auto required = deserializer->deserialize_bool(4);
@@ -638,7 +638,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    struct_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    struct_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto name = deserializer->deserialize_string(2);
         std::vector<types::complex_logical_type> types;
@@ -647,7 +647,7 @@ namespace components::types {
         types.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < types.capacity(); i++) {
             deserializer->advance_array(i);
-            types.emplace_back(complex_logical_type::deserialize(deserializer));
+            types.emplace_back(complex_logical_type::deserialize(resource, deserializer));
             deserializer->pop_array();
         }
         deserializer->pop_array();
@@ -680,7 +680,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    decimal_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    decimal_logical_type_extension::deserialize(std::pmr::memory_resource* /*resource*/, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto width = static_cast<uint8_t>(deserializer->deserialize_uint64(2));
         auto scale = static_cast<uint8_t>(deserializer->deserialize_uint64(3));
@@ -708,7 +708,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    enum_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    enum_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto name = deserializer->deserialize_string(2);
         std::vector<logical_value_t> entries;
@@ -716,7 +716,7 @@ namespace components::types {
         entries.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < entries.capacity(); i++) {
             deserializer->advance_array(i);
-            entries.emplace_back(complex_logical_type::deserialize(deserializer));
+            entries.emplace_back(resource, complex_logical_type::deserialize(resource, deserializer));
             deserializer->pop_array();
         }
         deserializer->pop_array();
@@ -745,7 +745,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    user_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    user_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto catalog = deserializer->deserialize_string(2);
         std::vector<logical_value_t> modifiers;
@@ -753,7 +753,7 @@ namespace components::types {
         modifiers.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < modifiers.capacity(); i++) {
             deserializer->advance_array(i);
-            modifiers.emplace_back(logical_value_t::deserialize(deserializer));
+            modifiers.emplace_back(logical_value_t::deserialize(resource, deserializer));
             deserializer->pop_array();
         }
         deserializer->pop_array();
@@ -782,17 +782,17 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    function_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    function_logical_type_extension::deserialize(std::pmr::memory_resource* resource, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         deserializer->advance_array(2);
-        auto return_type = complex_logical_type::deserialize(deserializer);
+        auto return_type = complex_logical_type::deserialize(resource, deserializer);
         deserializer->pop_array();
         std::vector<complex_logical_type> argument_types;
         deserializer->advance_array(3);
         argument_types.reserve(deserializer->current_array_size());
         for (size_t i = 0; i < argument_types.capacity(); i++) {
             deserializer->advance_array(i);
-            argument_types.emplace_back(complex_logical_type::deserialize(deserializer));
+            argument_types.emplace_back(complex_logical_type::deserialize(resource, deserializer));
             deserializer->pop_array();
         }
         deserializer->pop_array();
@@ -816,7 +816,7 @@ namespace components::types {
     }
 
     std::unique_ptr<logical_type_extension>
-    unknown_logical_type_extension::deserialize(serializer::msgpack_deserializer_t* deserializer) {
+    unknown_logical_type_extension::deserialize(std::pmr::memory_resource* /*resource*/, serializer::msgpack_deserializer_t* deserializer) {
         auto alias = deserializer->deserialize_string(1);
         auto type_name = deserializer->deserialize_string(2);
         auto res = std::make_unique<unknown_logical_type_extension>(std::move(type_name));

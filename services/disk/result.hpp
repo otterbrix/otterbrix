@@ -1,23 +1,24 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <components/document/document.hpp>
 #include <services/wal/base.hpp>
+#include <memory_resource>
 #include <vector>
 
 namespace services::disk {
 
-    struct result_collection_t {
-        collection_name_t name;
-        std::pmr::vector<components::document::document_ptr> documents;
-    };
-
     struct result_database_t {
         database_name_t name;
-        std::vector<result_collection_t> collections;
+        std::pmr::vector<collection_name_t> collections;
 
-        std::vector<collection_name_t> name_collections() const;
-        void set_collection(const std::vector<collection_name_t>& names);
+        result_database_t(std::pmr::memory_resource* resource, database_name_t name)
+            : name(std::move(name))
+            , collections(resource) {}
+
+        const std::pmr::vector<collection_name_t>& name_collections() const { return collections; }
+        void set_collection(const std::vector<collection_name_t>& names) {
+            collections.assign(names.begin(), names.end());
+        }
     };
 
     class result_load_t {
@@ -25,7 +26,7 @@ namespace services::disk {
 
     public:
         result_load_t() = default;
-        result_load_t(const std::vector<database_name_t>& databases, wal::id_t wal_id);
+        result_load_t(std::pmr::memory_resource* resource, const std::vector<database_name_t>& databases, wal::id_t wal_id);
         const result_t& operator*() const;
         result_t& operator*();
         std::vector<database_name_t> name_databases() const;
@@ -37,6 +38,7 @@ namespace services::disk {
         static result_load_t empty();
 
     private:
+        std::pmr::memory_resource* resource_{nullptr};
         result_t databases_;
         wal::id_t wal_id_{0};
     };

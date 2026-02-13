@@ -153,7 +153,7 @@ namespace components::sql::transform {
     std::vector<types::complex_logical_type> get_types(PGList& list);
     std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
 
-    types::logical_value_t get_value(Node* node);
-    types::logical_value_t get_array(PGList* list);
+    types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);
+    types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list);
 
 } // namespace components::sql::transform

@@ -1,16 +1,17 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <map>
-
-#include <actor-zeta/clock/clock.hpp>
 
 namespace core::non_thread_scheduler {
 
-    using handler = actor_zeta::clock::handler;
-
-    class clock_test final : public actor_zeta::clock::clock_t {
+    class clock_test final {
     public:
+        using time_point = std::chrono::steady_clock::time_point;
+        using duration_type = std::chrono::steady_clock::duration;
+        using handler = std::function<void()>;
+
         struct schedule_entry final {
             handler f;
             duration_type period;
@@ -19,8 +20,8 @@ namespace core::non_thread_scheduler {
         using schedule_map = std::multimap<time_point, schedule_entry>;
 
         clock_test();
-        time_point now() const noexcept override;
-        void schedule_periodically(time_point, handler, duration_type) override;
+        time_point now() const noexcept;
+        void schedule_periodically(time_point, handler, duration_type);
         bool trigger_timeout();
         size_t trigger_timeouts();
         size_t advance_time(duration_type);

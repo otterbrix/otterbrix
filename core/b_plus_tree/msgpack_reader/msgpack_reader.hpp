@@ -1,8 +1,8 @@
 #pragma once
 
 #include <charconv>
-#include <components/document/string_splitter.hpp>
 #include <components/types/physical_value.hpp>
+#include <core/string_splitter.hpp>
 #include <msgpack.hpp>
 
 namespace core::b_plus_tree {
@@ -14,7 +14,7 @@ namespace core::b_plus_tree {
         if (json_pointer[0] == '/') {
             json_pointer.remove_prefix(1);
         }
-        auto keys = string_splitter(json_pointer, '/');
+        auto keys = core::string_splitter(json_pointer, '/');
         auto keys_it = keys.begin();
         const msgpack::object* pack = &msg_object;
 

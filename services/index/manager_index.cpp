@@ -91,7 +91,7 @@ namespace services::index {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        std::lock_guard<spin_lock> guard(lock_);
+        std::lock_guard<std::mutex> guard(mutex_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {

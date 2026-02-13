@@ -11,7 +11,7 @@
 #include <actor-zeta/detail/behavior_t.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
-#include <core/spinlock/spinlock.hpp>
+#include <mutex>
 #include <core/file/local_file_system.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -110,7 +110,7 @@ namespace services::index {
         run_fn_t run_fn_;
         log_t log_;
         std::filesystem::path path_db_;
-        spin_lock lock_;
+        std::mutex mutex_;
 
         // Per-collection in-memory index engines
         std::pmr::unordered_map<collection_full_name_t, components::index::index_engine_ptr,collection_name_hash> engines_;

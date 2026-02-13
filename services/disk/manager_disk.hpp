@@ -26,6 +26,7 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 #include <chrono>
 #include <thread>
+#include <mutex>
 
 namespace services::disk {
 
@@ -210,7 +211,7 @@ namespace services::disk {
         actor_zeta::scheduler_raw scheduler_;
         actor_zeta::scheduler_raw scheduler_disk_;
         run_fn_t run_fn_;
-        spin_lock lock_;
+        std::mutex mutex_;
 
         actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
         log_t log_;
@@ -271,7 +272,7 @@ namespace services::disk {
             cmd,
             std::forward<Args>(args)...);
 
-        std::lock_guard<spin_lock> guard(lock_);
+        std::lock_guard<std::mutex> guard(mutex_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {

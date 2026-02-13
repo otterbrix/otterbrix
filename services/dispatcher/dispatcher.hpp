@@ -13,7 +13,7 @@
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include <core/executor.hpp>
-#include <core/spinlock/spinlock.hpp>
+#include <mutex>
 
 #include <components/catalog/catalog.hpp>
 #include <components/cursor/cursor.hpp>
@@ -105,7 +105,7 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
 
-        spin_lock lock_;
+        std::mutex mutex_;
 
         std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;
 

@@ -14,10 +14,10 @@ namespace services::planner::impl {
                            components::logical_plan::limit_t limit) {
             if (context.has_collection(coll_name)) {
                 return boost::intrusive_ptr(new components::operators::full_scan(
-                    context.resource, context.log, coll_name, expr, limit));
+                    context.resource, context.log.clone(), coll_name, expr, limit));
             } else {
                 return boost::intrusive_ptr(new components::operators::operator_match_t(
-                    nullptr, nullptr, expr, limit));
+                    nullptr, log_t{}, expr, limit));
             }
         }
     } // namespace

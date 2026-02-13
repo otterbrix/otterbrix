@@ -6,7 +6,7 @@ namespace components::operators {
 
     primary_key_scan::primary_key_scan(std::pmr::memory_resource* resource,
                                        collection_full_name_t name)
-        : read_only_operator_t(resource, nullptr, operator_type::primary_key_scan)
+        : read_only_operator_t(resource, log_t{}, operator_type::primary_key_scan)
         , name_(std::move(name))
         , rows_(resource, types::logical_type::BIGINT) {}
 

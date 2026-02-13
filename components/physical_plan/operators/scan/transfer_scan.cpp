@@ -6,7 +6,7 @@ namespace components::operators {
 
     transfer_scan::transfer_scan(std::pmr::memory_resource* resource, collection_full_name_t name,
                                   logical_plan::limit_t limit)
-        : read_only_operator_t(resource, nullptr, operator_type::transfer_scan)
+        : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
         , name_(std::move(name))
         , limit_(limit) {}
 

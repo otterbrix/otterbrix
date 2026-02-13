@@ -5,7 +5,7 @@
 
 namespace components::operators {
 
-    index_scan::index_scan(std::pmr::memory_resource* resource, log_t* log,
+    index_scan::index_scan(std::pmr::memory_resource* resource, log_t log,
                            collection_full_name_t name,
                            const expressions::compare_expression_ptr& expr,
                            logical_plan::limit_t limit)
@@ -15,7 +15,7 @@ namespace components::operators {
         , limit_(limit) {}
 
     void index_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (log_) {
+        if (log_.is_valid()) {
             trace(log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
         }
         if (name_.empty()) return;
@@ -23,7 +23,7 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (log_) {
+        if (log_.is_valid()) {
             trace(log(), "index_scan::await_async_and_resume on {}", name_.to_string());
         }
 

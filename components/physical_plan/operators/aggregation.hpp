@@ -7,7 +7,7 @@ namespace components::operators {
 
     class aggregation final : public read_only_operator_t {
     public:
-        aggregation(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name);
+        aggregation(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name);
 
         void set_match(operator_ptr&& match);
         void set_group(operator_ptr&& group);

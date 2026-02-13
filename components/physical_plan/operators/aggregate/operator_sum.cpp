@@ -5,7 +5,7 @@ namespace components::operators::aggregate {
 
     constexpr auto key_result_ = "sum";
 
-    operator_sum_t::operator_sum_t(std::pmr::memory_resource* resource, log_t* log,
+    operator_sum_t::operator_sum_t(std::pmr::memory_resource* resource, log_t log,
                                    expressions::key_t key)
         : operator_aggregate_t(resource, log)
         , key_(std::move(key)) {}

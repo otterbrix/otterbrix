@@ -55,7 +55,7 @@ namespace components::operators {
         operator_t& operator=(const operator_t&) = delete;
         operator_t& operator=(operator_t&&) = default;
 
-        operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
+        operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
 
         virtual ~operator_t() = default;
 
@@ -93,7 +93,7 @@ namespace components::operators {
     protected:
         void mark_executed();
         std::pmr::memory_resource* resource_;
-        log_t* log_;
+        log_t log_;
 
         ptr left_{nullptr};
         ptr right_{nullptr};
@@ -114,7 +114,7 @@ namespace components::operators {
 
     class read_only_operator_t : public operator_t {
     public:
-        read_only_operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
+        read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
     };
 
     enum class read_write_operator_state
@@ -128,7 +128,7 @@ namespace components::operators {
 
     class read_write_operator_t : public operator_t {
     public:
-        read_write_operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
+        read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
         //todo:
         //void commit();
         //void rollback();

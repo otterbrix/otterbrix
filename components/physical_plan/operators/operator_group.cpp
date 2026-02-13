@@ -5,7 +5,7 @@
 #include <components/physical_plan/operators/operator_empty.hpp>
 namespace components::operators {
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t* log)
+    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
         , values_(resource_)

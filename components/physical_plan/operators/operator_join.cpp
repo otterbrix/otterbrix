@@ -5,7 +5,7 @@
 
 namespace components::operators {
 
-    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t* log,
+    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t log,
                                      type join_type,
                                      const expressions::compare_expression_ptr& expression)
         : read_only_operator_t(resource, log, operator_type::join)
@@ -26,7 +26,7 @@ namespace components::operators {
 
             output_ = operators::make_operator_data(left_->output()->resource(), res_types);
 
-            if (log_) {
+            if (log_.is_valid()) {
                 trace(log(), "operator_join::left_size(): {}", chunk_left.size());
                 trace(log(), "operator_join::right_size(): {}", chunk_right.size());
             }
@@ -69,7 +69,7 @@ namespace components::operators {
                     break;
             }
 
-            if (log_) {
+            if (log_.is_valid()) {
                 trace(log(), "operator_join::result_size(): {}", output_->size());
             }
         }

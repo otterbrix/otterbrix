@@ -24,9 +24,9 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         auto op = context.has_collection(coll_name)
             ? boost::intrusive_ptr(
-                new components::operators::aggregation(context.resource, context.log, coll_name))
+                new components::operators::aggregation(context.resource, context.log.clone(), coll_name))
             : boost::intrusive_ptr(
-                new components::operators::aggregation(node->resource(), nullptr, coll_name));
+                new components::operators::aggregation(node->resource(), log_t{}, coll_name));
         op->set_limit(limit);
         for (const components::logical_plan::node_ptr& child : node->children()) {
             switch (child->type()) {

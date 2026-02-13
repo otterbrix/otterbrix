@@ -36,7 +36,7 @@ namespace services::planner::impl {
             }
         }
 
-        void add_group_aggregate(std::pmr::memory_resource* resource, log_t* log,
+        void add_group_aggregate(std::pmr::memory_resource* resource, log_t log,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             using components::expressions::aggregate_type;
@@ -107,9 +107,9 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
         if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log);
+            group = new components::operators::operator_group_t(context.resource, context.log.clone());
         } else {
-            group = new components::operators::operator_group_t(node->resource(), nullptr);
+            group = new components::operators::operator_group_t(node->resource(), log_t{});
         }
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
@@ -121,7 +121,7 @@ namespace services::planner::impl {
                           } else if (expr->group() == components::expressions::expression_group::aggregate) {
                               add_group_aggregate(
                                   known ? context.resource : node->resource(),
-                                  known ? context.log : nullptr,
+                                  known ? context.log.clone() : log_t{},
                                   group,
                                   static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
                           }

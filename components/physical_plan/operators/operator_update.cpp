@@ -3,7 +3,7 @@
 
 namespace components::operators {
 
-    operator_update::operator_update(std::pmr::memory_resource* resource, log_t* log,
+    operator_update::operator_update(std::pmr::memory_resource* resource, log_t log,
                                      collection_full_name_t name,
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,

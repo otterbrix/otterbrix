@@ -140,7 +140,7 @@ namespace components::index {
     auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
 
     void
-    index_engine_t::insert_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* /*pipeline_context*/) {
+    index_engine_t::insert_row(const vector::data_chunk_t& chunk, size_t row) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);
@@ -150,7 +150,7 @@ namespace components::index {
     }
 
     void
-    index_engine_t::delete_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* /*pipeline_context*/) {
+    index_engine_t::delete_row(const vector::data_chunk_t& chunk, size_t row) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);

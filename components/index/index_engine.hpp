@@ -10,7 +10,6 @@
 
 #include "forward.hpp"
 #include "index.hpp"
-#include <components/context/context.hpp>
 #include <core/pmr.hpp>
 
 namespace components::vector {
@@ -34,8 +33,8 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
-        void delete_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
+        void insert_row(const vector::data_chunk_t& chunk, size_t row);
+        void delete_row(const vector::data_chunk_t& chunk, size_t row);
 
         auto indexes() -> std::vector<std::string>;
 

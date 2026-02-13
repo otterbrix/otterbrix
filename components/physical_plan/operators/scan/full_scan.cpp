@@ -73,7 +73,7 @@ namespace components::operators {
         }
     }
 
-    full_scan::full_scan(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
+    full_scan::full_scan(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::full_scan)
@@ -87,7 +87,7 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (log_) {
+        if (log_.is_valid()) {
             trace(log(), "full_scan::await_async_and_resume on {}", name_.to_string());
         }
 

@@ -1,13 +1,12 @@
 #include "operator.hpp"
-#include <cassert>
 
 namespace components::operators {
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
-    operator_t::operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type)
+    operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)
-        , log_(log)
+        , log_(std::move(log))
         , type_(type) {}
 
     void operator_t::prepare() {
@@ -85,8 +84,7 @@ namespace components::operators {
     }
 
     log_t& operator_t::log() noexcept {
-        assert(log_ && "log() requires non-null log");
-        return *log_;
+        return log_;
     }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
@@ -129,13 +127,13 @@ namespace components::operators {
         co_return;
     }
 
-    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t* log,
+    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log,
                                                operator_type type)
-        : operator_t(resource, log, type) {}
+        : operator_t(resource, std::move(log), type) {}
 
-    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t* log,
+    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log,
                                                  operator_type type)
-        : operator_t(resource, log, type)
+        : operator_t(resource, std::move(log), type)
         , state_(read_write_operator_state::pending) {}
 
 } // namespace components::operators

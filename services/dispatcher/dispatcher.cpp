@@ -515,9 +515,7 @@ namespace services::dispatcher {
               logical_plan->collection_full_name().to_string(), session.data());
 
         auto dependency_tree_collections_names = logical_plan->collection_dependencies();
-        context_storage_t collections_context_storage;
-        collections_context_storage.resource = resource();
-        collections_context_storage.log = &log_;
+        context_storage_t collections_context_storage(resource(), log_.clone());
         for (auto& name : dependency_tree_collections_names) {
             if (!name.empty() && collections_.count(name) > 0) {
                 collections_context_storage.known_collections.insert(name);

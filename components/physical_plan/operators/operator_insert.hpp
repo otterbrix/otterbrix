@@ -6,7 +6,7 @@ namespace components::operators {
 
     class operator_insert final : public read_write_operator_t {
     public:
-        operator_insert(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name);
+        operator_insert(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name);
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
 

@@ -3,7 +3,7 @@
 
 namespace components::operators {
 
-    operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t* log,
+    operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t log,
                                      collection_full_name_t name,
                                      expressions::compare_expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::remove)

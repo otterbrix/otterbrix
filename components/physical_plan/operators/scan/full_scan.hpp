@@ -14,7 +14,7 @@ namespace components::operators {
 
     class full_scan final : public read_only_operator_t {
     public:
-        full_scan(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
+        full_scan(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit);
 

@@ -14,7 +14,7 @@ namespace services::planner::impl {
         // TODO: figure out key translation
         auto plan = boost::intrusive_ptr(
             new components::operators::operator_insert(
-                context.resource, context.log, node->collection_full_name()));
+                context.resource, context.log.clone(), node->collection_full_name()));
         plan->set_children(create_plan(context, node->children().front(), std::move(limit)));
 
         return plan;

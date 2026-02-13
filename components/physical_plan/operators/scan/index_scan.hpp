@@ -9,7 +9,7 @@ namespace components::operators {
 
     class index_scan final : public read_only_operator_t {
     public:
-        index_scan(std::pmr::memory_resource* resource, log_t* log,
+        index_scan(std::pmr::memory_resource* resource, log_t log,
                    collection_full_name_t name,
                    const expressions::compare_expression_ptr& expr,
                    logical_plan::limit_t limit);

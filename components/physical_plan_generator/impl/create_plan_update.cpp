@@ -30,7 +30,7 @@ namespace services::planner::impl {
         if (node_update->collection_from().empty() && !node_raw_data) {
             auto plan = boost::intrusive_ptr(
                 new components::operators::operator_update(
-                    context.resource, context.log, coll_name,
+                    context.resource, context.log.clone(), coll_name,
                     node_update->updates(),
                     node_update->upsert()));
             plan->set_children(create_plan_match(context, node_match, limit));
@@ -42,22 +42,22 @@ namespace services::planner::impl {
 
             auto plan = boost::intrusive_ptr(
                 new components::operators::operator_update(
-                    context.resource, context.log, coll_name,
+                    context.resource, context.log.clone(), coll_name,
                     node_update->updates(),
                     node_update->upsert(),
                     expr));
             if (node_raw_data) {
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log, coll_name,
+                                       context.resource, context.log.clone(), coll_name,
                                        nullptr, limit)),
                                    create_plan_data(node_raw_data));
             } else {
                 auto coll_from = node_update->collection_from();
                 plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log, coll_name,
+                                       context.resource, context.log.clone(), coll_name,
                                        nullptr, limit)),
                                    boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log, coll_from,
+                                       context.resource, context.log.clone(), coll_from,
                                        nullptr, limit)));
             }
 

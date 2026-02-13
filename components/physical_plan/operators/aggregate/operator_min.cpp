@@ -5,7 +5,7 @@ namespace components::operators::aggregate {
 
     constexpr auto key_result_ = "min";
 
-    operator_min_t::operator_min_t(std::pmr::memory_resource* resource, log_t* log,
+    operator_min_t::operator_min_t(std::pmr::memory_resource* resource, log_t log,
                                    expressions::key_t key)
         : operator_aggregate_t(resource, log)
         , key_(std::move(key)) {}

@@ -4,7 +4,7 @@
 
 namespace components::operators {
 
-    aggregation::aggregation(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name)
+    aggregation::aggregation(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name)
         : read_only_operator_t(resource, log, operator_type::aggregate)
         , name_(std::move(name)) {}
 

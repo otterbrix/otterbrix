@@ -147,8 +147,6 @@ namespace services::index {
     }
 
     // --- DML: bulk index operations ---
-    // Phase 1: Uses engine->insert_row/delete_row with nullptr pipeline_context
-    // (in-memory only; disk agent persistence will be added when agents are moved here)
 
     manager_index_t::unique_future<void> manager_index_t::insert_rows(
         session_id_t /*session*/,
@@ -165,7 +163,7 @@ namespace services::index {
         auto& engine = it->second;
         for (uint64_t i = 0; i < count; i++) {
             size_t row = static_cast<size_t>(start_row_id + i);
-            engine->insert_row(*data, row, nullptr);
+            engine->insert_row(*data, row);
         }
 
         co_return;
@@ -184,7 +182,7 @@ namespace services::index {
 
         auto& engine = it->second;
         for (auto row_id : row_ids) {
-            engine->delete_row(*data, row_id, nullptr);
+            engine->delete_row(*data, row_id);
         }
 
         co_return;
@@ -206,12 +204,12 @@ namespace services::index {
 
         // Delete old entries
         for (auto row_id : row_ids) {
-            engine->delete_row(*old_data, row_id, nullptr);
+            engine->delete_row(*old_data, row_id);
         }
 
         // Insert new entries
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, row_ids[i], nullptr);
+            engine->insert_row(*new_data, row_ids[i]);
         }
 
         co_return;
@@ -265,7 +263,7 @@ namespace services::index {
 
                 if (scan_data) {
                     for (uint64_t i = 0; i < scan_data->size(); i++) {
-                        engine->insert_row(*scan_data, i, nullptr);
+                        engine->insert_row(*scan_data, i);
                     }
                 }
             }

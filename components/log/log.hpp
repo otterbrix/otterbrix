@@ -21,7 +21,7 @@ public:
     log_t(std::shared_ptr<spdlog::async_logger>);
     log_t(std::shared_ptr<spdlog::logger>);
     ~log_t() = default;
-    auto clone() noexcept -> log_t;
+    auto clone() const noexcept -> log_t;
     auto set_level(level l) -> void;
     auto get_level() const -> log_t::level;
     auto context(std::shared_ptr<spdlog::async_logger> logger) noexcept -> void;

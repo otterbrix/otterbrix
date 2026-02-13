@@ -20,7 +20,7 @@ namespace components::operators {
 
     class operator_group_t final : public read_write_operator_t {
     public:
-        operator_group_t(std::pmr::memory_resource* resource, log_t* log);
+        operator_group_t(std::pmr::memory_resource* resource, log_t log);
 
         void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);

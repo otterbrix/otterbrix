@@ -93,7 +93,7 @@ namespace services::disk {
                              int64_t start,
                              uint64_t count);
 
-        actor_zeta::unique_future<uint64_t> storage_append(
+        actor_zeta::unique_future<std::pair<uint64_t, uint64_t>> storage_append(
             session_id_t session,
             collection_full_name_t name,
             std::unique_ptr<components::vector::data_chunk_t> data);

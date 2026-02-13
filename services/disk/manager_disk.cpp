@@ -542,11 +542,11 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_append(
+    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_t::storage_append(
         session_id_t /*session*/, collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) co_return 0;
+        if (!s || !data || data->size() == 0) co_return std::make_pair(uint64_t{0}, uint64_t{0});
 
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -630,7 +630,7 @@ namespace services::disk {
                     }
 
                     if (keep_rows.empty()) {
-                        co_return 0; // All rows are duplicates
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0}); // All rows are duplicates
                     }
 
                     if (keep_rows.size() < data->size()) {
@@ -650,7 +650,9 @@ namespace services::disk {
         }
 
         // 4. Append
-        co_return s->append(*data);
+        auto actual_count = data->size();
+        auto start_row = s->append(*data);
+        co_return std::make_pair(start_row, actual_count);
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_update(
@@ -965,11 +967,11 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_append(
+    manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_empty_t::storage_append(
         session_id_t /*session*/, collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) co_return 0;
+        if (!s || !data || data->size() == 0) co_return std::make_pair(uint64_t{0}, uint64_t{0});
 
         // Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -1041,7 +1043,7 @@ namespace services::disk {
                             keep_rows.push_back(i);
                         }
                     }
-                    if (keep_rows.empty()) co_return 0;
+                    if (keep_rows.empty()) co_return std::make_pair(uint64_t{0}, uint64_t{0});
                     if (keep_rows.size() < data->size()) {
                         auto filtered = std::make_unique<components::vector::data_chunk_t>(
                             resource(), data->types(), keep_rows.size());
@@ -1057,7 +1059,9 @@ namespace services::disk {
             }
         }
 
-        co_return s->append(*data);
+        auto actual_count = data->size();
+        auto start_row = s->append(*data);
+        co_return std::make_pair(start_row, actual_count);
     }
 
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::storage_update(

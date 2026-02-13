@@ -299,7 +299,13 @@ namespace services::collection::executor {
                         auto [_a, af] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::storage_append,
                             session, name, std::move(data_copy));
-                        auto start_row = co_await std::move(af);
+                        auto [start_row, actual_count] = co_await std::move(af);
+
+                        if (actual_count == 0) {
+                            // All rows were duplicates — nothing inserted
+                            cursor = make_cursor(resource(), operation_status_t::success);
+                            break;
+                        }
 
                         // Mirror to manager_index_t (dual write)
                         if (index_address_ != actor_zeta::address_t::empty_address()) {
@@ -310,7 +316,7 @@ namespace services::collection::executor {
                                 &index::manager_index_t::insert_rows,
                                 session, name, std::move(data_for_index),
                                 static_cast<uint64_t>(start_row),
-                                static_cast<uint64_t>(out_chunk.size()));
+                                actual_count);
                             co_await std::move(ixf);
                         }
 
@@ -324,9 +330,9 @@ namespace services::collection::executor {
                             std::move(data_for_disk));
                         co_await std::move(wrf);
 
-                        // Build result cursor
-                        components::vector::data_chunk_t result_chunk(resource(), {}, out_chunk.size());
-                        result_chunk.set_cardinality(out_chunk.size());
+                        // Build result cursor with actual inserted count
+                        components::vector::data_chunk_t result_chunk(resource(), {}, actual_count);
+                        result_chunk.set_cardinality(actual_count);
                         cursor = make_cursor(resource(), std::move(result_chunk));
                     } else {
                         cursor = make_cursor(resource(), operation_status_t::success);

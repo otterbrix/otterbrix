@@ -14,6 +14,8 @@ namespace components::operators {
 
     void aggregation::set_sort(operator_ptr&& sort) { sort_ = std::move(sort); }
 
+    void aggregation::set_limit(logical_plan::limit_t limit) { limit_ = limit; }
+
     void aggregation::on_execute_impl(pipeline::context_t*) { take_output(left_); }
 
     void aggregation::on_prepare_impl() {
@@ -27,7 +29,7 @@ namespace components::operators {
         } else {
             executor = match_ ? std::move(match_)
                               : static_cast<operator_ptr>(boost::intrusive_ptr(
-                                    new transfer_scan(resource_, name_, logical_plan::limit_t::unlimit())));
+                                    new transfer_scan(resource_, name_, limit_)));
         }
         if (group_) {
             group_->set_children(std::move(executor));

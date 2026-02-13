@@ -42,7 +42,3 @@ target_link_libraries(
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )
 
-if (DEV_MODE)
-    add_definitions(-DDEV_MODE)
-    add_subdirectory(tests)
-endif ()

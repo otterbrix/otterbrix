@@ -4,7 +4,6 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
-#include <components/index/index_engine.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/node_delete.hpp>
@@ -14,13 +13,8 @@
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
-#include <components/physical_plan/operators/scan/full_scan.hpp>
-#include <components/physical_plan/operators/scan/index_scan.hpp>
-#include <components/physical_plan/operators/scan/transfer_scan.hpp>
-#include <components/physical_plan/operators/scan/primary_key_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
-#include <services/disk/index_agent_disk.hpp>
 
 using namespace components::cursor;
 
@@ -79,205 +73,6 @@ namespace services::collection::executor {
     }
 
     auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
-
-    executor_t::unique_future<void> executor_t::intercept_all_scans_(
-        components::session::session_id_t session,
-        const components::operators::operator_ptr& op,
-        components::pipeline::context_t* pipeline_context) {
-        if (!op) co_return;
-        // If this is a scan leaf, intercept it
-        if (!op->left() && !op->right() &&
-            components::operators::is_scan(op->type())) {
-            co_await intercept_scan_(session, op, pipeline_context);
-            co_return;
-        }
-        // Otherwise recurse into children
-        if (op->left()) {
-            co_await intercept_all_scans_(session, op->left(), pipeline_context);
-        }
-        if (op->right()) {
-            co_await intercept_all_scans_(session, op->right(), pipeline_context);
-        }
-    }
-
-    executor_t::unique_future<void> executor_t::intercept_scan_(
-        components::session::session_id_t session,
-        const components::operators::operator_ptr& scan_op,
-        components::pipeline::context_t* pipeline_context) {
-
-        using components::operators::operator_type;
-
-        switch (scan_op->type()) {
-            case operator_type::full_scan: {
-                auto* fs = static_cast<components::operators::full_scan*>(scan_op.get());
-                auto name = fs->collection_name();
-                if (name.empty()) co_return;
-                trace(log_, "executor::intercept_scan_: full_scan on {}", name.to_string());
-
-                // Get types to build filter
-                auto [_t, tf] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_types, session, name);
-                auto types = co_await std::move(tf);
-
-                // Build filter from expression
-                auto filter = components::operators::transform_predicate(
-                    fs->expression(), types,
-                    pipeline_context ? &pipeline_context->parameters : nullptr);
-
-                // Scan from storage
-                int limit = fs->limit().limit();
-                auto [_s, sf] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_scan, session, name,
-                    std::move(filter), limit);
-                auto data = co_await std::move(sf);
-
-                if (data) {
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(), std::move(*data)));
-                } else {
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(),
-                            std::pmr::vector<components::types::complex_logical_type>{resource()}));
-                }
-                break;
-            }
-
-            case operator_type::transfer_scan: {
-                auto* ts = static_cast<components::operators::transfer_scan*>(scan_op.get());
-                auto name = ts->collection_name();
-                if (name.empty()) co_return;
-                trace(log_, "executor::intercept_scan_: transfer_scan on {}", name.to_string());
-
-                int limit = ts->limit().limit();
-                auto [_s, sf] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_scan, session, name,
-                    std::unique_ptr<components::table::table_filter_t>(nullptr), limit);
-                auto data = co_await std::move(sf);
-
-                if (data) {
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(), std::move(*data)));
-                } else {
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(),
-                            std::pmr::vector<components::types::complex_logical_type>{resource()}));
-                }
-                break;
-            }
-
-            case operator_type::index_scan: {
-                auto* is = static_cast<components::operators::index_scan*>(scan_op.get());
-                auto name = is->collection_name();
-                if (name.empty()) co_return;
-                trace(log_, "executor::intercept_scan_: index_scan on {}", name.to_string());
-
-                // Index search via manager_index_t
-                if (index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_s, sf] = actor_zeta::send(index_address_,
-                        &index::manager_index_t::search,
-                        session, name,
-                        components::index::keys_base_storage_t{{is->expr()->primary_key()}},
-                        components::types::logical_value_t{resource(), is->expr()->value()},
-                        is->expr()->type());
-                    auto row_ids_vec = co_await std::move(sf);
-
-                    size_t count = row_ids_vec.size();
-                    int limit_val = is->limit().limit();
-                    if (limit_val >= 0) {
-                        count = std::min(count, static_cast<size_t>(limit_val));
-                    }
-
-                    if (count > 0) {
-                        // Build row_ids vector for fetch
-                        components::vector::vector_t row_ids(resource(),
-                            components::types::logical_type::BIGINT, count);
-                        for (size_t i = 0; i < count; i++) {
-                            row_ids.set_value(i,
-                                components::types::logical_value_t{resource(), row_ids_vec[i]});
-                        }
-
-                        // Fetch from storage
-                        auto [_f, ff] = actor_zeta::send(disk_address_,
-                            &disk::manager_disk_t::storage_fetch, session, name,
-                            std::move(row_ids), count);
-                        auto data = co_await std::move(ff);
-
-                        if (data) {
-                            scan_op->inject_output(
-                                components::operators::make_operator_data(resource(), std::move(*data)));
-                        } else {
-                            auto [_t2, tf2] = actor_zeta::send(disk_address_,
-                                &disk::manager_disk_t::storage_types, session, name);
-                            auto types = co_await std::move(tf2);
-                            scan_op->inject_output(
-                                components::operators::make_operator_data(resource(), types));
-                        }
-                    } else {
-                        auto [_t3, tf3] = actor_zeta::send(disk_address_,
-                            &disk::manager_disk_t::storage_types, session, name);
-                        auto types = co_await std::move(tf3);
-                        scan_op->inject_output(
-                            components::operators::make_operator_data(resource(), types));
-                    }
-                } else {
-                    // No manager_index_t — return empty
-                    auto [_t4, tf4] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::storage_types, session, name);
-                    auto types = co_await std::move(tf4);
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(), types));
-                }
-                break;
-            }
-
-            case operator_type::primary_key_scan: {
-                auto* ps = static_cast<components::operators::primary_key_scan*>(scan_op.get());
-                auto name = ps->collection_name();
-                if (name.empty()) co_return;
-                trace(log_, "executor::intercept_scan_: primary_key_scan on {}", name.to_string());
-
-                auto row_count = ps->row_count();
-                if (row_count > 0) {
-                    // Copy rows vector for send
-                    components::vector::vector_t row_ids_copy(resource(),
-                        components::types::logical_type::BIGINT, row_count);
-                    for (size_t i = 0; i < row_count; i++) {
-                        row_ids_copy.set_value(i,
-                            components::types::logical_value_t{resource(),
-                                ps->rows().data<int64_t>()[i]});
-                    }
-
-                    auto [_f, ff] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::storage_fetch, session, name,
-                        std::move(row_ids_copy), row_count);
-                    auto data = co_await std::move(ff);
-
-                    if (data) {
-                        scan_op->inject_output(
-                            components::operators::make_operator_data(resource(), std::move(*data)));
-                    } else {
-                        auto [_t4, tf4] = actor_zeta::send(disk_address_,
-                            &disk::manager_disk_t::storage_types, session, name);
-                        auto types = co_await std::move(tf4);
-                        scan_op->inject_output(
-                            components::operators::make_operator_data(resource(), types));
-                    }
-                } else {
-                    auto [_t5, tf5] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::storage_types, session, name);
-                    auto types = co_await std::move(tf5);
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(), types));
-                }
-                break;
-            }
-
-            default:
-                break;
-        }
-
-        co_return;
-    }
 
     executor_t::unique_future<execute_result_t> executor_t::execute_plan(
         components::session::session_id_t session,
@@ -461,38 +256,32 @@ namespace services::collection::executor {
             }();
 
             components::pipeline::context_t pipeline_context{session, address(), parent_address_, plan_data.parameters};
+            pipeline_context.disk_address = disk_address_;
+            pipeline_context.index_address = index_address_;
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
-            // Recursively intercept all scan operators in the plan tree
-            co_await intercept_all_scans_(session, plan, &pipeline_context);
-
-            // Execute the plan tree (scan operators are already executed/injected)
+            // Execute the plan tree (scan operators send I/O requests and enter waiting state)
             plan->on_execute(&pipeline_context);
 
-            trace(log_, "executor: after on_execute, is_executed={}", plan->is_executed());
-            if (!plan->is_executed()) {
+            // Await all waiting operators (multiple scans in a join, etc.)
+            while (!plan->is_executed()) {
                 auto waiting_op = plan->find_waiting_operator();
-                if (waiting_op) {
-                    trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                    co_await waiting_op->await_async_and_resume(&pipeline_context);
-                    trace(log_, "executor: after await_async_and_resume completed");
-
-                    if (waiting_op->is_executed()) {
-                        trace(log_, "executor: waiting op completed, re-executing root plan");
-                        plan->on_execute(&pipeline_context);
-                    }
-                }
-
-                if (!plan->is_executed()) {
-                    error(log_, "Plan not executed after co_await! session: {}, plan type: {}",
+                if (!waiting_op) {
+                    error(log_, "Plan not executed and no waiting operator! session: {}, plan type: {}",
                           session.data(), static_cast<int>(plan->type()));
                     cursor = make_cursor(resource(), error_code_t::create_physical_plan_error,
                                          "operator failed to complete execution");
                     break;
                 }
+                trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
+                co_await waiting_op->await_async_and_resume(&pipeline_context);
+                trace(log_, "executor: after await_async_and_resume completed");
+                // Re-execute: completed scan allows parent to proceed, may find next waiting scan
+                plan->on_execute(&pipeline_context);
             }
+            if (cursor && cursor->is_error()) break;
 
             switch (plan->type()) {
                 case components::operators::operator_type::insert: {
@@ -586,7 +375,11 @@ namespace services::collection::executor {
                                 auto index_row_ids = std::pmr::vector<size_t>(resource());
                                 index_row_ids.reserve(modified_size);
                                 for (size_t i = 0; i < modified_size; i++) {
-                                    index_row_ids.push_back(ids[i]);
+                                    // Use chunk-local indices: data_for_index is a copy of scan_chunk,
+                                    // so row i in data_for_index corresponds to ids[i] in storage.
+                                    // The index engine uses row_id to access column.value(row_id),
+                                    // so it must be a valid index within the data chunk.
+                                    index_row_ids.push_back(i);
                                 }
                                 auto [_ix, ixf] = actor_zeta::send(index_address_,
                                     &index::manager_index_t::delete_rows,

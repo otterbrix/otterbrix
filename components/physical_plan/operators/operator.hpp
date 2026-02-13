@@ -88,10 +88,10 @@ namespace components::operators {
         const operator_write_data_ptr& no_modified() const;
         void set_children(ptr left, ptr right = nullptr);
         void take_output(ptr& src);
-        void inject_output(operator_data_ptr data);
         void clear(); //todo: replace by copy
 
     protected:
+        void mark_executed();
         std::pmr::memory_resource* resource_;
         log_t* log_;
 

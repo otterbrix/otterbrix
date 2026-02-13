@@ -22,6 +22,8 @@ namespace components::operators {
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

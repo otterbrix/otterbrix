@@ -15,6 +15,8 @@ namespace components::operators {
         const vector::vector_t& rows() const { return rows_; }
         size_t row_count() const { return size_; }
 
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+
     private:
         collection_full_name_t name_;
         vector::vector_t rows_;

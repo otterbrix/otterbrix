@@ -65,18 +65,6 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session,
                                                           plan_t plan_data);
 
-        // Intercept scan operator and inject data from storage
-        unique_future<void> intercept_scan_(
-            components::session::session_id_t session,
-            const components::operators::operator_ptr& scan_op,
-            components::pipeline::context_t* pipeline_context);
-
-        // Recursively traverse operator tree and intercept all scan operators
-        unique_future<void> intercept_all_scans_(
-            components::session::session_id_t session,
-            const components::operators::operator_ptr& op,
-            components::pipeline::context_t* pipeline_context);
-
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();

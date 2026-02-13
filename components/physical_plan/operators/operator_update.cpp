@@ -46,17 +46,18 @@ namespace components::operators {
                     for (size_t j = 0; j < chunk_right.size(); j++) {
                         if (predicate->check(chunk_left, chunk_right, i, j)) {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
-                            bool modified = false;
-                            for (const auto& expr : updates_) {
-                                modified |= expr->execute(chunk_left, chunk_right, i, j, &pipeline_context->parameters);
-                            }
-                            if (modified) {
-                                modified_->append(i);
-                            } else {
-                                no_modified_->append(i);
-                            }
+                            // Copy original values to output first (preserves scan data for executor)
                             for (size_t k = 0; k < chunk_left.column_count(); k++) {
                                 out_chunk.set_value(k, index, chunk_left.value(k, i));
+                            }
+                            bool modified = false;
+                            for (const auto& expr : updates_) {
+                                modified |= expr->execute(out_chunk, chunk_right, index, j, &pipeline_context->parameters);
+                            }
+                            if (modified) {
+                                modified_->append(index);
+                            } else {
+                                no_modified_->append(index);
                             }
                             vector::validate_chunk_capacity(out_chunk, ++index);
                         }
@@ -93,17 +94,18 @@ namespace components::operators {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
                         }
 
-                        bool modified = false;
-                        for (const auto& expr : updates_) {
-                            modified |= expr->execute(chunk, chunk, i, i, &pipeline_context->parameters);
-                        }
-                        if (modified) {
-                            modified_->append(i);
-                        } else {
-                            no_modified_->append(i);
-                        }
+                        // Copy original values to output first (preserves scan data for executor)
                         for (size_t j = 0; j < chunk.column_count(); j++) {
                             out_chunk.set_value(j, index, chunk.value(j, i));
+                        }
+                        bool modified = false;
+                        for (const auto& expr : updates_) {
+                            modified |= expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters);
+                        }
+                        if (modified) {
+                            modified_->append(index);
+                        } else {
+                            no_modified_->append(index);
                         }
                         vector::validate_chunk_capacity(out_chunk, ++index);
                     }

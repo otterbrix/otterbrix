@@ -34,7 +34,10 @@ namespace components::index {
     }
 
     auto single_field_index_t::remove_impl(components::index::value_t key) -> void {
-        storage_.erase(storage_.find(key));
+        auto it = storage_.find(key);
+        if (it != storage_.end()) {
+            storage_.erase(it);
+        }
     }
 
     index_t::range single_field_index_t::find_impl(const value_t& value) const {

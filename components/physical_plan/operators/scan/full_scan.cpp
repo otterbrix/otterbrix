@@ -1,6 +1,7 @@
 #include "full_scan.hpp"
 
 #include <components/physical_plan/operators/transformation.hpp>
+#include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
 
@@ -81,9 +82,38 @@ namespace components::operators {
         , limit_(limit) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        // Full scan is now handled by executor via:
-        //   send(disk_address_, &manager_disk_t::storage_scan) → data_chunk
-        // This operator is a no-op; data is injected via inject_output().
+        if (name_.empty()) return;
+        async_wait();
+    }
+
+    actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
+        if (log_) {
+            trace(log(), "full_scan::await_async_and_resume on {}", name_.to_string());
+        }
+
+        // Get types to build filter
+        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+            &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+        auto types = co_await std::move(tf);
+
+        // Build filter from expression
+        auto filter = transform_predicate(expression_, types, &ctx->parameters);
+
+        // Scan from storage
+        int limit_val = limit_.limit();
+        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+            &services::disk::manager_disk_t::storage_scan, ctx->session, name_,
+            std::move(filter), limit_val);
+        auto data = co_await std::move(sf);
+
+        if (data) {
+            output_ = make_operator_data(resource_, std::move(*data));
+        } else {
+            output_ = make_operator_data(resource_,
+                std::pmr::vector<types::complex_logical_type>{resource_});
+        }
+        mark_executed();
+        co_return;
     }
 
 } // namespace components::operators

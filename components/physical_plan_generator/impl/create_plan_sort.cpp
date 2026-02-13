@@ -10,9 +10,9 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         auto sort = context.has_collection(coll_name)
             ? boost::intrusive_ptr(
-                new components::operators::operator_sort_t(context.resource, context.log, coll_name))
+                new components::operators::operator_sort_t(context.resource, context.log))
             : boost::intrusive_ptr(
-                new components::operators::operator_sort_t(node->resource(), nullptr, coll_name));
+                new components::operators::operator_sort_t(node->resource(), nullptr));
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
                       [&sort](const components::expressions::expression_ptr& expr) {

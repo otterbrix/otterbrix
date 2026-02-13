@@ -10,11 +10,13 @@ namespace components::operators {
         transfer_scan(std::pmr::memory_resource* resource, collection_full_name_t name,
                       logical_plan::limit_t limit);
 
+        const collection_full_name_t& collection_name() const noexcept { return name_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
+        collection_full_name_t name_;
         const logical_plan::limit_t limit_;
     };
 

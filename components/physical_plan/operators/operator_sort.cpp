@@ -4,9 +4,8 @@
 
 namespace components::operators {
 
-    operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t* log,
-                                     collection_full_name_t name)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::sort) {}
+    operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t* log)
+        : read_only_operator_t(resource, log, operator_type::sort) {}
 
     void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
 

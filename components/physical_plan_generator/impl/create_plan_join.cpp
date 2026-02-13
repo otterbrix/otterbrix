@@ -20,10 +20,10 @@ namespace services::planner::impl {
         auto coll_name = context.has_collection(left_name) ? left_name : right_name;
         auto join = known
             ? boost::intrusive_ptr(
-                new components::operators::operator_join_t(context.resource, context.log, coll_name,
+                new components::operators::operator_join_t(context.resource, context.log,
                                                           join_node->type(), *expr))
             : boost::intrusive_ptr(
-                new components::operators::operator_join_t(nullptr, nullptr, {},
+                new components::operators::operator_join_t(nullptr, nullptr,
                                                           join_node->type(), *expr));
         components::operators::operator_ptr left;
         components::operators::operator_ptr right;

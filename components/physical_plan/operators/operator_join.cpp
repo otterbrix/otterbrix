@@ -5,10 +5,10 @@
 
 namespace components::operators {
 
-    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
+    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t* log,
                                      type join_type,
                                      const expressions::compare_expression_ptr& expression)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::join)
+        : read_only_operator_t(resource, log, operator_type::join)
         , join_type_(join_type)
         , expression_(std::move(expression)) {}
 

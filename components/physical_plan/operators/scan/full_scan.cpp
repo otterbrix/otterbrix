@@ -75,7 +75,8 @@ namespace components::operators {
     full_scan::full_scan(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::match)
+        : read_only_operator_t(resource, log, operator_type::full_scan)
+        , name_(std::move(name))
         , expression_(expression)
         , limit_(limit) {}
 

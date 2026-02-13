@@ -18,6 +18,10 @@ namespace components::operators {
         unused = 0x0,
         empty,
         match,
+        full_scan,
+        transfer_scan,
+        index_scan,
+        primary_key_scan,
         insert,
         remove,
         update,
@@ -26,6 +30,11 @@ namespace components::operators {
         aggregate,
         raw_data
     };
+
+    inline bool is_scan(operator_type t) {
+        return t == operator_type::full_scan || t == operator_type::transfer_scan ||
+               t == operator_type::index_scan || t == operator_type::primary_key_scan;
+    }
 
     enum class operator_state
     {
@@ -46,8 +55,7 @@ namespace components::operators {
         operator_t& operator=(const operator_t&) = delete;
         operator_t& operator=(operator_t&&) = default;
 
-        operator_t(std::pmr::memory_resource* resource, log_t* log,
-                   collection_full_name_t name, operator_type type);
+        operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
 
         virtual ~operator_t() = default;
 
@@ -68,8 +76,6 @@ namespace components::operators {
 
         ptr find_waiting_operator();
 
-        const collection_full_name_t& collection_name() const noexcept;
-
         virtual std::pmr::memory_resource* resource() const noexcept;
         log_t& log() noexcept;
 
@@ -88,7 +94,6 @@ namespace components::operators {
     protected:
         std::pmr::memory_resource* resource_;
         log_t* log_;
-        collection_full_name_t name_;
 
         ptr left_{nullptr};
         ptr right_{nullptr};
@@ -109,8 +114,7 @@ namespace components::operators {
 
     class read_only_operator_t : public operator_t {
     public:
-        read_only_operator_t(std::pmr::memory_resource* resource, log_t* log,
-                             collection_full_name_t name, operator_type type);
+        read_only_operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
     };
 
     enum class read_write_operator_state
@@ -124,8 +128,7 @@ namespace components::operators {
 
     class read_write_operator_t : public operator_t {
     public:
-        read_write_operator_t(std::pmr::memory_resource* resource, log_t* log,
-                              collection_full_name_t name, operator_type type);
+        read_write_operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type);
         //todo:
         //void commit();
         //void rollback();

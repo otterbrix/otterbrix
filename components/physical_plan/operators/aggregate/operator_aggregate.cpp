@@ -2,9 +2,8 @@
 
 namespace components::operators::aggregate {
 
-    operator_aggregate_t::operator_aggregate_t(std::pmr::memory_resource* resource, log_t* log,
-                                               collection_full_name_t name)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::aggregate) {}
+    operator_aggregate_t::operator_aggregate_t(std::pmr::memory_resource* resource, log_t* log)
+        : read_only_operator_t(resource, log, operator_type::aggregate) {}
 
     void operator_aggregate_t::on_execute_impl(pipeline::context_t*) { aggregate_result_ = aggregate_impl(); }
 

@@ -18,12 +18,14 @@ namespace components::operators {
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit);
 
+        const collection_full_name_t& collection_name() const noexcept { return name_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
+        collection_full_name_t name_;
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
     };

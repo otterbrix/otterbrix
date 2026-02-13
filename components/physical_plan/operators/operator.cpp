@@ -5,11 +5,9 @@ namespace components::operators {
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
-    operator_t::operator_t(std::pmr::memory_resource* resource, log_t* log,
-                           collection_full_name_t name, operator_type type)
+    operator_t::operator_t(std::pmr::memory_resource* resource, log_t* log, operator_type type)
         : resource_(resource)
         , log_(log)
-        , name_(std::move(name))
         , type_(type) {}
 
     void operator_t::prepare() {
@@ -82,10 +80,6 @@ namespace components::operators {
         return nullptr;
     }
 
-    const collection_full_name_t& operator_t::collection_name() const noexcept {
-        return name_;
-    }
-
     std::pmr::memory_resource* operator_t::resource() const noexcept {
         return resource_;
     }
@@ -137,12 +131,12 @@ namespace components::operators {
     }
 
     read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t* log,
-                                               collection_full_name_t name, operator_type type)
-        : operator_t(resource, log, std::move(name), type) {}
+                                               operator_type type)
+        : operator_t(resource, log, type) {}
 
     read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t* log,
-                                                 collection_full_name_t name, operator_type type)
-        : operator_t(resource, log, std::move(name), type)
+                                                 operator_type type)
+        : operator_t(resource, log, type)
         , state_(read_write_operator_state::pending) {}
 
 } // namespace components::operators

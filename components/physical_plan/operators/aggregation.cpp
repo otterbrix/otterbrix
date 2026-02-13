@@ -5,7 +5,8 @@
 namespace components::operators {
 
     aggregation::aggregation(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::aggregate) {}
+        : read_only_operator_t(resource, log, operator_type::aggregate)
+        , name_(std::move(name)) {}
 
     void aggregation::set_match(operator_ptr&& match) { match_ = std::move(match); }
 

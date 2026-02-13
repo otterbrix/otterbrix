@@ -4,7 +4,8 @@ namespace components::operators {
 
     primary_key_scan::primary_key_scan(std::pmr::memory_resource* resource,
                                        collection_full_name_t name)
-        : read_only_operator_t(resource, nullptr, std::move(name), operator_type::match)
+        : read_only_operator_t(resource, nullptr, operator_type::primary_key_scan)
+        , name_(std::move(name))
         , rows_(resource, types::logical_type::BIGINT) {}
 
     void primary_key_scan::append(size_t id) {

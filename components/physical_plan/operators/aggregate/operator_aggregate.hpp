@@ -10,7 +10,7 @@ namespace components::operators::aggregate {
         types::logical_value_t value() const;
 
     protected:
-        operator_aggregate_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name);
+        operator_aggregate_t(std::pmr::memory_resource* resource, log_t* log);
 
         types::logical_value_t aggregate_result_{std::pmr::null_memory_resource(), types::complex_logical_type{types::logical_type::NA}};
 

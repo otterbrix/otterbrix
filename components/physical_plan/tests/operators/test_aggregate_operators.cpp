@@ -30,7 +30,7 @@ TEST_CASE("components::physical_plan::aggregate::count") {
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::aggregate::operator_count_t count(res, lg, name);
+        operators::aggregate::operator_count_t count(res, lg);
         count.set_children(boost::intrusive_ptr(scan_ptr));
         count.on_execute(nullptr);
         REQUIRE(count.value().value<uint64_t>() == 100);
@@ -47,10 +47,10 @@ TEST_CASE("components::physical_plan::aggregate::count") {
 
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(res, lg, name, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(res, lg, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
-        operators::aggregate::operator_count_t count(res, lg, name);
+        operators::aggregate::operator_count_t count(res, lg);
         count.set_children(boost::intrusive_ptr(match_ptr));
         count.on_execute(&pipeline_context);
         REQUIRE(count.value().value<uint64_t>() == 10);
@@ -70,7 +70,7 @@ TEST_CASE("components::physical_plan::aggregate::min") {
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::aggregate::operator_min_t min_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_min_t min_(res, lg, key(&resource, "count"));
         min_.set_children(boost::intrusive_ptr(scan_ptr));
         min_.on_execute(nullptr);
         REQUIRE(min_.value().value<int64_t>() == 1);
@@ -87,10 +87,10 @@ TEST_CASE("components::physical_plan::aggregate::min") {
 
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(res, lg, name, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(res, lg, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
-        operators::aggregate::operator_min_t min_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_min_t min_(res, lg, key(&resource, "count"));
         min_.set_children(boost::intrusive_ptr(match_ptr));
         min_.on_execute(&pipeline_context);
         REQUIRE(min_.value().value<int64_t>() == 81);
@@ -110,7 +110,7 @@ TEST_CASE("components::physical_plan::aggregate::max") {
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::aggregate::operator_max_t max_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_max_t max_(res, lg, key(&resource, "count"));
         max_.set_children(boost::intrusive_ptr(scan_ptr));
         max_.on_execute(nullptr);
         REQUIRE(max_.value().value<int64_t>() == 100);
@@ -127,10 +127,10 @@ TEST_CASE("components::physical_plan::aggregate::max") {
 
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(res, lg, name, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(res, lg, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
-        operators::aggregate::operator_max_t max_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_max_t max_(res, lg, key(&resource, "count"));
         max_.set_children(boost::intrusive_ptr(match_ptr));
         max_.on_execute(&pipeline_context);
         REQUIRE(max_.value().value<int64_t>() == 19);
@@ -150,7 +150,7 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::aggregate::operator_sum_t sum_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_sum_t sum_(res, lg, key(&resource, "count"));
         sum_.set_children(boost::intrusive_ptr(scan_ptr));
         sum_.on_execute(nullptr);
         REQUIRE(sum_.value().value<int64_t>() == 5050);
@@ -167,10 +167,10 @@ TEST_CASE("components::physical_plan::aggregate::sum") {
 
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(res, lg, name, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(res, lg, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
-        operators::aggregate::operator_sum_t sum_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_sum_t sum_(res, lg, key(&resource, "count"));
         sum_.set_children(boost::intrusive_ptr(match_ptr));
         sum_.on_execute(&pipeline_context);
         REQUIRE(sum_.value().value<int64_t>() == 45);
@@ -190,7 +190,7 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::aggregate::operator_avg_t avg_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_avg_t avg_(res, lg, key(&resource, "count"));
         avg_.set_children(boost::intrusive_ptr(scan_ptr));
         avg_.on_execute(nullptr);
         REQUIRE(core::is_equals(avg_.value().value<double>(), 50.5));
@@ -207,10 +207,10 @@ TEST_CASE("components::physical_plan::aggregate::avg") {
 
         auto* scan_ptr = new operators::full_scan(res, lg, name, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(res, lg, name, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(res, lg, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
-        operators::aggregate::operator_avg_t avg_(res, lg, name, key(&resource, "count"));
+        operators::aggregate::operator_avg_t avg_(res, lg, key(&resource, "count"));
         avg_.set_children(boost::intrusive_ptr(match_ptr));
         avg_.on_execute(&pipeline_context);
         REQUIRE(core::is_equals(avg_.value().value<double>(), 5.0));

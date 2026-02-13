@@ -13,6 +13,7 @@ namespace components::operators {
         void set_sort(operator_ptr&& sort);
 
     private:
+        collection_full_name_t name_;
         operator_ptr match_{nullptr};
         operator_ptr group_{nullptr};
         operator_ptr sort_{nullptr};

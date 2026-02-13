@@ -17,7 +17,7 @@ namespace services::planner::impl {
                     context.resource, context.log, coll_name, expr, limit));
             } else {
                 return boost::intrusive_ptr(new components::operators::operator_match_t(
-                    nullptr, nullptr, {}, expr, limit));
+                    nullptr, nullptr, expr, limit));
             }
         }
     } // namespace

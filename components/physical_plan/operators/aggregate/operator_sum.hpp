@@ -7,7 +7,7 @@ namespace components::operators::aggregate {
 
     class operator_sum_t final : public operator_aggregate_t {
     public:
-        operator_sum_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,expressions::key_t key);
+        operator_sum_t(std::pmr::memory_resource* resource, log_t* log, expressions::key_t key);
 
     private:
         expressions::key_t key_;

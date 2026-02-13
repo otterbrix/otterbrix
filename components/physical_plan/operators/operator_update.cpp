@@ -8,7 +8,8 @@ namespace components::operators {
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
                                      expressions::compare_expression_ptr comp_expr)
-        : read_write_operator_t(resource, log, std::move(name), operator_type::update)
+        : read_write_operator_t(resource, log, operator_type::update)
+        , name_(std::move(name))
         , updates_(std::move(updates))
         , comp_expr_(std::move(comp_expr))
         , upsert_(upsert) {}

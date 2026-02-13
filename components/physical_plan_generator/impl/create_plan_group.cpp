@@ -37,7 +37,6 @@ namespace services::planner::impl {
         }
 
         void add_group_aggregate(std::pmr::memory_resource* resource, log_t* log,
-                                 const collection_full_name_t& name,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             using components::expressions::aggregate_type;
@@ -47,7 +46,7 @@ namespace services::planner::impl {
                     group->add_value(
                         expr->key().as_pmr_string(),
                         boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
-                            resource, log, name)));
+                            resource, log)));
                     break;
                 }
                 case aggregate_type::sum: {
@@ -58,7 +57,7 @@ namespace services::planner::impl {
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::operators::aggregate::operator_sum_t(
-                                             resource, log, name, field)));
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::avg: {
@@ -69,7 +68,7 @@ namespace services::planner::impl {
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::operators::aggregate::operator_avg_t(
-                                             resource, log, name, field)));
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::min: {
@@ -80,7 +79,7 @@ namespace services::planner::impl {
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::operators::aggregate::operator_min_t(
-                                             resource, log, name, field)));
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::max: {
@@ -91,7 +90,7 @@ namespace services::planner::impl {
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
                                          new components::operators::aggregate::operator_max_t(
-                                             resource, log, name, field)));
+                                             resource, log, field)));
                     break;
                 }
                 default:
@@ -108,9 +107,9 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
         if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log, coll_name);
+            group = new components::operators::operator_group_t(context.resource, context.log);
         } else {
-            group = new components::operators::operator_group_t(node->resource(), nullptr, {});
+            group = new components::operators::operator_group_t(node->resource(), nullptr);
         }
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
@@ -123,7 +122,6 @@ namespace services::planner::impl {
                               add_group_aggregate(
                                   known ? context.resource : node->resource(),
                                   known ? context.log : nullptr,
-                                  known ? coll_name : collection_full_name_t{},
                                   group,
                                   static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
                           }

@@ -11,10 +11,12 @@ namespace components::operators {
 
         void append(size_t id);
 
+        const collection_full_name_t& collection_name() const noexcept { return name_; }
         const vector::vector_t& rows() const { return rows_; }
         size_t row_count() const { return size_; }
 
     private:
+        collection_full_name_t name_;
         vector::vector_t rows_;
         size_t size_{0};
 

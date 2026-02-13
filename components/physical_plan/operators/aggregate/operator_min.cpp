@@ -6,8 +6,8 @@ namespace components::operators::aggregate {
     constexpr auto key_result_ = "min";
 
     operator_min_t::operator_min_t(std::pmr::memory_resource* resource, log_t* log,
-                                   collection_full_name_t name, expressions::key_t key)
-        : operator_aggregate_t(resource, log, std::move(name))
+                                   expressions::key_t key)
+        : operator_aggregate_t(resource, log)
         , key_(std::move(key)) {}
 
     types::logical_value_t operator_min_t::aggregate_impl() {

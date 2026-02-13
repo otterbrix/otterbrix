@@ -37,7 +37,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 1);
@@ -54,7 +54,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 99);
@@ -71,7 +71,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 10);
@@ -88,7 +88,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 11);
@@ -105,7 +105,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 89);
@@ -122,7 +122,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 90);
@@ -139,7 +139,7 @@ TEST_CASE("components::physical_plan::full_scan") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::limit_one());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::limit_one());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::limit_one());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
         match_ptr->on_execute(&pipeline_context);
         REQUIRE(match_ptr->output()->size() == 1);
@@ -162,7 +162,7 @@ TEST_CASE("components::physical_plan::delete") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* delete_ptr = new operators::operator_delete(table->resource_, &table->log_, table->name_);
@@ -183,7 +183,7 @@ TEST_CASE("components::physical_plan::delete") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::limit_one());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::limit_one());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::limit_one());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* delete_ptr = new operators::operator_delete(table->resource_, &table->log_, table->name_);
@@ -204,7 +204,7 @@ TEST_CASE("components::physical_plan::delete") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(5));
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(5));
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t(5));
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* delete_ptr = new operators::operator_delete(table->resource_, &table->log_, table->name_);
@@ -235,7 +235,7 @@ TEST_CASE("components::physical_plan::update") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t::unlimit());
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t::unlimit());
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* update_ptr = new operators::operator_update(table->resource_, &table->log_, table->name_, {script_update_1}, false);
@@ -265,7 +265,7 @@ TEST_CASE("components::physical_plan::update") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(1));
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(1));
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t(1));
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* update_ptr = new operators::operator_update(table->resource_, &table->log_, table->name_, {script_update_1, script_update_2}, false);
@@ -295,7 +295,7 @@ TEST_CASE("components::physical_plan::update") {
 
         auto* scan_ptr = new operators::full_scan(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(5));
         inject_scan_data(table, *scan_ptr);
-        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, table->name_, cond, logical_plan::limit_t(5));
+        auto* match_ptr = new operators::operator_match_t(table->resource_, &table->log_, cond, logical_plan::limit_t(5));
         match_ptr->set_children(boost::intrusive_ptr(scan_ptr));
 
         auto* update_ptr = new operators::operator_update(table->resource_, &table->log_, table->name_, {script_update_1, script_update_2}, false);

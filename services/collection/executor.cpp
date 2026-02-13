@@ -85,10 +85,9 @@ namespace services::collection::executor {
         const components::operators::operator_ptr& op,
         components::pipeline::context_t* pipeline_context) {
         if (!op) co_return;
-        // If this is a scan leaf (type=match, no children), intercept it
+        // If this is a scan leaf, intercept it
         if (!op->left() && !op->right() &&
-            !op->collection_name().empty() &&
-            op->type() == components::operators::operator_type::match) {
+            components::operators::is_scan(op->type())) {
             co_await intercept_scan_(session, op, pipeline_context);
             co_return;
         }
@@ -106,153 +105,175 @@ namespace services::collection::executor {
         const components::operators::operator_ptr& scan_op,
         components::pipeline::context_t* pipeline_context) {
 
-        auto name = scan_op->collection_name();
-        if (name.empty()) co_return;
+        using components::operators::operator_type;
 
-        if (auto* fs = dynamic_cast<components::operators::full_scan*>(scan_op.get())) {
-            trace(log_, "executor::intercept_scan_: full_scan on {}", name.to_string());
+        switch (scan_op->type()) {
+            case operator_type::full_scan: {
+                auto* fs = static_cast<components::operators::full_scan*>(scan_op.get());
+                auto name = fs->collection_name();
+                if (name.empty()) co_return;
+                trace(log_, "executor::intercept_scan_: full_scan on {}", name.to_string());
 
-            // Get types to build filter
-            auto [_t, tf] = actor_zeta::send(disk_address_,
-                &disk::manager_disk_t::storage_types, session, name);
-            auto types = co_await std::move(tf);
-
-            // Build filter from expression
-            auto filter = components::operators::transform_predicate(
-                fs->expression(), types,
-                pipeline_context ? &pipeline_context->parameters : nullptr);
-
-            // Scan from storage
-            int limit = fs->limit().limit();
-            auto [_s, sf] = actor_zeta::send(disk_address_,
-                &disk::manager_disk_t::storage_scan, session, name,
-                std::move(filter), limit);
-            auto data = co_await std::move(sf);
-
-            if (data) {
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(), std::move(*data)));
-            } else {
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(),
-                        std::pmr::vector<components::types::complex_logical_type>{resource()}));
-            }
-
-        } else if (dynamic_cast<components::operators::transfer_scan*>(scan_op.get())) {
-            trace(log_, "executor::intercept_scan_: transfer_scan on {}", name.to_string());
-            auto* ts = dynamic_cast<components::operators::transfer_scan*>(scan_op.get());
-
-            int limit = ts->limit().limit();
-            auto [_s, sf] = actor_zeta::send(disk_address_,
-                &disk::manager_disk_t::storage_scan, session, name,
-                std::unique_ptr<components::table::table_filter_t>(nullptr), limit);
-            auto data = co_await std::move(sf);
-
-            if (data) {
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(), std::move(*data)));
-            } else {
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(),
-                        std::pmr::vector<components::types::complex_logical_type>{resource()}));
-            }
-
-        } else if (auto* is = dynamic_cast<components::operators::index_scan*>(scan_op.get())) {
-            trace(log_, "executor::intercept_scan_: index_scan on {}", name.to_string());
-
-            // Index search via manager_index_t
-            if (index_address_ != actor_zeta::address_t::empty_address()) {
-                auto [_s, sf] = actor_zeta::send(index_address_,
-                    &index::manager_index_t::search,
-                    session, name,
-                    components::index::keys_base_storage_t{{is->expr()->primary_key()}},
-                    components::types::logical_value_t{resource(), is->expr()->value()},
-                    is->expr()->type());
-                auto row_ids_vec = co_await std::move(sf);
-
-                size_t count = row_ids_vec.size();
-                int limit_val = is->limit().limit();
-                if (limit_val >= 0) {
-                    count = std::min(count, static_cast<size_t>(limit_val));
-                }
-
-                if (count > 0) {
-                    // Build row_ids vector for fetch
-                    components::vector::vector_t row_ids(resource(),
-                        components::types::logical_type::BIGINT, count);
-                    for (size_t i = 0; i < count; i++) {
-                        row_ids.set_value(i,
-                            components::types::logical_value_t{resource(), row_ids_vec[i]});
-                    }
-
-                    // Fetch from storage
-                    auto [_f, ff] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::storage_fetch, session, name,
-                        std::move(row_ids), count);
-                    auto data = co_await std::move(ff);
-
-                    if (data) {
-                        scan_op->inject_output(
-                            components::operators::make_operator_data(resource(), std::move(*data)));
-                    } else {
-                        auto [_t2, tf2] = actor_zeta::send(disk_address_,
-                            &disk::manager_disk_t::storage_types, session, name);
-                        auto types = co_await std::move(tf2);
-                        scan_op->inject_output(
-                            components::operators::make_operator_data(resource(), types));
-                    }
-                } else {
-                    auto [_t3, tf3] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::storage_types, session, name);
-                    auto types = co_await std::move(tf3);
-                    scan_op->inject_output(
-                        components::operators::make_operator_data(resource(), types));
-                }
-            } else {
-                // No manager_index_t — return empty
-                auto [_t4, tf4] = actor_zeta::send(disk_address_,
+                // Get types to build filter
+                auto [_t, tf] = actor_zeta::send(disk_address_,
                     &disk::manager_disk_t::storage_types, session, name);
-                auto types = co_await std::move(tf4);
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(), types));
-            }
+                auto types = co_await std::move(tf);
 
-        } else if (auto* ps = dynamic_cast<components::operators::primary_key_scan*>(scan_op.get())) {
-            trace(log_, "executor::intercept_scan_: primary_key_scan on {}", name.to_string());
+                // Build filter from expression
+                auto filter = components::operators::transform_predicate(
+                    fs->expression(), types,
+                    pipeline_context ? &pipeline_context->parameters : nullptr);
 
-            auto row_count = ps->row_count();
-            if (row_count > 0) {
-                // Copy rows vector for send
-                components::vector::vector_t row_ids_copy(resource(),
-                    components::types::logical_type::BIGINT, row_count);
-                for (size_t i = 0; i < row_count; i++) {
-                    row_ids_copy.set_value(i,
-                        components::types::logical_value_t{resource(),
-                            ps->rows().data<int64_t>()[i]});
-                }
-
-                auto [_f, ff] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_fetch, session, name,
-                    std::move(row_ids_copy), row_count);
-                auto data = co_await std::move(ff);
+                // Scan from storage
+                int limit = fs->limit().limit();
+                auto [_s, sf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_scan, session, name,
+                    std::move(filter), limit);
+                auto data = co_await std::move(sf);
 
                 if (data) {
                     scan_op->inject_output(
                         components::operators::make_operator_data(resource(), std::move(*data)));
                 } else {
+                    scan_op->inject_output(
+                        components::operators::make_operator_data(resource(),
+                            std::pmr::vector<components::types::complex_logical_type>{resource()}));
+                }
+                break;
+            }
+
+            case operator_type::transfer_scan: {
+                auto* ts = static_cast<components::operators::transfer_scan*>(scan_op.get());
+                auto name = ts->collection_name();
+                if (name.empty()) co_return;
+                trace(log_, "executor::intercept_scan_: transfer_scan on {}", name.to_string());
+
+                int limit = ts->limit().limit();
+                auto [_s, sf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_scan, session, name,
+                    std::unique_ptr<components::table::table_filter_t>(nullptr), limit);
+                auto data = co_await std::move(sf);
+
+                if (data) {
+                    scan_op->inject_output(
+                        components::operators::make_operator_data(resource(), std::move(*data)));
+                } else {
+                    scan_op->inject_output(
+                        components::operators::make_operator_data(resource(),
+                            std::pmr::vector<components::types::complex_logical_type>{resource()}));
+                }
+                break;
+            }
+
+            case operator_type::index_scan: {
+                auto* is = static_cast<components::operators::index_scan*>(scan_op.get());
+                auto name = is->collection_name();
+                if (name.empty()) co_return;
+                trace(log_, "executor::intercept_scan_: index_scan on {}", name.to_string());
+
+                // Index search via manager_index_t
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_s, sf] = actor_zeta::send(index_address_,
+                        &index::manager_index_t::search,
+                        session, name,
+                        components::index::keys_base_storage_t{{is->expr()->primary_key()}},
+                        components::types::logical_value_t{resource(), is->expr()->value()},
+                        is->expr()->type());
+                    auto row_ids_vec = co_await std::move(sf);
+
+                    size_t count = row_ids_vec.size();
+                    int limit_val = is->limit().limit();
+                    if (limit_val >= 0) {
+                        count = std::min(count, static_cast<size_t>(limit_val));
+                    }
+
+                    if (count > 0) {
+                        // Build row_ids vector for fetch
+                        components::vector::vector_t row_ids(resource(),
+                            components::types::logical_type::BIGINT, count);
+                        for (size_t i = 0; i < count; i++) {
+                            row_ids.set_value(i,
+                                components::types::logical_value_t{resource(), row_ids_vec[i]});
+                        }
+
+                        // Fetch from storage
+                        auto [_f, ff] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::storage_fetch, session, name,
+                            std::move(row_ids), count);
+                        auto data = co_await std::move(ff);
+
+                        if (data) {
+                            scan_op->inject_output(
+                                components::operators::make_operator_data(resource(), std::move(*data)));
+                        } else {
+                            auto [_t2, tf2] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::storage_types, session, name);
+                            auto types = co_await std::move(tf2);
+                            scan_op->inject_output(
+                                components::operators::make_operator_data(resource(), types));
+                        }
+                    } else {
+                        auto [_t3, tf3] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::storage_types, session, name);
+                        auto types = co_await std::move(tf3);
+                        scan_op->inject_output(
+                            components::operators::make_operator_data(resource(), types));
+                    }
+                } else {
+                    // No manager_index_t — return empty
                     auto [_t4, tf4] = actor_zeta::send(disk_address_,
                         &disk::manager_disk_t::storage_types, session, name);
                     auto types = co_await std::move(tf4);
                     scan_op->inject_output(
                         components::operators::make_operator_data(resource(), types));
                 }
-            } else {
-                auto [_t5, tf5] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_types, session, name);
-                auto types = co_await std::move(tf5);
-                scan_op->inject_output(
-                    components::operators::make_operator_data(resource(), types));
+                break;
             }
+
+            case operator_type::primary_key_scan: {
+                auto* ps = static_cast<components::operators::primary_key_scan*>(scan_op.get());
+                auto name = ps->collection_name();
+                if (name.empty()) co_return;
+                trace(log_, "executor::intercept_scan_: primary_key_scan on {}", name.to_string());
+
+                auto row_count = ps->row_count();
+                if (row_count > 0) {
+                    // Copy rows vector for send
+                    components::vector::vector_t row_ids_copy(resource(),
+                        components::types::logical_type::BIGINT, row_count);
+                    for (size_t i = 0; i < row_count; i++) {
+                        row_ids_copy.set_value(i,
+                            components::types::logical_value_t{resource(),
+                                ps->rows().data<int64_t>()[i]});
+                    }
+
+                    auto [_f, ff] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::storage_fetch, session, name,
+                        std::move(row_ids_copy), row_count);
+                    auto data = co_await std::move(ff);
+
+                    if (data) {
+                        scan_op->inject_output(
+                            components::operators::make_operator_data(resource(), std::move(*data)));
+                    } else {
+                        auto [_t4, tf4] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::storage_types, session, name);
+                        auto types = co_await std::move(tf4);
+                        scan_op->inject_output(
+                            components::operators::make_operator_data(resource(), types));
+                    }
+                } else {
+                    auto [_t5, tf5] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::storage_types, session, name);
+                    auto types = co_await std::move(tf5);
+                    scan_op->inject_output(
+                        components::operators::make_operator_data(resource(), types));
+                }
+                break;
+            }
+
+            default:
+                break;
         }
 
         co_return;
@@ -426,7 +447,18 @@ namespace services::collection::executor {
                 break;
             }
 
-            auto coll_name = plan->collection_name();
+            auto coll_name = [&]() -> collection_full_name_t {
+                switch (plan->type()) {
+                    case components::operators::operator_type::insert:
+                        return static_cast<components::operators::operator_insert&>(*plan).collection_name();
+                    case components::operators::operator_type::remove:
+                        return static_cast<components::operators::operator_delete&>(*plan).collection_name();
+                    case components::operators::operator_type::update:
+                        return static_cast<components::operators::operator_update&>(*plan).collection_name();
+                    default:
+                        return {};
+                }
+            }();
 
             components::pipeline::context_t pipeline_context{session, address(), parent_address_, plan_data.parameters};
 

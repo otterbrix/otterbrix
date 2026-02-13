@@ -9,7 +9,7 @@ namespace components::operators {
     public:
         using order = sort::order;
 
-        operator_sort_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name);
+        operator_sort_t(std::pmr::memory_resource* resource, log_t* log);
 
         void add(size_t index, order order_ = order::ascending);
         // TODO: remove this method, calculate index via schema

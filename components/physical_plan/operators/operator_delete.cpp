@@ -6,7 +6,8 @@ namespace components::operators {
     operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t* log,
                                      collection_full_name_t name,
                                      expressions::compare_expression_ptr expr)
-        : read_write_operator_t(resource, log, std::move(name), operator_type::remove)
+        : read_write_operator_t(resource, log, operator_type::remove)
+        , name_(std::move(name))
         , compare_expression_(std::move(expr)) {}
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {

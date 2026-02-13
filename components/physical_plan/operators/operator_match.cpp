@@ -4,10 +4,10 @@
 
 namespace components::operators {
 
-    operator_match_t::operator_match_t(std::pmr::memory_resource* resource, log_t* log, collection_full_name_t name,
+    operator_match_t::operator_match_t(std::pmr::memory_resource* resource, log_t* log,
                                        const expressions::compare_expression_ptr& expression,
                                        logical_plan::limit_t limit)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::match)
+        : read_only_operator_t(resource, log, operator_type::match)
         , expression_(std::move(expression))
         , limit_(limit) {}
 

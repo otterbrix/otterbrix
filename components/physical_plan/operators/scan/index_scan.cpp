@@ -10,7 +10,8 @@ namespace components::operators {
                            index::index_engine_ptr& index_engine,
                            const expressions::compare_expression_ptr& expr,
                            logical_plan::limit_t limit)
-        : read_only_operator_t(resource, log, std::move(name), operator_type::match)
+        : read_only_operator_t(resource, log, operator_type::index_scan)
+        , name_(std::move(name))
         , index_engine_(&index_engine)
         , expr_(expr)
         , limit_(limit) {}

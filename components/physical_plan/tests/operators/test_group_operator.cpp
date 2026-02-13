@@ -26,7 +26,7 @@ TEST_CASE("components::physical_plan::group::base") {
         auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::operator_group_t group(res, lg, name);
+        operators::operator_group_t group(res, lg);
         group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("id_", operators::get::simple_value_t::create(key(&resource, "id_")));
         group.on_execute(nullptr);
@@ -37,7 +37,7 @@ TEST_CASE("components::physical_plan::group::base") {
         auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::operator_group_t group(res, lg, name);
+        operators::operator_group_t group(res, lg);
         group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("_id", operators::get::simple_value_t::create(key(&resource, "_id")));
         group.on_execute(nullptr);
@@ -48,7 +48,7 @@ TEST_CASE("components::physical_plan::group::base") {
         auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        operators::operator_group_t group(res, lg, name);
+        operators::operator_group_t group(res, lg);
         group.set_children(boost::intrusive_ptr(scan_ptr));
         group.add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
         group.on_execute(nullptr);
@@ -67,10 +67,10 @@ TEST_CASE("components::physical_plan::group::sort") {
         auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg, name));
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg));
         group->set_children(boost::intrusive_ptr(scan_ptr));
         group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
-        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg, name));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);
@@ -95,19 +95,19 @@ TEST_CASE("components::physical_plan::group::all") {
         auto* scan_ptr = new operators::transfer_scan(res, name, logical_plan::limit_t::unlimit());
         inject_scan_data(table, *scan_ptr);
 
-        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg, name));
+        auto group = boost::intrusive_ptr(new operators::operator_group_t(res, lg));
         group->set_children(boost::intrusive_ptr(scan_ptr));
         group->add_key("count_bool", operators::get::simple_value_t::create(key(&resource, "count_bool")));
 
-        group->add_value("cnt", boost::intrusive_ptr(new operators::aggregate::operator_count_t(res, lg, name)));
+        group->add_value("cnt", boost::intrusive_ptr(new operators::aggregate::operator_count_t(res, lg)));
         group->add_value(
             "sum",
-            boost::intrusive_ptr(new operators::aggregate::operator_sum_t(res, lg, name, key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_sum_t(res, lg, key(&resource, "count"))));
         group->add_value(
             "avg",
-            boost::intrusive_ptr(new operators::aggregate::operator_avg_t(res, lg, name, key(&resource, "count"))));
+            boost::intrusive_ptr(new operators::aggregate::operator_avg_t(res, lg, key(&resource, "count"))));
 
-        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg, name));
+        auto sort = boost::intrusive_ptr(new operators::operator_sort_t(res, lg));
         sort->set_children(std::move(group));
         sort->add({"count_bool"});
         sort->on_execute(nullptr);

@@ -52,7 +52,22 @@ namespace otterbrix {
     protected:
         explicit base_otterbrix_t(const configuration::config& config);
         std::filesystem::path main_path_;
+#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+        struct tsan_resource_t final : std::pmr::memory_resource {
+        protected:
+            void* do_allocate(size_t bytes, size_t align) override {
+                return std::pmr::new_delete_resource()->allocate(bytes, align);
+            }
+            void do_deallocate(void* p, size_t bytes, size_t align) override {
+                std::pmr::new_delete_resource()->deallocate(p, bytes, align);
+            }
+            bool do_is_equal(const memory_resource& other) const noexcept override {
+                return this == &other;
+            }
+        } resource;
+#else
         std::pmr::synchronized_pool_resource resource;
+#endif
         log_t log_;
         actor_zeta::scheduler_ptr scheduler_;
         actor_zeta::scheduler_ptr scheduler_dispatcher_;

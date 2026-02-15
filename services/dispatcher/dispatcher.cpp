@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_drop_database.hpp>
 
 #include <core/tracy/tracy.hpp>
 #include <core/executor.hpp>
@@ -308,8 +309,38 @@ namespace services::dispatcher {
 
                 case node_type::drop_database_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
-                    catalog_.drop_namespace(table_id(resource(), plan->collection_full_name()).get_namespace());
-                    break;
+                    auto db_name = plan->database_name();
+                    // Drop all collections in this database from index + disk
+                    for (const auto& coll : collections_) {
+                        if (coll.database == db_name) {
+                            if (index_address_ != actor_zeta::address_t::empty_address()) {
+                                auto [_ui, uif] = actor_zeta::send(index_address_,
+                                    &index::manager_index_t::unregister_collection, session, coll);
+                                co_await std::move(uif);
+                            }
+                            auto [_ds, dsf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::drop_storage, session, coll);
+                            co_await std::move(dsf);
+                            auto [_dr, drf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::remove_collection, session, coll.database, coll.collection);
+                            co_await std::move(drf);
+                        }
+                    }
+                    // WAL write
+                    auto drop_db = boost::static_pointer_cast<node_drop_database_t>(plan);
+                    auto [_w, wf] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::drop_database, session, drop_db);
+                    auto wal_id = co_await std::move(wf);
+                    // Remove database from disk metadata
+                    auto [_rd, rdf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::remove_database, session, db_name);
+                    co_await std::move(rdf);
+                    update_catalog(plan);
+                    // Flush
+                    auto [_f, ff] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(ff);
+                    co_return result;
                 }
 
                 case node_type::create_collection_t: {
@@ -488,7 +519,15 @@ namespace services::dispatcher {
     collection::executor::execute_result_t manager_dispatcher_t::drop_database_(
         node_ptr logical_plan) {
         trace(log_, "manager_dispatcher_t:drop_database {}", logical_plan->database_name());
-        databases_.erase(logical_plan->database_name());
+        auto db_name = logical_plan->database_name();
+        for (auto it = collections_.begin(); it != collections_.end();) {
+            if (it->database == db_name) {
+                it = collections_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        databases_.erase(db_name);
         return {make_cursor(resource(), operation_status_t::success), {}};
     }
 

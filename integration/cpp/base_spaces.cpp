@@ -17,7 +17,7 @@ namespace otterbrix {
 
     base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
         : main_path_(config.main_path)
-        , resource(std::pmr::synchronized_pool_resource())
+        , resource()
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , scheduler_dispatcher_(new actor_zeta::shared_work(3, 1000))
         , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))

@@ -45,8 +45,7 @@ namespace services::dispatcher {
 
         using run_fn_t = std::function<void()>;
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log,
-                             run_fn_t run_fn = []{ std::this_thread::yield(); });
+        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log, run_fn_t run_fn = []{ std::this_thread::yield(); });
         ~manager_dispatcher_t();
 
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }

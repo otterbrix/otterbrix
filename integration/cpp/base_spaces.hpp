@@ -6,6 +6,7 @@
 #include <core/executor.hpp>
 #include <actor-zeta/detail/memory.hpp>
 
+#include <core/config.hpp>
 #include <core/file/file_system.hpp>
 
 #include <memory>
@@ -52,7 +53,10 @@ namespace otterbrix {
     protected:
         explicit base_otterbrix_t(const configuration::config& config);
         std::filesystem::path main_path_;
-#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#if defined(OTTERBRIX_TSAN_ENABLED)
+        // TSAN cannot see through synchronized_pool_resource's internal mutex,
+        // causing false positive data race reports on memory reuse between threads.
+        // Under TSAN, delegate to new_delete_resource() which TSAN understands natively.
         struct tsan_resource_t final : std::pmr::memory_resource {
         protected:
             void* do_allocate(size_t bytes, size_t align) override {

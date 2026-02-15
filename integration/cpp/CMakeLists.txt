@@ -105,7 +105,3 @@ endif()
 if (DEV_MODE)
     add_subdirectory(test)
 endif()
-
-if (ALLOW_BENCHMARK)
-    add_subdirectory(benchmark)
-endif()

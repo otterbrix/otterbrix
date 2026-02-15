@@ -16,7 +16,7 @@
 #include <components/index/index_engine.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/log/log.hpp>
-#include "index_disk.hpp"
+#include "index_agent_disk.hpp"
 
 namespace services::index {
 
@@ -115,8 +115,8 @@ namespace services::index {
         // Per-collection in-memory index engines
         std::pmr::unordered_map<collection_full_name_t, components::index::index_engine_ptr,collection_name_hash> engines_;
 
-        // Per-index disk persistence (direct, non-actor)
-        std::unordered_map<std::string, std::unique_ptr<index_disk_t>> index_disks_;
+        // Per-index disk persistence (child actors)
+        std::vector<index_agent_disk_ptr> disk_agents_;
 
         // Index metadata persistence (indexes_METADATA file)
         using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
@@ -130,6 +130,9 @@ namespace services::index {
 
         // Address of manager_disk_t (for scan_segment when populating indexes)
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
+
+        // Find disk agent by address and schedule it if needed
+        void schedule_agent(const actor_zeta::address_t& addr, bool needs_sched);
 
         // Pending futures
         std::pmr::vector<unique_future<void>> pending_void_;

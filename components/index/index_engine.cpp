@@ -168,6 +168,17 @@ namespace components::index {
         return res;
     }
 
+    void
+    index_engine_t::for_each_disk_op(const vector::data_chunk_t& chunk, size_t row,
+                                      const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const {
+        for (const auto& index : storage_) {
+            if (index->is_disk() && is_match_column(index, chunk)) {
+                auto key = get_value_by_index(index, chunk, row);
+                fn(index->disk_agent(), key);
+            }
+        }
+    }
+
     void set_disk_agent(const index_engine_ptr& ptr, id_index id,
                         actor_zeta::address_t agent, actor_zeta::address_t manager) {
         auto* index = search_index(ptr, id);

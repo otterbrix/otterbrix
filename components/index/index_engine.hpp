@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -37,6 +38,10 @@ namespace components::index {
         void delete_row(const vector::data_chunk_t& chunk, size_t row);
 
         auto indexes() -> std::vector<std::string>;
+
+        // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
+        void for_each_disk_op(const vector::data_chunk_t& chunk, size_t row,
+                              const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const;
 
     private:
         using comparator_t = std::less<keys_base_storage_t>;

@@ -97,6 +97,11 @@ namespace services::wal {
     private:
         void create_wal_worker(int count_worker);
 
+        std::size_t worker_index_for(const collection_full_name_t& coll) const {
+            std::size_t h = std::hash<std::string>{}(coll.to_string());
+            return h % dispatchers_.size();
+        }
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         configuration::config_wal config_;

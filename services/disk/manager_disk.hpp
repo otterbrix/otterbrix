@@ -1,7 +1,6 @@
 #pragma once
 
 #include "agent_disk.hpp"
-#include <services/index/index_agent_disk.hpp>
 #include "result.hpp"
 #include "disk_contract.hpp"
 #include <components/configuration/configuration.hpp>
@@ -247,7 +246,7 @@ namespace services::disk {
 
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<result_load_t>> pending_load_;
-        std::pmr::vector<unique_future<index::index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<std::pmr::vector<size_t>>> pending_find_;
 
         void poll_pending();
 
@@ -434,7 +433,7 @@ namespace services::disk {
         std::pmr::memory_resource* resource_;
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<result_load_t>> pending_load_;
-        std::pmr::vector<unique_future<index::index_disk_t::result>> pending_find_;
+        std::pmr::vector<unique_future<std::pmr::vector<size_t>>> pending_find_;
     };
 
 } //namespace services::disk

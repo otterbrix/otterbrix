@@ -5,10 +5,55 @@
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/serialization/serializer.hpp>
 #include <components/serialization/deserializer.hpp>
-#include <services/disk/manager_disk.hpp>
+#include <actor-zeta/spawn.hpp>
+#include <core/executor.hpp>
+#include <core/b_plus_tree/b_plus_tree.hpp>
+#include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
+#include <msgpack.hpp>
+
+namespace {
+    using namespace core::b_plus_tree;
+
+    auto item_key_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
+        msgpack::unpacked msg;
+        msgpack::unpack(msg, item.data, item.size,
+            [](msgpack::type::object_type, std::size_t, void*) { return true; });
+        return get_field(msg.get(), "/0");
+    };
+
+    auto id_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
+        msgpack::unpacked msg;
+        msgpack::unpack(msg, item.data, item.size,
+            [](msgpack::type::object_type, std::size_t, void*) { return true; });
+        return get_field(msg.get(), "/1");
+    };
+
+    using value_t = components::types::logical_value_t;
+    using namespace components::types;
+
+    value_t reverse_convert(std::pmr::memory_resource* r, const physical_value& pv) {
+        switch (pv.type()) {
+            case physical_type::BOOL:    return value_t(r, pv.value<physical_type::BOOL>());
+            case physical_type::UINT8:   return value_t(r, pv.value<physical_type::UINT8>());
+            case physical_type::INT8:    return value_t(r, pv.value<physical_type::INT8>());
+            case physical_type::UINT16:  return value_t(r, pv.value<physical_type::UINT16>());
+            case physical_type::INT16:   return value_t(r, pv.value<physical_type::INT16>());
+            case physical_type::UINT32:  return value_t(r, pv.value<physical_type::UINT32>());
+            case physical_type::INT32:   return value_t(r, pv.value<physical_type::INT32>());
+            case physical_type::UINT64:  return value_t(r, pv.value<physical_type::UINT64>());
+            case physical_type::INT64:   return value_t(r, pv.value<physical_type::INT64>());
+            case physical_type::FLOAT:   return value_t(r, pv.value<physical_type::FLOAT>());
+            case physical_type::DOUBLE:  return value_t(r, pv.value<physical_type::DOUBLE>());
+            case physical_type::STRING: {
+                auto sv = pv.value<physical_type::STRING>();
+                return value_t(r, std::string(sv));
+            }
+            default: return value_t(r, complex_logical_type{logical_type::NA});
+        }
+    }
+} // anonymous namespace
 
 namespace services::index {
-
     manager_index_t::manager_index_t(std::pmr::memory_resource* resource,
                                      actor_zeta::scheduler_raw scheduler,
                                      log_t& log,
@@ -123,6 +168,16 @@ namespace services::index {
         trace(log_, "manager_index_t::sync: disk_address set");
     }
 
+    void manager_index_t::schedule_agent(const actor_zeta::address_t& addr, bool needs_sched) {
+        if (!needs_sched) return;
+        for (auto& agent : disk_agents_) {
+            if (agent->address() == addr) {
+                scheduler_->enqueue(agent.get());
+                return;
+            }
+        }
+    }
+
     // --- Collection lifecycle ---
 
     manager_index_t::unique_future<void> manager_index_t::register_collection(
@@ -148,7 +203,7 @@ namespace services::index {
     // --- DML: bulk index operations ---
 
     manager_index_t::unique_future<void> manager_index_t::insert_rows(
-        session_id_t /*session*/,
+        session_id_t session,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data,
         uint64_t start_row_id,
@@ -163,13 +218,22 @@ namespace services::index {
         for (uint64_t i = 0; i < count; i++) {
             size_t row = static_cast<size_t>(start_row_id + i);
             engine->insert_row(*data, row);
+
+            // Mirror to disk agents
+            engine->for_each_disk_op(*data, row, [&](const actor_zeta::address_t& agent_addr,
+                                                      const components::index::value_t& key) {
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(
+                    agent_addr, &index_agent_disk_t::insert, session, key, row);
+                schedule_agent(agent_addr, needs_sched);
+                pending_void_.emplace_back(std::move(future));
+            });
         }
 
         co_return;
     }
 
     manager_index_t::unique_future<void> manager_index_t::delete_rows(
-        session_id_t /*session*/,
+        session_id_t session,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> data,
         std::pmr::vector<size_t> row_ids) {
@@ -182,13 +246,22 @@ namespace services::index {
         auto& engine = it->second;
         for (auto row_id : row_ids) {
             engine->delete_row(*data, row_id);
+
+            // Mirror to disk agents
+            engine->for_each_disk_op(*data, row_id, [&](const actor_zeta::address_t& agent_addr,
+                                                         const components::index::value_t& key) {
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(
+                    agent_addr, &index_agent_disk_t::remove, session, key, row_id);
+                schedule_agent(agent_addr, needs_sched);
+                pending_void_.emplace_back(std::move(future));
+            });
         }
 
         co_return;
     }
 
     manager_index_t::unique_future<void> manager_index_t::update_rows(
-        session_id_t /*session*/,
+        session_id_t session,
         collection_full_name_t name,
         std::unique_ptr<components::vector::data_chunk_t> old_data,
         std::unique_ptr<components::vector::data_chunk_t> new_data,
@@ -204,11 +277,29 @@ namespace services::index {
         // Delete old entries
         for (auto row_id : row_ids) {
             engine->delete_row(*old_data, row_id);
+
+            // Mirror remove to disk agents
+            engine->for_each_disk_op(*old_data, row_id, [&](const actor_zeta::address_t& agent_addr,
+                                                             const components::index::value_t& key) {
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(
+                    agent_addr, &index_agent_disk_t::remove, session, key, row_id);
+                schedule_agent(agent_addr, needs_sched);
+                pending_void_.emplace_back(std::move(future));
+            });
         }
 
         // Insert new entries
         for (size_t i = 0; i < row_ids.size(); i++) {
             engine->insert_row(*new_data, row_ids[i]);
+
+            // Mirror insert to disk agents
+            engine->for_each_disk_op(*new_data, row_ids[i], [&](const actor_zeta::address_t& agent_addr,
+                                                                  const components::index::value_t& key) {
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(
+                    agent_addr, &index_agent_disk_t::insert, session, key, row_ids[i]);
+                schedule_agent(agent_addr, needs_sched);
+                pending_void_.emplace_back(std::move(future));
+            });
         }
 
         co_return;
@@ -249,29 +340,59 @@ namespace services::index {
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Populate index from storage via manager_disk_t
-            auto [_tr, trf] = actor_zeta::send(disk_address_,
-                &disk::manager_disk_t::storage_total_rows, session, name);
-            auto total_rows = co_await std::move(trf);
+            // Load index data from btree (persistent storage)
+            if (!path_db_.empty()) {
+                auto btree_path = path_db_ / name.database / name.collection / index_name;
+                if (std::filesystem::exists(btree_path / "metadata")) {
+                    try {
+                        core::filesystem::local_file_system_t fs;
+                        auto db = std::make_unique<core::b_plus_tree::btree_t>(
+                            resource_, fs, btree_path, item_key_getter);
+                        db->load();
 
-            if (total_rows > 0) {
-                auto [_ss, ssf] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::storage_scan_segment,
-                    session, name, int64_t{0}, total_rows);
-                auto scan_data = co_await std::move(ssf);
+                        if (db->size() > 0) {
+                            struct pv_entry { components::types::physical_value key; int64_t row_id; };
+                            std::pmr::vector<pv_entry> raw(resource_);
+                            db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
+                                auto item = core::b_plus_tree::btree_t::item_data{
+                                    static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                    static_cast<uint32_t>(sz)};
+                                return {item_key_getter(item),
+                                        static_cast<int64_t>(
+                                            id_getter(item).value<components::types::physical_type::UINT64>())};
+                            });
 
-                if (scan_data) {
-                    for (uint64_t i = 0; i < scan_data->size(); i++) {
-                        engine->insert_row(*scan_data, i);
+                            auto* idx = components::index::search_index(engine, keys);
+                            if (idx) {
+                                for (auto& e : raw) {
+                                    idx->insert(reverse_convert(resource_, e.key), e.row_id);
+                                }
+                                trace(log_, "create_index: loaded {} entries from btree", raw.size());
+                            }
+                        }
+                    } catch (const std::exception& e) {
+                        trace(log_, "create_index: btree load failed: {}", e.what());
                     }
                 }
             }
 
-            // Create disk index for persistent storage
+            // Create disk agent for persistent storage
             if (!path_db_.empty()) {
-                auto disk_path = path_db_ / name.database / name.collection / index_name;
-                auto index_disk = std::make_unique<index_disk_t>(disk_path, resource_);
-                index_disks_.try_emplace(std::string(index_name), std::move(index_disk));
+                try {
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
+                        resource_, path_db_, name, std::string(index_name), log_);
+
+                    // Link disk agent with in-memory index
+                    auto* idx = components::index::search_index(engine, keys);
+                    if (idx) {
+                        idx->set_disk_agent(agent->address(), address());
+                        engine->add_disk_agent(id_index, agent->address());
+                    }
+
+                    disk_agents_.emplace_back(std::move(agent));
+                } catch (const std::exception& e) {
+                    trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
+                }
             }
 
             // Persist index metadata
@@ -285,7 +406,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void> manager_index_t::drop_index(
-        session_id_t /*session*/,
+        session_id_t session,
         collection_full_name_t name,
         index_name_t index_name) {
 
@@ -298,11 +419,21 @@ namespace services::index {
         auto* index = components::index::search_index(engine, index_name);
 
         if (index) {
-            // Drop disk index if exists
-            auto disk_it = index_disks_.find(std::string(index_name));
-            if (disk_it != index_disks_.end()) {
-                disk_it->second->drop();
-                index_disks_.erase(disk_it);
+            // Drop disk agent if exists
+            if (index->is_disk()) {
+                auto agent_addr = index->disk_agent();
+                auto [needs_sched, future] = actor_zeta::otterbrix::send(
+                    agent_addr, &index_agent_disk_t::drop, session);
+                schedule_agent(agent_addr, needs_sched);
+
+                // Wait for drop to complete before destroying the agent
+                co_await std::move(future);
+
+                // Remove agent from our list
+                disk_agents_.erase(
+                    std::remove_if(disk_agents_.begin(), disk_agents_.end(),
+                                   [&agent_addr](const auto& a) { return a->address() == agent_addr; }),
+                    disk_agents_.end());
             }
 
             components::index::drop_index(engine, index);
@@ -328,68 +459,10 @@ namespace services::index {
         auto it = engines_.find(name);
         if (it == engines_.end()) co_return result;
 
-        auto& engine = it->second;
-        auto* index = components::index::search_index(engine, keys);
+        auto* index = components::index::search_index(it->second, keys);
         if (!index) co_return result;
 
-        // Perform in-memory search based on compare type
-        switch (compare) {
-            case components::expressions::compare_type::eq: {
-                auto range = index->find(value);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                    result.push_back(iter->row_index);
-                }
-                break;
-            }
-            case components::expressions::compare_type::lt: {
-                auto range = index->lower_bound(value);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                    result.push_back(iter->row_index);
-                }
-                break;
-            }
-            case components::expressions::compare_type::lte: {
-                auto ub = index->upper_bound(value);
-                for (auto iter = index->cbegin(); iter != ub.first; ++iter) {
-                    result.push_back(iter->row_index);
-                }
-                break;
-            }
-            case components::expressions::compare_type::gt: {
-                auto range = index->upper_bound(value);
-                for (auto iter = range.first; iter != range.second; ++iter) {
-                    result.push_back(iter->row_index);
-                }
-                break;
-            }
-            case components::expressions::compare_type::gte: {
-                auto lb = index->lower_bound(value);
-                for (auto iter = lb.second; iter != index->cend(); ++iter) {
-                    result.push_back(iter->row_index);
-                }
-                break;
-            }
-            case components::expressions::compare_type::ne: {
-                auto eq_range = index->find(value);
-                for (auto iter = index->cbegin(); iter != index->cend(); ++iter) {
-                    bool in_eq = false;
-                    for (auto eq_it = eq_range.first; eq_it != eq_range.second; ++eq_it) {
-                        if (eq_it->row_index == iter->row_index) {
-                            in_eq = true;
-                            break;
-                        }
-                    }
-                    if (!in_eq) {
-                        result.push_back(iter->row_index);
-                    }
-                }
-                break;
-            }
-            default:
-                break;
-        }
-
-        co_return result;
+        co_return index->search(compare, value);
     }
 
     manager_index_t::unique_future<bool> manager_index_t::has_index(

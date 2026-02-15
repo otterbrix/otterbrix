@@ -308,7 +308,7 @@ namespace services::index {
     // --- DDL: index management ---
 
     manager_index_t::unique_future<uint32_t> manager_index_t::create_index(
-        session_id_t session,
+        session_id_t /*session*/,
         collection_full_name_t name,
         index_name_t index_name,
         components::index::keys_base_storage_t keys,

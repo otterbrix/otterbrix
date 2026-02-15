@@ -642,7 +642,23 @@ namespace services::disk {
             }
         }
 
-        // 4. Append
+        // 4. Type compatibility check — computing tables may evolve types per column,
+        //    but columnar storage is fixed-type. Skip append if types don't match.
+        if (s->has_schema() && !table_columns.empty()) {
+            bool types_match = true;
+            for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
+                if (data->data[i].type().type() != table_columns[i].type().type()) {
+                    types_match = false;
+                    break;
+                }
+            }
+            if (!types_match) {
+                trace(log_, "storage_append: column type mismatch, skipping append (type evolution)");
+                co_return std::make_pair(s->total_rows(), uint64_t{0});
+            }
+        }
+
+        // 5. Append
         auto actual_count = data->size();
         auto start_row = s->append(*data);
         co_return std::make_pair(start_row, actual_count);

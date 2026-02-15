@@ -3,6 +3,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <chrono>
 #include <thread>
+#include <unordered_set>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 
@@ -580,7 +581,68 @@ namespace services::disk {
             data->data = std::move(expanded_data);
         }
 
-        // 3. Append
+        // 3. Dedup — filter out rows with _id values that already exist in the table
+        if (s->total_rows() > 0) {
+            int64_t id_col = -1;
+            for (uint64_t col = 0; col < data->column_count(); col++) {
+                if (data->data[col].type().has_alias() &&
+                    data->data[col].type().alias() == "_id") {
+                    id_col = static_cast<int64_t>(col);
+                    break;
+                }
+            }
+            if (id_col >= 0) {
+                auto existing = std::make_unique<components::vector::data_chunk_t>(
+                    resource(), s->types(), 0);
+                s->scan(*existing, nullptr, -1);
+
+                int64_t existing_id_col = -1;
+                for (uint64_t col = 0; col < existing->column_count(); col++) {
+                    if (existing->data[col].type().has_alias() &&
+                        existing->data[col].type().alias() == "_id") {
+                        existing_id_col = static_cast<int64_t>(col);
+                        break;
+                    }
+                }
+
+                if (existing_id_col >= 0 && existing->size() > 0) {
+                    std::unordered_set<std::string> existing_ids;
+                    for (uint64_t i = 0; i < existing->size(); i++) {
+                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
+                        if (!val.is_null()) {
+                            existing_ids.emplace(val.value<std::string_view>());
+                        }
+                    }
+
+                    std::vector<uint64_t> keep_rows;
+                    keep_rows.reserve(data->size());
+                    for (uint64_t i = 0; i < data->size(); i++) {
+                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
+                        if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
+                            keep_rows.push_back(i);
+                        }
+                    }
+
+                    if (keep_rows.empty()) {
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    }
+
+                    if (keep_rows.size() < data->size()) {
+                        auto filtered = std::make_unique<components::vector::data_chunk_t>(
+                            resource(), data->types(), keep_rows.size());
+                        for (uint64_t col = 0; col < data->column_count(); col++) {
+                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
+                                auto val = data->data[col].value(keep_rows[i]);
+                                filtered->data[col].set_value(i, val);
+                            }
+                        }
+                        data = std::move(filtered);
+                    }
+                }
+            }
+        }
+
+        // 4. Append
         auto actual_count = data->size();
         auto start_row = s->append(*data);
         co_return std::make_pair(start_row, actual_count);
@@ -934,6 +996,60 @@ namespace services::disk {
                 }
             }
             data->data = std::move(expanded_data);
+        }
+
+        // Dedup
+        if (s->total_rows() > 0) {
+            int64_t id_col = -1;
+            for (uint64_t col = 0; col < data->column_count(); col++) {
+                if (data->data[col].type().has_alias() &&
+                    data->data[col].type().alias() == "_id") {
+                    id_col = static_cast<int64_t>(col);
+                    break;
+                }
+            }
+            if (id_col >= 0) {
+                auto existing = std::make_unique<components::vector::data_chunk_t>(
+                    resource(), s->types(), 0);
+                s->scan(*existing, nullptr, -1);
+                int64_t existing_id_col = -1;
+                for (uint64_t col = 0; col < existing->column_count(); col++) {
+                    if (existing->data[col].type().has_alias() &&
+                        existing->data[col].type().alias() == "_id") {
+                        existing_id_col = static_cast<int64_t>(col);
+                        break;
+                    }
+                }
+                if (existing_id_col >= 0 && existing->size() > 0) {
+                    std::unordered_set<std::string> existing_ids;
+                    for (uint64_t i = 0; i < existing->size(); i++) {
+                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
+                        if (!val.is_null()) {
+                            existing_ids.emplace(val.value<std::string_view>());
+                        }
+                    }
+                    std::vector<uint64_t> keep_rows;
+                    keep_rows.reserve(data->size());
+                    for (uint64_t i = 0; i < data->size(); i++) {
+                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
+                        if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
+                            keep_rows.push_back(i);
+                        }
+                    }
+                    if (keep_rows.empty()) co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    if (keep_rows.size() < data->size()) {
+                        auto filtered = std::make_unique<components::vector::data_chunk_t>(
+                            resource(), data->types(), keep_rows.size());
+                        for (uint64_t col = 0; col < data->column_count(); col++) {
+                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
+                                auto val = data->data[col].value(keep_rows[i]);
+                                filtered->data[col].set_value(i, val);
+                            }
+                        }
+                        data = std::move(filtered);
+                    }
+                }
+            }
         }
 
         auto actual_count = data->size();

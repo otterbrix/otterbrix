@@ -233,9 +233,10 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
     }
 
     // Build column list string
-    std::string col_list = "_id";
-    for (const auto& col : columns) {
-        col_list += ", " + col;
+    std::string col_list;
+    for (size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) col_list += ", ";
+        col_list += columns[i];
     }
 
     // Read data lines and batch INSERT
@@ -265,9 +266,9 @@ void interpreted_benchmark_t::load_csv_file(benchmark_state_t& state, const csv_
         auto fields = split_csv_line(trimmed_line, entry.delimiter);
         ++row_num;
 
-        std::string tuple = "('row_" + std::to_string(row_num) + "'";
+        std::string tuple = "(";
         for (size_t i = 0; i < columns.size(); ++i) {
-            tuple += ", ";
+            if (i > 0) tuple += ", ";
             if (i < fields.size() && !fields[i].empty()) {
                 if (is_numeric(fields[i])) {
                     tuple += fields[i];

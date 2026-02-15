@@ -7,7 +7,6 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
@@ -156,10 +155,9 @@ TEST_CASE("services::dispatcher::computed_operations") {
     });
 
     std::stringstream query;
-    query << "INSERT INTO test.test (_id, name, count) VALUES ";
+    query << "INSERT INTO test.test (name, count) VALUES ";
     for (int num = 0; num < 100; ++num) {
-        query << "('" << gen_id(num + 1, &mr) << "', "
-              << "'Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+        query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
     }
 
     test.execute_sql(query.str());
@@ -176,7 +174,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
         REQUIRE(count.back().type() == logical_type::BIGINT);
     });
 
-    test.execute_sql("INSERT INTO test.test (_id, name, count) VALUES ('" + gen_id(100) + "', 10, 'test');");
+    test.execute_sql("INSERT INTO test.test (name, count) VALUES (10, 'test');");
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
         auto count = catalog.get_computing_table_schema(id).find_field_versions("count");

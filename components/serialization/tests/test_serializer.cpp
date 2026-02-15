@@ -69,7 +69,7 @@ TEST_CASE("components::serialization::expressions") {
     }
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
         scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
         auto agg_expr = make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "total"));

@@ -1,9 +1,16 @@
 #include <catch2/catch.hpp>
-#include <components/tests/generaty.hpp>
 #include <services/index/index_disk.hpp>
 
 using components::types::logical_value_t;
 using services::index::index_disk_t;
+
+std::string padded_string(int i, std::size_t size = 24) {
+    auto s = std::to_string(i);
+    while (s.size() < size) {
+        s.insert(0, "0");
+    }
+    return s;
+}
 
 std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
     auto s = std::to_string(i);
@@ -22,28 +29,28 @@ TEST_CASE("services::index::index_disk::string") {
     auto index = index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
-        index.insert(logical_value_t(&resource, gen_id(i)), static_cast<size_t>(i));
+        index.insert(logical_value_t(&resource, padded_string(i)), static_cast<size_t>(i));
     }
 
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(1))).size() == 1);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(1))).front() == 1);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(10))).size() == 1);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(10))).front() == 10);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(100))).size() == 1);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(100))).front() == 100);
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(101))).empty());
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(0))).empty());
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(1))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(1))).front() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(10))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(10))).front() == 10);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(100))).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(100))).front() == 100);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(101))).empty());
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(0))).empty());
 
-    REQUIRE(index.lower_bound(logical_value_t(&resource, gen_id(10))).size() == 9);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, gen_id(90))).size() == 10);
+    REQUIRE(index.lower_bound(logical_value_t(&resource, padded_string(10))).size() == 9);
+    REQUIRE(index.upper_bound(logical_value_t(&resource, padded_string(90))).size() == 10);
 
     for (int i = 2; i <= 100; i += 2) {
-        index.remove(logical_value_t(&resource, gen_id(i)));
+        index.remove(logical_value_t(&resource, padded_string(i)));
     }
 
-    REQUIRE(index.find(logical_value_t(&resource, gen_id(2))).empty());
-    REQUIRE(index.lower_bound(logical_value_t(&resource, gen_id(10))).size() == 5);
-    REQUIRE(index.upper_bound(logical_value_t(&resource, gen_id(90))).size() == 5);
+    REQUIRE(index.find(logical_value_t(&resource, padded_string(2))).empty());
+    REQUIRE(index.lower_bound(logical_value_t(&resource, padded_string(10))).size() == 5);
+    REQUIRE(index.upper_bound(logical_value_t(&resource, padded_string(90))).size() == 5);
 }
 
 TEST_CASE("services::index::index_disk::int32") {

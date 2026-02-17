@@ -5,8 +5,8 @@
 #include "result.hpp"
 
 #include <actor-zeta/actor/basic_actor.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/log/log.hpp>
@@ -43,15 +43,13 @@ namespace services::disk {
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<
-            &agent_disk_t::load,
-            &agent_disk_t::append_database,
-            &agent_disk_t::remove_database,
-            &agent_disk_t::append_collection,
-            &agent_disk_t::remove_collection,
-            &agent_disk_t::remove_documents,
-            &agent_disk_t::fix_wal_id
-        >;
+        using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::load,
+                                                            &agent_disk_t::append_database,
+                                                            &agent_disk_t::remove_database,
+                                                            &agent_disk_t::append_collection,
+                                                            &agent_disk_t::remove_collection,
+                                                            &agent_disk_t::remove_documents,
+                                                            &agent_disk_t::fix_wal_id>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

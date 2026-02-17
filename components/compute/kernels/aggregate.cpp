@@ -24,7 +24,7 @@ namespace {
             for (size_t i = 0; i < count; i++) {
                 raw_sum += v.data<T>()[i];
             }
-            return logical_value_t{raw_sum};
+            return logical_value_t{v.resource(), raw_sum};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
@@ -32,7 +32,7 @@ namespace {
             for (size_t i = 0; i < count; i++) {
                 raw_sum += T(v.data<U>()[i]);
             }
-            return logical_value_t{raw_sum};
+            return logical_value_t{v.resource(), raw_sum};
         }
     };
 
@@ -40,11 +40,11 @@ namespace {
     struct divide_operator_t<void> {
         template<typename T>
         auto operator()(const logical_value_t& v, size_t count) const {
-            return logical_value_t{v.value<T>() / static_cast<T>(count)};
+            return logical_value_t{v.resource(), v.value<T>() / static_cast<T>(count)};
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v, size_t count) const {
-            return logical_value_t{T(v.value<U>() / static_cast<U>(count))};
+            return logical_value_t{v.resource(), T(v.value<U>() / static_cast<U>(count))};
         }
     };
 
@@ -52,25 +52,25 @@ namespace {
     struct min_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{*std::min_element(v.data<T>(), v.data<T>() + count)};
+            return logical_value_t{v.resource(), *std::min_element(v.data<T>(), v.data<T>() + count)};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{T(*std::min_element(v.data<U>(), v.data<U>() + count))};
+            return logical_value_t{v.resource(), T(*std::min_element(v.data<U>(), v.data<U>() + count))};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
-            return logical_value_t{std::min(v1.value<T>(), v2.value<T>())};
+            return logical_value_t{v1.resource(), std::min(v1.value<T>(), v2.value<T>())};
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
-            return logical_value_t{T(std::min(v1.value<U>(), v2.value<U>()))};
+            return logical_value_t{v1.resource(), T(std::min(v1.value<U>(), v2.value<U>()))};
         }
     };
 
@@ -78,25 +78,25 @@ namespace {
     struct max_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{*std::max_element(v.data<T>(), v.data<T>() + count)};
+            return logical_value_t{v.resource(), *std::max_element(v.data<T>(), v.data<T>() + count)};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{T(*std::max_element(v.data<U>(), v.data<U>() + count))};
+            return logical_value_t{v.resource(), T(*std::max_element(v.data<U>(), v.data<U>() + count))};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
-            return logical_value_t{std::max(v1.value<T>(), v2.value<T>())};
+            return logical_value_t{v1.resource(), std::max(v1.value<T>(), v2.value<T>())};
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
-            return logical_value_t{T(std::max(v1.value<U>(), v2.value<U>()))};
+            return logical_value_t{v1.resource(), T(std::max(v1.value<U>(), v2.value<U>()))};
         }
     };
 
@@ -139,6 +139,7 @@ namespace {
                 // intermediate logical_value_t could be avoided, but convenient for templates
                 auto int_sum = op.template operator()<int64_t>(v, count);
                 int_sum = logical_value_t::create_decimal(
+                    v.resource(),
                     int_sum.template value<int64_t>(),
                     static_cast<decimal_logical_type_extension*>(v.type().extension())->width(),
                     static_cast<decimal_logical_type_extension*>(v.type().extension())->scale());
@@ -151,7 +152,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(nullptr);
+        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -193,6 +194,7 @@ namespace {
                 // intermediate logical_value_t could be avoided, but convenient for templates
                 auto int_sum = op.template operator()<int64_t>(v1, v2);
                 int_sum = logical_value_t::create_decimal(
+                    v1.resource(),
                     int_sum.template value<int64_t>(),
                     static_cast<decimal_logical_type_extension*>(v1.type().extension())->width(),
                     static_cast<decimal_logical_type_extension*>(v1.type().extension())->scale());
@@ -205,7 +207,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(nullptr);
+        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -247,6 +249,7 @@ namespace {
                 // intermediate logical_value_t could be avoided, but convenient for templates
                 auto int_sum = op.template operator()<int64_t>(v, count);
                 int_sum = logical_value_t::create_decimal(
+                    v.resource(),
                     int_sum.template value<int64_t>(),
                     static_cast<decimal_logical_type_extension*>(v.type().extension())->width(),
                     static_cast<decimal_logical_type_extension*>(v.type().extension())->scale());
@@ -259,7 +262,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(nullptr);
+        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
     }
 
     logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
@@ -269,12 +272,12 @@ namespace {
     logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
 
     struct sum_kernel_state : kernel_state {
-        logical_value_t value;
+        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
     };
 
     static compute_result<kernel_state_ptr> sum_init(kernel_context&, kernel_init_args) {
         auto c = std::make_unique<sum_kernel_state>();
-        c->value = logical_value_t{};
+        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
@@ -296,12 +299,12 @@ namespace {
     }
 
     struct min_kernel_state : kernel_state {
-        logical_value_t value;
+        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
     };
 
     static compute_result<kernel_state_ptr> min_init(kernel_context&, kernel_init_args) {
         auto c = std::make_unique<min_kernel_state>();
-        c->value = logical_value_t{};
+        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
@@ -324,12 +327,12 @@ namespace {
     }
 
     struct max_kernel_state : kernel_state {
-        logical_value_t value;
+        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
     };
 
     static compute_result<kernel_state_ptr> max_init(kernel_context&, kernel_init_args) {
         auto c = std::make_unique<max_kernel_state>();
-        c->value = logical_value_t{};
+        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
@@ -373,19 +376,19 @@ namespace {
     }
 
     static compute_status count_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(static_cast<count_kernel_state*>(ctx.state())->value);
+        out.emplace_back(out.get_allocator().resource(), static_cast<count_kernel_state*>(ctx.state())->value);
         return compute_status::ok();
     }
 
     struct avg_kernel_state : kernel_state {
         size_t count;
-        logical_value_t value;
+        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
     };
 
     static compute_result<kernel_state_ptr> avg_init(kernel_context&, kernel_init_args) {
         auto c = std::make_unique<avg_kernel_state>();
         c->count = size_t{0};
-        c->value = logical_value_t{};
+        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
@@ -460,7 +463,7 @@ namespace {
                                                         size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::var_args(1), doc, available_kernel_slots);
 
         kernel_signature_t sig({always_true_type_matcher()}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};

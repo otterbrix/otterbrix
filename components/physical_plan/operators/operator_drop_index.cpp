@@ -3,8 +3,8 @@
 #include <components/cursor/cursor.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
-#include <core/pmr.hpp>
 #include <core/executor.hpp>
+#include <core/pmr.hpp>
 #include <services/collection/collection.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -36,10 +36,10 @@ namespace components::operators {
 
         if (index_ptr->is_disk()) {
             auto [_, future] = actor_zeta::send(context_->disk(),
-                             &services::disk::manager_disk_t::drop_index_agent,
-                             pipeline_context->session,
-                             node_->name(),
-                             context_);
+                                                &services::disk::manager_disk_t::drop_index_agent,
+                                                pipeline_context->session,
+                                                node_->name(),
+                                                context_);
 
             pipeline_context->add_pending_disk_future(std::move(future));
         }

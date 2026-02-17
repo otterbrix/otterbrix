@@ -1,8 +1,6 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
 #include <components/expressions/aggregate_expression.hpp>
-#include <components/tests/generaty.hpp>
-#include <core/operations_helper.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -14,6 +12,8 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
+#include <components/tests/generaty.hpp>
+#include <core/operations_helper.hpp>
 #include <variant>
 
 static const database_name_t table_database_name = "table_testdatabase";
@@ -96,16 +96,16 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     INFO("find") {
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto cur = dispatcher->execute_plan(session, agg);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
@@ -122,8 +122,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
@@ -141,10 +141,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     }
 
     INFO("insert from select") {
-        auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                  {table_database_name, table_other_collection_name});
-        ins->append_child(logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                            {table_database_name, table_collection_name}));
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), {table_database_name, table_other_collection_name});
+        ins->append_child(
+            logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name}));
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
@@ -160,8 +160,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     INFO("delete") {
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
@@ -196,8 +196,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
@@ -242,8 +242,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     INFO("update") {
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::lt,
@@ -282,8 +282,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::lt,
@@ -300,8 +300,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                         {table_database_name, table_collection_name});
+            auto agg =
+                logical_plan::make_node_aggregate(dispatcher->resource(), {table_database_name, table_collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
@@ -340,36 +340,35 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             calculate_expr->right() = new expressions::update_expr_get_const_value_t(id_par{1});
             update_expr->left() = std::move(calculate_expr);
 
-                auto expr = components::expressions::make_compare_expression(
-                    dispatcher->resource(),
-                    compare_type::eq,
-                    key{{{"initial_table", "count"}, dispatcher->resource()}},
-                    key{{{"from_table", "count"}, dispatcher->resource()}});
+            auto expr = components::expressions::make_compare_expression(
+                dispatcher->resource(),
+                compare_type::eq,
+                key{{{"initial_table", "count"}, dispatcher->resource()}},
+                key{{{"from_table", "count"}, dispatcher->resource()}});
 
-                auto update = logical_plan::make_node_update_many(
-                    dispatcher->resource(),
-                    {table_database_name, table_other_collection_name},
-                    logical_plan::make_node_match(dispatcher->resource(),
-                                                  {table_database_name, table_other_collection_name},
-                                                  std::move(expr)),
-                    {std::move(update_expr)},
-                    false);
-                update->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
-                update->set_result_alias("initial_table");
-                update->children().back()->set_result_alias("from_table");
-                auto cur = dispatcher->execute_plan(session, update, params);
-                REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == 10);
-            }
-            {
-                auto session = otterbrix::session_id_t();
-                auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                             {table_database_name, table_other_collection_name});
-                auto cur = dispatcher->execute_plan(session, agg);
-                REQUIRE(cur->size() == 10);
-                for (size_t num = 0; num < cur->size(); ++num) {
-                    REQUIRE(cur->chunk_data().value(0, num).value<int64_t>() == static_cast<int64_t>(91 + num) * 2);
-                }
+            auto update = logical_plan::make_node_update_many(
+                dispatcher->resource(),
+                {table_database_name, table_other_collection_name},
+                logical_plan::make_node_match(dispatcher->resource(),
+                                              {table_database_name, table_other_collection_name},
+                                              std::move(expr)),
+                {std::move(update_expr)},
+                false);
+            update->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));
+            update->set_result_alias("initial_table");
+            update->children().back()->set_result_alias("from_table");
+            auto cur = dispatcher->execute_plan(session, update, params);
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
+                                                         {table_database_name, table_other_collection_name});
+            auto cur = dispatcher->execute_plan(session, agg);
+            REQUIRE(cur->size() == 10);
+            for (size_t num = 0; num < cur->size(); ++num) {
+                REQUIRE(cur->chunk_data().value(0, num).value<int64_t>() == static_cast<int64_t>(91 + num) * 2);
             }
         }
     }
@@ -394,8 +393,12 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             chunk_right.set_value(0,
                                   static_cast<size_t>(num),
                                   types::logical_value_t{dispatcher->resource(), gen_id(static_cast<int>(num + 1001))});
-            chunk_right.set_value(1, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), (num + 25) * 2 * 10});
-            chunk_right.set_value(2, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), (num + 25) * 2});
+            chunk_right.set_value(1,
+                                  static_cast<size_t>(num),
+                                  types::logical_value_t{dispatcher->resource(), (num + 25) * 2 * 10});
+            chunk_right.set_value(2,
+                                  static_cast<size_t>(num),
+                                  types::logical_value_t{dispatcher->resource(), (num + 25) * 2});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -431,8 +434,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
                 REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
             }
@@ -457,8 +459,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
                 REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
             }
@@ -482,8 +483,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int num = 0; num < 26; ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
                 REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() == (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
             }
@@ -518,8 +518,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int index = 0, num = 13; index < 13; ++index, ++num) {
                 REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
                 REQUIRE(cur->chunk_data().value(6, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2);
-                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(index)).value<int64_t>() ==
-                        (num + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(index)).value<int64_t>() == (num + 25) * 2 * 10);
                 REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(index)).value<std::string_view>() ==
                         "Name " + std::to_string((num + 25) * 2));
             }
@@ -533,8 +532,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     std::vector<expressions::expression_ptr> sort = {
                         expressions::make_sort_expression(key(dispatcher->resource(), "avg"),
                                                           expressions::sort_order::desc)};
-                    aggregate->append_child(
-                        logical_plan::make_node_sort(dispatcher->resource(), {}, std::move(sort)));
+                    aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(), {}, std::move(sort)));
                 }
                 {
                     auto group = logical_plan::make_node_group(dispatcher->resource(), {});
@@ -544,35 +542,35 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                     scalar_expr->append_param(key(dispatcher->resource(), "key_1"));
                     group->append_expression(std::move(scalar_expr));
 
-                        auto count_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                                 "count",
-                                                                                 key(dispatcher->resource(), "count"));
-                        count_expr->append_param(key(dispatcher->resource(), "name"));
-                        group->append_expression(std::move(count_expr));
+                    auto count_expr = expressions::make_aggregate_expression(dispatcher->resource(),
+                                                                             "count",
+                                                                             key(dispatcher->resource(), "count"));
+                    count_expr->append_param(key(dispatcher->resource(), "name"));
+                    group->append_expression(std::move(count_expr));
 
-                        auto sum_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               "sum",
-                                                                               key(dispatcher->resource(), "sum"));
-                        sum_expr->append_param(key(dispatcher->resource(), "value"));
-                        group->append_expression(std::move(sum_expr));
+                    auto sum_expr = expressions::make_aggregate_expression(dispatcher->resource(),
+                                                                           "sum",
+                                                                           key(dispatcher->resource(), "sum"));
+                    sum_expr->append_param(key(dispatcher->resource(), "value"));
+                    group->append_expression(std::move(sum_expr));
 
-                        auto avg_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               "avg",
-                                                                               key(dispatcher->resource(), "avg"));
-                        avg_expr->append_param(key(dispatcher->resource(), "key"));
-                        group->append_expression(std::move(avg_expr));
+                    auto avg_expr = expressions::make_aggregate_expression(dispatcher->resource(),
+                                                                           "avg",
+                                                                           key(dispatcher->resource(), "avg"));
+                    avg_expr->append_param(key(dispatcher->resource(), "key"));
+                    group->append_expression(std::move(avg_expr));
 
-                        auto min_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               "min",
-                                                                               key(dispatcher->resource(), "min"));
-                        min_expr->append_param(key(dispatcher->resource(), "value"));
-                        group->append_expression(std::move(min_expr));
+                    auto min_expr = expressions::make_aggregate_expression(dispatcher->resource(),
+                                                                           "min",
+                                                                           key(dispatcher->resource(), "min"));
+                    min_expr->append_param(key(dispatcher->resource(), "value"));
+                    group->append_expression(std::move(min_expr));
 
-                        auto max_expr = expressions::make_aggregate_expression(dispatcher->resource(),
-                                                                               "max",
-                                                                               key(dispatcher->resource(), "max"));
-                        max_expr->append_param(key(dispatcher->resource(), "value"));
-                        group->append_expression(std::move(max_expr));
+                    auto max_expr = expressions::make_aggregate_expression(dispatcher->resource(),
+                                                                           "max",
+                                                                           key(dispatcher->resource(), "max"));
+                    max_expr->append_param(key(dispatcher->resource(), "value"));
+                    group->append_expression(std::move(max_expr));
 
                     aggregate->append_child(std::move(group));
                 }
@@ -585,11 +583,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                 key(dispatcher->resource(), "key_1", side_t::left),
                                                 core::parameter_id_t(1))));
                 }
-                params->add_parameter(core::parameter_id_t(1), types::logical_value_t(dispatcher->resource(), int64_t{75}));
+                params->add_parameter(core::parameter_id_t(1),
+                                      types::logical_value_t(dispatcher->resource(), int64_t{75}));
             }
             {
-                auto join =
-                    logical_plan::make_node_join(dispatcher->resource(), {}, logical_plan::join_type::inner);
+                auto join = logical_plan::make_node_join(dispatcher->resource(), {}, logical_plan::join_type::inner);
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left));
                 join->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), chunk_right));
                 {
@@ -605,36 +603,36 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 13);
 
-                REQUIRE(cur->chunk_data().data[1].type().type() == types::logical_type::UBIGINT);
-                REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
-                REQUIRE(cur->chunk_data().data[2].type().type() == types::logical_type::BIGINT);
-                REQUIRE(cur->chunk_data().data[2].type().alias() == "sum");
-                REQUIRE(cur->chunk_data().data[3].type().type() == types::logical_type::BIGINT);
-                REQUIRE(cur->chunk_data().data[3].type().alias() == "avg");
-                REQUIRE(cur->chunk_data().data[4].type().type() == types::logical_type::BIGINT);
-                REQUIRE(cur->chunk_data().data[4].type().alias() == "min");
-                REQUIRE(cur->chunk_data().data[5].type().type() == types::logical_type::BIGINT);
-                REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
+            REQUIRE(cur->chunk_data().data[1].type().type() == types::logical_type::UBIGINT);
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().type() == types::logical_type::BIGINT);
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "sum");
+            REQUIRE(cur->chunk_data().data[3].type().type() == types::logical_type::BIGINT);
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "avg");
+            REQUIRE(cur->chunk_data().data[4].type().type() == types::logical_type::BIGINT);
+            REQUIRE(cur->chunk_data().data[4].type().alias() == "min");
+            REQUIRE(cur->chunk_data().data[5].type().type() == types::logical_type::BIGINT);
+            REQUIRE(cur->chunk_data().data[5].type().alias() == "max");
 
-                for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
-                    REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
-                    REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==
-                            (reversed + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(3, static_cast<size_t>(num)).value<int64_t>() ==
-                            static_cast<int64_t>((reversed + 25) * 2));
-                    REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
-                            (reversed + 25) * 2 * 10);
-                    REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
-                            (reversed + 25) * 2 * 10);
-                }
+            for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
+                REQUIRE(cur->chunk_data().value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
+                REQUIRE(cur->chunk_data().value(2, static_cast<size_t>(num)).value<int64_t>() ==
+                        (reversed + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(3, static_cast<size_t>(num)).value<int64_t>() ==
+                        static_cast<int64_t>((reversed + 25) * 2));
+                REQUIRE(cur->chunk_data().value(4, static_cast<size_t>(num)).value<int64_t>() ==
+                        (reversed + 25) * 2 * 10);
+                REQUIRE(cur->chunk_data().value(5, static_cast<size_t>(num)).value<int64_t>() ==
+                        (reversed + 25) * 2 * 10);
             }
-            INFO("just raw data") {
-                auto session = otterbrix::session_id_t();
-                auto node = logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left);
-                auto cur = dispatcher->execute_plan(session, node);
-                REQUIRE(cur->is_success());
-                REQUIRE(cur->size() == chunk_left.size());
-                REQUIRE(cur->chunk_data().column_count() == chunk_left.column_count());
+        }
+        INFO("just raw data") {
+            auto session = otterbrix::session_id_t();
+            auto node = logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left);
+            auto cur = dispatcher->execute_plan(session, node);
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == chunk_left.size());
+            REQUIRE(cur->chunk_data().column_count() == chunk_left.column_count());
 
             for (size_t i = 0; i < chunk_left.column_count(); i++) {
                 for (size_t j = 0; j < chunk_left.size(); j++) {

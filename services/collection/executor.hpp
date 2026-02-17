@@ -5,8 +5,8 @@
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <services/collection/collection.hpp>
@@ -21,7 +21,6 @@ namespace services::collection::executor {
     };
 
     struct function_result_t {
-        bool success;
         std::string function_name;
         components::compute::function_uid function_id;
         std::vector<components::compute::kernel_signature_t> function_signatures;
@@ -55,13 +54,10 @@ namespace services::collection::executor {
                                                      components::logical_plan::storage_parameters parameters,
                                                      services::context_storage_t context_storage);
 
-        unique_future<function_result_t> register_udf(components::session::session_id_t session,
-                                                      components::compute::function_ptr function);
+        unique_future<std::optional<function_result_t>> register_udf(components::session::session_id_t session,
+                                                                     components::compute::function_ptr function);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<
-            &executor_t::execute_plan,
-            &executor_t::register_udf
-        >;
+        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan, &executor_t::register_udf>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -71,25 +67,24 @@ namespace services::collection::executor {
                               components::logical_plan::storage_parameters&& parameters,
                               services::context_storage_t&& context_storage);
 
-        unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session,
-                                                          plan_t plan_data);
+        unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session, plan_t plan_data);
 
-        unique_future<components::cursor::cursor_t_ptr> aggregate_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> update_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> insert_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> delete_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
+        unique_future<components::cursor::cursor_t_ptr>
+        aggregate_document_impl_(const components::session::session_id_t& session,
+                                 context_collection_t* context_,
+                                 components::operators::operator_ptr plan);
+        unique_future<components::cursor::cursor_t_ptr>
+        update_document_impl_(const components::session::session_id_t& session,
+                              context_collection_t* context_,
+                              components::operators::operator_ptr plan);
+        unique_future<components::cursor::cursor_t_ptr>
+        insert_document_impl_(const components::session::session_id_t& session,
+                              context_collection_t* context_,
+                              components::operators::operator_ptr plan);
+        unique_future<components::cursor::cursor_t_ptr>
+        delete_document_impl_(const components::session::session_id_t& session,
+                              context_collection_t* context_,
+                              components::operators::operator_ptr plan);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

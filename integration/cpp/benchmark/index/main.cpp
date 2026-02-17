@@ -40,7 +40,12 @@ void only_find_eq(benchmark::State& state) {
     state.ResumeTiming();
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
-            auto p = create_aggregate(dispatcher->resource(), database_name, collection_name, compare_type::eq, "count", 115);
+            auto p = create_aggregate(dispatcher->resource(),
+                                      database_name,
+                                      collection_name,
+                                      compare_type::eq,
+                                      "count",
+                                      115);
             dispatcher->find(session, p.first, p.second);
         }
     }
@@ -55,7 +60,12 @@ void only_find_gt(benchmark::State& state) {
     state.ResumeTiming();
     for (auto _ : state) {
         for (int i = 0; i < state.range(0); ++i) {
-            auto p = create_aggregate(dispatcher->resource(), database_name, collection_name, compare_type::gt, "count", size_collection - 100);
+            auto p = create_aggregate(dispatcher->resource(),
+                                      database_name,
+                                      collection_name,
+                                      compare_type::gt,
+                                      "count",
+                                      size_collection - 100);
             dispatcher->find(session, p.first, p.second);
         }
     }

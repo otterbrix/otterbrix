@@ -26,8 +26,7 @@ namespace otterbrix {
 
     wrapper_dispatcher_t::~wrapper_dispatcher_t() { trace(log_, "delete wrapper_dispatcher_t"); }
 
-    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {
-    }
+    void wrapper_dispatcher_t::behavior(actor_zeta::mailbox::message* /*msg*/) {}
 
     auto wrapper_dispatcher_t::make_type() const noexcept -> const char* { return "wrapper_dispatcher"; }
 
@@ -43,7 +42,6 @@ namespace otterbrix {
 
         std::move(future).get();
     }
-
 
     auto wrapper_dispatcher_t::create_database(const session_id_t& session, const database_name_t& database)
         -> cursor_t_ptr {
@@ -164,8 +162,10 @@ namespace otterbrix {
                                     const collection_name_t& collection) -> size_t {
         trace(log_, "wrapper_dispatcher_t::size session: {}, collection name : {} ", session.data(), collection);
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::size,
-                                                  session, database, collection);
+                                                       &services::dispatcher::manager_dispatcher_t::size,
+                                                       session,
+                                                       database,
+                                                       collection);
         return wait_future(future);
     }
 
@@ -176,8 +176,9 @@ namespace otterbrix {
               session.data(),
               function->name());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::register_udf,
-                                                  session, std::move(function));
+                                                       &services::dispatcher::manager_dispatcher_t::register_udf,
+                                                       session,
+                                                       std::move(function));
         return wait_future(future);
     }
 
@@ -190,10 +191,10 @@ namespace otterbrix {
               session.data(),
               function_name);
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::unregister_udf,
-                                                  session,
-                         function_name,
-                         inputs);
+                                                       &services::dispatcher::manager_dispatcher_t::unregister_udf,
+                                                       session,
+                                                       function_name,
+                                                       inputs);
         return wait_future(future);
     }
 
@@ -246,8 +247,9 @@ namespace otterbrix {
         -> components::cursor::cursor_t_ptr {
         trace(log_, "wrapper_dispatcher_t::get_schema session: {}", session.data());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::get_schema,
-                                                  session, ids);
+                                                       &services::dispatcher::manager_dispatcher_t::get_schema,
+                                                       session,
+                                                       ids);
         return wait_future(future);
     }
 
@@ -258,8 +260,10 @@ namespace otterbrix {
         assert(params);
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                  &services::dispatcher::manager_dispatcher_t::execute_plan,
-                                                  session, std::move(node), std::move(params));
+                                                       &services::dispatcher::manager_dispatcher_t::execute_plan,
+                                                       session,
+                                                       std::move(node),
+                                                       std::move(params));
 
         return wait_future(future);
     }

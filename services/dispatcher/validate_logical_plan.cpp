@@ -2,6 +2,7 @@
 
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
+#include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_update.hpp"
 
 #include <components/catalog/table_id.hpp>
@@ -370,7 +371,9 @@ namespace services::dispatcher {
                 case compare_type::gt:
                 case compare_type::gte:
                 case compare_type::lt:
-                case compare_type::lte: {
+                case compare_type::lte:
+                    // TODO: check type for regex
+                case compare_type::regex: {
                     if (std::holds_alternative<components::expressions::key_t>(expr->left())) {
                         auto key_res = validate_key(resource,
                                                     std::get<components::expressions::key_t>(expr->left()),
@@ -419,9 +422,6 @@ namespace services::dispatcher {
                     }
                     break;
                 }
-                case compare_type::regex: {
-                    // TODO:
-                }
                 default:
                     break;
             }
@@ -442,6 +442,16 @@ namespace services::dispatcher {
                     named_schema result(resource);
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
                         result.emplace_back(type_from_t{node->collection_name(), column});
+                    }
+                    return schema_result<named_schema>{std::move(result)};
+                }
+                if (catalog.table_computes(id)) {
+                    named_schema result(resource);
+                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
+                    for (const auto& column : sch.child_types()) {
+                        result.emplace_back(
+                            type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
+                                        column});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 } else {
@@ -532,22 +542,14 @@ namespace services::dispatcher {
         return error;
     }
 
-    cursor_t_ptr
-    validate_format_and_types(std::pmr::memory_resource* resource, const catalog& catalog, node_t* logical_plan) {
-        used_format_t used_format = used_format_t::undefined;
+    cursor_t_ptr validate_types(std::pmr::memory_resource* resource, const catalog& catalog, node_t* logical_plan) {
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         cursor_t_ptr result = make_cursor(resource, operation_status_t::success);
 
-        auto check_format = [&](node_t* node) {
-            // incoming raw data might not know about type used and only have a field name
-            // which is different from the type
-            // so we have to collect all known fields that may be used
-            used_format_t check = used_format_t::undefined;
-            // pull check format from collection referenced by logical_plan
+        auto check_node = [&](node_t* node) {
             if (!node->collection_full_name().empty()) {
                 table_id id(resource, node->collection_full_name());
                 if (auto res = check_collection_exists(resource, catalog, id); !res) {
-                    check = catalog.get_table_format(id);
                     if (!catalog.table_computes(id)) {
                         for (const auto& type : catalog.get_table_schema(id).columns()) {
                             encountered_types.emplace_back(type);
@@ -561,89 +563,53 @@ namespace services::dispatcher {
             // pull/double-check check format from collection referenced by logical_plan and data stored inside node_data_t
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
-                if (check == used_format_t::undefined) {
-                    check = static_cast<used_format_t>(data_node->uses_data_chunk());
-                } else if (check != static_cast<used_format_t>(data_node->uses_data_chunk())) {
-                    result =
-                        make_cursor(resource,
-                                    error_code_t::incompatible_storage_types,
-                                    "logical plan data format is not the same as referenced collection data format");
-                    return false;
-                }
 
-                // convert data_chunk to documents
-                if (used_format == used_format_t::documents && check == used_format_t::columns) {
-                    data_node->convert_to_documents();
-                    check = used_format_t::documents;
-                }
-
-                if (data_node->uses_data_chunk()) {
-                    for (auto& column : data_node->data_chunk().data) {
-                        auto it = std::find_if(encountered_types.begin(),
-                                               encountered_types.end(),
-                                               [&column](const complex_logical_type& type) {
-                                                   return type.alias() == column.type().alias();
-                                               });
-                        // if this is a registered type, then conversion is required
-                        if (it != encountered_types.end() && catalog.type_exists(it->type_name())) {
-                            // try to cast to it
-                            if (it->type() == logical_type::STRUCT) {
-                                components::vector::vector_t new_column(resource,
-                                                                        *it,
-                                                                        data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(*it);
-                                    if (val.type().type() == logical_type::NA) {
-                                        result =
-                                            make_cursor(resource,
-                                                        error_code_t::schema_error,
-                                                        "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, val);
-                                    }
+                for (auto& column : data_node->data_chunk().data) {
+                    auto it = std::find_if(
+                        encountered_types.begin(),
+                        encountered_types.end(),
+                        [&column](const complex_logical_type& type) { return type.alias() == column.type().alias(); });
+                    // if this is a registered type, then conversion is required
+                    if (it != encountered_types.end() && catalog.type_exists(it->type_name())) {
+                        // try to cast to it
+                        if (it->type() == logical_type::STRUCT) {
+                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.value(i).cast_as(*it);
+                                if (val.type().type() == logical_type::NA) {
+                                    result =
+                                        make_cursor(resource,
+                                                    error_code_t::schema_error,
+                                                    "couldn't convert parsed ROW to type: \'" + it->alias() + "\'");
+                                    return false;
+                                } else {
+                                    new_column.set_value(i, val);
                                 }
-                                column = std::move(new_column);
-                            } else if (it->type() == logical_type::ENUM) {
-                                components::vector::vector_t new_column(resource,
-                                                                        *it,
-                                                                        data_node->data_chunk().capacity());
-                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.data<std::string_view>()[i];
-                                    auto enum_val = logical_value_t::create_enum(*it, val);
-                                    if (enum_val.type().type() == logical_type::NA) {
-                                        result =
-                                            make_cursor(resource,
-                                                        error_code_t::schema_error,
-                                                        "enum: \'" + it->alias() + "\' does not contain value: \'" +
-                                                            std::string(val) + "\'");
-                                        return false;
-                                    } else {
-                                        new_column.set_value(i, enum_val);
-                                    }
-                                }
-                                column = std::move(new_column);
-                            } else {
-                                assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                             }
+                            column = std::move(new_column);
+                        } else if (it->type() == logical_type::ENUM) {
+                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.data<std::string_view>()[i];
+                                auto enum_val = logical_value_t::create_enum(resource, *it, val);
+                                if (enum_val.type().type() == logical_type::NA) {
+                                    result = make_cursor(resource,
+                                                         error_code_t::schema_error,
+                                                         "enum: \'" + it->alias() + "\' does not contain value: \'" +
+                                                             std::string(val) + "\'");
+                                    return false;
+                                } else {
+                                    new_column.set_value(i, enum_val);
+                                }
+                            }
+                            column = std::move(new_column);
+                        } else {
+                            assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                         }
                     }
                 }
             }
-
-            // compare check to previously gathered
-            if (used_format == check) {
-                return true;
-            } else if (used_format == used_format_t::undefined) {
-                used_format = check;
-                return true;
-            } else if (check == used_format_t::undefined) {
-                return true;
-            }
-            result = make_cursor(resource,
-                                 error_code_t::incompatible_storage_types,
-                                 "logical plan data format is not the same as referenced collection data format");
-            return false;
+            return true;
         };
 
         std::queue<node_t*> look_up;
@@ -651,7 +617,7 @@ namespace services::dispatcher {
         while (!look_up.empty()) {
             auto plan_node = look_up.front();
 
-            if (check_format(plan_node)) {
+            if (check_node(plan_node)) {
                 for (const auto& child : plan_node->children()) {
                     look_up.emplace(child.get());
                 }
@@ -661,14 +627,7 @@ namespace services::dispatcher {
             }
         }
 
-        switch (used_format) {
-            case used_format_t::documents:
-                return make_cursor(resource, std::pmr::vector<components::document::document_ptr>{resource});
-            case used_format_t::columns:
-                return make_cursor(resource, components::vector::data_chunk_t{resource, {}, 0});
-            default:
-                return make_cursor(resource, error_code_t::incompatible_storage_types, "undefined storage format");
-        }
+        return make_cursor(resource, operation_status_t::success);
     }
 
     schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
@@ -720,11 +679,24 @@ namespace services::dispatcher {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
+                    } else if (catalog.table_computes(id)) {
+                        auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
+                        for (const auto& column : sch.child_types()) {
+                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
+                                                                                               : node->result_alias(),
+                                                                  column});
+                        }
                     } else {
                         return schema_result<named_schema>{
                             resource,
                             components::cursor::error_t{error_code_t::collection_not_exists, ""}};
                     }
+                }
+                if (table_schema.empty() && incoming_schema.empty()) {
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{error_code_t::schema_error,
+                                                    "invalid aggregate node, that contains no fields"}};
                 }
                 if (incoming_schema.empty()) {
                     incoming_schema = table_schema;
@@ -733,12 +705,6 @@ namespace services::dispatcher {
                 if (table_schema.empty()) {
                     table_schema = incoming_schema;
                     same_schema = true;
-                }
-                if (table_schema.empty() && incoming_schema.empty()) {
-                    return schema_result<named_schema>{
-                        resource,
-                        components::cursor::error_t{error_code_t::schema_error,
-                                                    "invalid aggregate node, that contains no fields"}};
                 }
                 if (node_match) {
                     auto res = impl::validate_schema(resource,
@@ -754,7 +720,7 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
-                    result = incoming_schema;
+                    return schema_result{std::move(incoming_schema)};
                 } else {
                     for (auto& expr : node_group->expressions()) {
                         if (expr->group() == expression_group::scalar) {
@@ -931,33 +897,45 @@ namespace services::dispatcher {
             }
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
+                table_id id(resource, node->collection_full_name());
+                if (auto err = check_collection_exists(resource, catalog, id); err) {
+                    return schema_result<named_schema>{resource, err->get_error()};
+                }
+
                 auto incoming_schema = validate_schema(resource, catalog, node->children().front().get(), parameters);
                 if (incoming_schema.is_error()) {
                     return incoming_schema;
                 } else {
-                    table_id id(resource, node->collection_full_name());
+                    named_schema table_schema(resource);
                     if (catalog.table_exists(id)) {
-                        const auto& table_schema = catalog.get_table_schema(id).columns();
-                        if (table_schema.size() == incoming_schema.value().size()) {
-                            for (size_t i = 0; i < incoming_schema.value().size(); i++) {
-                                if (table_schema[i].alias() != incoming_schema.value()[i].type.alias()) {
-                                    return schema_result<named_schema>{
-                                        resource,
-                                        components::cursor::error_t{error_code_t::schema_error,
-                                                                    "insert_node: field name missmatch"}};
-                                }
+                        for (const auto& column : catalog.get_table_schema(id).columns()) {
+                            table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
+                                                                                               : node->result_alias(),
+                                                                  column});
+                        }
+                    } else {
+                        auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
+                        for (const auto& column : sch.child_types()) {
+                            table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                        }
+                    }
+                    // TODO: incomplete rows insert
+                    if (table_schema.empty() || table_schema.size() == incoming_schema.value().size()) {
+                        for (size_t i = 0; i < table_schema.size(); i++) {
+                            // TODO: key translation and type compare, instead of names:
+                            if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
+                                return schema_result<named_schema>{
+                                    resource,
+                                    components::cursor::error_t{error_code_t::schema_error,
+                                                                "insert_node: field name missmatch"}};
                             }
-                        } else {
-                            return schema_result<named_schema>{
-                                resource,
-                                components::cursor::error_t{
-                                    error_code_t::schema_error,
-                                    "insert_node: number of data columns does not match the table one"}};
                         }
                     } else {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{error_code_t::collection_not_exists, ""}};
+                            components::cursor::error_t{
+                                error_code_t::schema_error,
+                                "insert_node: number of data columns does not match the table one"}};
                     }
                 }
                 return schema_result{std::move(result)};
@@ -980,6 +958,13 @@ namespace services::dispatcher {
                 table_id id(resource, node->collection_full_name());
                 if (catalog.table_exists(id)) {
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
+                        table_schema.emplace_back(
+                            type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
+                                        column});
+                    }
+                } else if (catalog.table_computes(id)) {
+                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
+                    for (const auto& column : sch.child_types()) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
                                         column});
@@ -1045,6 +1030,36 @@ namespace services::dispatcher {
                 // TODO: check updates for update_t
                 return schema_result{std::move(result)};
             }
+            case node_type::create_index_t: {
+                table_id id(resource, node->collection_full_name());
+                if (auto err = check_collection_exists(resource, catalog, id); err) {
+                    return schema_result<named_schema>{resource, err->get_error()};
+                }
+
+                named_schema table_schema{resource};
+                if (catalog.table_computes(id)) {
+                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
+                    for (const auto& column : sch.child_types()) {
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                    }
+                } else {
+                    const auto& sch = catalog.get_table_schema(id).columns();
+                    for (const auto& column : sch) {
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                    }
+                }
+                auto& keys = reinterpret_cast<node_create_index_t*>(node)->keys();
+                for (auto& key : keys) {
+                    auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
+                    if (key_res.is_error()) {
+                        return schema_result<named_schema>(resource, key_res.error());
+                    }
+                }
+                return schema_result{named_schema{resource}};
+            }
+            case node_type::drop_index_t:
+                // nothing to check here
+                break;
             default:
                 // TODO: add check to validate schema, if assert is triggered
                 assert(false);

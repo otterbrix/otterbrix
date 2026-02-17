@@ -1,7 +1,8 @@
 #pragma once
 
-#include <components/physical_plan/operators/operator_raw_data.hpp>
+#include <components/compute/function.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
+#include <components/physical_plan/operators/operator_raw_data.hpp>
 #include <components/tests/generaty.hpp>
 #include <services/collection/collection.hpp>
 
@@ -76,14 +77,19 @@ inline context_ptr init_table(std::pmr::memory_resource* resource) {
     return table;
 }
 
-inline context_ptr create_collection(std::pmr::memory_resource* resource) {
-    return create_table(resource);
-}
+inline context_ptr create_collection(std::pmr::memory_resource* resource) { return create_table(resource); }
 
-inline void fill_collection(context_ptr& collection) {
-    fill_table(collection);
-}
+inline void fill_collection(context_ptr& collection) { fill_table(collection); }
 
-inline context_ptr init_collection(std::pmr::memory_resource* resource) {
-    return init_table(resource);
+inline context_ptr init_collection(std::pmr::memory_resource* resource) { return init_table(resource); }
+
+inline compute::function* get_function_by_name(const std::string& name) {
+    auto it = std::find_if(compute::DEFAULT_FUNCTIONS.begin(),
+                           compute::DEFAULT_FUNCTIONS.end(),
+                           [&name](const auto& pair) { return pair.first == name; });
+    if (it != compute::DEFAULT_FUNCTIONS.end()) {
+        return compute::function_registry_t::get_default()->get_function(it->second.uid);
+    } else {
+        return compute::function_registry_t::get_default()->get_function(compute::invalid_function_uid);
+    }
 }

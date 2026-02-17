@@ -58,20 +58,15 @@ namespace services::disk {
         co_return;
     }
 
-    index_agent_disk_t::unique_future<void> index_agent_disk_t::insert(
-        session_id_t session,
-        value_t key,
-        size_t row_id
-    ) {
+    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::insert(session_id_t session, value_t key, size_t row_id) {
         trace(log_, "index_agent_disk_t::insert row {}, session: {}", row_id, session.data());
         index_disk_->insert(key, row_id);
         co_return;
     }
 
-    index_agent_disk_t::unique_future<void> index_agent_disk_t::insert_many(
-        session_id_t session,
-        std::vector<std::pair<value_t, size_t>> values
-    ) {
+    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values) {
         trace(log_, "index_agent_disk_t::insert_many: {}, session: {}", values.size(), session.data());
         for (const auto& [key, row_id] : values) {
             index_disk_->insert(key, row_id);
@@ -79,21 +74,15 @@ namespace services::disk {
         co_return;
     }
 
-    index_agent_disk_t::unique_future<void> index_agent_disk_t::remove(
-        session_id_t session,
-        value_t key,
-        size_t row_id
-    ) {
+    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::remove(session_id_t session, value_t key, size_t row_id) {
         trace(log_, "index_agent_disk_t::remove row {}, session: {}", row_id, session.data());
         index_disk_->remove(key, row_id);
         co_return;
     }
 
-    index_agent_disk_t::unique_future<index_disk_t::result> index_agent_disk_t::find(
-        session_id_t session,
-        value_t value,
-        components::expressions::compare_type compare
-    ) {
+    index_agent_disk_t::unique_future<index_disk_t::result>
+    index_agent_disk_t::find(session_id_t session, value_t value, components::expressions::compare_type compare) {
         using components::expressions::compare_type;
 
         trace(log_, "index_agent_disk_t::find, session: {}", session.data());

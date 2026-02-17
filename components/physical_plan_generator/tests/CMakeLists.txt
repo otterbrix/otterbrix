@@ -14,6 +14,9 @@ target_link_libraries(
         otterbrix::log
         otterbrix::logical_plan
         otterbrix::dispatcher
+        otterbrix::collection
+        otterbrix::disk
+        otterbrix::index
         otterbrix::wal
         otterbrix::physical_plan
         otterbrix::cursor
@@ -31,23 +34,28 @@ target_link_libraries(
 # Use linker group on Linux to resolve mutual symbol references
 if(UNIX AND NOT APPLE)
     target_link_libraries(${PROJECT_NAME} PRIVATE
-        -Wl,--start-group
-        otterbrix::collection
-        otterbrix::disk
-        otterbrix::index
-        -Wl,--end-group
+            -Wl,--start-group
+            otterbrix::dispatcher
+            otterbrix::collection
+            otterbrix::disk
+            otterbrix::index
+            otterbrix::wal
+            -Wl,--end-group
     )
 else()
     # macOS/other: link twice to resolve circular deps
     target_link_libraries(${PROJECT_NAME} PRIVATE
-        otterbrix::collection
-        otterbrix::disk
+            otterbrix::dispatcher
+            otterbrix::collection
+            otterbrix::disk
+            otterbrix::index
+            otterbrix::wal
     )
 endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC
         ..
-        )
+)
 
 include(CTest)
 include(Catch)

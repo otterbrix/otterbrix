@@ -6,10 +6,11 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_insert(const context_storage_t& context,
-                                                           const components::compute::function_registry_t& function_registry,
-                                                           const components::logical_plan::node_ptr& node,
-                                                           components::logical_plan::limit_t limit) {
+    components::operators::operator_ptr
+    create_plan_insert(const context_storage_t& context,
+                       const components::compute::function_registry_t& function_registry,
+                       const components::logical_plan::node_ptr& node,
+                       components::logical_plan::limit_t limit) {
         // TODO: figure out key translation
         auto plan = boost::intrusive_ptr(
             //new components::operators::operator_insert(context.at(node->collection_full_name()),

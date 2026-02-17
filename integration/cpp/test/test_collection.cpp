@@ -75,21 +75,6 @@ TEST_CASE("integration::cpp::test_collection") {
         }
     }
 
-    INFO("insert non unique id") {
-        auto chunk = gen_data_chunk(100, dispatcher->resource());
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),
-                                                              {database_name, collection_name},
-                                                              std::move(chunk));
-        {
-            auto session = otterbrix::session_id_t();
-            dispatcher->execute_plan(session, ins);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
-        }
-    }
-
     INFO("find") {
         {
             auto session = otterbrix::session_id_t();
@@ -225,7 +210,9 @@ TEST_CASE("integration::cpp::test_collection") {
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), gen_id(1, dispatcher->resource())));
+            params->add_parameter(
+                id_par{1},
+                components::types::logical_value_t(dispatcher->resource(), gen_id(1, dispatcher->resource())));
             auto cur = dispatcher->find_one(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);

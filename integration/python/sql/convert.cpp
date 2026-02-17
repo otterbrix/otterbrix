@@ -58,8 +58,7 @@ auto to_sorter(const py::handle& sort_dict) -> components::sort::sorter_t {
 }
 
 auto to_order(const py::object& order) -> components::sort::order {
-    return py::int_(order).cast<int>() < 0 ? components::sort::order::descending
-                                           : components::sort::order::ascending;
+    return py::int_(order).cast<int>() < 0 ? components::sort::order::descending : components::sort::order::ascending;
 }
 
 using components::logical_plan::node_aggregate_t;

@@ -12,10 +12,11 @@ void delete_many(benchmark::State& state) {
                 auto match = components::logical_plan::make_node_match(
                     dispatcher->resource(),
                     {database_name, collection_name},
-                    components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                     compare_type::lt,
-                                                                     components::expressions::key_t{dispatcher->resource(), "count"},
-                                                                     core::parameter_id_t{1}));
+                    components::expressions::make_compare_expression(
+                        dispatcher->resource(),
+                        compare_type::lt,
+                        components::expressions::key_t{dispatcher->resource(), "count"},
+                        core::parameter_id_t{1}));
                 params->add_parameter(core::parameter_id_t{1}, 100 * i);
                 dispatcher->delete_many(session, match, params);
             }
@@ -23,10 +24,11 @@ void delete_many(benchmark::State& state) {
                 auto match = components::logical_plan::make_node_match(
                     dispatcher->resource(),
                     {database_name, collection_name},
-                    components::expressions::make_compare_expression(dispatcher->resource(),
-                                                                     compare_type::gt,
-                                                                     components::expressions::key_t{dispatcher->resource(), "count"},
-                                                                     core::parameter_id_t{2}));
+                    components::expressions::make_compare_expression(
+                        dispatcher->resource(),
+                        compare_type::gt,
+                        components::expressions::key_t{dispatcher->resource(), "count"},
+                        core::parameter_id_t{2}));
                 params->add_parameter(core::parameter_id_t{2}, size_collection - 100 * i);
                 dispatcher->delete_many(session, match, params);
             }

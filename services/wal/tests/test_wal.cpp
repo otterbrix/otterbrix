@@ -137,9 +137,8 @@ TEST_CASE("services::wal::insert_many_test") {
 
     for (int i = 0; i <= 3; ++i) {
         auto chunk = gen_data_chunk(5, 0, &resource);
-        auto data = components::logical_plan::make_node_insert(&resource,
-                                                               {database_name, collection_name},
-                                                               std::move(chunk));
+        auto data =
+            components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
         auto session = components::session::session_id_t();
         test_wal.wal->insert_many(session, data);
     }
@@ -419,9 +418,8 @@ TEST_CASE("services::wal::large_insert_many_rows") {
 
     constexpr int kRows = 500;
     auto chunk = gen_data_chunk(kRows, 0, &resource);
-    auto data = components::logical_plan::make_node_insert(&resource,
-                                                           {database_name, collection_name},
-                                                           std::move(chunk));
+    auto data =
+        components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
     auto session = components::session::session_id_t();
     test_wal.wal->insert_many(session, data);
 

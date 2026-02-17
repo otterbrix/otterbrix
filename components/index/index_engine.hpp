@@ -27,7 +27,8 @@ namespace components::index {
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
         auto matching(const std::string& name) -> index_t::pointer;
-        auto has_index(const std::string& name) -> bool; // TODO figure out how to make it faster (not using matching inside)
+        auto has_index(const std::string& name)
+            -> bool; // TODO figure out how to make it faster (not using matching inside)
         auto add_index(const keys_base_storage_t&, index_ptr) -> uint32_t;
         auto add_disk_agent(id_index id, actor_zeta::address_t address) -> void;
         auto drop_index(index_t::pointer index) -> void;
@@ -82,7 +83,9 @@ namespace components::index {
     void find(const index_engine_ptr& index, id_index id, result_set_t*);
     void find(const index_engine_ptr& index, query_t query, result_set_t*);
 
-    void set_disk_agent(const index_engine_ptr& ptr, id_index id,
-                        actor_zeta::address_t agent, actor_zeta::address_t manager);
+    void set_disk_agent(const index_engine_ptr& ptr,
+                        id_index id,
+                        actor_zeta::address_t agent,
+                        actor_zeta::address_t manager);
 
 } // namespace components::index

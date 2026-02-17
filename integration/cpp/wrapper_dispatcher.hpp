@@ -1,15 +1,15 @@
 #pragma once
 
 #include <atomic>
-#include <mutex>
 #include <condition_variable>
-#include <vector>
 #include <functional>
+#include <mutex>
+#include <vector>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <core/spinlock/spinlock.hpp>

@@ -127,7 +127,12 @@ TEST_CASE("components::sql::update_where") {
             "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true "
             "WHERE id > 10 AND name = 'old_name' AND is_doc = false;",
             R"_($update: {$upsert: 0, $match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}, $limit: -1})_",
-            vec({v(&resource, 10ul), v(&resource, "new name"), v(&resource, true), v(&resource, 10ul), v(&resource, "old_name"), v(&resource, false)}),
+            vec({v(&resource, 10ul),
+                 v(&resource, "new name"),
+                 v(&resource, true),
+                 v(&resource, 10ul),
+                 v(&resource, "old_name"),
+                 v(&resource, false)}),
             f);
     }
 }
@@ -196,12 +201,13 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
         fields f;
         f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "array_type"}));
         f.back()->left() = new update_expr_get_const_value_t(core::parameter_id_t{0});
-        TEST_SIMPLE_UPDATE(
-            "UPDATE TestDatabase.TestCollection SET array_type = ARRAY[1,2,3,4];",
-            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-            vec({components::types::logical_value_t::create_array(&arena_resource, components::types::logical_type::BIGINT,
-                                                                  {v(&resource, 1l), v(&resource, 2l), v(&resource, 3l), v(&resource, 4l)})}),
-            f);
+        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET array_type = ARRAY[1,2,3,4];",
+                           R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
+                           vec({components::types::logical_value_t::create_array(
+                               &arena_resource,
+                               components::types::logical_type::BIGINT,
+                               {v(&resource, 1l), v(&resource, 2l), v(&resource, 3l), v(&resource, 4l)})}),
+                           f);
     }
 
     {

@@ -31,7 +31,7 @@ static compute_status vector_exec(kernel_context& ctx, const data_chunk_t& in, s
     c->exec_called++;
 
     for (size_t i = 0; i < in.data.size(); ++i) {
-        auto cnt = logical_value_t(in.data[0].data<int>()[i] * c->multiplier);
+        auto cnt = logical_value_t(in.resource(), in.data[0].data<int>()[i] * c->multiplier);
         out.set_value(i, cnt);
     }
     return compute_status::ok();
@@ -68,7 +68,7 @@ static compute_status agg_merge(kernel_context&, kernel_state&& from, kernel_sta
 }
 
 static compute_status agg_finalize(kernel_context& ctx, std::pmr::vector<components::types::logical_value_t>& out) {
-    out.emplace_back(static_cast<agg_counter*>(ctx.state())->value);
+    out.emplace_back(out.get_allocator().resource(), static_cast<agg_counter*>(ctx.state())->value);
     return compute_status::ok();
 }
 
@@ -89,7 +89,7 @@ TEST_CASE("components::compute::vector::single") {
     REQUIRE(fn->add_kernel(std::move(k)));
 
     data_chunk_t chunk(std::pmr::get_default_resource(), {logical_type::INTEGER});
-    chunk.set_value(0, 0, logical_value_t(10));
+    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 10));
 
     auto res = fn->execute(chunk, 1, &opts);
     REQUIRE(res);
@@ -107,10 +107,10 @@ TEST_CASE("components::compute::vector::batch") {
     REQUIRE(fn->add_kernel(std::move(k)));
 
     data_chunk_t c1(std::pmr::get_default_resource(), {logical_type::INTEGER});
-    c1.set_value(0, 0, logical_value_t(1));
+    c1.set_value(0, 0, logical_value_t(c1.resource(), 1));
 
     data_chunk_t c2(std::pmr::get_default_resource(), {logical_type::INTEGER});
-    c2.set_value(0, 0, logical_value_t(10));
+    c2.set_value(0, 0, logical_value_t(c2.resource(), 10));
 
     std::vector<data_chunk_t> batch;
     batch.emplace_back(std::move(c1));
@@ -131,8 +131,8 @@ TEST_CASE("components::compute::aggregate::single") {
     REQUIRE(fn->add_kernel(std::move(k)));
 
     data_chunk_t chunk(std::pmr::get_default_resource(), {logical_type::INTEGER}, 2);
-    chunk.set_value(0, 0, logical_value_t(2));
-    chunk.set_value(0, 1, logical_value_t(3));
+    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 2));
+    chunk.set_value(0, 1, logical_value_t(chunk.resource(), 3));
 
     auto res = fn->execute(chunk, 2);
     REQUIRE(res);
@@ -148,12 +148,12 @@ TEST_CASE("components::compute::aggregate::batch") {
     REQUIRE(fn->add_kernel(std::move(k)));
 
     data_chunk_t c1(std::pmr::get_default_resource(), {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, logical_value_t(1));
-    c1.set_value(0, 1, logical_value_t(2));
+    c1.set_value(0, 0, logical_value_t(c1.resource(), 1));
+    c1.set_value(0, 1, logical_value_t(c1.resource(), 2));
 
     data_chunk_t c2(std::pmr::get_default_resource(), {logical_type::INTEGER}, 2);
-    c2.set_value(0, 0, logical_value_t(3));
-    c2.set_value(0, 1, logical_value_t(4));
+    c2.set_value(0, 0, logical_value_t(c2.resource(), 3));
+    c2.set_value(0, 1, logical_value_t(c2.resource(), 4));
 
     std::vector<data_chunk_t> batch;
     batch.emplace_back(std::move(c1));
@@ -173,7 +173,7 @@ TEST_CASE("components::compute::options_required") {
     REQUIRE(fn->add_kernel(std::move(k)));
 
     data_chunk_t chunk(std::pmr::get_default_resource(), {logical_type::INTEGER});
-    chunk.set_value(0, 0, logical_value_t(1));
+    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 1));
 
     auto res = fn->execute(chunk, 1);
     REQUIRE_FALSE(res);
@@ -201,7 +201,7 @@ TEST_CASE("components::compute::errors") {
         REQUIRE(fn->add_kernel(std::move(k)));
 
         data_chunk_t try_chunk(std::pmr::get_default_resource(), {logical_type::STRING_LITERAL});
-        try_chunk.set_value(0, 0, logical_value_t("oops"));
+        try_chunk.set_value(0, 0, logical_value_t(chunk.resource(), "oops"));
 
         auto res = fn->execute(try_chunk, 1);
         REQUIRE_FALSE(res);

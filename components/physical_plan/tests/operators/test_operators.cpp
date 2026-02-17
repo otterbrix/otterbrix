@@ -138,8 +138,8 @@ TEST_CASE("components::physical_plan::delete") {
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
-        delete_.set_children(boost::intrusive_ptr(
-            new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+        delete_.set_children(
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 90);
     }
@@ -155,8 +155,8 @@ TEST_CASE("components::physical_plan::delete") {
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
-        delete_.set_children(boost::intrusive_ptr(
-            new operators::full_scan(d(table), cond, logical_plan::limit_t::limit_one())));
+        delete_.set_children(
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t::limit_one())));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 99);
     }
@@ -172,8 +172,7 @@ TEST_CASE("components::physical_plan::delete") {
         pipeline::context_t pipeline_context(std::move(parameters));
 
         operators::operator_delete delete_(d(table));
-        delete_.set_children(
-            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
+        delete_.set_children(boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
         delete_.on_execute(&pipeline_context);
         REQUIRE(d(table)->table_storage().table().calculate_size() == 95);
     }
@@ -186,8 +185,12 @@ TEST_CASE("components::physical_plan::update") {
     SECTION("find::update") {
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(2),
+                      types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(3),
+                      types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -209,8 +212,8 @@ TEST_CASE("components::physical_plan::update") {
         }
 
         operators::operator_update update_(d(table), {script_update_1}, false);
-        update_.set_children(boost::intrusive_ptr(
-            new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+        update_.set_children(
+            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t::unlimit())));
         update_.on_execute(&pipeline_context);
         {
             operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
@@ -222,8 +225,12 @@ TEST_CASE("components::physical_plan::update") {
     SECTION("find::update_one") {
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(2),
+                      types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(3),
+                      types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -247,8 +254,7 @@ TEST_CASE("components::physical_plan::update") {
         }
 
         operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
-        update_.set_children(
-            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(1))));
+        update_.set_children(boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(1))));
         update_.on_execute(&pipeline_context);
         {
             operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
@@ -262,8 +268,12 @@ TEST_CASE("components::physical_plan::update") {
     SECTION("find::update_limit") {
         logical_plan::storage_parameters parameters(&resource);
         add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(90)));
-        add_parameter(parameters, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(999)));
-        add_parameter(parameters, core::parameter_id_t(3), types::logical_value_t(&resource, static_cast<int64_t>(9999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(2),
+                      types::logical_value_t(&resource, static_cast<int64_t>(999)));
+        add_parameter(parameters,
+                      core::parameter_id_t(3),
+                      types::logical_value_t(&resource, static_cast<int64_t>(9999)));
         pipeline::context_t pipeline_context(std::move(parameters));
 
         auto cond = make_compare_expression(&resource,
@@ -287,8 +297,7 @@ TEST_CASE("components::physical_plan::update") {
         }
 
         operators::operator_update update_(d(table), {script_update_1, script_update_2}, false);
-        update_.set_children(
-            boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
+        update_.set_children(boost::intrusive_ptr(new operators::full_scan(d(table), cond, logical_plan::limit_t(5))));
         update_.on_execute(&pipeline_context);
         {
             operators::full_scan scan(d(table), cond_check, logical_plan::limit_t::unlimit());
@@ -460,7 +469,9 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                   key(&resource, "count", side_t::left),
                                                   core::parameter_id_t(1));
         logical_plan::storage_parameters parameters_check(&resource);
-        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(50)));
+        add_parameter(parameters_check,
+                      core::parameter_id_t(1),
+                      types::logical_value_t(&resource, static_cast<int64_t>(50)));
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {
@@ -474,11 +485,13 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                 key(&resource, "count", side_t::left),
                                                 core::parameter_id_t(1));
             logical_plan::storage_parameters parameters(&resource);
-            add_parameter(parameters, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(60)));
+            add_parameter(parameters,
+                          core::parameter_id_t(1),
+                          types::logical_value_t(&resource, static_cast<int64_t>(60)));
             pipeline::context_t pipeline_context(std::move(parameters));
             operators::operator_delete delete_(d(table));
-            delete_.set_children(boost::intrusive_ptr(
-                new operators::index_scan(d(table), cond, logical_plan::limit_t::unlimit())));
+            delete_.set_children(
+                boost::intrusive_ptr(new operators::index_scan(d(table), cond, logical_plan::limit_t::unlimit())));
             delete_.on_execute(&pipeline_context);
             REQUIRE(delete_.modified()->size() == 40);
 
@@ -494,8 +507,12 @@ TEST_CASE("components::physical_plan::index::delete_and_update") {
                                                   key(&resource, "count", side_t::left),
                                                   core::parameter_id_t(1));
         logical_plan::storage_parameters parameters_check(&resource);
-        add_parameter(parameters_check, core::parameter_id_t(1), types::logical_value_t(&resource, static_cast<int64_t>(50)));
-        add_parameter(parameters_check, core::parameter_id_t(2), types::logical_value_t(&resource, static_cast<int64_t>(0)));
+        add_parameter(parameters_check,
+                      core::parameter_id_t(1),
+                      types::logical_value_t(&resource, static_cast<int64_t>(50)));
+        add_parameter(parameters_check,
+                      core::parameter_id_t(2),
+                      types::logical_value_t(&resource, static_cast<int64_t>(0)));
         pipeline::context_t pipeline_context_check(std::move(parameters_check));
 
         {

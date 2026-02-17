@@ -14,8 +14,7 @@ TEST_CASE("single_field_index:base") {
     // Insert row indices with corresponding values
     // Values: 0, 1, 10, 5, 6, 2, 8, 13
     // Row indices: 0, 1, 2, 3, 4, 5, 6, 7
-    std::vector<std::pair<int64_t, int64_t>> data = {
-        {0, 0}, {1, 1}, {10, 2}, {5, 3}, {6, 4}, {2, 5}, {8, 6}, {13, 7}};
+    std::vector<std::pair<int64_t, int64_t>> data = {{0, 0}, {1, 1}, {10, 2}, {5, 3}, {6, 4}, {2, 5}, {8, 6}, {13, 7}};
 
     for (const auto& [value, row_idx] : data) {
         components::types::logical_value_t val(&resource, value);
@@ -26,7 +25,7 @@ TEST_CASE("single_field_index:base") {
         components::types::logical_value_t value(&resource, 10);
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
-        REQUIRE(find_range.first->row_index == 2);  // Row index for value 10
+        REQUIRE(find_range.first->row_index == 2); // Row index for value 10
         REQUIRE(++find_range.first == find_range.second);
     }
 
@@ -42,9 +41,9 @@ TEST_CASE("single_field_index:base") {
         REQUIRE(find_range.first == index.cbegin());
         // Values less than 4 are: 0, 1, 2 (sorted)
         // Row indices for 0, 1, 2 are: 0, 1, 5
-        REQUIRE(find_range.first->row_index == 0);  // value 0
-        REQUIRE((++find_range.first)->row_index == 1);  // value 1
-        REQUIRE((++find_range.first)->row_index == 5);  // value 2
+        REQUIRE(find_range.first->row_index == 0);     // value 0
+        REQUIRE((++find_range.first)->row_index == 1); // value 1
+        REQUIRE((++find_range.first)->row_index == 5); // value 2
         REQUIRE(++find_range.first == find_range.second);
     }
 
@@ -53,9 +52,9 @@ TEST_CASE("single_field_index:base") {
         auto find_range = index.lower_bound(value);
         REQUIRE(find_range.first == index.cbegin());
         // Values less than 5 are: 0, 1, 2 (sorted)
-        REQUIRE(find_range.first->row_index == 0);  // value 0
-        REQUIRE((++find_range.first)->row_index == 1);  // value 1
-        REQUIRE((++find_range.first)->row_index == 5);  // value 2
+        REQUIRE(find_range.first->row_index == 0);     // value 0
+        REQUIRE((++find_range.first)->row_index == 1); // value 1
+        REQUIRE((++find_range.first)->row_index == 5); // value 2
         REQUIRE(++find_range.first == find_range.second);
     }
 
@@ -65,9 +64,9 @@ TEST_CASE("single_field_index:base") {
         REQUIRE(find_range.second == index.cend());
         // Values greater than 6 are: 8, 10, 13 (sorted)
         // Row indices for 8, 10, 13 are: 6, 2, 7
-        REQUIRE(find_range.first->row_index == 6);  // value 8
-        REQUIRE((++find_range.first)->row_index == 2);  // value 10
-        REQUIRE((++find_range.first)->row_index == 7);  // value 13
+        REQUIRE(find_range.first->row_index == 6);     // value 8
+        REQUIRE((++find_range.first)->row_index == 2); // value 10
+        REQUIRE((++find_range.first)->row_index == 7); // value 13
         REQUIRE(++find_range.first == find_range.second);
     }
 
@@ -76,9 +75,9 @@ TEST_CASE("single_field_index:base") {
         auto find_range = index.upper_bound(value);
         REQUIRE(find_range.second == index.cend());
         // Values greater than 7 are: 8, 10, 13 (sorted)
-        REQUIRE(find_range.first->row_index == 6);  // value 8
-        REQUIRE((++find_range.first)->row_index == 2);  // value 10
-        REQUIRE((++find_range.first)->row_index == 7);  // value 13
+        REQUIRE(find_range.first->row_index == 6);     // value 8
+        REQUIRE((++find_range.first)->row_index == 2); // value 10
+        REQUIRE((++find_range.first)->row_index == 7); // value 13
         REQUIRE(++find_range.first == find_range.second);
     }
 
@@ -86,7 +85,7 @@ TEST_CASE("single_field_index:base") {
         // Insert duplicate values with different row indices
         for (const auto& [value, row_idx] : data) {
             components::types::logical_value_t val(&resource, value);
-            index.insert(val, row_idx + 100);  // Different row indices
+            index.insert(val, row_idx + 100); // Different row indices
         }
         components::types::logical_value_t value(&resource, 10);
         auto find_range = index.find(value);
@@ -128,5 +127,5 @@ TEST_CASE("single_field_index:engine") {
     components::types::logical_value_t value(&resource, 5);
     auto find_range = idx->find(value);
     REQUIRE(find_range.first != find_range.second);
-    REQUIRE(find_range.first->row_index == 6);  // Row 6 has value 5 (11-5=6)
+    REQUIRE(find_range.first->row_index == 6); // Row 6 has value 5 (11-5=6)
 }

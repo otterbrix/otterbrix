@@ -1,8 +1,8 @@
 #pragma once
+#include <actor-zeta/detail/future.hpp>
+#include <components/index/index_engine.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/index/index_engine.hpp>
-#include <actor-zeta/detail/future.hpp>
 #include <memory>
 
 namespace components::operators {

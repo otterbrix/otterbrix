@@ -2,11 +2,11 @@
 
 #include <components/expressions/compare_expression.hpp>
 
+#include <actor-zeta/detail/future.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <actor-zeta/detail/future.hpp>
-#include <services/disk/index_disk.hpp>
 #include <memory>
+#include <services/disk/index_disk.hpp>
 
 namespace components::operators {
 

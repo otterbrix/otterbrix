@@ -58,6 +58,13 @@ namespace components::catalog {
         return it->second;
     }
 
+    const computed_schema& catalog::get_computing_table_schema(const table_id& id) const {
+        auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
+        auto it = info.find(id.table_name());
+        assert(it != info.end());
+        return it->second;
+    }
+
     catalog_error catalog::create_table(const table_id& id, table_metadata meta) {
         if (!namespace_exists(id.get_namespace())) {
             return {catalog_mistake_t::MISSING_NAMESPACE, "Namespace does not exist for table: " + id.to_string()};

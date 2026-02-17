@@ -7,10 +7,11 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_join(const context_storage_t& context,
-                                                         const components::compute::function_registry_t& function_registry,
-                                                         const components::logical_plan::node_ptr& node,
-                                                         components::logical_plan::limit_t limit) {
+    components::operators::operator_ptr
+    create_plan_join(const context_storage_t& context,
+                     const components::compute::function_registry_t& function_registry,
+                     const components::logical_plan::node_ptr& node,
+                     components::logical_plan::limit_t limit) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
         auto collection_context = context.at(node->children().front()->collection_full_name());

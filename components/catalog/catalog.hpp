@@ -26,6 +26,7 @@ namespace components::catalog {
         [[nodiscard]] std::pmr::vector<table_id> list_tables(const table_namespace_t& namespace_name) const;
         [[nodiscard]] const schema& get_table_schema(const table_id& id) const;
         [[nodiscard]] computed_schema& get_computing_table_schema(const table_id& id);
+        [[nodiscard]] const computed_schema& get_computing_table_schema(const table_id& id) const;
 
         [[nodiscard]] catalog_error create_table(const table_id& id, table_metadata meta);
         [[nodiscard]] catalog_error create_computing_table(const table_id& id);

@@ -31,17 +31,11 @@ namespace components::pipeline {
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 
-        void add_pending_disk_future(disk_future_t&& future) {
-            pending_disk_futures_.push_back(std::move(future));
-        }
-        
-        std::vector<disk_future_t> take_pending_disk_futures() {
-            return std::move(pending_disk_futures_);
-        }
-        
-        bool has_pending_disk_futures() const noexcept {
-            return !pending_disk_futures_.empty();
-        }
+        void add_pending_disk_future(disk_future_t&& future) { pending_disk_futures_.push_back(std::move(future)); }
+
+        std::vector<disk_future_t> take_pending_disk_futures() { return std::move(pending_disk_futures_); }
+
+        bool has_pending_disk_futures() const noexcept { return !pending_disk_futures_.empty(); }
 
     private:
         actor_zeta::address_t address_{actor_zeta::address_t::empty_address()};

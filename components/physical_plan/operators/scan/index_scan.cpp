@@ -1,8 +1,8 @@
 #include "index_scan.hpp"
+#include <core/executor.hpp>
+#include <services/collection/collection.hpp>
 #include <services/disk/index_agent_disk.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/collection/collection.hpp>
-#include <core/executor.hpp>
 
 namespace components::operators {
 
@@ -34,10 +34,10 @@ namespace components::operators {
     }
 
     operators::operator_data_ptr search_by_index(index::index_t* index,
-                                                       const expressions::compare_expression_ptr& expr,
-                                                       const logical_plan::limit_t& limit,
-                                                       const logical_plan::storage_parameters* parameters,
-                                                       table::data_table_t& table) {
+                                                 const expressions::compare_expression_ptr& expr,
+                                                 const logical_plan::limit_t& limit,
+                                                 const logical_plan::storage_parameters* parameters,
+                                                 table::data_table_t& table) {
         auto ranges = search_range_by_index(index, expr, parameters);
         size_t rows = 0;
         for (const auto& range : ranges) {
@@ -91,14 +91,15 @@ namespace components::operators {
             auto agent_copy = index->disk_agent();
             auto value_copy = value;
             auto [_, future] = actor_zeta::send(index->disk_manager(),
-                                           &services::disk::manager_disk_t::index_find_by_agent,
-                                           std::move(session_copy),
-                                           std::move(agent_copy),
-                                           std::move(value_copy),
-                                           expr_->type());
+                                                &services::disk::manager_disk_t::index_find_by_agent,
+                                                std::move(session_copy),
+                                                std::move(agent_copy),
+                                                std::move(value_copy),
+                                                expr_->type());
 
             bool tmp_disk_future_ready_ = future.available();
-            disk_future_ = std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
+            disk_future_ =
+                std::make_unique<actor_zeta::unique_future<services::disk::index_disk_t::result>>(std::move(future));
             disk_future_ready_ = tmp_disk_future_ready_;
             async_wait();
         } else {
@@ -113,8 +114,8 @@ namespace components::operators {
                                           &pipeline_context->parameters,
                                           context_->table_storage().table());
             } else {
-                output_ = operators::make_operator_data(context_->resource(),
-                                                              context_->table_storage().table().copy_types());
+                output_ =
+                    operators::make_operator_data(context_->resource(), context_->table_storage().table().copy_types());
             }
         }
     }
@@ -133,14 +134,11 @@ namespace components::operators {
             return; //limit = 0
         }
         if (index) {
-            output_ = search_by_index(index,
-                                      expr_,
-                                      limit_,
-                                      &pipeline_context->parameters,
-                                      context_->table_storage().table());
+            output_ =
+                search_by_index(index, expr_, limit_, &pipeline_context->parameters, context_->table_storage().table());
         } else {
-            output_ = operators::make_operator_data(context_->resource(),
-                                                          context_->table_storage().table().copy_types());
+            output_ =
+                operators::make_operator_data(context_->resource(), context_->table_storage().table().copy_types());
         }
     }
 

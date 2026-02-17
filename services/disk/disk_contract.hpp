@@ -1,8 +1,8 @@
 #pragma once
 
-#include <actor-zeta/detail/future.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/address.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
@@ -11,8 +11,8 @@
 #include <components/session/session.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <services/disk/result.hpp>
 #include <services/disk/index_disk.hpp>
+#include <services/disk/result.hpp>
 #include <services/wal/base.hpp>
 
 namespace services::collection {
@@ -36,80 +36,76 @@ namespace services::disk {
         actor_zeta::unique_future<void> append_database(session_id_t session, database_name_t database);
         actor_zeta::unique_future<void> remove_database(session_id_t session, database_name_t database);
 
-        actor_zeta::unique_future<void> append_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
-        actor_zeta::unique_future<void> remove_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
+        actor_zeta::unique_future<void>
+        append_collection(session_id_t session, database_name_t database, collection_name_t collection);
+        actor_zeta::unique_future<void>
+        remove_collection(session_id_t session, database_name_t database, collection_name_t collection);
 
         actor_zeta::unique_future<void> write_data_chunk(session_id_t session,
-                                             database_name_t database,
-                                             collection_name_t collection,
-                                             std::unique_ptr<components::vector::data_chunk_t> data);
+                                                         database_name_t database,
+                                                         collection_name_t collection,
+                                                         std::unique_ptr<components::vector::data_chunk_t> data);
         actor_zeta::unique_future<void> remove_documents(session_id_t session,
-                                             database_name_t database,
-                                             collection_name_t collection,
-                                             document_ids_t documents);
+                                                         database_name_t database,
+                                                         collection_name_t collection,
+                                                         document_ids_t documents);
 
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
-        actor_zeta::unique_future<actor_zeta::address_t> create_index_agent(
-            session_id_t session,
-            components::logical_plan::node_create_index_ptr index,
-            services::collection::context_collection_t* collection);
+        actor_zeta::unique_future<actor_zeta::address_t>
+        create_index_agent(session_id_t session,
+                           components::logical_plan::node_create_index_ptr index,
+                           services::collection::context_collection_t* collection);
         actor_zeta::unique_future<void> drop_index_agent(session_id_t session,
-                                             index_name_t index_name,
-                                             services::collection::context_collection_t* collection);
+                                                         index_name_t index_name,
+                                                         services::collection::context_collection_t* collection);
         actor_zeta::unique_future<void> drop_index_agent_success(session_id_t session);
 
-        actor_zeta::unique_future<void> index_insert_many(
-            session_id_t session,
-            index_name_t index_name,
-            std::vector<std::pair<components::types::logical_value_t, size_t>> values);
+        actor_zeta::unique_future<void>
+        index_insert_many(session_id_t session,
+                          index_name_t index_name,
+                          std::vector<std::pair<components::types::logical_value_t, size_t>> values);
         actor_zeta::unique_future<void> index_insert(session_id_t session,
-                                         index_name_t index_name,
-                                         components::types::logical_value_t key,
-                                         size_t row_id);
+                                                     index_name_t index_name,
+                                                     components::types::logical_value_t key,
+                                                     size_t row_id);
         actor_zeta::unique_future<void> index_remove(session_id_t session,
-                                         index_name_t index_name,
-                                         components::types::logical_value_t key,
-                                         size_t row_id);
+                                                     index_name_t index_name,
+                                                     components::types::logical_value_t key,
+                                                     size_t row_id);
 
         actor_zeta::unique_future<void> index_insert_by_agent(session_id_t session,
-                                                  actor_zeta::address_t agent_address,
-                                                  components::types::logical_value_t key,
-                                                  size_t row_id);
+                                                              actor_zeta::address_t agent_address,
+                                                              components::types::logical_value_t key,
+                                                              size_t row_id);
         actor_zeta::unique_future<void> index_remove_by_agent(session_id_t session,
-                                                  actor_zeta::address_t agent_address,
-                                                  components::types::logical_value_t key,
-                                                  size_t row_id);
-        actor_zeta::unique_future<index_disk_t::result> index_find_by_agent(
-            session_id_t session,
-            actor_zeta::address_t agent_address,
-            components::types::logical_value_t key,
-            components::expressions::compare_type compare);
+                                                              actor_zeta::address_t agent_address,
+                                                              components::types::logical_value_t key,
+                                                              size_t row_id);
+        actor_zeta::unique_future<index_disk_t::result>
+        index_find_by_agent(session_id_t session,
+                            actor_zeta::address_t agent_address,
+                            components::types::logical_value_t key,
+                            components::expressions::compare_type compare);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<
-            &disk_contract::load,
-            &disk_contract::load_indexes,
-            &disk_contract::append_database,
-            &disk_contract::remove_database,
-            &disk_contract::append_collection,
-            &disk_contract::remove_collection,
-            &disk_contract::write_data_chunk,
-            &disk_contract::remove_documents,
-            &disk_contract::flush,
-            &disk_contract::create_index_agent,
-            &disk_contract::drop_index_agent,
-            &disk_contract::drop_index_agent_success,
-            &disk_contract::index_insert_many,
-            &disk_contract::index_insert,
-            &disk_contract::index_remove,
-            &disk_contract::index_insert_by_agent,
-            &disk_contract::index_remove_by_agent,
-            &disk_contract::index_find_by_agent
-        >;
+        using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::load,
+                                                            &disk_contract::load_indexes,
+                                                            &disk_contract::append_database,
+                                                            &disk_contract::remove_database,
+                                                            &disk_contract::append_collection,
+                                                            &disk_contract::remove_collection,
+                                                            &disk_contract::write_data_chunk,
+                                                            &disk_contract::remove_documents,
+                                                            &disk_contract::flush,
+                                                            &disk_contract::create_index_agent,
+                                                            &disk_contract::drop_index_agent,
+                                                            &disk_contract::drop_index_agent_success,
+                                                            &disk_contract::index_insert_many,
+                                                            &disk_contract::index_insert,
+                                                            &disk_contract::index_remove,
+                                                            &disk_contract::index_insert_by_agent,
+                                                            &disk_contract::index_remove_by_agent,
+                                                            &disk_contract::index_find_by_agent>;
 
         disk_contract() = delete;
     };

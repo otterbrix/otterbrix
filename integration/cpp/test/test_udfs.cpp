@@ -2,6 +2,8 @@
 
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/tests/generaty.hpp>
+#include <core/operations_helper.hpp>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
@@ -43,7 +45,7 @@ static compute_status concat_merge(kernel_context&, kernel_state&& from, kernel_
 }
 
 static compute_status concat_finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(static_cast<concat_kernel_state*>(ctx.state())->value);
+    out.emplace_back(out.get_allocator().resource(), static_cast<concat_kernel_state*>(ctx.state())->value);
     return compute_status::ok();
 }
 
@@ -84,7 +86,7 @@ static compute_status mult_merge(kernel_context&, kernel_state&& from, kernel_st
 }
 
 static compute_status mult_finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(static_cast<mult_kernel_state*>(ctx.state())->value);
+    out.emplace_back(out.get_allocator().resource(), static_cast<mult_kernel_state*>(ctx.state())->value);
     return compute_status::ok();
 }
 
@@ -106,7 +108,7 @@ std::unique_ptr<aggregate_function> make_mult_func() {
 static compute_status is_even_exec(kernel_context&,
                                    const std::pmr::vector<types::logical_value_t>& in,
                                    std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(in[0].value<int64_t>() % 2 == 0);
+    out.emplace_back(out.get_allocator().resource(), in[0].value<int64_t>() % 2 == 0);
     return compute_status::ok();
 }
 
@@ -126,7 +128,7 @@ std::unique_ptr<row_function> make_is_even_func() {
 static compute_status modulo_exec(kernel_context&,
                                   const std::pmr::vector<types::logical_value_t>& in,
                                   std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(in[0].value<int64_t>() % in[1].value<int64_t>());
+    out.emplace_back(out.get_allocator().resource(), in[0].value<int64_t>() % in[1].value<int64_t>());
     return compute_status::ok();
 }
 

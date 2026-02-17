@@ -22,7 +22,10 @@ TEST_CASE("components::physical_plan_generator::match") {
         auto node_match = make_node_match(&resource, get_name(), nullptr);
         services::context_storage_t context(&resource);
         context.emplace(get_name(), d(collection));
-        auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
+        auto plan = create_plan(context,
+                                *compute::function_registry_t::get_default(),
+                                node_match,
+                                components::logical_plan::limit_t::unlimit());
         plan->on_execute(nullptr);
         REQUIRE(plan->output()->size() == 100);
     }
@@ -35,7 +38,10 @@ TEST_CASE("components::physical_plan_generator::match") {
                                                                   core::parameter_id_t(1)));
         services::context_storage_t context(&resource);
         context.emplace(get_name(), d(collection));
-        auto plan = create_plan(context, node_match, components::logical_plan::limit_t::unlimit());
+        auto plan = create_plan(context,
+                                *compute::function_registry_t::get_default(),
+                                node_match,
+                                components::logical_plan::limit_t::unlimit());
         REQUIRE(node_match->to_string() == R"_($match: {"key": {$eq: #1}})_");
     }
 }

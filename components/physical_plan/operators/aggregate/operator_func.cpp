@@ -3,17 +3,19 @@
 #include <components/compute/function.hpp>
 #include <services/collection/collection.hpp>
 
-namespace components::table::operators::aggregate {
+namespace components::operators::aggregate {
 
     operator_func_t::operator_func_t(services::collection::context_collection_t* context,
                                      compute::function* func,
                                      std::pmr::vector<expressions::param_storage> args)
         : operator_aggregate_t(context)
         , args_(std::move(args))
-        , func_(func) {}
+        , func_(func) {
+        assert(func);
+    }
 
     types::logical_value_t operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
-        auto result = types::logical_value_t(nullptr);
+        auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA);
         if (left_ && left_->output()) {
             const auto& chunk = left_->output()->data_chunk();
             using column_it = decltype(vector::data_chunk_t::data)::const_iterator;
@@ -69,4 +71,4 @@ namespace components::table::operators::aggregate {
 
     std::string operator_func_t::key_impl() const { return func_->name(); }
 
-} // namespace components::table::operators::aggregate
+} // namespace components::operators::aggregate

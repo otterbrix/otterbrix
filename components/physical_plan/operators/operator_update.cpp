@@ -78,8 +78,8 @@ namespace components::operators {
         } else if (left_ && left_->output()) {
             if (left_->output()->size() == 0) {
                 if (upsert_) {
-                    output_ = operators::make_operator_data(context_->resource(),
-                                                                  left_->output()->data_chunk().types());
+                    output_ =
+                        operators::make_operator_data(context_->resource(), left_->output()->data_chunk().types());
 
                     table::table_append_state state(context_->resource());
                     context_->table_storage().table().initialize_append(state);

@@ -11,7 +11,7 @@
 namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_delete(const context_storage_t& context,
-                                                                 const components::logical_plan::node_ptr& node) {
+                                                           const components::logical_plan::node_ptr& node) {
         const auto* node_delete = static_cast<const components::logical_plan::node_delete_t*>(node.get());
 
         components::logical_plan::node_ptr node_match = nullptr;
@@ -40,20 +40,18 @@ namespace services::planner::impl {
             auto plan = boost::intrusive_ptr(
                 new components::operators::operator_delete(context.at(node->collection_full_name()), *expr));
             if (node_raw_data) {
-                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.at(node->collection_full_name()),
-                                       nullptr,
-                                       limit)),
-                                   create_plan_data(node_raw_data));
+                plan->set_children(
+                    boost::intrusive_ptr(
+                        new components::operators::full_scan(context.at(node->collection_full_name()), nullptr, limit)),
+                    create_plan_data(node_raw_data));
             } else {
-                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.at(node->collection_full_name()),
-                                       nullptr,
-                                       limit)),
-                                   boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.at(node_delete->collection_from()),
-                                       nullptr,
-                                       limit)));
+                plan->set_children(
+                    boost::intrusive_ptr(
+                        new components::operators::full_scan(context.at(node->collection_full_name()), nullptr, limit)),
+                    boost::intrusive_ptr(
+                        new components::operators::full_scan(context.at(node_delete->collection_from()),
+                                                             nullptr,
+                                                             limit)));
             }
 
             return plan;

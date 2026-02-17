@@ -259,13 +259,12 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         for (size_t number = 0; number < 10; ++number) {
-            REQUIRE(cur->chunk_data().value(0, number).value<std::string_view>() ==
-                    "Name " + std::to_string(number));
+            REQUIRE(cur->chunk_data().value(0, number).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->chunk_data().value(1, number).value<uint64_t>() == 10);
             REQUIRE(cur->chunk_data().value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(core::is_equals(cur->chunk_data().value(3, number).value<double>(),
-                                    static_cast<double>((number % 20 + (number + 10) % 20)) / 2.0));
+            REQUIRE(core::is_equals(cur->chunk_data().value(3, number).value<int64_t>(),
+                                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2));
             REQUIRE(cur->chunk_data().value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
             REQUIRE(cur->chunk_data().value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
@@ -284,13 +283,11 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
         for (size_t row = 0; row < 10; ++row) {
             int number = 9 - static_cast<int>(row);
-            REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
-                    "Name " + std::to_string(number));
+            REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->chunk_data().value(1, row).value<uint64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() ==
-                    5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(core::is_equals(cur->chunk_data().value(3, row).value<double>(),
-                                    static_cast<double>((number % 20 + (number + 10) % 20)) / 2.0));
+            REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(core::is_equals(cur->chunk_data().value(3, row).value<int64_t>(),
+                                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2));
             REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (number + 10) % 20);
         }

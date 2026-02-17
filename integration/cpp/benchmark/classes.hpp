@@ -67,9 +67,7 @@ void init_spaces() {
     create_index<on_wal, on_disk>(collection_name_with_index);
 }
 
-inline void init_collection() {
-    init_collection<false, false>(collection_name);
-}
+inline void init_collection() { init_collection<false, false>(collection_name); }
 
 template<bool on_wal, bool on_disk>
 otterbrix::wrapper_dispatcher_t* wr_dispatcher() {
@@ -96,10 +94,9 @@ std::pair<node_aggregate_ptr, parameter_node_ptr> create_aggregate(std::pmr::mem
     auto params = make_parameter_node(resource);
     if (key.empty()) {
         params->add_parameter(core::parameter_id_t{1}, value);
-        aggregate->append_child(
-            make_node_match(resource,
-                            {database_name, collection_name},
-                            make_compare_expression(resource, compare_type::all_true)));
+        aggregate->append_child(make_node_match(resource,
+                                                {database_name, collection_name},
+                                                make_compare_expression(resource, compare_type::all_true)));
     } else {
         params->add_parameter(core::parameter_id_t{1}, value);
         aggregate->append_child(make_node_match(resource,

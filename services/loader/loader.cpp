@@ -30,31 +30,24 @@ namespace services::loader {
             auto indexes_path = config_.path / "indexes_METADATA";
             if (std::filesystem::exists(indexes_path)) {
                 trace(log_, "loader_t: opening indexes metafile at {}", indexes_path.string());
-                metafile_indexes_ = open_file(fs_,
-                                              indexes_path,
-                                              file_flags::READ,
-                                              file_lock_type::NO_LOCK);
+                metafile_indexes_ = open_file(fs_, indexes_path, file_flags::READ, file_lock_type::NO_LOCK);
             }
         }
 
         auto wal_file_path = wal_config_.path / ".wal";
-        debug(log_, "loader_t: WAL file path: {}, exists: {}",
+        debug(log_,
+              "loader_t: WAL file path: {}, exists: {}",
               wal_file_path.string(),
               std::filesystem::exists(wal_file_path));
         if (!wal_config_.path.empty() && std::filesystem::exists(wal_file_path)) {
             trace(log_, "loader_t: opening WAL at {}", wal_file_path.string());
-            wal_file_ = open_file(fs_,
-                                  wal_file_path,
-                                  file_flags::READ,
-                                  file_lock_type::NO_LOCK);
+            wal_file_ = open_file(fs_, wal_file_path, file_flags::READ, file_lock_type::NO_LOCK);
         }
 
         trace(log_, "loader_t: initialization complete");
     }
 
-    loader_t::~loader_t() {
-        trace(log_, "loader_t: destructor");
-    }
+    loader_t::~loader_t() { trace(log_, "loader_t: destructor"); }
 
     bool loader_t::has_data() const {
         if (!disk_) {
@@ -84,7 +77,9 @@ namespace services::loader {
 
         read_wal_records(state);
 
-        trace(log_, "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records",
+        trace(log_,
+              "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL "
+              "records",
               state.databases.size(),
               state.collections.size(),
               state.index_definitions.size(),
@@ -145,18 +140,22 @@ namespace services::loader {
                 auto index = components::logical_plan::node_t::deserialize(&deserializer);
                 deserializer.pop_array();
 
-                auto index_ptr = boost::polymorphic_pointer_downcast<
-                    components::logical_plan::node_create_index_t>(index);
+                auto index_ptr =
+                    boost::polymorphic_pointer_downcast<components::logical_plan::node_create_index_t>(index);
 
                 auto index_path = config_.path / index_ptr->collection_full_name().database /
                                   index_ptr->collection_full_name().collection / index_ptr->name();
                 if (is_index_valid(index_path)) {
-                    debug(log_, "loader_t: found valid index definition: {} on {}",
-                          index_ptr->name(), index_ptr->collection_full_name().to_string());
+                    debug(log_,
+                          "loader_t: found valid index definition: {} on {}",
+                          index_ptr->name(),
+                          index_ptr->collection_full_name().to_string());
                     state.index_definitions.push_back(std::move(index_ptr));
                 } else {
-                    warn(log_, "loader_t: skipping corrupted index: {} on {}",
-                         index_ptr->name(), index_ptr->collection_full_name().to_string());
+                    warn(log_,
+                         "loader_t: skipping corrupted index: {} on {}",
+                         index_ptr->name(),
+                         index_ptr->collection_full_name().to_string());
                 }
             } else {
                 break;
@@ -199,8 +198,11 @@ namespace services::loader {
             }
 
             if (!record.data) {
-                debug(log_, "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
-                      start_index, record.crc32, record.last_crc32);
+                debug(log_,
+                      "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
+                      start_index,
+                      record.crc32,
+                      record.last_crc32);
                 start_index = next_wal_index(start_index, record.size);
                 continue;
             }
@@ -208,8 +210,10 @@ namespace services::loader {
             total_records++;
 
             if (record.id > state.last_wal_id) {
-                debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
-                      record.id, record.data->to_string());
+                debug(log_,
+                      "loader_t: read WAL record id {} type {} (will replay)",
+                      record.id,
+                      record.data->to_string());
                 state.wal_records.push_back(std::move(record));
             } else {
                 skipped_records++;
@@ -217,8 +221,11 @@ namespace services::loader {
             start_index = next_wal_index(start_index, record.size);
         }
 
-        debug(log_, "loader_t: scanned {} WAL records, skipped {} (already on disk), {} to replay",
-              total_records, skipped_records, state.wal_records.size());
+        debug(log_,
+              "loader_t: scanned {} WAL records, skipped {} (already on disk), {} to replay",
+              total_records,
+              skipped_records,
+              state.wal_records.size());
         trace(log_, "loader_t: read {} WAL records for replay", state.wal_records.size());
     }
 
@@ -228,9 +235,7 @@ namespace services::loader {
             return 0;
         }
         size_tt size = 0;
-        size = (size_tt(uint8_t(buf[0])) << 24) |
-               (size_tt(uint8_t(buf[1])) << 16) |
-               (size_tt(uint8_t(buf[2])) << 8) |
+        size = (size_tt(uint8_t(buf[0])) << 24) | (size_tt(uint8_t(buf[1])) << 16) | (size_tt(uint8_t(buf[2])) << 8) |
                (size_tt(uint8_t(buf[3])));
         return size;
     }
@@ -263,10 +268,8 @@ namespace services::loader {
             auto output = read_wal_data(start, finish);
 
             const char* crc_ptr = output.data() + record.size;
-            record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) |
-                           (crc32_t(uint8_t(crc_ptr[1])) << 16) |
-                           (crc32_t(uint8_t(crc_ptr[2])) << 8) |
-                           (crc32_t(uint8_t(crc_ptr[3])));
+            record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) | (crc32_t(uint8_t(crc_ptr[1])) << 16) |
+                           (crc32_t(uint8_t(crc_ptr[2])) << 8) | (crc32_t(uint8_t(crc_ptr[3])));
 
             auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
             if (record.crc32 == computed_crc) {
@@ -310,7 +313,7 @@ namespace services::loader {
         for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
             if (entry.is_regular_file() && entry.path().filename() != "metadata") {
                 if (std::filesystem::file_size(entry.path()) == 0) {
-                    return false;  // Corrupted segment file
+                    return false; // Corrupted segment file
                 }
             }
         }

@@ -3,11 +3,11 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/tests/generaty.hpp>
 
+#include <atomic>
 #include <catch2/catch.hpp>
+#include <fstream>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <fstream>
 
 using components::expressions::compare_type;
 using components::expressions::side_t;
@@ -17,7 +17,6 @@ using namespace components::types;
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
-
 
 #define INIT_COLLECTION()                                                                                              \
     do {                                                                                                               \
@@ -135,11 +134,12 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, count, count_str, count_double, count_bool) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (count, _id, count_str, count_double, count_bool, "
+                     "count_array) VALUES ";
             for (int num = 1; num <= kDocuments; ++num) {
-                query << "('" << gen_id(num, dispatcher->resource()) << "', "
-                      << num << ", '" << num << "', " << (num + 0.1) << ", " << ((num % 2 != 0) ? "true" : "false") << ")"
-                      << (num == kDocuments ? ";" : ", ");
+                query << "(" << num << ", '" << gen_id(num, dispatcher->resource()) << "', '" << num << "', "
+                      << (num + 0.1) << ", " << ((num % 2 != 0) ? "true" : "false") << ", ARRAY[0, 0, 0, 0, 0]"
+                      << ")" << (num == kDocuments ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -147,8 +147,8 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
             REQUIRE(cur->is_success());
         }
     }
@@ -169,7 +169,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_queries") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/concurrent_queries");
     test_clear_directory(config);
 
-    constexpr int kDocuments = 100;  // Reduced to avoid load issues
+    constexpr int kDocuments = 100; // Reduced to avoid load issues
     constexpr int kThreads = 5;
     constexpr int kQueriesPerThread = 5;
 
@@ -196,17 +196,16 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_queries") {
                     try {
                         int search_value = (t * kQueriesPerThread + q) % kDocuments + 1;
                         auto session = otterbrix::session_id_t();
-                        auto plan = components::logical_plan::make_node_aggregate(
-                            dispatcher->resource(), {database_name, collection_name});
+                        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
+                                                                                  {database_name, collection_name});
                         auto expr = components::expressions::make_compare_expression(
                             dispatcher->resource(),
                             compare_type::eq,
                             key{dispatcher->resource(), "count", side_t::left},
                             id_par{1});
-                        plan->append_child(components::logical_plan::make_node_match(
-                            dispatcher->resource(),
-                            {database_name, collection_name},
-                            std::move(expr)));
+                        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
+                                                                                     {database_name, collection_name},
+                                                                                     std::move(expr)));
                         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
                         params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), search_value));
                         auto c = dispatcher->find(session, plan, params);
@@ -260,17 +259,16 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto plan = components::logical_plan::make_node_aggregate(
-                dispatcher->resource(), {database_name, collection_name});
-            auto expr = components::expressions::make_compare_expression(
-                dispatcher->resource(),
-                compare_type::eq,
-                key{dispatcher->resource(), "count_str", side_t::left},
-                id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(
-                dispatcher->resource(),
-                {database_name, collection_name},
-                std::move(expr)));
+            auto plan =
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
+            auto expr =
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
+                                                                 id_par{1});
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
+                                                                         {database_name, collection_name},
+                                                                         std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), "50"));
             auto c = dispatcher->find(session, plan, params);
@@ -279,17 +277,16 @@ TEST_CASE("integration::cpp::test_disk_index::multiple_indexes") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto plan = components::logical_plan::make_node_aggregate(
-                dispatcher->resource(), {database_name, collection_name});
+            auto plan =
+                components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
             auto expr = components::expressions::make_compare_expression(
                 dispatcher->resource(),
                 compare_type::eq,
                 key{dispatcher->resource(), "count_double", side_t::left},
                 id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(
-                dispatcher->resource(),
-                {database_name, collection_name},
-                std::move(expr)));
+            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
+                                                                         {database_name, collection_name},
+                                                                         std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50.1));
             auto c = dispatcher->find(session, plan, params);
@@ -360,7 +357,7 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_disk_index/concurrent_large_dataset");
     test_clear_directory(config);
 
-    constexpr int kDocuments = 10;  // Large dataset that previously caused issues
+    constexpr int kDocuments = 10; // Large dataset that previously caused issues
     constexpr int kThreads = 50;
     constexpr int kQueriesPerThread = 10;
 
@@ -387,17 +384,16 @@ TEST_CASE("integration::cpp::test_disk_index::concurrent_large_dataset") {
                     try {
                         int search_value = (t * kQueriesPerThread + q) % kDocuments + 1;
                         auto session = otterbrix::session_id_t();
-                        auto plan = components::logical_plan::make_node_aggregate(
-                            dispatcher->resource(), {database_name, collection_name});
+                        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
+                                                                                  {database_name, collection_name});
                         auto expr = components::expressions::make_compare_expression(
                             dispatcher->resource(),
                             compare_type::eq,
                             key{dispatcher->resource(), "count", side_t::left},
                             id_par{1});
-                        plan->append_child(components::logical_plan::make_node_match(
-                            dispatcher->resource(),
-                            {database_name, collection_name},
-                            std::move(expr)));
+                        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
+                                                                                     {database_name, collection_name},
+                                                                                     std::move(expr)));
                         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
                         params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), search_value));
                         auto c = dispatcher->find(session, plan, params);
@@ -453,17 +449,15 @@ TEST_CASE("integration::cpp::test_disk_index::io_error_handling") {
         auto* dispatcher = space.dispatcher();
 
         auto session = otterbrix::session_id_t();
-        auto plan = components::logical_plan::make_node_aggregate(
-            dispatcher->resource(), {database_name, collection_name});
-        auto expr = components::expressions::make_compare_expression(
-            dispatcher->resource(),
-            compare_type::eq,
-            key{dispatcher->resource(), "count", side_t::left},
-            id_par{1});
-        plan->append_child(components::logical_plan::make_node_match(
-            dispatcher->resource(),
-            {database_name, collection_name},
-            std::move(expr)));
+        auto plan =
+            components::logical_plan::make_node_aggregate(dispatcher->resource(), {database_name, collection_name});
+        auto expr = components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                     compare_type::eq,
+                                                                     key{dispatcher->resource(), "count", side_t::left},
+                                                                     id_par{1});
+        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
+                                                                     {database_name, collection_name},
+                                                                     std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
         params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
 

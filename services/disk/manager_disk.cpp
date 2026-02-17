@@ -2,9 +2,9 @@
 #include "result.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <chrono>
-#include <thread>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
+#include <thread>
 
 #include <core/executor.hpp>
 #include <services/collection/collection.hpp>
@@ -236,7 +236,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::load_indexes(session_id_t session,
-                                                                      actor_zeta::address_t dispatcher_address) {
+                                                                     actor_zeta::address_t dispatcher_address) {
         trace(log_, "manager_disk_t::load_indexes , session : {}", session.data());
         load_session_ = session;
         co_await load_indexes_impl(session, dispatcher_address);
@@ -244,7 +244,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::append_database(session_id_t session,
-                                                                         database_name_t database) {
+                                                                        database_name_t database) {
         trace(log_, "manager_disk_t::append_database , session : {} , database : {}", session.data(), database);
         command_append_database_t command{database};
         append_command(commands_, session, command_t(command));
@@ -252,16 +252,15 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::remove_database(session_id_t session,
-                                                                         database_name_t database) {
+                                                                        database_name_t database) {
         trace(log_, "manager_disk_t::remove_database , session : {} , database : {}", session.data(), database);
         command_remove_database_t command{database};
         append_command(commands_, session, command_t(command));
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::append_collection(session_id_t session,
-                                                                           database_name_t database,
-                                                                           collection_name_t collection) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::append_collection(session_id_t session, database_name_t database, collection_name_t collection) {
         trace(log_,
               "manager_disk_t::append_collection , session : {} , database : {} , collection : {}",
               session.data(),
@@ -272,9 +271,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::remove_collection(session_id_t session,
-                                                                           database_name_t database,
-                                                                           collection_name_t collection) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::remove_collection(session_id_t session, database_name_t database, collection_name_t collection) {
         trace(log_,
               "manager_disk_t::remove_collection , session : {} , database : {} , collection : {}",
               session.data(),
@@ -286,9 +284,9 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::remove_documents(session_id_t session,
-                                                                          database_name_t database,
-                                                                          collection_name_t collection,
-                                                                          document_ids_t documents) {
+                                                                         database_name_t database,
+                                                                         collection_name_t collection,
+                                                                         document_ids_t documents) {
         trace(log_,
               "manager_disk_t::remove_documents , session : {} , database : {} , collection : {}",
               session.data(),
@@ -299,10 +297,11 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::write_data_chunk(session_id_t session,
-                                                                          database_name_t database,
-                                                                          collection_name_t collection,
-                                                                          std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::write_data_chunk(session_id_t session,
+                                     database_name_t database,
+                                     collection_name_t collection,
+                                     std::unique_ptr<components::vector::data_chunk_t> data) {
         trace(log_,
               "manager_disk_t::write_data_chunk , session : {} , database : {} , collection : {} , rows : {}",
               session.data(),
@@ -327,7 +326,8 @@ namespace services::disk {
                         }
                     }
                     if (indexes.empty()) {
-                        auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection, command);
+                        auto [needs_sched, future] =
+                            actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection, command);
                         if (needs_sched) {
                             scheduler_->enqueue(agents_[0].get());
                         }
@@ -335,7 +335,8 @@ namespace services::disk {
                     } else {
                         removed_indexes_.emplace(session, removed_index_t{indexes.size(), command});
                         for (auto* index : indexes) {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(index->address(), &index_agent_disk_t::drop, session);
+                            auto [needs_sched, future] =
+                                actor_zeta::otterbrix::send(index->address(), &index_agent_disk_t::drop, session);
                             if (needs_sched) {
                                 scheduler_disk_->enqueue(index);
                             }
@@ -345,7 +346,8 @@ namespace services::disk {
                 } else {
                     switch (command.name()) {
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>: {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_database, command);
+                            auto [needs_sched, future] =
+                                actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_database, command);
                             if (needs_sched) {
                                 scheduler_->enqueue(agents_[0].get());
                             }
@@ -353,7 +355,8 @@ namespace services::disk {
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_database>: {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_database, command);
+                            auto [needs_sched, future] =
+                                actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_database, command);
                             if (needs_sched) {
                                 scheduler_->enqueue(agents_[0].get());
                             }
@@ -361,7 +364,8 @@ namespace services::disk {
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>: {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_collection, command);
+                            auto [needs_sched, future] =
+                                actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_collection, command);
                             if (needs_sched) {
                                 scheduler_->enqueue(agents_[0].get());
                             }
@@ -369,7 +373,8 @@ namespace services::disk {
                             break;
                         }
                         case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>: {
-                            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_documents, command);
+                            auto [needs_sched, future] =
+                                actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_documents, command);
                             if (needs_sched) {
                                 scheduler_->enqueue(agents_[0].get());
                             }
@@ -387,10 +392,10 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<actor_zeta::address_t> manager_disk_t::create_index_agent(
-        session_id_t session,
-        components::logical_plan::node_create_index_ptr index,
-        services::collection::context_collection_t* collection) {
+    manager_disk_t::unique_future<actor_zeta::address_t>
+    manager_disk_t::create_index_agent(session_id_t session,
+                                       components::logical_plan::node_create_index_ptr index,
+                                       services::collection::context_collection_t* collection) {
         auto name = index->name();
         trace(log_, "manager_disk: create_index_agent : {}", name);
         if (index_agents_.contains(name) && !index_agents_.at(name)->is_dropped()) {
@@ -399,7 +404,8 @@ namespace services::disk {
         } else {
             trace(log_, "manager_disk: create_index_agent : {}", name);
             index_agents_.erase(name);
-            auto index_agent = actor_zeta::spawn<index_agent_disk_t>(resource(), this, config_.path, collection, name, log_);
+            auto index_agent =
+                actor_zeta::spawn<index_agent_disk_t>(resource(), this, config_.path, collection, name, log_);
             auto agent_address = index_agent->address();
             index_agents_.insert_or_assign(name, std::move(index_agent));
             if (session.data() != load_session_.data()) {
@@ -410,17 +416,17 @@ namespace services::disk {
         }
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::drop_index_agent(
-        session_id_t session,
-        index_name_t index_name,
-        services::collection::context_collection_t* /*collection*/) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::drop_index_agent(session_id_t session,
+                                     index_name_t index_name,
+                                     services::collection::context_collection_t* /*collection*/) {
         if (index_agents_.contains(index_name)) {
             trace(log_, "manager_disk: drop_index_agent : {}", index_name);
             command_drop_index_t command{index_name, actor_zeta::address_t::empty_address()};
             append_command(commands_, session, command_t(command));
             auto* index_agent = index_agents_.at(index_name).get();
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::drop, session);
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(index_agent->address(), &index_agent_disk_t::drop, session);
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -444,8 +450,9 @@ namespace services::disk {
             if (it_all_drop != removed_indexes_.end()) {
                 if (--it_all_drop->second.size == 0) {
                     const auto& drop_collection = it_all_drop->second.command.get<command_remove_collection_t>();
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection,
-                                                it_all_drop->second.command);
+                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(),
+                                                                             &agent_disk_t::remove_collection,
+                                                                             it_all_drop->second.command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -456,15 +463,17 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::index_insert_many(
-        session_id_t session,
-        index_name_t index_name,
-        std::vector<std::pair<components::types::logical_value_t, size_t>> values) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::index_insert_many(session_id_t session,
+                                      index_name_t index_name,
+                                      std::vector<std::pair<components::types::logical_value_t, size_t>> values) {
         trace(log_, "manager_disk: index_insert_many : {} , {} values", index_name, values.size());
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::insert_many, session, std::move(values));
+                                                                     &index_agent_disk_t::insert_many,
+                                                                     session,
+                                                                     std::move(values));
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -474,16 +483,18 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::index_insert(
-        session_id_t session,
-        index_name_t index_name,
-        components::types::logical_value_t key,
-        size_t row_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::index_insert(session_id_t session,
+                                                                     index_name_t index_name,
+                                                                     components::types::logical_value_t key,
+                                                                     size_t row_id) {
         trace(log_, "manager_disk: index_insert : {}", index_name);
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::insert, session, std::move(key), row_id);
+                                                                     &index_agent_disk_t::insert,
+                                                                     session,
+                                                                     std::move(key),
+                                                                     row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -493,16 +504,18 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::index_remove(
-        session_id_t session,
-        index_name_t index_name,
-        components::types::logical_value_t key,
-        size_t row_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::index_remove(session_id_t session,
+                                                                     index_name_t index_name,
+                                                                     components::types::logical_value_t key,
+                                                                     size_t row_id) {
         trace(log_, "manager_disk: index_remove : {}", index_name);
         if (index_agents_.contains(index_name)) {
             auto* index_agent = index_agents_.at(index_name).get();
             auto [needs_sched, future] = actor_zeta::otterbrix::send(index_agent->address(),
-                                        &index_agent_disk_t::remove, session, std::move(key), row_id);
+                                                                     &index_agent_disk_t::remove,
+                                                                     session,
+                                                                     std::move(key),
+                                                                     row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(index_agent);
             }
@@ -512,11 +525,10 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::index_insert_by_agent(
-        session_id_t session,
-        actor_zeta::address_t agent_address,
-        components::types::logical_value_t key,
-        size_t row_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::index_insert_by_agent(session_id_t session,
+                                                                              actor_zeta::address_t agent_address,
+                                                                              components::types::logical_value_t key,
+                                                                              size_t row_id) {
         trace(log_, "manager_disk: index_insert_by_agent");
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
@@ -527,7 +539,10 @@ namespace services::disk {
         }
         if (found_agent) {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
-                                        &index_agent_disk_t::insert, session, std::move(key), row_id);
+                                                                     &index_agent_disk_t::insert,
+                                                                     session,
+                                                                     std::move(key),
+                                                                     row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
@@ -538,11 +553,10 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::index_remove_by_agent(
-        session_id_t session,
-        actor_zeta::address_t agent_address,
-        components::types::logical_value_t key,
-        size_t row_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::index_remove_by_agent(session_id_t session,
+                                                                              actor_zeta::address_t agent_address,
+                                                                              components::types::logical_value_t key,
+                                                                              size_t row_id) {
         trace(log_, "manager_disk: index_remove_by_agent");
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
@@ -553,7 +567,10 @@ namespace services::disk {
         }
         if (found_agent) {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
-                                        &index_agent_disk_t::remove, session, std::move(key), row_id);
+                                                                     &index_agent_disk_t::remove,
+                                                                     session,
+                                                                     std::move(key),
+                                                                     row_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
@@ -564,11 +581,11 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<index_disk_t::result> manager_disk_t::index_find_by_agent(
-        session_id_t session,
-        actor_zeta::address_t agent_address,
-        components::types::logical_value_t key,
-        components::expressions::compare_type compare) {
+    manager_disk_t::unique_future<index_disk_t::result>
+    manager_disk_t::index_find_by_agent(session_id_t session,
+                                        actor_zeta::address_t agent_address,
+                                        components::types::logical_value_t key,
+                                        components::expressions::compare_type compare) {
         trace(log_, "manager_disk: index_find_by_agent");
         index_agent_disk_t* found_agent = nullptr;
         for (auto& [name, ptr] : index_agents_) {
@@ -579,7 +596,10 @@ namespace services::disk {
         }
         if (found_agent) {
             auto [needs_sched, future] = actor_zeta::otterbrix::send(found_agent->address(),
-                                        &index_agent_disk_t::find, session, std::move(key), compare);
+                                                                     &index_agent_disk_t::find,
+                                                                     session,
+                                                                     std::move(key),
+                                                                     compare);
             if (needs_sched) {
                 scheduler_disk_->enqueue(found_agent);
             }
@@ -605,25 +625,24 @@ namespace services::disk {
         }
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::load_indexes_impl(
-        session_id_t /*session*/, actor_zeta::address_t dispatcher_address) {
+    manager_disk_t::unique_future<void> manager_disk_t::load_indexes_impl(session_id_t /*session*/,
+                                                                          actor_zeta::address_t dispatcher_address) {
         auto indexes = make_unique(read_indexes_impl());
         metafile_indexes_->seek(metafile_indexes_->file_size());
 
         for (auto& index : indexes) {
             trace(log_, "manager_disk: load_indexes_impl : {}", index->name());
 
-            auto [_cr, cursor_future] = actor_zeta::send(
-                dispatcher_address,
-                &dispatcher::manager_dispatcher_t::execute_plan,
-                session_id_t::generate_uid(),
-                boost::static_pointer_cast<components::logical_plan::node_t>(index),
-                components::logical_plan::make_parameter_node(resource()));
+            auto [_cr, cursor_future] =
+                actor_zeta::send(dispatcher_address,
+                                 &dispatcher::manager_dispatcher_t::execute_plan,
+                                 session_id_t::generate_uid(),
+                                 boost::static_pointer_cast<components::logical_plan::node_t>(index),
+                                 components::logical_plan::make_parameter_node(resource()));
             auto cursor = co_await std::move(cursor_future);
 
             if (cursor && cursor->is_error()) {
-                error(log_, "manager_disk: failed to create index {}: {}",
-                      index->name(), cursor->get_error().what);
+                error(log_, "manager_disk: failed to create index {}: {}", index->name(), cursor->get_error().what);
             }
         }
 
@@ -712,21 +731,19 @@ namespace services::disk {
 
     auto manager_disk_empty_t::make_type() const noexcept -> const char* { return "manager_disk"; }
 
-    void manager_disk_empty_t::sync(address_pack /*pack*/) {
-    }
+    void manager_disk_empty_t::sync(address_pack /*pack*/) {}
 
-    void manager_disk_empty_t::create_agent(int) {
-    }
+    void manager_disk_empty_t::create_agent(int) {}
 
     actor_zeta::behavior_t manager_disk_empty_t::behavior(actor_zeta::mailbox::message* msg) {
-        pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(),
-                           [](const auto& f) { return !f.valid() || f.available(); }),
-            pending_void_.end());
-        pending_load_.erase(
-            std::remove_if(pending_load_.begin(), pending_load_.end(),
-                           [](const auto& f) { return !f.valid() || f.available(); }),
-            pending_load_.end());
+        pending_void_.erase(std::remove_if(pending_void_.begin(),
+                                           pending_void_.end(),
+                                           [](const auto& f) { return !f.valid() || f.available(); }),
+                            pending_void_.end());
+        pending_load_.erase(std::remove_if(pending_load_.begin(),
+                                           pending_load_.end(),
+                                           [](const auto& f) { return !f.valid() || f.available(); }),
+                            pending_load_.end());
 
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::load>: {
@@ -810,64 +827,70 @@ namespace services::disk {
         co_return result_load_t::empty();
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::load_indexes(
-        session_id_t /*session*/, actor_zeta::address_t /*dispatcher_address*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::load_indexes(session_id_t /*session*/, actor_zeta::address_t /*dispatcher_address*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_database(
-        session_id_t /*session*/, database_name_t /*database*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_database(session_id_t /*session*/,
+                                                                                    database_name_t /*database*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_database(
-        session_id_t /*session*/, database_name_t /*database*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_database(session_id_t /*session*/,
+                                                                                    database_name_t /*database*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_collection(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::append_collection(session_id_t /*session*/,
+                                            database_name_t /*database*/,
+                                            collection_name_t /*collection*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_collection(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::remove_collection(session_id_t /*session*/,
+                                            database_name_t /*database*/,
+                                            collection_name_t /*collection*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::write_data_chunk(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/,
-        std::unique_ptr<components::vector::data_chunk_t> /*data*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::write_data_chunk(session_id_t /*session*/,
+                                           database_name_t /*database*/,
+                                           collection_name_t /*collection*/,
+                                           std::unique_ptr<components::vector::data_chunk_t> /*data*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_documents(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/,
-        document_ids_t /*documents*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_documents(session_id_t /*session*/,
+                                                                                     database_name_t /*database*/,
+                                                                                     collection_name_t /*collection*/,
+                                                                                     document_ids_t /*documents*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::flush(
-        session_id_t /*session*/, wal::id_t /*wal_id*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::flush(session_id_t /*session*/,
+                                                                          wal::id_t /*wal_id*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<actor_zeta::address_t> manager_disk_empty_t::create_index_agent(
-        session_id_t /*session*/,
-        components::logical_plan::node_create_index_ptr /*index*/,
-        services::collection::context_collection_t* /*collection*/) {
+    manager_disk_empty_t::unique_future<actor_zeta::address_t>
+    manager_disk_empty_t::create_index_agent(session_id_t /*session*/,
+                                             components::logical_plan::node_create_index_ptr /*index*/,
+                                             services::collection::context_collection_t* /*collection*/) {
         co_return actor_zeta::address_t::empty_address();
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::drop_index_agent(
-        session_id_t /*session*/,
-        index_name_t /*index_name*/,
-        services::collection::context_collection_t* /*collection*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::drop_index_agent(session_id_t /*session*/,
+                                           index_name_t /*index_name*/,
+                                           services::collection::context_collection_t* /*collection*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::drop_index_agent_success(
-        session_id_t /*session*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::drop_index_agent_success(session_id_t /*session*/) {
         co_return;
     }
 
@@ -878,43 +901,43 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert(
-        session_id_t /*session*/,
-        index_name_t /*index_name*/,
-        components::types::logical_value_t /*key*/,
-        size_t /*row_id*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::index_insert(session_id_t /*session*/,
+                                       index_name_t /*index_name*/,
+                                       components::types::logical_value_t /*key*/,
+                                       size_t /*row_id*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_remove(
-        session_id_t /*session*/,
-        index_name_t /*index_name*/,
-        components::types::logical_value_t /*key*/,
-        size_t /*row_id*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::index_remove(session_id_t /*session*/,
+                                       index_name_t /*index_name*/,
+                                       components::types::logical_value_t /*key*/,
+                                       size_t /*row_id*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_insert_by_agent(
-        session_id_t /*session*/,
-        actor_zeta::address_t /*agent_address*/,
-        components::types::logical_value_t /*key*/,
-        size_t /*row_id*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::index_insert_by_agent(session_id_t /*session*/,
+                                                actor_zeta::address_t /*agent_address*/,
+                                                components::types::logical_value_t /*key*/,
+                                                size_t /*row_id*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::index_remove_by_agent(
-        session_id_t /*session*/,
-        actor_zeta::address_t /*agent_address*/,
-        components::types::logical_value_t /*key*/,
-        size_t /*row_id*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::index_remove_by_agent(session_id_t /*session*/,
+                                                actor_zeta::address_t /*agent_address*/,
+                                                components::types::logical_value_t /*key*/,
+                                                size_t /*row_id*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<index_disk_t::result> manager_disk_empty_t::index_find_by_agent(
-        session_id_t /*session*/,
-        actor_zeta::address_t /*agent_address*/,
-        components::types::logical_value_t /*key*/,
-        components::expressions::compare_type /*compare*/) {
+    manager_disk_empty_t::unique_future<index_disk_t::result>
+    manager_disk_empty_t::index_find_by_agent(session_id_t /*session*/,
+                                              actor_zeta::address_t /*agent_address*/,
+                                              components::types::logical_value_t /*key*/,
+                                              components::expressions::compare_type /*compare*/) {
         co_return index_disk_t::result{resource()};
     }
 

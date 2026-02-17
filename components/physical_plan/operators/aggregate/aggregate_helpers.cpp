@@ -93,7 +93,8 @@ namespace components::operators::aggregate::impl {
                 // stored as int64_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
                 auto int_sum = op.template operator()<int64_t>(v, count);
-                int_sum = types::logical_value_t::create_decimal(v.resource(),
+                int_sum = types::logical_value_t::create_decimal(
+                    v.resource(),
                     int_sum.template value<int64_t>(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->width(),
                     static_cast<types::decimal_logical_type_extension*>(v.type().extension())->scale());

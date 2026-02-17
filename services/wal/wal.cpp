@@ -30,7 +30,10 @@ namespace services::wal {
 
     std::size_t next_index(std::size_t index, size_tt size) { return index + size + sizeof(size_tt) + sizeof(crc32_t); }
 
-    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* /*manager*/, log_t& log, configuration::config_wal config)
+    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource,
+                                     manager_wal_replicate_t* /*manager*/,
+                                     log_t& log,
+                                     configuration::config_wal config)
         : actor_zeta::basic_actor<wal_replicate_t>(resource)
         , log_(log.clone())
         , config_(std::move(config))
@@ -124,7 +127,6 @@ namespace services::wal {
 
     auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
-
     void wal_replicate_t::write_buffer(buffer_t& buffer) { file_->write(buffer.data(), buffer.size()); }
 
     void wal_replicate_t::read_buffer(buffer_t& buffer, size_t start_index, size_t size) const {
@@ -133,7 +135,7 @@ namespace services::wal {
     }
 
     wal_replicate_t::~wal_replicate_t() { trace(log_, "delete wal_replicate_t"); }
-    
+
     static size_tt read_size_impl(const char* input, size_tt index_start) {
         size_tt size_tmp = 0;
         size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
@@ -158,10 +160,8 @@ namespace services::wal {
         return buffer;
     }
 
-    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_t::load(
-        session_id_t session,
-        services::wal::id_t wal_id
-    ) {
+    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_t::load(session_id_t session,
+                                                                                services::wal::id_t wal_id) {
         trace(log_, "wal_replicate_t::load, session: {}, id: {}", session.data(), wal_id);
         std::size_t start_index = 0;
         next_id(wal_id);
@@ -177,11 +177,8 @@ namespace services::wal {
         co_return records;
     }
 
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_database(
-        session_id_t session,
-        components::logical_plan::node_create_database_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::create_database(session_id_t session, components::logical_plan::node_create_database_ptr data) {
         trace(log_,
               "wal_replicate_t::create_database {}, session: {}",
               data->collection_full_name().database,
@@ -190,10 +187,8 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_database(
-        session_id_t session,
-        components::logical_plan::node_drop_database_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data) {
         trace(log_,
               "wal_replicate_t::drop_database {}, session: {}",
               data->collection_full_name().database,
@@ -202,10 +197,9 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_collection(
-        session_id_t session,
-        components::logical_plan::node_create_collection_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::create_collection(session_id_t session,
+                                       components::logical_plan::node_create_collection_ptr data) {
         trace(log_,
               "wal_replicate_t::create_collection {}::{}, session: {}",
               data->collection_full_name().database,
@@ -215,10 +209,8 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_collection(
-        session_id_t session,
-        components::logical_plan::node_drop_collection_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data) {
         trace(log_,
               "wal_replicate_t::drop_collection {}::{}, session: {}",
               data->collection_full_name().database,
@@ -228,10 +220,8 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_one(
-        session_id_t session,
-        components::logical_plan::node_insert_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::insert_one(session_id_t session, components::logical_plan::node_insert_ptr data) {
         trace(log_,
               "wal_replicate_t::insert_one {}::{}, session: {}",
               data->collection_full_name().database,
@@ -241,10 +231,8 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_many(
-        session_id_t session,
-        components::logical_plan::node_insert_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::insert_many(session_id_t session, components::logical_plan::node_insert_ptr data) {
         trace(log_,
               "wal_replicate_t::insert_many {}::{}, session: {}",
               data->collection_full_name().database,
@@ -254,11 +242,10 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_one(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::delete_one(session_id_t session,
+                                components::logical_plan::node_delete_ptr data,
+                                components::logical_plan::parameter_node_ptr params) {
         trace(log_,
               "wal_replicate_t::delete_one {}::{}, session: {}",
               data->collection_full_name().database,
@@ -268,11 +255,10 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_many(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::delete_many(session_id_t session,
+                                 components::logical_plan::node_delete_ptr data,
+                                 components::logical_plan::parameter_node_ptr params) {
         trace(log_,
               "wal_replicate_t::delete_many {}::{}, session: {}",
               data->collection_full_name().database,
@@ -282,11 +268,10 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_one(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::update_one(session_id_t session,
+                                components::logical_plan::node_update_ptr data,
+                                components::logical_plan::parameter_node_ptr params) {
         trace(log_,
               "wal_replicate_t::update_one {}::{}, session: {}",
               data->collection_full_name().database,
@@ -296,11 +281,10 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_many(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::update_many(session_id_t session,
+                                 components::logical_plan::node_update_ptr data,
+                                 components::logical_plan::parameter_node_ptr params) {
         trace(log_,
               "wal_replicate_t::update_many {}::{}, session: {}",
               data->collection_full_name().database,
@@ -310,10 +294,8 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_index(
-        session_id_t session,
-        components::logical_plan::node_create_index_ptr data
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::create_index(session_id_t session, components::logical_plan::node_create_index_ptr data) {
         trace(log_,
               "wal_replicate_t::create_index {}::{}, session: {}",
               data->collection_full_name().database,
@@ -424,10 +406,8 @@ namespace services::wal {
                                                                configuration::config_wal config)
         : wal_replicate_t(resource, manager, log, std::move(config)) {}
 
-    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(
-        session_id_t /*session*/,
-        services::wal::id_t
-    ) {
+    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(session_id_t /*session*/,
+                                                                                             services::wal::id_t) {
         co_return std::vector<record_t>{};
     }
 

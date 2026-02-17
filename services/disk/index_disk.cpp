@@ -125,7 +125,7 @@ namespace services::disk {
             &res,
             [](void* data, size_t size) -> size_t {
                 return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                        .value<components::types::physical_type::UINT64>();
+                    .value<components::types::physical_type::UINT64>();
             },
             [&max_index](const auto& index, const auto&) { return index != max_index; });
     }
@@ -145,7 +145,7 @@ namespace services::disk {
             &res,
             [](void* data, size_t size) -> size_t {
                 return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                        .value<components::types::physical_type::UINT64>();
+                    .value<components::types::physical_type::UINT64>();
             },
             [&min_index](const auto& index, const auto&) { return index != min_index; });
     }

@@ -2,11 +2,11 @@
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/implements.hpp>
-#include <actor-zeta/actor/dispatch.hpp>
-#include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/behavior_t.hpp>
+#include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 #include <actor-zeta/scheduler/sharing_scheduler.hpp>
 
@@ -51,46 +51,51 @@ namespace services::wal {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        [[nodiscard]]
-        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+        [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(address_pack pack);
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
-        unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
-        unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
-        unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> create_database(session_id_t session,
+                                                           components::logical_plan::node_create_database_ptr data);
+        unique_future<services::wal::id_t> drop_database(session_id_t session,
+                                                         components::logical_plan::node_drop_database_ptr data);
+        unique_future<services::wal::id_t> create_collection(session_id_t session,
+                                                             components::logical_plan::node_create_collection_ptr data);
+        unique_future<services::wal::id_t> drop_collection(session_id_t session,
+                                                           components::logical_plan::node_drop_collection_ptr data);
+        unique_future<services::wal::id_t> insert_one(session_id_t session,
+                                                      components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> insert_many(session_id_t session,
+                                                       components::logical_plan::node_insert_ptr data);
         unique_future<services::wal::id_t> delete_one(session_id_t session,
-                                       components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                                      components::logical_plan::node_delete_ptr data,
+                                                      components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> delete_many(session_id_t session,
-                                        components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                                       components::logical_plan::node_delete_ptr data,
+                                                       components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> update_one(session_id_t session,
-                                       components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                                      components::logical_plan::node_update_ptr data,
+                                                      components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> update_many(session_id_t session,
-                                        components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
-        unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+                                                       components::logical_plan::node_update_ptr data,
+                                                       components::logical_plan::parameter_node_ptr params);
+        unique_future<services::wal::id_t> create_index(session_id_t session,
+                                                        components::logical_plan::node_create_index_ptr data);
 
-        using dispatch_traits = actor_zeta::implements<
-            wal_contract,
-            &manager_wal_replicate_t::load,
-            &manager_wal_replicate_t::create_database,
-            &manager_wal_replicate_t::drop_database,
-            &manager_wal_replicate_t::create_collection,
-            &manager_wal_replicate_t::drop_collection,
-            &manager_wal_replicate_t::insert_one,
-            &manager_wal_replicate_t::insert_many,
-            &manager_wal_replicate_t::delete_one,
-            &manager_wal_replicate_t::delete_many,
-            &manager_wal_replicate_t::update_one,
-            &manager_wal_replicate_t::update_many,
-            &manager_wal_replicate_t::create_index
-        >;
+        using dispatch_traits = actor_zeta::implements<wal_contract,
+                                                       &manager_wal_replicate_t::load,
+                                                       &manager_wal_replicate_t::create_database,
+                                                       &manager_wal_replicate_t::drop_database,
+                                                       &manager_wal_replicate_t::create_collection,
+                                                       &manager_wal_replicate_t::drop_collection,
+                                                       &manager_wal_replicate_t::insert_one,
+                                                       &manager_wal_replicate_t::insert_many,
+                                                       &manager_wal_replicate_t::delete_one,
+                                                       &manager_wal_replicate_t::delete_many,
+                                                       &manager_wal_replicate_t::update_one,
+                                                       &manager_wal_replicate_t::update_many,
+                                                       &manager_wal_replicate_t::create_index>;
 
     private:
         void create_wal_worker(int count_worker);
@@ -114,8 +119,7 @@ namespace services::wal {
         actor_zeta::behavior_t current_behavior_;
     };
 
-    class manager_wal_replicate_empty_t final
-        : public actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t> {
+    class manager_wal_replicate_empty_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t> {
         using session_id_t = components::session::session_id_t;
 
     public:
@@ -133,41 +137,46 @@ namespace services::wal {
         void sync(address_pack pack);
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
-        unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
-        unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
-        unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> create_database(session_id_t session,
+                                                           components::logical_plan::node_create_database_ptr data);
+        unique_future<services::wal::id_t> drop_database(session_id_t session,
+                                                         components::logical_plan::node_drop_database_ptr data);
+        unique_future<services::wal::id_t> create_collection(session_id_t session,
+                                                             components::logical_plan::node_create_collection_ptr data);
+        unique_future<services::wal::id_t> drop_collection(session_id_t session,
+                                                           components::logical_plan::node_drop_collection_ptr data);
+        unique_future<services::wal::id_t> insert_one(session_id_t session,
+                                                      components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> insert_many(session_id_t session,
+                                                       components::logical_plan::node_insert_ptr data);
         unique_future<services::wal::id_t> delete_one(session_id_t session,
-                                       components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                                      components::logical_plan::node_delete_ptr data,
+                                                      components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> delete_many(session_id_t session,
-                                        components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                                       components::logical_plan::node_delete_ptr data,
+                                                       components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> update_one(session_id_t session,
-                                       components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                                      components::logical_plan::node_update_ptr data,
+                                                      components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> update_many(session_id_t session,
-                                        components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
-        unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+                                                       components::logical_plan::node_update_ptr data,
+                                                       components::logical_plan::parameter_node_ptr params);
+        unique_future<services::wal::id_t> create_index(session_id_t session,
+                                                        components::logical_plan::node_create_index_ptr data);
 
-        using dispatch_traits = actor_zeta::implements<
-            wal_contract,
-            &manager_wal_replicate_empty_t::load,
-            &manager_wal_replicate_empty_t::create_database,
-            &manager_wal_replicate_empty_t::drop_database,
-            &manager_wal_replicate_empty_t::create_collection,
-            &manager_wal_replicate_empty_t::drop_collection,
-            &manager_wal_replicate_empty_t::insert_one,
-            &manager_wal_replicate_empty_t::insert_many,
-            &manager_wal_replicate_empty_t::delete_one,
-            &manager_wal_replicate_empty_t::delete_many,
-            &manager_wal_replicate_empty_t::update_one,
-            &manager_wal_replicate_empty_t::update_many,
-            &manager_wal_replicate_empty_t::create_index
-        >;
+        using dispatch_traits = actor_zeta::implements<wal_contract,
+                                                       &manager_wal_replicate_empty_t::load,
+                                                       &manager_wal_replicate_empty_t::create_database,
+                                                       &manager_wal_replicate_empty_t::drop_database,
+                                                       &manager_wal_replicate_empty_t::create_collection,
+                                                       &manager_wal_replicate_empty_t::drop_collection,
+                                                       &manager_wal_replicate_empty_t::insert_one,
+                                                       &manager_wal_replicate_empty_t::insert_many,
+                                                       &manager_wal_replicate_empty_t::delete_one,
+                                                       &manager_wal_replicate_empty_t::delete_many,
+                                                       &manager_wal_replicate_empty_t::update_one,
+                                                       &manager_wal_replicate_empty_t::update_many,
+                                                       &manager_wal_replicate_empty_t::create_index>;
 
     private:
         void create_wal_worker(int count_worker);

@@ -52,9 +52,9 @@ namespace services::dispatcher {
                                                        const components::catalog::catalog& catalog,
                                                        const std::string& alias);
 
-    components::cursor::cursor_t_ptr validate_format_and_types(std::pmr::memory_resource* resource,
-                                                               const components::catalog::catalog& catalog,
-                                                               components::logical_plan::node_t* node);
+    components::cursor::cursor_t_ptr validate_types(std::pmr::memory_resource* resource,
+                                                    const components::catalog::catalog& catalog,
+                                                    components::logical_plan::node_t* node);
     schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                 const components::catalog::catalog& catalog,
                                                 components::logical_plan::node_t* node,

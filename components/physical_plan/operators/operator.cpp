@@ -108,9 +108,7 @@ namespace components::operators {
 
     void operator_t::on_prepare_impl() {}
 
-    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
-        co_return;
-    }
+    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
     read_only_operator_t::read_only_operator_t(services::collection::context_collection_t* collection,
                                                operator_type type)

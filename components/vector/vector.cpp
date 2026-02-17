@@ -141,9 +141,9 @@ namespace components::vector {
             auto& child_types = value.type().child_types();
             auto& child_vectors = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
             for (uint64_t i = 0; i < child_types.size(); i++) {
-                auto vector = std::make_unique<vector_t>(resource(),
-                                                         value.is_null() ? types::logical_value_t(resource(), child_types[i])
-                                                                         : value.children()[i]);
+                auto vector = std::make_unique<vector_t>(
+                    resource(),
+                    value.is_null() ? types::logical_value_t(resource(), child_types[i]) : value.children()[i]);
                 child_vectors.push_back(std::move(vector));
             }
             if (value.is_null()) {
@@ -495,7 +495,9 @@ namespace components::vector {
                 if (val.is_null()) {
                     for (size_t i = 0; i < children.size(); i++) {
                         auto& vec_child = children[i];
-                        vec_child->set_value(index, types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                        vec_child->set_value(
+                            index,
+                            types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
                     }
                 } else {
                     auto& val_children = val.children();
@@ -531,7 +533,9 @@ namespace components::vector {
                 auto& child = entry();
                 if (val.is_null()) {
                     for (uint64_t i = 0; i < array_size; i++) {
-                        child.set_value(index * array_size + i, types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
+                        child.set_value(
+                            index * array_size + i,
+                            types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
                     }
                 } else {
                     auto& val_children = val.children();
@@ -597,7 +601,8 @@ namespace components::vector {
                 case vector_type::SEQUENCE: {
                     int64_t start, increment;
                     get_sequence(start, increment);
-                    return types::logical_value_t::create_numeric(vector->resource(), vector->type_,
+                    return types::logical_value_t::create_numeric(vector->resource(),
+                                                                  vector->type_,
                                                                   start + increment * static_cast<int64_t>(index));
                 }
                 default:
@@ -631,14 +636,21 @@ namespace components::vector {
             case types::logical_type::UBIGINT:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<uint64_t*>(vector->data_)[index]);
             case types::logical_type::HUGEINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<types::int128_t*>(vector->data_)[index]);
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<types::int128_t*>(vector->data_)[index]);
             case types::logical_type::UHUGEINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<types::uint128_t*>(vector->data_)[index]);
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<types::uint128_t*>(vector->data_)[index]);
             case types::logical_type::DECIMAL: {
                 assert(vector->type_.extension()->type() == types::logical_type_extension::extension_type::DECIMAL);
-                auto width = static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->width();
-                auto scale = static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->scale();
-                return types::logical_value_t::create_decimal(vector->resource(), reinterpret_cast<int64_t*>(vector->data_)[index], width, scale);
+                auto width =
+                    static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->width();
+                auto scale =
+                    static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->scale();
+                return types::logical_value_t::create_decimal(vector->resource(),
+                                                              reinterpret_cast<int64_t*>(vector->data_)[index],
+                                                              width,
+                                                              scale);
             }
             case types::logical_type::POINTER:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<void*>((vector->data_)[index]));
@@ -647,7 +659,8 @@ namespace components::vector {
             case types::logical_type::DOUBLE:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<double*>(vector->data_)[index]);
             case types::logical_type::STRING_LITERAL: {
-                return types::logical_value_t(vector->resource(), std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
+                return types::logical_value_t(vector->resource(),
+                                              std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
             }
             case types::logical_type::MAP: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
@@ -656,7 +669,9 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_map(vector->resource(), vector->child().type_, std::move(children));
+                return types::logical_value_t::create_map(vector->resource(),
+                                                          vector->child().type_,
+                                                          std::move(children));
             }
             case types::logical_type::STRUCT: {
                 auto& child_entries = vector->entries();
@@ -668,7 +683,9 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
-                return types::logical_value_t::create_struct(vector->resource(), vector->type_.type_name(), std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(),
+                                                             vector->type_.type_name(),
+                                                             std::move(children));
             }
             case types::logical_type::LIST: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
@@ -677,10 +694,13 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_list(vector->resource(), vector->type_.child_type(), std::move(children));
+                return types::logical_value_t::create_list(vector->resource(),
+                                                           vector->type_.child_type(),
+                                                           std::move(children));
             }
             case types::logical_type::ARRAY: {
-                auto stride = static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
+                auto stride =
+                    static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
                 auto offset = index * stride;
                 auto& child_vec = vector->entry();
                 std::vector<types::logical_value_t> children;
@@ -691,11 +711,14 @@ namespace components::vector {
                 return types::logical_value_t::create_array(
                     vector->resource(),
                     types::complex_logical_type(
-                        static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->internal_type()),
+                        static_cast<const types::array_logical_type_extension*>(vector->type_.extension())
+                            ->internal_type()),
                     children);
             }
             case types::logical_type::ENUM: {
-                return types::logical_value_t::create_enum(vector->resource(), vector->type_, reinterpret_cast<int32_t*>(vector->data_)[index]);
+                return types::logical_value_t::create_enum(vector->resource(),
+                                                           vector->type_,
+                                                           reinterpret_cast<int32_t*>(vector->data_)[index]);
             }
             case types::logical_type::UNION: {
                 uint8_t tag;

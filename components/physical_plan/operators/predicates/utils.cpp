@@ -1,7 +1,7 @@
 #include "utils.hpp"
 #include <components/expressions/key.hpp>
 
-namespace components::table::operators::predicates::impl {
+namespace components::operators::predicates::impl {
 
     value_getter create_value_getter(const expressions::key_t& key) {
         assert(key.side() != expressions::side_t::undefined);
@@ -60,7 +60,7 @@ namespace components::table::operators::predicates::impl {
             }
             auto res = function_ptr->execute(args);
             if (res.status() != compute::compute_status::ok()) {
-                throw std::runtime_error("table::operators::predicates: undefined error during function "
+                throw std::runtime_error("operators::predicates: undefined error during function "
                                          "execution in value_getter_t");
             }
             return std::get<std::pmr::vector<types::logical_value_t>>(res.value()).front();
@@ -84,4 +84,4 @@ namespace components::table::operators::predicates::impl {
         }
     }
 
-} // namespace components::table::operators::predicates::impl
+} // namespace components::operators::predicates::impl

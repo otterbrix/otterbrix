@@ -65,7 +65,7 @@ namespace components::table::storage {
         }
 
         auto buffer_handle = allocate(memory_tag::IN_MEMORY_TABLE, size, false);
-        return buffer_handle.block_handle();
+        return buffer_handle.block_handle()->shared_from_this();
     }
 
     std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_small_memory(uint64_t size) {
@@ -109,7 +109,9 @@ namespace components::table::storage {
 
     buffer_handle_t standard_buffer_manager_t::allocate(memory_tag tag, uint64_t block_size, bool can_destroy) {
         auto block = register_memory(tag, block_size, can_destroy);
-        return pin(block);
+        auto buf = pin(block);
+        buf.set_ownership(std::move(block));
+        return buf;
     }
 
     void standard_buffer_manager_t::reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) {
@@ -247,7 +249,7 @@ namespace components::table::storage {
         buffer_pool_.add_to_eviction_queue(handle);
     }
 
-    void standard_buffer_manager_t::unpin(std::shared_ptr<block_handle_t>& handle) {
+    void standard_buffer_manager_t::unpin(block_handle_t* handle) {
         bool purge = false;
         {
             auto lock = handle->get_lock();
@@ -258,7 +260,8 @@ namespace components::table::storage {
             auto new_readers = handle->decrement_readers();
             if (new_readers == 0) {
                 if (handle->must_add_to_eviction_queue()) {
-                    purge = buffer_pool_.add_to_eviction_queue(handle);
+                    auto sp = handle->shared_from_this();
+                    purge = buffer_pool_.add_to_eviction_queue(sp);
                 } else {
                     handle->unload(lock);
                 }

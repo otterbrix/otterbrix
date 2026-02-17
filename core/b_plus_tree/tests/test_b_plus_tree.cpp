@@ -744,7 +744,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         // just use one buffer
         uint64_t* buffer = static_cast<uint64_t*>(resource.allocate(dummy_size));
         std::vector<uint64_t> test_data;
-        test_data.reserve(test_count);
+        test_data.resize(test_count);
         for (uint64_t i = 0; i < test_count; i++) {
             test_data[i] = i;
         }

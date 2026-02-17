@@ -49,7 +49,8 @@ namespace components::vector {
         for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
             if (std::next(it) == col_indices.end()) {
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    return sub_column->entry().value(*it * index);
+                    auto stride = static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
+                    return sub_column->entry().value(index * stride + *it);
                 } else {
                     return sub_column->entries()[*it]->value(index);
                 }
@@ -71,7 +72,8 @@ namespace components::vector {
         for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
             if (std::next(it) == col_indices.end()) {
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    return sub_column->entry().set_value(*it * index, val);
+                    auto stride = static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
+                    return sub_column->entry().set_value(index * stride + *it, val);
                 } else {
                     return sub_column->entries()[*it]->set_value(index, val);
                 }

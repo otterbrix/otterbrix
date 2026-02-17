@@ -135,9 +135,9 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, count, count_str, count_double, count_bool) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (count, count_str, count_double, count_bool) VALUES ";
             for (int num = 1; num <= kDocuments; ++num) {
-                query << "('" << gen_id(num, dispatcher->resource()) << "', "
+                query << "("
                       << num << ", '" << num << "', " << (num + 0.1) << ", " << ((num % 2 != 0) ? "true" : "false") << ")"
                       << (num == kDocuments ? ";" : ", ");
             }

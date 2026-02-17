@@ -1,6 +1,0 @@
-#!/bin/bash
-
-flame_path=~/src/FlameGraph
-
-perf record -g ./benchmark_insert_many
-perf script | $flame_path/stackcollapse-perf.pl | $flame_path/flamegraph.pl > diagram_insert_many.svg

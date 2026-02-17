@@ -4,7 +4,6 @@
 #include <pybind11/stl_bind.h>
 
 #include "spaces.hpp"
-#include <services/collection/collection.hpp>
 #include <utility>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a

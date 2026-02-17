@@ -1,11 +1,11 @@
 #include "operator_sort.hpp"
 #include "transformation.hpp"
-#include <services/collection/collection.hpp>
+
 
 namespace components::operators {
 
-    operator_sort_t::operator_sort_t(services::collection::context_collection_t* context)
-        : read_only_operator_t(context, operator_type::sort) {}
+    operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t log)
+        : read_only_operator_t(resource, log, operator_type::sort) {}
 
     void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
 

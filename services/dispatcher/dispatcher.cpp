@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_drop_database.hpp>
 
 #include <core/tracy/tracy.hpp>
 #include <core/executor.hpp>
@@ -13,7 +14,8 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 
 #include <services/disk/manager_disk.hpp>
-#include <services/collection/collection.hpp>
+#include <services/index/manager_index.hpp>
+#include <services/collection/context_storage.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <boost/polymorphic_pointer_cast.hpp>
@@ -38,6 +40,8 @@ namespace services::dispatcher {
         , catalog_(resource_ptr)
         , databases_(resource_ptr)
         , collections_(resource_ptr)
+        , executors_(resource_ptr)
+        , executor_addresses_(resource_ptr)
         , pending_void_(resource_ptr)
         , pending_cursor_(resource_ptr)
         , pending_size_(resource_ptr)
@@ -55,7 +59,7 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        std::lock_guard<spin_lock> guard(lock_);
+        std::lock_guard<std::mutex> guard(mutex_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -131,13 +135,21 @@ namespace services::dispatcher {
     void manager_dispatcher_t::sync(sync_pack pack) {
         constexpr static int wal_idx = 0;
         constexpr static int disk_idx = 1;
+        constexpr static int index_idx = 2;
         wal_address_ = std::get<wal_idx>(pack);
         disk_address_ = std::get<disk_idx>(pack);
+        index_address_ = std::get<index_idx>(pack);
 
-        executor_ = actor_zeta::spawn<collection::executor::executor_t>(
-            resource(), address(), wal_address_, disk_address_, log_.clone());
-        executor_address_ = executor_->address();
-        trace(log_, "manager_dispatcher_t: executor spawned with WAL/Disk addresses");
+        executors_.reserve(executor_pool_size_);
+        executor_addresses_.reserve(executor_pool_size_);
+        for (std::size_t i = 0; i < executor_pool_size_; ++i) {
+            auto exec = actor_zeta::spawn<collection::executor::executor_t>(
+                resource(), address(), wal_address_, disk_address_, index_address_, log_.clone());
+            executor_addresses_.push_back(exec->address());
+            executors_.push_back(std::move(exec));
+        }
+        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses",
+              executor_pool_size_);
     }
 
     void manager_dispatcher_t::init_from_state(
@@ -151,11 +163,7 @@ namespace services::dispatcher {
         for (const auto& full_name : collections) {
             debug(log_, "manager_dispatcher_t::init_from_state: creating collection {}.{}",
                   full_name.database, full_name.collection);
-
-            auto* context = new collection::context_collection_t(
-                resource(), full_name, disk_address_, log_.clone());
-
-            collections_.emplace(full_name, context);
+            collections_.insert(full_name);
             debug(log_, "manager_dispatcher_t::init_from_state: collection {}.{} initialized",
                   full_name.database, full_name.collection);
         }
@@ -301,8 +309,38 @@ namespace services::dispatcher {
 
                 case node_type::drop_database_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
-                    catalog_.drop_namespace(table_id(resource(), plan->collection_full_name()).get_namespace());
-                    break;
+                    auto db_name = plan->database_name();
+                    // Drop all collections in this database from index + disk
+                    for (const auto& coll : collections_) {
+                        if (coll.database == db_name) {
+                            if (index_address_ != actor_zeta::address_t::empty_address()) {
+                                auto [_ui, uif] = actor_zeta::send(index_address_,
+                                    &index::manager_index_t::unregister_collection, session, coll);
+                                co_await std::move(uif);
+                            }
+                            auto [_ds, dsf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::drop_storage, session, coll);
+                            co_await std::move(dsf);
+                            auto [_dr, drf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::remove_collection, session, coll.database, coll.collection);
+                            co_await std::move(drf);
+                        }
+                    }
+                    // WAL write
+                    auto drop_db = boost::static_pointer_cast<node_drop_database_t>(plan);
+                    auto [_w, wf] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::drop_database, session, drop_db);
+                    auto wal_id = co_await std::move(wf);
+                    // Remove database from disk metadata
+                    auto [_rd, rdf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::remove_database, session, db_name);
+                    co_await std::move(rdf);
+                    update_catalog(plan);
+                    // Flush
+                    auto [_f, ff] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id);
+                    co_await std::move(ff);
+                    co_return result;
                 }
 
                 case node_type::create_collection_t: {
@@ -311,6 +349,30 @@ namespace services::dispatcher {
                                      session, plan->database_name(), plan->collection_name());
                     co_await std::move(cf1);
                     auto create_collection = boost::static_pointer_cast<node_create_collection_t>(plan);
+                    // Create storage in manager_disk_t
+                    if (create_collection->schema().empty()) {
+                        auto [_cs, csf] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::create_storage,
+                            session, plan->collection_full_name());
+                        co_await std::move(csf);
+                    } else {
+                        std::vector<components::table::column_definition_t> storage_columns;
+                        storage_columns.reserve(create_collection->schema().size());
+                        for (const auto& type : create_collection->schema()) {
+                            storage_columns.emplace_back(type.alias(), type);
+                        }
+                        auto [_cs, csf] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::create_storage_with_columns,
+                            session, plan->collection_full_name(), std::move(storage_columns));
+                        co_await std::move(csf);
+                    }
+                    // Register collection in manager_index_t
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ri, rif] = actor_zeta::send(index_address_,
+                            &index::manager_index_t::register_collection,
+                            session, plan->collection_full_name());
+                        co_await std::move(rif);
+                    }
                     auto [_c2, cf2] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::create_collection, session, create_collection);
                     auto wal_id = co_await std::move(cf2);
@@ -330,6 +392,18 @@ namespace services::dispatcher {
 
                 case node_type::drop_collection_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                    // Unregister collection from manager_index_t
+                    if (index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto [_ui, uif] = actor_zeta::send(index_address_,
+                            &index::manager_index_t::unregister_collection,
+                            session, plan->collection_full_name());
+                        co_await std::move(uif);
+                    }
+                    // Drop storage from manager_disk_t
+                    auto [_ds, dsf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::drop_storage,
+                        session, plan->collection_full_name());
+                    co_await std::move(dsf);
                     auto [_dr1, drf1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::remove_collection,
                                      session, plan->database_name(), plan->collection_name());
                     co_await std::move(drf1);
@@ -343,9 +417,27 @@ namespace services::dispatcher {
                     co_return result;
                 }
 
-                case node_type::create_index_t:
+                case node_type::create_index_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                    auto create_index = boost::static_pointer_cast<node_create_index_t>(plan);
+                    auto [_ci, cif] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::create_index, session, create_index);
+                    auto wal_id_ci = co_await std::move(cif);
+                    auto [_cid, cidf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id_ci);
+                    co_await std::move(cidf);
+                    co_return result;
+                }
+
                 case node_type::drop_index_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                    auto drop_index = boost::static_pointer_cast<node_drop_index_t>(plan);
+                    auto [_di, dif] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::drop_index, session, drop_index);
+                    auto wal_id_di = co_await std::move(dif);
+                    auto [_did, didf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal_id_di);
+                    co_await std::move(didf);
                     co_return result;
                 }
 
@@ -373,11 +465,15 @@ namespace services::dispatcher {
         }
 
         collection_full_name_t name{database_name, collection};
-        auto coll = collections_.at(name).get();
-        if (coll->dropped()) {
+        if (collections_.find(name) == collections_.end()) {
             co_return size_t(0);
         }
-        co_return coll->table_storage().table().calculate_size();
+        // Get size from storage in manager_disk_t
+        auto [_s, sf] = actor_zeta::send(disk_address_,
+            &disk::manager_disk_t::storage_calculate_size,
+            components::session::session_id_t{}, name);
+        auto sz = co_await std::move(sf);
+        co_return static_cast<size_t>(sz);
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr> manager_dispatcher_t::get_schema(
@@ -423,45 +519,30 @@ namespace services::dispatcher {
     collection::executor::execute_result_t manager_dispatcher_t::drop_database_(
         node_ptr logical_plan) {
         trace(log_, "manager_dispatcher_t:drop_database {}", logical_plan->database_name());
-        databases_.erase(logical_plan->database_name());
+        auto db_name = logical_plan->database_name();
+        for (auto it = collections_.begin(); it != collections_.end();) {
+            if (it->database == db_name) {
+                it = collections_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        databases_.erase(db_name);
         return {make_cursor(resource(), operation_status_t::success), {}};
     }
 
     collection::executor::execute_result_t manager_dispatcher_t::create_collection_(
         node_ptr logical_plan) {
         trace(log_, "manager_dispatcher_t:create_collection {}", logical_plan->collection_full_name().to_string());
-        auto create_collection_plan =
-            boost::polymorphic_pointer_downcast<node_create_collection_t>(logical_plan);
-        if (create_collection_plan->schema().empty()) {
-            collections_.emplace(logical_plan->collection_full_name(),
-                                 new collection::context_collection_t(resource(),
-                                                                      logical_plan->collection_full_name(),
-                                                                      disk_address_,
-                                                                      log_.clone()));
-        } else {
-            std::vector<components::table::column_definition_t> columns;
-            columns.reserve(create_collection_plan->schema().size());
-            for (const auto& type : create_collection_plan->schema()) {
-                columns.emplace_back(type.alias(), type);
-            }
-            collections_.emplace(logical_plan->collection_full_name(),
-                                 new collection::context_collection_t(resource(),
-                                                                      logical_plan->collection_full_name(),
-                                                                      std::move(columns),
-                                                                      disk_address_,
-                                                                      log_.clone()));
-        }
+        collections_.insert(logical_plan->collection_full_name());
         return {make_cursor(resource(), operation_status_t::success), {}};
     }
 
     collection::executor::execute_result_t manager_dispatcher_t::drop_collection_(
         node_ptr logical_plan) {
         trace(log_, "manager_dispatcher_t:drop_collection {}", logical_plan->collection_full_name().to_string());
-        auto cursor = collections_.at(logical_plan->collection_full_name())->drop()
-            ? make_cursor(resource(), operation_status_t::success)
-            : make_cursor(resource(), error_code_t::other_error, "collection not dropped");
         collections_.erase(logical_plan->collection_full_name());
-        return {std::move(cursor), {}};
+        return {make_cursor(resource(), operation_status_t::success), {}};
     }
 
     manager_dispatcher_t::unique_future<collection::executor::execute_result_t>
@@ -473,26 +554,24 @@ namespace services::dispatcher {
               logical_plan->collection_full_name().to_string(), session.data());
 
         auto dependency_tree_collections_names = logical_plan->collection_dependencies();
-        context_storage_t collections_context_storage;
-        while (!dependency_tree_collections_names.empty()) {
-            collection_full_name_t name =
-                dependency_tree_collections_names.extract(dependency_tree_collections_names.begin()).value();
-            if (name.empty()) {
-                collections_context_storage.emplace(std::move(name), nullptr);
-                continue;
+        context_storage_t collections_context_storage(resource(), log_.clone());
+        for (auto& name : dependency_tree_collections_names) {
+            if (!name.empty() && collections_.count(name) > 0) {
+                collections_context_storage.known_collections.insert(name);
             }
-            collections_context_storage.emplace(std::move(name), collections_.at(name).get());
         }
 
-        trace(log_, "manager_dispatcher_t:execute_plan_impl: calling executor");
-        auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_address_,
+        assert(!executors_.empty());
+        auto pool_idx = collection_name_hash{}(logical_plan->collection_full_name()) % executors_.size();
+        trace(log_, "manager_dispatcher_t:execute_plan_impl: calling executor[{}]", pool_idx);
+        auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                            &collection::executor::executor_t::execute_plan,
                                                            session,
                                                            logical_plan,
                                                            parameters,
                                                            std::move(collections_context_storage));
-        if (needs_sched && executor_) {
-            scheduler_->enqueue(executor_.get());
+        if (needs_sched && executors_[pool_idx]) {
+            scheduler_->enqueue(executors_[pool_idx].get());
         }
         auto result = co_await std::move(future);
 

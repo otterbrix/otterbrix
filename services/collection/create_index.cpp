@@ -1,16 +1,6 @@
 #include "executor.hpp"
 
-#include <components/index/single_field_index.hpp>
-#include <components/physical_plan_generator/create_plan.hpp>
-#include <services/disk/index_agent_disk.hpp>
-
-using components::logical_plan::index_type;
-
-using components::index::make_index;
-using components::index::single_field_index_t;
-
-using namespace components::cursor;
-using namespace core::pmr;
+#include <components/logical_plan/node_create_index.hpp>
 
 namespace services::collection::executor {
 

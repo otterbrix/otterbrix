@@ -1,15 +1,14 @@
 #include "operator_join.hpp"
 
 #include <components/vector/vector_operations.hpp>
-#include <services/collection/collection.hpp>
 #include <vector>
 
 namespace components::operators {
 
-    operator_join_t::operator_join_t(services::collection::context_collection_t* context,
+    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t log,
                                      type join_type,
                                      const expressions::compare_expression_ptr& expression)
-        : read_only_operator_t(context, operator_type::join)
+        : read_only_operator_t(resource, log, operator_type::join)
         , join_type_(join_type)
         , expression_(std::move(expression)) {}
 
@@ -27,9 +26,9 @@ namespace components::operators {
 
             output_ = operators::make_operator_data(left_->output()->resource(), res_types);
 
-            if (context_) {
-                trace(context_->log(), "operator_join::left_size(): {}", chunk_left.size());
-                trace(context_->log(), "operator_join::right_size(): {}", chunk_right.size());
+            if (log_.is_valid()) {
+                trace(log(), "operator_join::left_size(): {}", chunk_left.size());
+                trace(log(), "operator_join::right_size(): {}", chunk_right.size());
             }
 
             indices_left_.clear();
@@ -70,9 +69,8 @@ namespace components::operators {
                     break;
             }
 
-            if (context_) {
-                // Same reason as above
-                trace(context_->log(), "operator_join::result_size(): {}", output_->size());
+            if (log_.is_valid()) {
+                trace(log(), "operator_join::result_size(): {}", output_->size());
             }
         }
     }

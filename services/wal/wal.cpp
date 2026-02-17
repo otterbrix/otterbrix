@@ -13,15 +13,19 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/serialization/deserializer.hpp>
 
 namespace services::wal {
 
-    constexpr static auto wal_name = ".wal";
     using core::filesystem::file_flags;
     using core::filesystem::file_lock_type;
+
+    static std::string wal_file_name(int worker_index) {
+        return ".wal_" + std::to_string(worker_index);
+    }
 
     bool file_exist_(const std::filesystem::path& path) {
         std::filesystem::file_status s = std::filesystem::file_status{};
@@ -30,17 +34,19 @@ namespace services::wal {
 
     std::size_t next_index(std::size_t index, size_tt size) { return index + size + sizeof(size_tt) + sizeof(crc32_t); }
 
-    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* /*manager*/, log_t& log, configuration::config_wal config)
+    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* /*manager*/, log_t& log, configuration::config_wal config, int worker_index, int worker_count)
         : actor_zeta::basic_actor<wal_replicate_t>(resource)
         , log_(log.clone())
         , config_(std::move(config))
         , fs_(core::filesystem::local_file_system_t())
+        , worker_index_(worker_index)
+        , worker_count_(worker_count)
         , pending_load_(resource)
         , pending_id_(resource) {
         if (config_.sync_to_disk) {
             std::filesystem::create_directories(config_.path);
             file_ = open_file(fs_,
-                              config_.path / wal_name,
+                              config_.path / wal_file_name(worker_index_),
                               file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
                               file_lock_type::NO_LOCK);
             file_->seek(file_->file_size());
@@ -117,6 +123,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_index, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -164,7 +174,7 @@ namespace services::wal {
     ) {
         trace(log_, "wal_replicate_t::load, session: {}, id: {}", session.data(), wal_id);
         std::size_t start_index = 0;
-        next_id(wal_id);
+        next_id(wal_id, 1);
         std::vector<record_t> records;
         if (find_start_record(wal_id, start_index)) {
             std::size_t size = 0;
@@ -323,9 +333,22 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_index(
+        session_id_t session,
+        components::logical_plan::node_drop_index_ptr data
+    ) {
+        trace(log_,
+              "wal_replicate_t::drop_index {}::{}, session: {}",
+              data->collection_full_name().database,
+              data->collection_full_name().collection,
+              session.data());
+        write_data_(data, components::logical_plan::make_parameter_node(resource()));
+        co_return services::wal::id_t(id_);
+    }
+
     template<class T>
     void wal_replicate_t::write_data_(T& data, components::logical_plan::parameter_node_ptr params) {
-        next_id(id_);
+        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
         last_crc32_ = pack(buffer, last_crc32_, id_, data, params);
         write_buffer(buffer);
@@ -339,23 +362,27 @@ namespace services::wal {
             start_index = next_index(start_index, read_size(start_index));
             id = read_id(start_index);
         }
+        // Align id_ so that next next_id() call produces the correct worker partition
+        // If no records exist (id_ == 0), set id_ = worker_index_ (next call will add worker_count_)
+        if (static_cast<services::wal::id_t>(id_) == 0) {
+            id_ = static_cast<services::wal::id_t>(worker_index_);
+        }
     }
 
     bool wal_replicate_t::find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const {
+        if (wal_id == 0) return false;
         start_index = 0;
-        auto first_id = read_id(start_index);
-        if (first_id > 0) {
-            for (auto n = first_id; n < wal_id; ++n) {
-                auto size = read_size(start_index);
-                if (size > 0) {
-                    start_index = next_index(start_index, size);
-                } else {
-                    return false;
-                }
+        auto id = read_id(start_index);
+        while (id > 0 && id < wal_id) {
+            auto size = read_size(start_index);
+            if (size > 0) {
+                start_index = next_index(start_index, size);
+                id = read_id(start_index);
+            } else {
+                return false;
             }
-            return wal_id == read_id(start_index);
         }
-        return false;
+        return id > 0 && id >= wal_id;
     }
 
     services::wal::id_t wal_replicate_t::read_id(std::size_t start_index) const {
@@ -421,8 +448,10 @@ namespace services::wal {
     wal_replicate_without_disk_t::wal_replicate_without_disk_t(std::pmr::memory_resource* resource,
                                                                manager_wal_replicate_t* manager,
                                                                log_t& log,
-                                                               configuration::config_wal config)
-        : wal_replicate_t(resource, manager, log, std::move(config)) {}
+                                                               configuration::config_wal config,
+                                                               int worker_index,
+                                                               int worker_count)
+        : wal_replicate_t(resource, manager, log, std::move(config), worker_index, worker_count) {}
 
     wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(
         session_id_t /*session*/,

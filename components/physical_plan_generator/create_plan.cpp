@@ -1,10 +1,8 @@
 #include "create_plan.hpp"
 
-#include "impl/create_plan_add_index.hpp"
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
-#include "impl/create_plan_drop_index.hpp"
 #include "impl/create_plan_group.hpp"
 #include "impl/create_plan_insert.hpp"
 #include "impl/create_plan_join.hpp"
@@ -38,10 +36,6 @@ namespace services::planner {
                 return impl::create_plan_update(context, node);
             case node_type::join_t:
                 return impl::create_plan_join(context, node, std::move(limit));
-            case node_type::create_index_t:
-                return impl::create_plan_add_index(context, node);
-            case node_type::drop_index_t:
-                return impl::create_plan_drop_index(context, node);
             default:
                 break;
         }

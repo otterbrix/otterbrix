@@ -1,6 +1,9 @@
 #include "test_config.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_update.hpp>
 #include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
@@ -332,5 +335,88 @@ TEST_CASE("integration::cpp::test_index::no_type save_load") {
         CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
         CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
         CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
+    }
+}
+
+TEST_CASE("integration::cpp::test_index::delete_and_update") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/delete_and_update");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        INIT_COLLECTION();
+        CREATE_INDEX("ncount", "count");
+        FILL_COLLECTION();
+    }
+
+    INFO("verify initial state via index") {
+        // count > 50 should match rows 51..100 → 50 rows
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50);
+    }
+
+    INFO("delete rows where count > 90") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto del = components::logical_plan::make_node_delete_many(
+                dispatcher->resource(),
+                {database_name, collection_name},
+                components::logical_plan::make_node_match(
+                    dispatcher->resource(),
+                    {database_name, collection_name},
+                    components::expressions::make_compare_expression(
+                        dispatcher->resource(),
+                        compare_type::gt,
+                        key{dispatcher->resource(), "count", side_t::left},
+                        id_par{1})));
+            auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
+            auto cur = dispatcher->execute_plan(session, del, params);
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+    }
+
+    INFO("verify index after delete") {
+        // count > 50 should now match rows 51..90 → 40 rows
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40);
+    }
+
+    INFO("update row where count == 50 to count = 999") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto match = components::logical_plan::make_node_match(
+                dispatcher->resource(),
+                {database_name, collection_name},
+                components::expressions::make_compare_expression(
+                    dispatcher->resource(),
+                    compare_type::eq,
+                    key{dispatcher->resource(), "count", side_t::left},
+                    id_par{1}));
+            components::expressions::update_expr_ptr update_expr =
+                new components::expressions::update_expr_set_t(
+                    components::expressions::key_t{dispatcher->resource(), "count"});
+            update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
+            auto upd = components::logical_plan::make_node_update_many(
+                dispatcher->resource(),
+                {database_name, collection_name},
+                match,
+                {update_expr});
+            auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
+            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
+            params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));
+            auto cur = dispatcher->execute_plan(session, upd, params);
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+    }
+
+    INFO("verify index after update") {
+        // count == 50 should now return 0 rows (was updated to 999)
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 50), 0);
+        // count == 999 should return 1 row
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 999), 1);
     }
 }

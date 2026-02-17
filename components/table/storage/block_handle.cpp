@@ -152,14 +152,14 @@ namespace components::table::storage {
         state_ = block_state::LOADED;
         readers_ = 1;
         memory_charge_ = std::move(reservation);
-        return buffer_handle_t(shared_from_this(), buffer_.get());
+        return buffer_handle_t(this, buffer_.get());
     }
 
     buffer_handle_t block_handle_t::load(std::unique_ptr<file_buffer_t> reusable_buffer) {
         if (state_ == block_state::LOADED) {
             assert(buffer_);
             ++readers_;
-            return buffer_handle_t(shared_from_this(), buffer_.get());
+            return buffer_handle_t(this, buffer_.get());
         }
 
         if (block_id_ < MAXIMUM_BLOCK) {
@@ -171,7 +171,7 @@ namespace components::table::storage {
         }
         state_ = block_state::LOADED;
         readers_ = 1;
-        return buffer_handle_t(shared_from_this(), buffer_.get());
+        return buffer_handle_t(this, buffer_.get());
     }
 
     std::unique_ptr<file_buffer_t> block_handle_t::unload_and_take_block(std::unique_lock<std::mutex>&) {

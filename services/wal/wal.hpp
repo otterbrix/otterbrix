@@ -24,6 +24,7 @@
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/node_update.hpp>
 
 namespace services::wal {
@@ -37,7 +38,7 @@ namespace services::wal {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config);
+        wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config, int worker_index = 0, int worker_count = 1);
         virtual ~wal_replicate_t();
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
@@ -67,6 +68,8 @@ namespace services::wal {
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session,
                                          components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session,
+                                        components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_replicate_t::load,
@@ -80,7 +83,8 @@ namespace services::wal {
             &wal_replicate_t::delete_many,
             &wal_replicate_t::update_one,
             &wal_replicate_t::update_many,
-            &wal_replicate_t::create_index
+            &wal_replicate_t::create_index,
+            &wal_replicate_t::drop_index
         >;
 
         auto make_type() const noexcept -> const char*;
@@ -104,6 +108,8 @@ namespace services::wal {
         log_t log_;
         configuration::config_wal config_;
         core::filesystem::local_file_system_t fs_;
+        int worker_index_{0};
+        int worker_count_{1};
         atomic_id_t id_{0};
         crc32_t last_crc32_{0};
         file_ptr file_;
@@ -129,7 +135,7 @@ namespace services::wal {
         using address_t = actor_zeta::address_t;
 
     public:
-        wal_replicate_without_disk_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config);
+        wal_replicate_without_disk_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config, int worker_index = 0, int worker_count = 1);
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
 

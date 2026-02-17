@@ -16,6 +16,7 @@ set(otterbrix_LIBS
         otterbrix::dispatcher
         otterbrix::wal
         otterbrix::disk
+        otterbrix::index_service
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree
@@ -103,8 +104,4 @@ endif()
 
 if (DEV_MODE)
     add_subdirectory(test)
-endif()
-
-if (ALLOW_BENCHMARK)
-    add_subdirectory(benchmark)
 endif()

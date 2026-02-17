@@ -1,6 +1,5 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
-#include <collection/collection.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/tests/generaty.hpp>
@@ -12,8 +11,6 @@ using components::expressions::compare_type;
 using components::expressions::side_t;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
-using services::collection::context_collection_t;
-
 template<typename T>
 using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
 
@@ -68,21 +65,6 @@ TEST_CASE("integration::cpp::test_collection") {
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 50);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
-        }
-    }
-
-    INFO("insert non unique id") {
-        auto chunk = gen_data_chunk(100, dispatcher->resource());
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(),
-                                                              {database_name, collection_name},
-                                                              std::move(chunk));
-        {
-            auto session = otterbrix::session_id_t();
-            dispatcher->execute_plan(session, ins);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -219,13 +201,13 @@ TEST_CASE("integration::cpp::test_collection") {
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
-                                                                 key{dispatcher->resource(), "_id", side_t::left},
+                                                                 key{dispatcher->resource(), "count_str", side_t::left},
                                                                  id_par{1});
             plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
                                                                          {database_name, collection_name},
                                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), gen_id(1, dispatcher->resource())));
+            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "1"));
             auto cur = dispatcher->find_one(session, plan, params);
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);

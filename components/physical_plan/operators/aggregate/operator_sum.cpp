@@ -1,13 +1,13 @@
 #include "operator_sum.hpp"
 #include "aggregate_helpers.hpp"
-#include <services/collection/collection.hpp>
 
 namespace components::operators::aggregate {
 
     constexpr auto key_result_ = "sum";
 
-    operator_sum_t::operator_sum_t(services::collection::context_collection_t* context, expressions::key_t key)
-        : operator_aggregate_t(context)
+    operator_sum_t::operator_sum_t(std::pmr::memory_resource* resource, log_t log,
+                                   expressions::key_t key)
+        : operator_aggregate_t(resource, log)
         , key_(std::move(key)) {}
 
     types::logical_value_t operator_sum_t::aggregate_impl() {

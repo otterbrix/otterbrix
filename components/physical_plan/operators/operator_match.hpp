@@ -9,7 +9,7 @@ namespace components::operators {
 
     class operator_match_t final : public read_only_operator_t {
     public:
-        operator_match_t(services::collection::context_collection_t* context,
+        operator_match_t(std::pmr::memory_resource* resource, log_t log,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit);
 

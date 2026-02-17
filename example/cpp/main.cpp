@@ -1,7 +1,6 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
-#include "components/tests/generaty.hpp"
 #include <integration/cpp/otterbrix.hpp>
 
 using namespace components;
@@ -40,10 +39,9 @@ TEST_CASE("example::sql::base") {
 
     INFO("insert") {
         std::stringstream query;
-        query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+        query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
         for (int num = 0; num < 100; ++num) {
-            query << "('" << gen_id(num + 1) << "', "
-                  << "'Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+            query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
         }
         auto c = execute_sql(otterbrix, query.str());
         REQUIRE(c->size() == 100);
@@ -140,10 +138,9 @@ TEST_CASE("example::sql::group_by") {
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
 
         std::stringstream query;
-        query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+        query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
         for (int num = 0; num < 100; ++num) {
-            query << "('" << gen_id(num + 1) << "', "
-                  << "'Name " << (num % 10) << "', " << (num % 20) << ")" << (num == 99 ? ";" : ", ");
+            query << "('Name " << (num % 10) << "', " << (num % 20) << ")" << (num == 99 ? ";" : ", ");
         }
         auto c = execute_sql(otterbrix, query.str());
         REQUIRE(c->is_success());

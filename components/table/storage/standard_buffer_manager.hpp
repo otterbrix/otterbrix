@@ -34,7 +34,7 @@ namespace components::table::storage {
 
         buffer_handle_t pin(std::shared_ptr<block_handle_t>& handle) final;
         void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) final;
-        void unpin(std::shared_ptr<block_handle_t>& handle) final;
+        void unpin(block_handle_t* handle) final;
 
         void set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max()) final;
 

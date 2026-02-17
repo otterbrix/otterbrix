@@ -1,6 +1,5 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
-#include <components/tests/generaty.hpp>
 #include <integration/cpp/connection.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -38,10 +37,9 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
             size_t end = work_per_thread * (id + 1);
 
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (size_t num = start; num < end; ++num) {
-                query << "('" << gen_id(static_cast<int>(num + 1), dispatcher->resource()) << "', "
-                      << "'Name " << num << "', " << num << ")" << (num == end - 1 ? ";" : ", ");
+                query << "('Name " << num << "'," << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto session = otterbrix::session_id_t();
             auto c = dispatcher->execute_sql(session, query.str());
@@ -123,10 +121,9 @@ TEST_CASE("integration::cpp::test_connectors") {
             size_t end = work_per_thread * (id + 1);
 
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (size_t num = start; num < end; ++num) {
-                query << "('" << gen_id(static_cast<int>(num + 1), otterbrix->dispatcher()->resource()) << "', "
-                      << "'Name " << num << "', " << num << ")" << (num == end - 1 ? ";" : ", ");
+                query << "('Name " << num << "'," << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto c = connectors[id]->execute(query.str());
             //REQUIRE(c->size() == work_per_thread);

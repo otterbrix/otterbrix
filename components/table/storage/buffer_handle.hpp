@@ -12,7 +12,7 @@ namespace components::table::storage {
     class buffer_handle_t {
     public:
         buffer_handle_t();
-        explicit buffer_handle_t(std::shared_ptr<block_handle_t> handle, file_buffer_t* node);
+        explicit buffer_handle_t(block_handle_t* handle, file_buffer_t* node);
         ~buffer_handle_t();
         buffer_handle_t(const buffer_handle_t& other) = delete;
         buffer_handle_t& operator=(const buffer_handle_t&) = delete;
@@ -31,11 +31,14 @@ namespace components::table::storage {
         file_buffer_t& file_buffer();
         void destroy();
 
-        const std::shared_ptr<block_handle_t>& block_handle() const { return handle_; }
+        block_handle_t* block_handle() const { return handle_; }
+
+        void set_ownership(std::shared_ptr<block_handle_t> owner) { owned_block_ = std::move(owner); }
 
     private:
-        std::shared_ptr<block_handle_t> handle_;
+        block_handle_t* handle_;
         file_buffer_t* node_;
+        std::shared_ptr<block_handle_t> owned_block_;
     };
 
 } // namespace components::table::storage

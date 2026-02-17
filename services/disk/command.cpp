@@ -1,6 +1,6 @@
 #include "command.hpp"
 #include "agent_disk.hpp"
-#include "index_agent_disk.hpp"
+#include <services/index/index_agent_disk.hpp>
 
 namespace services::disk {
 
@@ -19,7 +19,7 @@ namespace services::disk {
                 } else if constexpr (std::is_same_v<command_type, command_remove_documents_t>) {
                     return actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>;
                 } else if constexpr (std::is_same_v<command_type, command_drop_index_t>) {
-                    return actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::drop>;
+                    return actor_zeta::msg_id<index::index_agent_disk_t, &index::index_agent_disk_t::drop>;
                 }
                 static_assert(true, "Not valid command type");
             },

@@ -1,6 +1,69 @@
 #include "index.hpp"
+#include <components/expressions/forward.hpp>
 
 namespace components::index {
+
+    std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare, const value_t& value) const {
+        std::pmr::vector<int64_t> result(resource_);
+
+        switch (compare) {
+            case expressions::compare_type::eq: {
+                auto range = find(value);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                    result.push_back(iter->row_index);
+                }
+                break;
+            }
+            case expressions::compare_type::lt: {
+                auto range = lower_bound(value);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                    result.push_back(iter->row_index);
+                }
+                break;
+            }
+            case expressions::compare_type::lte: {
+                auto ub = upper_bound(value);
+                for (auto iter = cbegin(); iter != ub.first; ++iter) {
+                    result.push_back(iter->row_index);
+                }
+                break;
+            }
+            case expressions::compare_type::gt: {
+                auto range = upper_bound(value);
+                for (auto iter = range.first; iter != range.second; ++iter) {
+                    result.push_back(iter->row_index);
+                }
+                break;
+            }
+            case expressions::compare_type::gte: {
+                auto lb = lower_bound(value);
+                for (auto iter = lb.second; iter != cend(); ++iter) {
+                    result.push_back(iter->row_index);
+                }
+                break;
+            }
+            case expressions::compare_type::ne: {
+                auto eq_range = find(value);
+                for (auto iter = cbegin(); iter != cend(); ++iter) {
+                    bool in_eq = false;
+                    for (auto eq_it = eq_range.first; eq_it != eq_range.second; ++eq_it) {
+                        if (eq_it->row_index == iter->row_index) {
+                            in_eq = true;
+                            break;
+                        }
+                    }
+                    if (!in_eq) {
+                        result.push_back(iter->row_index);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+
+        return result;
+    }
 
     index_t::index_t(std::pmr::memory_resource* resource,
                      components::logical_plan::index_type type,

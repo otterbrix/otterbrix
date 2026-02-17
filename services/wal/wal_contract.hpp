@@ -12,6 +12,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
 #include <services/wal/base.hpp>
@@ -57,6 +58,8 @@ namespace services::wal {
 
         actor_zeta::unique_future<id_t> create_index(session_id_t session,
             components::logical_plan::node_create_index_ptr data);
+        actor_zeta::unique_future<id_t> drop_index(session_id_t session,
+            components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_contract::load,
@@ -70,7 +73,8 @@ namespace services::wal {
             &wal_contract::delete_many,
             &wal_contract::update_one,
             &wal_contract::update_many,
-            &wal_contract::create_index
+            &wal_contract::create_index,
+            &wal_contract::drop_index
         >;
 
         wal_contract() = delete;

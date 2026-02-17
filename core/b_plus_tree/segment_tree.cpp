@@ -186,8 +186,14 @@ namespace core::b_plus_tree {
                             update_metadata_(append_node, metadata);
                         } else {
                             // nothing left but to split this block
-                            auto split_result = append_node->block->split_append(index, item);
                             append_node->last_used = std::chrono::system_clock::now();
+                            std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> split_result;
+                            try {
+                                split_result = append_node->block->split_append(index, item);
+                            } catch (...) {
+                                unload_old_segments_();
+                                split_result = append_node->block->split_append(index, item);
+                            }
                             append_node->modified = true;
                             update_metadata_(append_node, metadata);
                             if (split_result.second) {
@@ -202,8 +208,14 @@ namespace core::b_plus_tree {
                     }
                 } else {
                     // nothing left but to split this block
-                    auto split_result = append_node->block->split_append(index, item);
                     append_node->last_used = std::chrono::system_clock::now();
+                    std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> split_result;
+                    try {
+                        split_result = append_node->block->split_append(index, item);
+                    } catch (...) {
+                        unload_old_segments_();
+                        split_result = append_node->block->split_append(index, item);
+                    }
                     append_node->modified = true;
                     update_metadata_(append_node, metadata);
                     if (split_result.second) {

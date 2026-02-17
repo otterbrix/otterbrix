@@ -6,6 +6,10 @@
 
 namespace services::planner::impl {
 
+    // Note: Index selection is handled at execution time by the executor
+    // (via intercept_scan_/index_engine), not during plan generation.
+    // Plan always creates full_scan/transfer_scan; executor may optimize
+    // to index_scan based on available indexes.
     namespace {
         components::operators::operator_ptr
         create_plan_match_(const context_storage_t& context,

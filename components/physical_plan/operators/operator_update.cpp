@@ -1,5 +1,6 @@
 #include "operator_update.hpp"
 #include "predicates/predicate.hpp"
+#include <components/vector/vector_operations.hpp>
 
 namespace components::operators {
 
@@ -48,7 +49,7 @@ namespace components::operators {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                             // Copy original values to output first (preserves scan data for executor)
                             for (size_t k = 0; k < chunk_left.column_count(); k++) {
-                                out_chunk.set_value(k, index, chunk_left.value(k, i));
+                                vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
                             }
                             bool modified = false;
                             for (const auto& expr : updates_) {
@@ -96,7 +97,7 @@ namespace components::operators {
 
                         // Copy original values to output first (preserves scan data for executor)
                         for (size_t j = 0; j < chunk.column_count(); j++) {
-                            out_chunk.set_value(j, index, chunk.value(j, i));
+                            vector::vector_ops::copy(chunk.data[j], out_chunk.data[j], i + 1, i, index);
                         }
                         bool modified = false;
                         for (const auto& expr : updates_) {

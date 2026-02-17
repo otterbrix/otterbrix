@@ -1,6 +1,5 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
-#include <collection/collection.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/tests/generaty.hpp>

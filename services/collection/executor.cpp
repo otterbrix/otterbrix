@@ -398,9 +398,7 @@ namespace services::collection::executor {
                         components::vector::vector_t row_ids(resource(),
                             components::types::logical_type::BIGINT, modified_size);
                         for (size_t i = 0; i < modified_size; i++) {
-                            row_ids.set_value(i,
-                                components::types::logical_value_t{resource(),
-                                    static_cast<int64_t>(ids[i])});
+                            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
                         }
                         auto [_d, df] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::storage_delete_rows,
@@ -473,9 +471,7 @@ namespace services::collection::executor {
                         components::vector::vector_t row_ids(resource(),
                             components::types::logical_type::BIGINT, out_chunk.size());
                         for (uint64_t i = 0; i < out_chunk.size(); i++) {
-                            row_ids.set_value(i,
-                                components::types::logical_value_t{resource(),
-                                    out_chunk.row_ids.data<int64_t>()[i]});
+                            row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
                         }
                         auto data_copy = std::make_unique<components::vector::data_chunk_t>(
                             resource(), out_chunk.types(), out_chunk.size());

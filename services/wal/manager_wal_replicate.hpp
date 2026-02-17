@@ -75,6 +75,7 @@ namespace services::wal {
                                         components::logical_plan::node_update_ptr data,
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -89,11 +90,17 @@ namespace services::wal {
             &manager_wal_replicate_t::delete_many,
             &manager_wal_replicate_t::update_one,
             &manager_wal_replicate_t::update_many,
-            &manager_wal_replicate_t::create_index
+            &manager_wal_replicate_t::create_index,
+            &manager_wal_replicate_t::drop_index
         >;
 
     private:
         void create_wal_worker(int count_worker);
+
+        std::size_t worker_index_for(const collection_full_name_t& coll) const {
+            std::size_t h = std::hash<std::string>{}(coll.to_string());
+            return h % dispatchers_.size();
+        }
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -152,6 +159,7 @@ namespace services::wal {
                                         components::logical_plan::node_update_ptr data,
                                         components::logical_plan::parameter_node_ptr params);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
+        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -166,7 +174,8 @@ namespace services::wal {
             &manager_wal_replicate_empty_t::delete_many,
             &manager_wal_replicate_empty_t::update_one,
             &manager_wal_replicate_empty_t::update_many,
-            &manager_wal_replicate_empty_t::create_index
+            &manager_wal_replicate_empty_t::create_index,
+            &manager_wal_replicate_empty_t::drop_index
         >;
 
     private:

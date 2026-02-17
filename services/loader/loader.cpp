@@ -1,5 +1,6 @@
 #include "loader.hpp"
 
+#include <algorithm>
 #include <absl/crc/crc32c.h>
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -19,8 +20,7 @@ namespace services::loader {
         , wal_config_(wal_config)
         , disk_(nullptr)
         , fs_(local_file_system_t())
-        , metafile_indexes_(nullptr)
-        , wal_file_(nullptr) {
+        , metafile_indexes_(nullptr) {
         trace(log_, "loader_t: initializing");
 
         if (!config_.path.empty() && std::filesystem::exists(config_.path)) {
@@ -37,16 +37,30 @@ namespace services::loader {
             }
         }
 
-        auto wal_file_path = wal_config_.path / ".wal";
-        debug(log_, "loader_t: WAL file path: {}, exists: {}",
-              wal_file_path.string(),
-              std::filesystem::exists(wal_file_path));
-        if (!wal_config_.path.empty() && std::filesystem::exists(wal_file_path)) {
-            trace(log_, "loader_t: opening WAL at {}", wal_file_path.string());
-            wal_file_ = open_file(fs_,
-                                  wal_file_path,
-                                  file_flags::READ,
-                                  file_lock_type::NO_LOCK);
+        // Open per-worker WAL files (.wal_0, .wal_1, ...)
+        if (!wal_config_.path.empty()) {
+            for (int i = 0; i < wal_config_.agent; ++i) {
+                auto wal_file_path = wal_config_.path / (".wal_" + std::to_string(i));
+                debug(log_, "loader_t: WAL file path: {}, exists: {}",
+                      wal_file_path.string(),
+                      std::filesystem::exists(wal_file_path));
+                if (std::filesystem::exists(wal_file_path)) {
+                    trace(log_, "loader_t: opening WAL at {}", wal_file_path.string());
+                    wal_files_.push_back(open_file(fs_,
+                                                   wal_file_path,
+                                                   file_flags::READ,
+                                                   file_lock_type::NO_LOCK));
+                }
+            }
+            // Also check legacy single .wal file for backward compatibility
+            auto legacy_wal_path = wal_config_.path / ".wal";
+            if (wal_files_.empty() && std::filesystem::exists(legacy_wal_path)) {
+                trace(log_, "loader_t: opening legacy WAL at {}", legacy_wal_path.string());
+                wal_files_.push_back(open_file(fs_,
+                                               legacy_wal_path,
+                                               file_flags::READ,
+                                               file_lock_type::NO_LOCK));
+            }
         }
 
         trace(log_, "loader_t: initialization complete");
@@ -176,55 +190,59 @@ namespace services::loader {
     }
 
     void loader_t::read_wal_records(loaded_state_t& state) {
-        trace(log_, "loader_t: reading WAL records for replay");
+        trace(log_, "loader_t: reading WAL records for replay from {} WAL files", wal_files_.size());
 
-        if (!wal_file_) {
-            trace(log_, "loader_t: no WAL file, skipping");
+        if (wal_files_.empty()) {
+            trace(log_, "loader_t: no WAL files, skipping");
             return;
         }
 
-        debug(log_, "loader_t: WAL file exists, last_wal_id from disk checkpoint: {}", state.last_wal_id);
+        debug(log_, "loader_t: last_wal_id from disk checkpoint: {}", state.last_wal_id);
 
-        auto first_size = read_wal_size(0);
-        debug(log_, "loader_t: first WAL record size at index 0 = {}", first_size);
-
-        std::size_t start_index = 0;
         std::size_t total_records = 0;
         std::size_t skipped_records = 0;
 
-        while (true) {
-            auto record = read_wal_record(start_index);
-            if (!record.is_valid()) {
-                break;
-            }
+        for (auto& wal_file : wal_files_) {
+            std::size_t start_index = 0;
 
-            if (!record.data) {
-                debug(log_, "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
-                      start_index, record.crc32, record.last_crc32);
+            while (true) {
+                auto record = read_wal_record(wal_file.get(), start_index);
+                if (!record.is_valid()) {
+                    break;
+                }
+
+                if (!record.data) {
+                    debug(log_, "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
+                          start_index, record.crc32, record.last_crc32);
+                    start_index = next_wal_index(start_index, record.size);
+                    continue;
+                }
+
+                total_records++;
+
+                if (record.id > state.last_wal_id) {
+                    debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
+                          record.id, record.data->to_string());
+                    state.wal_records.push_back(std::move(record));
+                } else {
+                    skipped_records++;
+                }
                 start_index = next_wal_index(start_index, record.size);
-                continue;
             }
-
-            total_records++;
-
-            if (record.id > state.last_wal_id) {
-                debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
-                      record.id, record.data->to_string());
-                state.wal_records.push_back(std::move(record));
-            } else {
-                skipped_records++;
-            }
-            start_index = next_wal_index(start_index, record.size);
         }
+
+        // Sort all records from all WAL files by ID for correct replay order
+        std::sort(state.wal_records.begin(), state.wal_records.end(),
+            [](const wal::record_t& a, const wal::record_t& b) { return a.id < b.id; });
 
         debug(log_, "loader_t: scanned {} WAL records, skipped {} (already on disk), {} to replay",
               total_records, skipped_records, state.wal_records.size());
         trace(log_, "loader_t: read {} WAL records for replay", state.wal_records.size());
     }
 
-    loader_t::size_tt loader_t::read_wal_size(std::size_t start_index) const {
+    loader_t::size_tt loader_t::read_wal_size(core::filesystem::file_handle_t* file, std::size_t start_index) const {
         char buf[4];
-        if (!wal_file_->read(buf, sizeof(size_tt), start_index)) {
+        if (!file->read(buf, sizeof(size_tt), start_index)) {
             return 0;
         }
         size_tt size = 0;
@@ -235,32 +253,32 @@ namespace services::loader {
         return size;
     }
 
-    std::pmr::string loader_t::read_wal_data(std::size_t start, std::size_t finish) const {
+    std::pmr::string loader_t::read_wal_data(core::filesystem::file_handle_t* file, std::size_t start, std::size_t finish) const {
         auto size = finish - start;
         std::pmr::string output(resource_);
         output.resize(size);
-        wal_file_->read(output.data(), size, start);
+        file->read(output.data(), size, start);
         return output;
     }
 
-    wal::id_t loader_t::read_wal_id(std::size_t start_index) const {
-        auto size = read_wal_size(start_index);
+    wal::id_t loader_t::read_wal_id(core::filesystem::file_handle_t* file, std::size_t start_index) const {
+        auto size = read_wal_size(file, start_index);
         if (size > 0) {
             auto start = start_index + sizeof(size_tt);
             auto finish = start + size;
-            auto output = read_wal_data(start, finish);
+            auto output = read_wal_data(file, start, finish);
             return wal::unpack_wal_id(output);
         }
         return 0;
     }
 
-    wal::record_t loader_t::read_wal_record(std::size_t start_index) const {
+    wal::record_t loader_t::read_wal_record(core::filesystem::file_handle_t* file, std::size_t start_index) const {
         wal::record_t record;
-        record.size = read_wal_size(start_index);
+        record.size = read_wal_size(file, start_index);
         if (record.size > 0) {
             auto start = start_index + sizeof(size_tt);
             auto finish = start + record.size + sizeof(crc32_t);
-            auto output = read_wal_data(start, finish);
+            auto output = read_wal_data(file, start, finish);
 
             const char* crc_ptr = output.data() + record.size;
             record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) |

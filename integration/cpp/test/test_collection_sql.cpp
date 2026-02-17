@@ -1,5 +1,4 @@
 #include "test_config.hpp"
-#include <components/tests/generaty.hpp>
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
@@ -38,10 +37,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query << "('" << gen_id(num + 1, dispatcher->resource()) << "', "
-                      << "'Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+                query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -72,9 +70,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto computed = cur->type_data()[0];
             auto stated = cur->type_data()[1];
 
-            REQUIRE(types::complex_logical_type::contains(computed, [](const types::complex_logical_type& type) {
-                return type.alias() == "_id" && type.type() == types::logical_type::STRING_LITERAL;
-            }));
             REQUIRE(types::complex_logical_type::contains(computed, [](const types::complex_logical_type& type) {
                 return type.alias() == "name" && type.type() == types::logical_type::STRING_LITERAL;
             }));
@@ -121,11 +116,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 0);
-            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 1);
-            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 2);
-            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 3);
-            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 4);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1);
+            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 2);
+            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 3);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -134,11 +129,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count DESC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 99);
-            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 98);
-            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 97);
-            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 96);
-            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 95);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 99);
+            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 98);
+            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 97);
+            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 96);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 95);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -147,11 +142,148 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY name;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 0);
-            REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 1);
-            REQUIRE(cur->chunk_data().value(2, 2).value<int64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(2, 3).value<int64_t>() == 11);
-            REQUIRE(cur->chunk_data().value(2, 4).value<int64_t>() == 12);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1);
+            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 10);
+            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 11);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 12);
+        }
+    }
+
+    INFO("comparison operators") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count != 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 99);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count >= 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count <= 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 11);
+        }
+    }
+
+    INFO("standalone aggregates") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 99);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4950);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(core::is_equals(cur->chunk_data().value(0, 0).value<double>(), 49.5));
+        }
+    }
+
+    INFO("filtered aggregates") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection "
+                                               "WHERE count <= 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 11);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection "
+                                               "WHERE count > 80;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 81);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection "
+                                               "WHERE count < 20;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 19);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection "
+                                               "WHERE count < 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 45);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection "
+                                               "WHERE count < 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(core::is_equals(cur->chunk_data().value(0, 0).value<double>(), 4.5));
+        }
+    }
+
+    INFO("select with limit") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "LIMIT 5;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "LIMIT 1;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
         }
     }
 
@@ -217,6 +349,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->size() == 20);
         }
     }
+
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::group_by") {
@@ -239,10 +372,9 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query << "('" << gen_id(num + 1, dispatcher->resource()) << "', "
-                      << "'Name " << (num % 10) << "', " << (num % 20) << ")" << (num == 99 ? ";" : ", ");
+                query << "('Name " << (num % 10) << "', " << (num % 20) << ")" << (num == 99 ? ";" : ", ");
             }
             dispatcher->execute_sql(session, query.str());
         }
@@ -294,6 +426,16 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (number + 10) % 20);
         }
+    }
+
+    INFO("group by unique field") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name, COUNT(name) AS cnt "
+                                           "FROM TestDatabase.TestCollection "
+                                           "GROUP BY name;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
     }
 }
 
@@ -354,10 +496,9 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (_id, name, count) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query << "('" << gen_id(num + 1, dispatcher->resource()) << "', "
-                      << "'Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+                query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -393,6 +534,25 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->size(session, database_name, collection_name) == 100);
+        }
+    }
+
+    INFO("find with limit") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count > 90 LIMIT 3;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count > 90 LIMIT 1;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
         }
     }
 
@@ -583,5 +743,14 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 55);
         }
+    }
+    INFO("group by non-existent field") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT no_such_field, COUNT(count) AS cnt "
+                                           "FROM TestDatabase.TestCollection "
+                                           "GROUP BY no_such_field;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
     }
 }

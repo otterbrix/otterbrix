@@ -1,13 +1,13 @@
 #include "operator_match.hpp"
 #include "predicates/predicate.hpp"
-#include "services/collection/collection.hpp"
+
 
 namespace components::operators {
 
-    operator_match_t::operator_match_t(services::collection::context_collection_t* context,
+    operator_match_t::operator_match_t(std::pmr::memory_resource* resource, log_t log,
                                        const expressions::compare_expression_ptr& expression,
                                        logical_plan::limit_t limit)
-        : read_only_operator_t(context, operator_type::match)
+        : read_only_operator_t(resource, log, operator_type::match)
         , expression_(std::move(expression))
         , limit_(limit) {}
 

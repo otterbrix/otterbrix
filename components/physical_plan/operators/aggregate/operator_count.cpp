@@ -1,12 +1,11 @@
 #include "operator_count.hpp"
-#include <services/collection/collection.hpp>
 
 namespace components::operators::aggregate {
 
     constexpr auto key_result_ = "count";
 
-    operator_count_t::operator_count_t(services::collection::context_collection_t* context)
-        : operator_aggregate_t(context) {}
+    operator_count_t::operator_count_t(std::pmr::memory_resource* resource, log_t log)
+        : operator_aggregate_t(resource, log) {}
 
     types::logical_value_t operator_count_t::aggregate_impl() {
         if (left_ && left_->output()) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -10,7 +11,6 @@
 
 #include "forward.hpp"
 #include "index.hpp"
-#include <components/context/context.hpp>
 #include <core/pmr.hpp>
 
 namespace components::vector {
@@ -34,10 +34,14 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
-        void delete_row(const vector::data_chunk_t& chunk, size_t row, pipeline::context_t* pipeline_context);
+        void insert_row(const vector::data_chunk_t& chunk, size_t row);
+        void delete_row(const vector::data_chunk_t& chunk, size_t row);
 
         auto indexes() -> std::vector<std::string>;
+
+        // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
+        void for_each_disk_op(const vector::data_chunk_t& chunk, size_t row,
+                              const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const;
 
     private:
         using comparator_t = std::less<keys_base_storage_t>;

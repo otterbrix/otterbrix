@@ -7,7 +7,7 @@ namespace components::operators::aggregate {
 
     class operator_min_t final : public operator_aggregate_t {
     public:
-        explicit operator_min_t(services::collection::context_collection_t* collection, expressions::key_t key);
+        operator_min_t(std::pmr::memory_resource* resource, log_t log, expressions::key_t key);
 
     private:
         expressions::key_t key_;

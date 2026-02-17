@@ -3,25 +3,16 @@
 #include "transformation.hpp"
 
 #include <components/physical_plan/operators/operator_empty.hpp>
-#include <services/collection/collection.hpp>
-
 namespace components::operators {
 
-    operator_group_t::operator_group_t(services::collection::context_collection_t* context)
-        : read_write_operator_t(context, operator_type::aggregate)
-        , keys_(context->resource())
-        , values_(context->resource())
-        , inputs_(context->resource())
-        , result_types_(context->resource())
-        , transposed_output_(context->resource()) {}
+    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log)
+        : read_write_operator_t(resource, log, operator_type::aggregate)
+        , keys_(resource_)
+        , values_(resource_)
+        , inputs_(resource_)
+        , result_types_(resource_)
+        , transposed_output_(resource_) {}
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource)
-        : read_write_operator_t(nullptr, operator_type::aggregate)
-        , keys_(resource)
-        , values_(resource)
-        , inputs_(resource)
-        , result_types_(resource)
-        , transposed_output_(resource) {}
 
     void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
         keys_.push_back({name, std::move(getter)});
@@ -98,7 +89,7 @@ namespace components::operators {
             for (size_t i = 0; i < transposed_output_.size(); i++) {
                 aggregator->clear(); //todo: need copy aggregator
                 aggregator->set_children(boost::intrusive_ptr(new components::operators::operator_empty_t(
-                    context_,
+                    resource_,
                     operators::make_operator_data(
                         left_->output()->resource(),
                         impl::transpose(left_->output()->resource(), inputs_.at(i), types)))));

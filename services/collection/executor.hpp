@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/table_metadata.hpp>
+#include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -8,8 +9,8 @@
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <services/collection/collection.hpp>
 #include <services/collection/context_storage.hpp>
+#include <core/btree/btree.hpp>
 #include <stack>
 
 namespace services::collection::executor {
@@ -40,6 +41,7 @@ namespace services::collection::executor {
                    actor_zeta::address_t parent_address,
                    actor_zeta::address_t wal_address,
                    actor_zeta::address_t disk_address,
+                   actor_zeta::address_t index_address,
                    log_t&& log);
         ~executor_t() = default;
 
@@ -63,27 +65,11 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session,
                                                           plan_t plan_data);
 
-        unique_future<components::cursor::cursor_t_ptr> aggregate_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> update_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> insert_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-        unique_future<components::cursor::cursor_t_ptr> delete_document_impl_(
-            const components::session::session_id_t& session,
-            context_collection_t* context_,
-            components::operators::operator_ptr plan);
-
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
+        actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
 
         std::pmr::vector<unique_future<void>> pending_void_;

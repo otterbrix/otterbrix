@@ -36,7 +36,7 @@ namespace services::planner::impl {
             }
         }
 
-        void add_group_aggregate(collection::context_collection_t* context,
+        void add_group_aggregate(std::pmr::memory_resource* resource, log_t log,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             using components::expressions::aggregate_type;
@@ -45,7 +45,8 @@ namespace services::planner::impl {
                 case aggregate_type::count: {
                     group->add_value(
                         expr->key().as_pmr_string(),
-                        boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(context)));
+                        boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
+                            resource, log)));
                     break;
                 }
                 case aggregate_type::sum: {
@@ -55,7 +56,8 @@ namespace services::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_sum_t(context, field)));
+                                         new components::operators::aggregate::operator_sum_t(
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::avg: {
@@ -65,7 +67,8 @@ namespace services::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_avg_t(context, field)));
+                                         new components::operators::aggregate::operator_avg_t(
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::min: {
@@ -75,7 +78,8 @@ namespace services::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_min_t(context, field)));
+                                         new components::operators::aggregate::operator_min_t(
+                                             resource, log, field)));
                     break;
                 }
                 case aggregate_type::max: {
@@ -85,7 +89,8 @@ namespace services::planner::impl {
                     auto field = std::get<components::expressions::key_t>(expr->params().front());
                     group->add_value(expr->key().as_pmr_string(),
                                      boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_max_t(context, field)));
+                                         new components::operators::aggregate::operator_max_t(
+                                             resource, log, field)));
                     break;
                 }
                 default:
@@ -99,11 +104,12 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_group(const context_storage_t& context,
                                                                 const components::logical_plan::node_ptr& node) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
-        auto collection_context = context.at(node->collection_full_name());
-        if (collection_context) {
-            group = new components::operators::operator_group_t(collection_context);
+        auto coll_name = node->collection_full_name();
+        bool known = context.has_collection(coll_name);
+        if (known) {
+            group = new components::operators::operator_group_t(context.resource, context.log.clone());
         } else {
-            group = new components::operators::operator_group_t(node->resource());
+            group = new components::operators::operator_group_t(node->resource(), log_t{});
         }
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
@@ -114,7 +120,8 @@ namespace services::planner::impl {
                                   static_cast<const components::expressions::scalar_expression_t*>(expr.get()));
                           } else if (expr->group() == components::expressions::expression_group::aggregate) {
                               add_group_aggregate(
-                                  context.at(node->collection_full_name()),
+                                  known ? context.resource : node->resource(),
+                                  known ? context.log.clone() : log_t{},
                                   group,
                                   static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
                           }

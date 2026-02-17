@@ -143,7 +143,7 @@ namespace components::table {
                 new_block->offset = 0;
                 new_block->size = alloc_size;
                 handle = buffer_manager.allocate(storage::memory_tag::OVERFLOW_STRINGS, alloc_size, false);
-                block = handle.block_handle();
+                block = handle.block_handle()->shared_from_this();
                 state.overflow_blocks.emplace(block->block_id(), new_block.get());
                 new_block->block = std::move(block);
                 new_block->next = std::move(state.head);
@@ -1091,7 +1091,7 @@ namespace components::table {
         auto& buffer_manager = block->block_manager.buffer_manager;
         auto old_handle = buffer_manager.pin(block);
         auto new_handle = buffer_manager.allocate(storage::memory_tag::IN_MEMORY_TABLE, new_size);
-        auto new_block = new_handle.block_handle();
+        auto new_block = new_handle.block_handle()->shared_from_this();
         memcpy(new_handle.ptr(), old_handle.ptr(), segment_size_);
 
         this->block_id_ = new_block->block_id();

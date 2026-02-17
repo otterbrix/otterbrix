@@ -1,18 +1,33 @@
 #include "operator.hpp"
-#include <cassert>
-#include <services/collection/collection.hpp>
 
 namespace components::operators {
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
-    operator_t::operator_t(services::collection::context_collection_t* context, operator_type type)
-        : context_(context)
+    operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
+        : resource_(resource)
+        , log_(std::move(log))
         , type_(type) {}
+
+    void operator_t::prepare() {
+        if (!prepared_) {
+            on_prepare_impl();
+            prepared_ = true;
+        }
+        if (left_) {
+            left_->prepare();
+        }
+        if (right_) {
+            right_->prepare();
+        }
+    }
 
     void operator_t::on_execute(pipeline::context_t* pipeline_context) {
         if (state_ == operator_state::created || state_ == operator_state::running) {
-            on_prepare_impl();
+            if (!prepared_) {
+                on_prepare_impl();
+                prepared_ = true;
+            }
             state_ = operator_state::running;
             if (left_) {
                 left_->on_execute(pipeline_context);
@@ -64,16 +79,12 @@ namespace components::operators {
         return nullptr;
     }
 
-    const collection_full_name_t& operator_t::collection_name() const noexcept {
-        assert(context_ && "collection_name() requires non-null context");
-        return context_->name();
+    std::pmr::memory_resource* operator_t::resource() const noexcept {
+        return resource_;
     }
 
-    services::collection::context_collection_t* operator_t::context() noexcept { return context_; }
-
-    std::pmr::memory_resource* operator_t::resource() const noexcept {
-        assert(context_ && "resource() requires non-null context");
-        return context_->resource();
+    log_t& operator_t::log() noexcept {
+        return log_;
     }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
@@ -97,6 +108,10 @@ namespace components::operators {
 
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
 
+    void operator_t::mark_executed() {
+        state_ = operator_state::executed;
+    }
+
     void operator_t::clear() {
         state_ = operator_state::created;
         left_ = nullptr;
@@ -110,13 +125,13 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
-    read_only_operator_t::read_only_operator_t(services::collection::context_collection_t* collection,
+    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log,
                                                operator_type type)
-        : operator_t(collection, type) {}
+        : operator_t(resource, std::move(log), type) {}
 
-    read_write_operator_t::read_write_operator_t(services::collection::context_collection_t* collection,
+    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log,
                                                  operator_type type)
-        : operator_t(collection, type)
+        : operator_t(resource, std::move(log), type)
         , state_(read_write_operator_state::pending) {}
 
 } // namespace components::operators

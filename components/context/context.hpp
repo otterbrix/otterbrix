@@ -21,6 +21,9 @@ namespace components::pipeline {
         const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
+        actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
+        actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
+
         explicit context_t(logical_plan::storage_parameters init_parameters);
         context_t(context_t&& context) noexcept;
         context_t(session::session_id_t session,

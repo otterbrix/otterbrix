@@ -15,7 +15,7 @@ namespace services::planner::impl {
         auto plan = boost::intrusive_ptr(
             //new components::operators::operator_insert(context.at(node->collection_full_name()),
             //                                                       insert->key_translation()));
-            new components::operators::operator_insert(context.at(node->collection_full_name())));
+            new components::operators::operator_insert(context.resource, context.log.clone(), node->collection_full_name()));
         plan->set_children(create_plan(context, function_registry, node->children().front(), std::move(limit)));
 
         return plan;

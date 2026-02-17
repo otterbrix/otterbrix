@@ -96,8 +96,7 @@ TEST_CASE("services::wal::insert_one_test") {
         REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
         const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
         REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-        REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
-        REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
+        REQUIRE(chunk.value(1, 0).value<std::string_view>() == std::to_string(num));
 
         read_index = finish;
     }
@@ -168,8 +167,7 @@ TEST_CASE("services::wal::insert_many_test") {
         for (size_t j = 0; j < chunk.size(); j++) {
             ++num;
             REQUIRE(chunk.value(0, j).value<int64_t>() == num);
-            REQUIRE(chunk.value(1, j).value<std::string_view>() == gen_id(num, &resource));
-            REQUIRE(chunk.value(2, j).value<std::string_view>() == std::to_string(num));
+            REQUIRE(chunk.value(1, j).value<std::string_view>() == std::to_string(num));
         }
 
         read_index = finish;
@@ -405,8 +403,7 @@ TEST_CASE("services::wal::read_record") {
         REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->size() > 0);
         const auto& chunk = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->data_chunk();
         REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-        REQUIRE(chunk.value(1, 0).value<std::string_view>() == gen_id(num, &resource));
-        REQUIRE(chunk.value(2, 0).value<std::string_view>() == std::to_string(num));
+        REQUIRE(chunk.value(1, 0).value<std::string_view>() == std::to_string(num));
         index = test_wal.wal->test_next_record(index);
     }
     REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
@@ -449,7 +446,5 @@ TEST_CASE("services::wal::large_insert_many_rows") {
     REQUIRE(read_chunk.size() == kRows);
 
     REQUIRE(read_chunk.value(0, 0).value<int64_t>() == 1);
-    REQUIRE(read_chunk.value(1, 0).value<std::string_view>() == gen_id(1, &resource));
     REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);
-    REQUIRE(read_chunk.value(1, kRows - 1).value<std::string_view>() == gen_id(kRows, &resource));
 }

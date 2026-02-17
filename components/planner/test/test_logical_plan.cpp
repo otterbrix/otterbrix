@@ -76,7 +76,7 @@ TEST_CASE("components::planner::group") {
     auto resource = std::pmr::synchronized_pool_resource();
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
         scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
         auto agg_expr = make_aggregate_expression(&resource, "sum", key(&resource, "total"));
@@ -91,11 +91,11 @@ TEST_CASE("components::planner::group") {
         auto node_group = make_node_group(&resource, get_name(), expressions);
         REQUIRE(
             node_group->to_string() ==
-            R"_($group: {_id: "date", total: {$sum: {$multiply: ["price", "quantity"]}}, avg_quantity: {$avg: "quantity"}})_");
+            R"_($group: {count: "date", total: {$sum: {$multiply: ["price", "quantity"]}}, avg_quantity: {$avg: "quantity"}})_");
     }
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
         scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
         scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "count_4"));
@@ -103,7 +103,7 @@ TEST_CASE("components::planner::group") {
         scalar_expr->append_param(key(&resource, "count"));
         expressions.emplace_back(std::move(scalar_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);
-        REQUIRE(node_group->to_string() == R"_($group: {_id: "date", count_4: {$multiply: [#1, "count"]}})_");
+        REQUIRE(node_group->to_string() == R"_($group: {count: "date", count_4: {$multiply: [#1, "count"]}})_");
     }
 }
 
@@ -137,7 +137,7 @@ TEST_CASE("components::planner::aggregate") {
 
     {
         std::vector<expression_ptr> expressions;
-        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "_id"));
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
         scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
         scalar_expr = make_scalar_expression(&resource, scalar_type::multiply, key(&resource, "count_4"));
@@ -158,7 +158,7 @@ TEST_CASE("components::planner::aggregate") {
 
     REQUIRE(node_aggregate->to_string() == R"_($aggregate: {)_"
                                            R"_($match: {"key": {$eq: #1}}, )_"
-                                           R"_($group: {_id: "date", count_4: {$multiply: [#1, "count"]}}, )_"
+                                           R"_($group: {count: "date", count_4: {$multiply: [#1, "count"]}}, )_"
                                            R"_($sort: {name: 1, count: -1})_"
                                            R"_(})_");
 }

@@ -33,29 +33,29 @@ namespace services::planner::impl {
             }
         }
 
-        void add_group_aggregate(collection::context_collection_t* context,
+        void add_group_aggregate(std::pmr::memory_resource* resource, log_t log,
                                  const components::compute::function_registry_t& function_registry,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
-                                 context,
+                                      resource, log,
                                  function_registry.get_function(expr->function_uid()),
                                  expr->params())));
         }
 
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_group(const context_storage_t& context,
-                      const components::compute::function_registry_t& function_registry,
-                      const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
+                                                            const components::compute::function_registry_t& function_registry,
+                                                                const components::logical_plan::node_ptr& node) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
-        auto collection_context = context.at(node->collection_full_name());
-        if (collection_context) {
-            group = new components::operators::operator_group_t(collection_context);
+        auto coll_name = node->collection_full_name();
+        bool known = context.has_collection(coll_name);
+        if (known) {
+            group = new components::operators::operator_group_t(context.resource, context.log.clone());
         } else {
-            group = new components::operators::operator_group_t(node->resource());
+            group = new components::operators::operator_group_t(node->resource(), log_t{});
         }
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
@@ -66,7 +66,8 @@ namespace services::planner::impl {
                                   static_cast<const components::expressions::scalar_expression_t*>(expr.get()));
                           } else if (expr->group() == components::expressions::expression_group::aggregate) {
                               add_group_aggregate(
-                                  context.at(node->collection_full_name()),
+                                  known ? context.resource : node->resource(),
+                                  known ? context.log.clone() : log_t{},
                                   function_registry,
                                   group,
                                   static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));

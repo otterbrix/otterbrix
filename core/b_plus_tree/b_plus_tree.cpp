@@ -792,7 +792,11 @@ namespace core::b_plus_tree {
         }
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
         size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
-        file->read(static_cast<void*>(buffer), METADATA_SIZE, 0);
+        if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            tree_mutex_.unlock();
+            return;
+        }
 
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
@@ -810,7 +814,17 @@ namespace core::b_plus_tree {
             ids_.push_back(segment_tree_id);
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            assert(file_exists(fs_, leaf_file_name));
+            if (!file_exists(fs_, leaf_file_name)) {
+                for (size_t j = 0; j < i; j++) {
+                    delete *(nodes_layer + j);
+                }
+                resource_->deallocate(static_cast<void*>(nodes_layer), leaf_nodes_count_ * sizeof(base_node_t*));
+                resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+                item_count_ = 0;
+                leaf_nodes_count_ = 0;
+                tree_mutex_.unlock();
+                return;
+            }
             std::unique_ptr<core::filesystem::file_handle_t> leaf_file =
                 open_file(fs_, leaf_file_name, file_flags::READ | file_flags::WRITE);
             base_node_t* node = static_cast<base_node_t*>(new leaf_node_t(resource_,

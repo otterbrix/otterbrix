@@ -6,6 +6,7 @@
 #include <components/log/log.hpp>
 #include <core/executor.hpp>
 
+#include <core/config.hpp>
 #include <core/file/file_system.hpp>
 
 #include <memory>
@@ -23,6 +24,11 @@ namespace services {
         class manager_disk_empty_t;
         using manager_disk_empty_ptr = std::unique_ptr<manager_disk_empty_t, actor_zeta::pmr::deleter_t>;
     } // namespace disk
+
+    namespace index {
+        class manager_index_t;
+        using manager_index_ptr = std::unique_ptr<manager_index_t, actor_zeta::pmr::deleter_t>;
+    } // namespace index
 
     namespace wal {
         class manager_wal_replicate_t;
@@ -47,7 +53,25 @@ namespace otterbrix {
     protected:
         explicit base_otterbrix_t(const configuration::config& config);
         std::filesystem::path main_path_;
+#if defined(OTTERBRIX_TSAN_ENABLED)
+        // TSAN cannot see through synchronized_pool_resource's internal mutex,
+        // causing false positive data race reports on memory reuse between threads.
+        // Under TSAN, delegate to new_delete_resource() which TSAN understands natively.
+        struct tsan_resource_t final : std::pmr::memory_resource {
+        protected:
+            void* do_allocate(size_t bytes, size_t align) override {
+                return std::pmr::new_delete_resource()->allocate(bytes, align);
+            }
+            void do_deallocate(void* p, size_t bytes, size_t align) override {
+                std::pmr::new_delete_resource()->deallocate(p, bytes, align);
+            }
+            bool do_is_equal(const memory_resource& other) const noexcept override {
+                return this == &other;
+            }
+        } resource;
+#else
         std::pmr::synchronized_pool_resource resource;
+#endif
         log_t log_;
         actor_zeta::scheduler_ptr scheduler_;
         actor_zeta::scheduler_ptr scheduler_dispatcher_;
@@ -55,6 +79,7 @@ namespace otterbrix {
         std::variant<std::monostate, services::disk::manager_disk_empty_ptr, services::disk::manager_disk_ptr>
             manager_disk_;
         std::variant<std::monostate, services::wal::manager_wal_empty_ptr, services::wal::manager_wal_ptr> manager_wal_;
+        services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
 

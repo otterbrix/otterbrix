@@ -7,7 +7,6 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
@@ -33,13 +32,15 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
         , transformer_(resource) {
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(), manager_disk_->address()));
-        manager_wal_->sync(
-            std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
+                                                   manager_disk_->address(),
+                                                   actor_zeta::address_t::empty_address()));
+        manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
+                                           manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
 
-        manager_dispatcher_->set_run_fn([this] { scheduler_->run(100); });
-        manager_disk_->set_run_fn([this] { scheduler_->run(100); });
+        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
+        manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
     }
 
     ~test_dispatcher() {
@@ -68,10 +69,10 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                       &manager_dispatcher_t::execute_plan,
-                                                       session_id_t{},
-                                                       std::move(view.node),
-                                                       std::move(view.params));
+                                                  &manager_dispatcher_t::execute_plan,
+                                                  session_id_t{},
+                                                  std::move(view.node),
+                                                  std::move(view.params));
         pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
     }
 
@@ -154,10 +155,9 @@ TEST_CASE("services::dispatcher::computed_operations") {
     });
 
     std::stringstream query;
-    query << "INSERT INTO test.test (_id, name, count) VALUES ";
+    query << "INSERT INTO test.test (name, count) VALUES ";
     for (int num = 0; num < 100; ++num) {
-        query << "('" << gen_id(num + 1, &mr) << "', "
-              << "'Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+        query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
     }
 
     test.execute_sql(query.str());
@@ -165,12 +165,10 @@ TEST_CASE("services::dispatcher::computed_operations") {
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         REQUIRE(cur->is_success());
 
-        REQUIRE(catalog.get_table_schema(id).columns()[0].alias() == "_id");
+        REQUIRE(catalog.get_table_schema(id).columns()[0].alias() == "name");
         REQUIRE(catalog.get_table_schema(id).columns()[0].type() == logical_type::STRING_LITERAL);
-        REQUIRE(catalog.get_table_schema(id).columns()[1].alias() == "name");
-        REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::STRING_LITERAL);
-        REQUIRE(catalog.get_table_schema(id).columns()[2].alias() == "count");
-        REQUIRE(catalog.get_table_schema(id).columns()[2].type() == logical_type::BIGINT);
+        REQUIRE(catalog.get_table_schema(id).columns()[1].alias() == "count");
+        REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::BIGINT);
     });
     /*
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
@@ -186,7 +184,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
         REQUIRE(count.back().type() == logical_type::BIGINT);
     });
 
-    test.execute_sql("INSERT INTO test.test (_id, name, count) VALUES ('" + gen_id(100) + "', 10, 'test');");
+    test.execute_sql("INSERT INTO test.test (name, count) VALUES (10, 'test');");
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
         auto count = catalog.get_computing_table_schema(id).find_field_versions("count");

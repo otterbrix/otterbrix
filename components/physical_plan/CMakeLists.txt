@@ -7,8 +7,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
-        operators/operator_add_index.cpp
-        operators/operator_drop_index.cpp
 
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp
@@ -69,7 +67,3 @@ target_link_libraries(
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )
 
-if (DEV_MODE)
-    add_definitions(-DDEV_MODE)
-    add_subdirectory(tests)
-endif ()

@@ -19,7 +19,7 @@ log_t::log_t(std::shared_ptr<spdlog::async_logger> logger)
 log_t::log_t(std::shared_ptr<spdlog::logger> logger)
     : logger_(std::move(logger)) {}
 
-auto log_t::clone() noexcept -> log_t { return logger_; }
+auto log_t::clone() const noexcept -> log_t { return logger_; }
 
 auto log_t::set_level(level l) -> void { logger_->set_level(static_cast<spdlog::level::level_enum>(l)); }
 auto log_t::get_level() const -> log_t::level {

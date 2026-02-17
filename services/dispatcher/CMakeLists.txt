@@ -27,6 +27,7 @@ target_link_libraries(
         otterbrix::cursor
         otterbrix::session
         otterbrix::planner
+        otterbrix::index_service
         spdlog::spdlog
         actor-zeta::actor-zeta
         absl::int128

@@ -76,6 +76,8 @@ namespace components::index {
         const actor_zeta::address_t& disk_manager() const noexcept;
         void set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept;
 
+        std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value) const;
+
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 
     protected:

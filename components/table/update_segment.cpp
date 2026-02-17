@@ -142,7 +142,7 @@ namespace components::table {
                 handle = buffer_manager.pin(entry->block);
             } else {
                 handle = buffer_manager.allocate(storage::memory_tag::TRANSACTION, capacity, false);
-                entry->block = handle.block_handle();
+                entry->block = handle.block_handle()->shared_from_this();
             }
             entry->capacity = capacity;
             entry->position = 0;

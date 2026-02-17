@@ -29,7 +29,6 @@ option(ENABLE_TSAN "thread sanitizer" OFF)
 option(EXAMPLE "Example" OFF)
 option(ALLOW_BENCHMARK "Allow benchmark" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
-option(APPLICATION_SERVER "application server" OFF)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_definitions(-D_GNU_SOURCE)
@@ -151,13 +150,6 @@ endif(CCACHE_FOUND)
 
 # ccache
 #############################################################################################
-# wasm
-if(WASM_BUILD)
-
-endif()
-# wasm
-#############################################################################################
-
 #set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 #set( CMAKE_SKIP_RPATH ON)
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
@@ -177,16 +169,15 @@ include_directories(components)
 add_subdirectory(core)
 add_subdirectory(components)
 
-if (APPLICATION_SERVER)
-    set(WASM_OBJECT OFF)
-    set(WASM_BUILD OFF)
-endif ()
-
 include_directories(services)
 add_subdirectory(services)
 add_subdirectory(integration)
 if(EXAMPLE)
     add_subdirectory(example)
+endif()
+
+if(ALLOW_BENCHMARK)
+    add_subdirectory(benchmark)
 endif()
 
 

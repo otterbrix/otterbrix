@@ -42,7 +42,7 @@ namespace components::table::storage {
         virtual void reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) = 0;
         virtual buffer_handle_t pin(std::shared_ptr<block_handle_t>& handle) = 0;
         virtual void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) = 0;
-        virtual void unpin(std::shared_ptr<block_handle_t>& handle) = 0;
+        virtual void unpin(block_handle_t* handle) = 0;
 
         virtual uint64_t block_allocation_size() const = 0;
         virtual uint64_t block_size() const = 0;

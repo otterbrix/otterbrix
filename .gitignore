@@ -425,3 +425,4 @@ build
 .opencode
 *.wal
 *.txt.user
+benchmark/data/

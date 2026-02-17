@@ -1,5 +1,6 @@
 #include "manager_wal_replicate.hpp"
 #include <actor-zeta/spawn.hpp>
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -61,6 +62,7 @@ namespace services::wal {
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
+
         poll_pending();
 
         switch (msg->command()) {
@@ -112,6 +114,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_index, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_index, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -125,179 +131,188 @@ namespace services::wal {
     void manager_wal_replicate_t::create_wal_worker(int count_worker) {
         for (int i = 0; i < count_worker; ++i) {
             if (config_.sync_to_disk) {
-                trace(log_, "manager_wal_replicate_t::create_wal_worker");
-                auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_);
+                trace(log_, "manager_wal_replicate_t::create_wal_worker index={} count={}", i, count_worker);
+                auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_, i, count_worker);
                 dispatchers_.emplace_back(std::move(worker));
             } else {
-                trace(log_, "manager_wal_replicate_t::create_wal_worker without disk");
-                auto worker = actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_);
+                trace(log_, "manager_wal_replicate_t::create_wal_worker without disk index={}", i);
+                auto worker = actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_, i, count_worker);
                 dispatchers_.emplace_back(std::move(worker));
             }
         }
     }
 
-    manager_wal_replicate_t::unique_future<std::vector<record_t>>
-    manager_wal_replicate_t::load(session_id_t session, services::wal::id_t wal_id) {
-        trace(log_, "manager_wal_replicate_t::load, id: {}", wal_id);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::load, session, wal_id);
-        if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+    manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(
+        session_id_t session,
+        services::wal::id_t wal_id) {
+        trace(log_, "manager_wal_replicate_t::load, id: {}, workers: {}", wal_id, dispatchers_.size());
+        std::vector<record_t> all_records;
+        for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
+            auto [needs_sched, future] = actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::load, session, wal_id);
+            if (needs_sched) {
+                scheduler_->enqueue(dispatchers_[i].get());
+            }
+            auto records = co_await std::move(future);
+            all_records.insert(all_records.end(), records.begin(), records.end());
         }
-        co_return co_await std::move(future);
+        std::sort(all_records.begin(), all_records.end(),
+            [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        co_return all_records;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::create_database(session_id_t session,
-                                             components::logical_plan::node_create_database_ptr data) {
+
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::create_database(
+        session_id_t session,
+        components::logical_plan::node_create_database_ptr data) {
         trace(log_, "manager_wal_replicate_t::create_database {}", data->database_name());
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_database, session, std::move(data));
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_database, session, std::move(data));
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::drop_database(session_id_t session,
-                                           components::logical_plan::node_drop_database_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::drop_database(
+        session_id_t session,
+        components::logical_plan::node_drop_database_ptr data) {
         trace(log_, "manager_wal_replicate_t::drop_database {}", data->database_name());
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_database, session, std::move(data));
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_database, session, std::move(data));
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[0].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::create_collection(session_id_t session,
-                                               components::logical_plan::node_create_collection_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::create_collection(
+        session_id_t session,
+        components::logical_plan::node_create_collection_ptr data) {
         trace(log_,
               "manager_wal_replicate_t::create_collection {}::{}",
               data->database_name(),
               data->collection_name());
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_collection, session, std::move(data));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::create_collection, session, std::move(data));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::drop_collection(session_id_t session,
-                                             components::logical_plan::node_drop_collection_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::drop_collection(
+        session_id_t session,
+        components::logical_plan::node_drop_collection_ptr data) {
         trace(log_, "manager_wal_replicate_t::drop_collection {}::{}", data->database_name(), data->collection_name());
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::drop_collection, session, std::move(data));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::drop_collection, session, std::move(data));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::insert_one(session_id_t session, components::logical_plan::node_insert_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::insert_one(
+        session_id_t session,
+        components::logical_plan::node_insert_ptr data) {
         trace(log_, "manager_wal_replicate_t::insert_one");
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::insert_one, session, std::move(data));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::insert_one, session, std::move(data));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::insert_many(session_id_t session, components::logical_plan::node_insert_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::insert_many(
+        session_id_t session,
+        components::logical_plan::node_insert_ptr data) {
         trace(log_, "manager_wal_replicate_t::insert_many");
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::insert_many, session, std::move(data));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::insert_many, session, std::move(data));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::delete_one(session_id_t session,
-                                        components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::delete_one(
+        session_id_t session,
+        components::logical_plan::node_delete_ptr data,
+        components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::delete_one");
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(),
-                                                      &wal_replicate_t::delete_one,
-                                                      session,
-                                                      std::move(data),
-                                                      std::move(params));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::delete_one, session, std::move(data), std::move(params));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::delete_many(session_id_t session,
-                                         components::logical_plan::node_delete_ptr data,
-                                         components::logical_plan::parameter_node_ptr params) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::delete_many(
+        session_id_t session,
+        components::logical_plan::node_delete_ptr data,
+        components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::delete_many");
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(),
-                                                      &wal_replicate_t::delete_many,
-                                                      session,
-                                                      std::move(data),
-                                                      std::move(params));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::delete_many, session, std::move(data), std::move(params));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::update_one(session_id_t session,
-                                        components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::update_one(
+        session_id_t session,
+        components::logical_plan::node_update_ptr data,
+        components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::update_one");
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(),
-                                                      &wal_replicate_t::update_one,
-                                                      session,
-                                                      std::move(data),
-                                                      std::move(params));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::update_one, session, std::move(data), std::move(params));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::update_many(session_id_t session,
-                                         components::logical_plan::node_update_ptr data,
-                                         components::logical_plan::parameter_node_ptr params) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::update_many(
+        session_id_t session,
+        components::logical_plan::node_update_ptr data,
+        components::logical_plan::parameter_node_ptr params) {
         trace(log_, "manager_wal_replicate_t::update_many");
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[0].get(),
-                                                      &wal_replicate_t::update_many,
-                                                      session,
-                                                      std::move(data),
-                                                      std::move(params));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::update_many, session, std::move(data), std::move(params));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::create_index(session_id_t session, components::logical_plan::node_create_index_ptr data) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::create_index(
+        session_id_t session,
+        components::logical_plan::node_create_index_ptr data) {
         trace(log_, "manager_wal_replicate_t::create_index");
-        auto [needs_sched, future] =
-            actor_zeta::send(dispatchers_[0].get(), &wal_replicate_t::create_index, session, std::move(data));
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::create_index, session, std::move(data));
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[0].get());
+            scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(
-        std::pmr::memory_resource* resource,
-        actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
-        log_t& log)
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::drop_index(
+        session_id_t session,
+        components::logical_plan::node_drop_index_ptr data) {
+        trace(log_, "manager_wal_replicate_t::drop_index");
+        auto idx = worker_index_for(data->collection_full_name());
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::drop_index, session, std::move(data));
+        if (needs_sched) {
+            scheduler_->enqueue(dispatchers_[idx].get());
+        }
+        co_return co_await std::move(future);
+    }
+
+    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* resource,
+                                                                 actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
+                                                                 log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
         , resource_(resource)
         , log_(log)
@@ -309,7 +324,8 @@ namespace services::wal {
 
     actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
         pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(), [](const auto& f) { return f.available(); }),
+            std::remove_if(pending_void_.begin(), pending_void_.end(),
+                           [](const auto& f) { return f.available(); }),
             pending_void_.end());
 
         switch (msg->command()) {
@@ -360,6 +376,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_index, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_index, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -373,90 +393,89 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
     }
 
-    manager_wal_replicate_empty_t::unique_future<std::vector<record_t>>
-    manager_wal_replicate_empty_t::load(session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
+    manager_wal_replicate_empty_t::unique_future<std::vector<record_t>> manager_wal_replicate_empty_t::load(
+        session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::load - return empty records");
         co_return std::vector<record_t>{};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::create_database(session_id_t /*session*/,
-                                                   components::logical_plan::node_create_database_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_database(
+        session_id_t /*session*/, components::logical_plan::node_create_database_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_database - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::drop_database(session_id_t /*session*/,
-                                                 components::logical_plan::node_drop_database_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_database(
+        session_id_t /*session*/, components::logical_plan::node_drop_database_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::drop_database - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::create_collection(session_id_t /*session*/,
-                                                     components::logical_plan::node_create_collection_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_collection(
+        session_id_t /*session*/, components::logical_plan::node_create_collection_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_collection - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::drop_collection(session_id_t /*session*/,
-                                                   components::logical_plan::node_drop_collection_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_collection(
+        session_id_t /*session*/, components::logical_plan::node_drop_collection_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::drop_collection - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::insert_one(session_id_t /*session*/,
-                                              components::logical_plan::node_insert_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::insert_one(
+        session_id_t /*session*/, components::logical_plan::node_insert_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::insert_one - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::insert_many(session_id_t /*session*/,
-                                               components::logical_plan::node_insert_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::insert_many(
+        session_id_t /*session*/, components::logical_plan::node_insert_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::insert_many - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::delete_one(session_id_t /*session*/,
-                                              components::logical_plan::node_delete_ptr /*data*/,
-                                              components::logical_plan::parameter_node_ptr /*params*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::delete_one(
+        session_id_t /*session*/,
+        components::logical_plan::node_delete_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::delete_one - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::delete_many(session_id_t /*session*/,
-                                               components::logical_plan::node_delete_ptr /*data*/,
-                                               components::logical_plan::parameter_node_ptr /*params*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::delete_many(
+        session_id_t /*session*/,
+        components::logical_plan::node_delete_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::delete_many - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::update_one(session_id_t /*session*/,
-                                              components::logical_plan::node_update_ptr /*data*/,
-                                              components::logical_plan::parameter_node_ptr /*params*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::update_one(
+        session_id_t /*session*/,
+        components::logical_plan::node_update_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::update_one - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::update_many(session_id_t /*session*/,
-                                               components::logical_plan::node_update_ptr /*data*/,
-                                               components::logical_plan::parameter_node_ptr /*params*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::update_many(
+        session_id_t /*session*/,
+        components::logical_plan::node_update_ptr /*data*/,
+        components::logical_plan::parameter_node_ptr /*params*/) {
         trace(log_, "manager_wal_replicate_empty_t::update_many - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::create_index(session_id_t /*session*/,
-                                                components::logical_plan::node_create_index_ptr /*data*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_index(
+        session_id_t /*session*/, components::logical_plan::node_create_index_ptr /*data*/) {
         trace(log_, "manager_wal_replicate_empty_t::create_index - return success");
+        co_return services::wal::id_t{0};
+    }
+
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_index(
+        session_id_t /*session*/, components::logical_plan::node_drop_index_ptr /*data*/) {
+        trace(log_, "manager_wal_replicate_empty_t::drop_index - return success");
         co_return services::wal::id_t{0};
     }
 

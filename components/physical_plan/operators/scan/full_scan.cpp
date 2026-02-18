@@ -64,7 +64,9 @@ namespace components::operators {
         }
     }
 
-    full_scan::full_scan(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
+    full_scan::full_scan(std::pmr::memory_resource* resource,
+                         log_t log,
+                         collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::full_scan)
@@ -73,7 +75,8 @@ namespace components::operators {
         , limit_(limit) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty()) return;
+        if (name_.empty())
+            return;
         async_wait();
     }
 
@@ -83,8 +86,8 @@ namespace components::operators {
         }
 
         // Get types to build filter
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+        auto [_t, tf] =
+            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, name_);
         auto types = co_await std::move(tf);
 
         // Build filter from expression
@@ -93,15 +96,17 @@ namespace components::operators {
         // Scan from storage
         int limit_val = limit_.limit();
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_scan, ctx->session, name_,
-            std::move(filter), limit_val);
+                                         &services::disk::manager_disk_t::storage_scan,
+                                         ctx->session,
+                                         name_,
+                                         std::move(filter),
+                                         limit_val);
         auto data = co_await std::move(sf);
 
         if (data) {
             output_ = make_operator_data(resource_, std::move(*data));
         } else {
-            output_ = make_operator_data(resource_,
-                std::pmr::vector<types::complex_logical_type>{resource_});
+            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
         }
         mark_executed();
         co_return;

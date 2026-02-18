@@ -33,22 +33,25 @@ namespace services::planner::impl {
             }
         }
 
-        void add_group_aggregate(std::pmr::memory_resource* resource, log_t log,
+        void add_group_aggregate(std::pmr::memory_resource* resource,
+                                 log_t log,
                                  const components::compute::function_registry_t& function_registry,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
-                                      resource, log,
+                                 resource,
+                                 log,
                                  function_registry.get_function(expr->function_uid()),
                                  expr->params())));
         }
 
     } // namespace
 
-    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
-                                                            const components::compute::function_registry_t& function_registry,
-                                                                const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_group(const context_storage_t& context,
+                      const components::compute::function_registry_t& function_registry,
+                      const components::logical_plan::node_ptr& node) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);

@@ -4,12 +4,12 @@
 #include <components/catalog/catalog.hpp>
 #include <core/executor.hpp>
 #include <memory>
-#include <thread>
 #include <services/disk/manager_disk.hpp>
-#include <services/index/manager_index.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/manager_index.hpp>
 #include <services/loader/loader.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <thread>
 
 namespace otterbrix {
 
@@ -40,8 +40,8 @@ namespace otterbrix {
 
         services::loader::loader_t loader(config.disk, config.wal, &resource, log_);
         auto state = loader.load();
-        auto index_definitions = std::move(state.index_definitions);  // save before move
-        auto wal_records = std::move(state.wal_records);  // save WAL records before move
+        auto index_definitions = std::move(state.index_definitions); // save before move
+        auto wal_records = std::move(state.wal_records);             // save WAL records before move
 
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
@@ -49,16 +49,15 @@ namespace otterbrix {
         services::wal::manager_wal_replicate_empty_t* wal_empty_ptr = nullptr;
         if (config.wal.on) {
             auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
-                                                                                                scheduler_.get(),
-                                                                                                config.wal,
-                                                                                                log_);
+                                                                                     scheduler_.get(),
+                                                                                     config.wal,
+                                                                                     log_);
             manager_wal_address = manager->address();
             wal_ptr = manager.get();
             manager_wal_ = std::move(manager);
         } else {
-            auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource,
-                                                                                                      scheduler_.get(),
-                                                                                                      log_);
+            auto manager =
+                actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource, scheduler_.get(), log_);
             manager_wal_address = manager->address();
             wal_empty_ptr = manager.get();
             manager_wal_ = std::move(manager);
@@ -71,16 +70,15 @@ namespace otterbrix {
         services::disk::manager_disk_empty_t* disk_empty_ptr = nullptr;
         if (config.disk.on) {
             auto manager = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
-                                                                                        scheduler_.get(),
-                                                                                        scheduler_disk_.get(),
-                                                                                        config.disk,
-                                                                                        log_);
+                                                                             scheduler_.get(),
+                                                                             scheduler_disk_.get(),
+                                                                             config.disk,
+                                                                             log_);
             manager_disk_address = manager->address();
             disk_ptr = manager.get();
             manager_disk_ = std::move(manager);
         } else {
-            auto manager =
-                actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
+            auto manager = actor_zeta::spawn<services::disk::manager_disk_empty_t>(&resource, scheduler_.get());
             manager_disk_address = manager->address();
             disk_empty_ptr = manager.get();
             manager_disk_ = std::move(manager);
@@ -88,30 +86,26 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::manager_index start");
-        manager_index_ = actor_zeta::spawn<services::index::manager_index_t>(
-            &resource, scheduler_.get(), log_, config.disk.path);
+        manager_index_ =
+            actor_zeta::spawn<services::index::manager_index_t>(&resource, scheduler_.get(), log_, config.disk.path);
         auto manager_index_address = manager_index_->address();
         trace(log_, "spaces::manager_index finish");
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
-                                                                                     scheduler_dispatcher_.get(),
-                                                                                     log_);
+            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
-        wrapper_dispatcher_ =
-            actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
+        wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_address,
-                                                   manager_disk_address,
-                                                   manager_index_address));
+        manager_dispatcher_->sync(std::make_tuple(manager_wal_address, manager_disk_address, manager_index_address));
 
         if (wal_ptr) {
             wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
         } else {
-            wal_empty_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
+            wal_empty_ptr->sync(
+                std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
         }
 
         if (disk_ptr) {
@@ -135,8 +129,11 @@ namespace otterbrix {
                 components::catalog::table_id table_id(&resource, coll_name);
                 auto err = catalog.create_computing_table(table_id);
                 if (err) {
-                    warn(log_, "spaces::failed to create computing table {}.{}: {}",
-                         coll_name.database, coll_name.collection, err.what());
+                    warn(log_,
+                         "spaces::failed to create computing table {}.{}: {}",
+                         coll_name.database,
+                         coll_name.collection,
+                         err.what());
                 }
             }
         }
@@ -155,9 +152,7 @@ namespace otterbrix {
         }
 
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
-        manager_dispatcher_->init_from_state(
-            std::move(state.databases),
-            std::move(state.collections));
+        manager_dispatcher_->init_from_state(std::move(state.databases), std::move(state.collections));
 
         scheduler_dispatcher_->start();
         scheduler_->start();
@@ -165,16 +160,17 @@ namespace otterbrix {
 
         if (!wal_records.empty()) {
             // Group WAL records by collection for parallel replay
-            std::unordered_map<collection_full_name_t,
-                               std::vector<services::wal::record_t*>,
-                               collection_name_hash> grouped_records;
+            std::unordered_map<collection_full_name_t, std::vector<services::wal::record_t*>, collection_name_hash>
+                grouped_records;
             for (auto& record : wal_records) {
                 if (record.data) {
                     grouped_records[record.data->collection_full_name()].push_back(&record);
                 }
             }
-            trace(log_, "spaces::replaying {} WAL records across {} collection groups",
-                  wal_records.size(), grouped_records.size());
+            trace(log_,
+                  "spaces::replaying {} WAL records across {} collection groups",
+                  wal_records.size(),
+                  grouped_records.size());
 
             std::vector<std::thread> replay_threads;
             replay_threads.reserve(grouped_records.size());
@@ -182,13 +178,17 @@ namespace otterbrix {
                 replay_threads.emplace_back([this, &records, &coll_name] {
                     auto session = components::session::session_id_t();
                     for (auto* record : records) {
-                        trace(log_, "spaces::replaying WAL record id {} type {} (collection {})",
-                              record->id, record->data->to_string(), coll_name.to_string());
-                        auto cursor = wrapper_dispatcher_->execute_plan(
-                            session, record->data, record->params);
+                        trace(log_,
+                              "spaces::replaying WAL record id {} type {} (collection {})",
+                              record->id,
+                              record->data->to_string(),
+                              coll_name.to_string());
+                        auto cursor = wrapper_dispatcher_->execute_plan(session, record->data, record->params);
                         if (cursor->is_error()) {
-                            warn(log_, "spaces::failed to replay WAL record {}: {}",
-                                 record->id, cursor->get_error().what);
+                            warn(log_,
+                                 "spaces::failed to replay WAL record {}: {}",
+                                 record->id,
+                                 cursor->get_error().what);
                         }
                     }
                 });
@@ -205,12 +205,13 @@ namespace otterbrix {
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {
-                trace(log_, "spaces::creating index: {} on {}",
-                      index_def->name(), index_def->collection_full_name().to_string());
+                trace(log_,
+                      "spaces::creating index: {} on {}",
+                      index_def->name(),
+                      index_def->collection_full_name().to_string());
                 auto cursor = wrapper_dispatcher_->execute_plan(session, index_def, nullptr);
                 if (cursor->is_error()) {
-                    warn(log_, "spaces::failed to create index {}: {}",
-                         index_def->name(), cursor->get_error().what);
+                    warn(log_, "spaces::failed to create index {}: {}", index_def->name(), cursor->get_error().what);
                 } else {
                     trace(log_, "spaces::index {} created successfully", index_def->name());
                 }

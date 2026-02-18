@@ -162,11 +162,10 @@ namespace components::expressions {
                                          size_t,
                                          const logical_plan::storage_parameters*) {
         if (left_) {
-            auto indices = to.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            auto prev_value = to.value(indices, row_to);
+            assert(key_.path().front() != size_t(-1));
+            auto prev_value = to.value(key_.path(), row_to);
             auto res = prev_value != left_->output().value();
-            to.set_value(indices, row_to, left_->output().value());
+            to.set_value(key_.path(), row_to, left_->output().value());
             return res;
         }
         return false;
@@ -222,13 +221,11 @@ namespace components::expressions {
             }
         }
         if (side == side_t::right) {
-            auto indices = from.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            output_ = from.value(indices, row_from);
+            assert(key_.path().front() != size_t(-1));
+            output_ = from.value(key_.path(), row_from);
         } else if (side == side_t::left) {
-            auto indices = to.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            output_ = to.value(indices, row_to);
+            assert(key_.path().front() != size_t(-1));
+            output_ = to.value(key_.path(), row_to);
         }
         return false;
     }

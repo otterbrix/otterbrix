@@ -1,7 +1,6 @@
 #include "operator_sort.hpp"
 #include "transformation.hpp"
 
-
 namespace components::operators {
 
     operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t log)

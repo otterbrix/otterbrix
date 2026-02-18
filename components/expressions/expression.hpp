@@ -80,4 +80,6 @@ namespace components::expressions {
         return stream;
     }
 
+    std::string to_string(const param_storage& param);
+
 } // namespace components::expressions

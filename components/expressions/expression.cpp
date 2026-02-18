@@ -110,4 +110,10 @@ namespace components::expressions {
             param);
     }
 
+    std::string to_string(const param_storage& param) {
+        std::stringstream stream;
+        stream << param;
+        return stream.str();
+    }
+
 } // namespace components::expressions

@@ -7,7 +7,9 @@ namespace components::operators {
 
     class operator_delete final : public read_write_operator_t {
     public:
-        explicit operator_delete(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
+        explicit operator_delete(std::pmr::memory_resource* resource,
+                                 log_t log,
+                                 collection_full_name_t name,
                                  expressions::expression_ptr expr = nullptr);
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
@@ -16,7 +18,7 @@ namespace components::operators {
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         collection_full_name_t name_;
-        expressions::expression_ptr compare_expression_;
+        expressions::expression_ptr expression_;
     };
 
 } // namespace components::operators

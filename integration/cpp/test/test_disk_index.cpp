@@ -3,11 +3,11 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/tests/generaty.hpp>
 
+#include <atomic>
 #include <catch2/catch.hpp>
+#include <fstream>
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <fstream>
 
 using components::expressions::compare_type;
 using components::expressions::side_t;
@@ -134,10 +134,11 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
-            query << "INSERT INTO TestDatabase.TestCollection (count, count_str, count_double, count_bool) VALUES ";
+            query << "INSERT INTO TestDatabase.TestCollection (count, count_str, count_double, count_bool, "
+                     "count_array) VALUES ";
             for (int num = 1; num <= kDocuments; ++num) {
-                query << "("
-                      << num << ", '" << num << "', " << (num + 0.1) << ", " << ((num % 2 != 0) ? "true" : "false") << ", ARRAY[0, 0, 0, 0, 0]"
+                query << "(" << num << ", '" << num << "', " << (num + 0.1) << ", "
+                      << ((num % 2 != 0) ? "true" : "false") << ", ARRAY[0, 0, 0, 0, 0]"
                       << ")" << (num == kDocuments ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());

@@ -107,6 +107,8 @@ namespace components::compute {
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
+        [[nodiscard]] virtual std::unique_ptr<function> get_copy() const = 0;
+
     protected:
         function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options = nullptr);
 
@@ -212,18 +214,24 @@ namespace components::compute {
     public:
         vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
+
+        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
     };
 
     class aggregate_function : public detail::function_impl<aggregate_kernel> {
     public:
         aggregate_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
+
+        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
     };
 
     class row_function : public detail::function_impl<row_kernel> {
     public:
         row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
+
+        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
     };
 
     // WARNING: function_registry_t does NOT provide thread-safety guarantees, use mutex

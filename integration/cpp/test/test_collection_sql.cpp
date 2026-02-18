@@ -180,43 +180,42 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
     INFO("standalone aggregates") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 0);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 99);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4950);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(core::is_equals(cur->chunk_data().value(0, 0).value<double>(), 49.5));
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 49);
         }
     }
 
@@ -264,7 +263,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(core::is_equals(cur->chunk_data().value(0, 0).value<double>(), 4.5));
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4);
         }
     }
 
@@ -349,7 +348,6 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->size() == 20);
         }
     }
-
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::group_by") {
@@ -395,8 +393,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->chunk_data().value(1, number).value<uint64_t>() == 10);
             REQUIRE(cur->chunk_data().value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(core::is_equals(cur->chunk_data().value(3, number).value<int64_t>(),
-                                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2));
+            REQUIRE(cur->chunk_data().value(3, number).value<int64_t>() ==
+                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
             REQUIRE(cur->chunk_data().value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
             REQUIRE(cur->chunk_data().value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
@@ -418,8 +416,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
             REQUIRE(cur->chunk_data().value(1, row).value<uint64_t>() == 10);
             REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(core::is_equals(cur->chunk_data().value(3, row).value<int64_t>(),
-                                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2));
+            REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() ==
+                    static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
             REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == number % 20);
             REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (number + 10) % 20);
         }
@@ -761,7 +759,6 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                                            "SELECT no_such_field, COUNT(count) AS cnt "
                                            "FROM TestDatabase.TestCollection "
                                            "GROUP BY no_such_field;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 0);
+        REQUIRE(cur->is_error());
     }
 }

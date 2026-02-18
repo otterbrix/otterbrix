@@ -222,7 +222,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         INFO("single argument") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               R"_(SELECT count, concat(_id) AS result )_"
+                                               R"_(SELECT count, concat(count_str) AS result )_"
                                                R"_(FROM TestDatabase.TestCollection )_"
                                                R"_(GROUP BY count )_"
                                                R"_(ORDER BY count DESC;)_");
@@ -233,7 +233,7 @@ TEST_CASE("integration::cpp::test_udfs") {
             for (size_t i = 0; i < chunk.size(); i++) {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
                 REQUIRE(chunk.data[1].data<std::string_view>()[i] ==
-                        gen_id(static_cast<int>(kNumInserts - i)) + gen_id(static_cast<int>(kNumInserts - i)));
+                        std::to_string(kNumInserts - i) + std::to_string(kNumInserts - i));
             }
         }
         INFO("multiple arguments") {
@@ -408,7 +408,7 @@ TEST_CASE("integration::cpp::test_udfs") {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               R"_(SELECT count, concat(_id) AS result )_"
+                                               R"_(SELECT count, concat(count_str) AS result )_"
                                                R"_(FROM TestDatabase.TestCollection )_"
                                                R"_(GROUP BY count )_"
                                                R"_(ORDER BY count DESC;)_");

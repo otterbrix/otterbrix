@@ -11,7 +11,8 @@ namespace components::operators::aggregate {
 
     class operator_func_t final : public operator_aggregate_t {
     public:
-        explicit operator_func_t(services::collection::context_collection_t* collection,
+        explicit operator_func_t(std::pmr::memory_resource* resource,
+                                 log_t log,
                                  compute::function*,
                                  std::pmr::vector<expressions::param_storage> keys);
 

@@ -5,7 +5,8 @@
 
 namespace components::operators {
 
-    operator_join_t::operator_join_t(std::pmr::memory_resource* resource, log_t log,
+    operator_join_t::operator_join_t(std::pmr::memory_resource* resource,
+                                     log_t log,
                                      type join_type,
                                      const expressions::expression_ptr& expression)
         : read_only_operator_t(resource, log, operator_type::join)

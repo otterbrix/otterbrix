@@ -32,15 +32,14 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
         , transformer_(resource) {
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
-                                                   manager_disk_->address(),
-                                                   actor_zeta::address_t::empty_address()));
-        manager_wal_->sync(std::make_tuple(actor_zeta::address_t(manager_disk_->address()),
-                                           manager_dispatcher_->address()));
+        manager_dispatcher_->sync(
+            std::make_tuple(manager_wal_->address(), manager_disk_->address(), actor_zeta::address_t::empty_address()));
+        manager_wal_->sync(
+            std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
 
-        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
-        manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
+        manager_dispatcher_->set_run_fn([this] { scheduler_->run(100); });
+        manager_disk_->set_run_fn([this] { scheduler_->run(100); });
     }
 
     ~test_dispatcher() {
@@ -69,10 +68,10 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                  &manager_dispatcher_t::execute_plan,
-                                                  session_id_t{},
-                                                  std::move(view.node),
-                                                  std::move(view.params));
+                                                       &manager_dispatcher_t::execute_plan,
+                                                       session_id_t{},
+                                                       std::move(view.node),
+                                                       std::move(view.params));
         pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
     }
 

@@ -92,7 +92,7 @@ namespace services::dispatcher {
                 auto it = matches.begin();
                 auto next_it = std::next(it);
                 if (truncated_key.storage().size() > it->key_order) {
-                    if (it->type->is_nested()) {
+                    if (it->type->type() == logical_type::STRUCT) {
                         for (size_t i = 0; i < it->type->child_types().size(); i++) {
                             const auto& child = it->type->child_types()[i];
                             if (core::pmr::operator==(child.alias(), truncated_key.storage()[it->key_order])) {
@@ -101,6 +101,34 @@ namespace services::dispatcher {
                                 matches.emplace(next_it, type_match_t{std::move(path), &child, it->key_order + 1});
                             }
                         }
+                    } else if (it->type->type() == logical_type::ARRAY) {
+                        auto arr_type_ext = static_cast<array_logical_type_extension*>(it->type->extension());
+                        // used atoll because it does not give exceptions with incorrect arguments
+                        // and 0 index is invalid anyway
+                        auto index = std::atoll(truncated_key.storage()[it->key_order].c_str());
+                        if (index <= 0 || static_cast<size_t>(index) > arr_type_ext->size()) {
+                            matches.erase(it);
+                            continue;
+                        }
+                        column_path path = it->path;
+                        // store 0 based index
+                        path.emplace_back(index - 1);
+                        matches.emplace(next_it,
+                                        type_match_t{std::move(path), &it->type->child_type(), it->key_order + 1});
+                    } else if (it->type->type() == logical_type::LIST) {
+                        // used atoll because it does not give exceptions with incorrect arguments
+                        // and 0 index is invalid anyway
+                        auto index = std::atoll(truncated_key.storage()[it->key_order].c_str());
+                        // list does not have a fixed size, so we can not check upper bounds here
+                        if (index <= 0) {
+                            matches.erase(it);
+                            continue;
+                        }
+                        column_path path = it->path;
+                        // store 0 based index
+                        path.emplace_back(index - 1);
+                        matches.emplace(next_it,
+                                        type_match_t{std::move(path), &it->type->child_type(), it->key_order + 1});
                     }
                 } else {
                     // this is an exact match
@@ -125,14 +153,32 @@ namespace services::dispatcher {
                                                         "path: \'" + truncated_key.as_string() +
                                                             "\' is not nested, and \'*\' can not be applied"));
                     }
-
-                    auto parent_type = std::move(result[0]);
-                    result.clear();
-                    result.reserve(parent_type.type.child_types().size());
-                    for (size_t i = 0; i < parent_type.type.child_types().size(); i++) {
-                        column_path path = parent_type.path;
-                        path.emplace_back(i);
-                        result.emplace_back(type_path_t{std::move(path), parent_type.type.child_types()[i]});
+                    if (result.front().type.type() == logical_type::LIST) {
+                        return schema_result<type_paths>(
+                            resource,
+                            components::cursor::error_t(error_code_t::schema_error,
+                                                        "path: \'" + truncated_key.as_string() +
+                                                            "\' is a list type, and \'*\' can not be applied"));
+                    }
+                    if (result.front().type.type() == logical_type::STRUCT) {
+                        auto parent_type = std::move(result[0]);
+                        result.clear();
+                        result.reserve(parent_type.type.child_types().size());
+                        for (size_t i = 0; i < parent_type.type.child_types().size(); i++) {
+                            column_path path = parent_type.path;
+                            path.emplace_back(i);
+                            result.emplace_back(type_path_t{std::move(path), parent_type.type.child_types()[i]});
+                        }
+                    } else {
+                        auto parent_type = std::move(result[0]);
+                        auto arr_type_ext = static_cast<array_logical_type_extension*>(parent_type.type.extension());
+                        result.clear();
+                        result.reserve(arr_type_ext->size());
+                        for (size_t i = 0; i < arr_type_ext->size(); i++) {
+                            column_path path = parent_type.path;
+                            path.emplace_back(i);
+                            result.emplace_back(type_path_t{std::move(path), arr_type_ext->internal_type()});
+                        }
                     }
                 }
             }

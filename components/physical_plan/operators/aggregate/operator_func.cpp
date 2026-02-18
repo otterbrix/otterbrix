@@ -1,14 +1,14 @@
 #include "operator_func.hpp"
 
 #include <components/compute/function.hpp>
-#include <services/collection/collection.hpp>
 
 namespace components::operators::aggregate {
 
-    operator_func_t::operator_func_t(services::collection::context_collection_t* context,
+    operator_func_t::operator_func_t(std::pmr::memory_resource* resource,
+                                     log_t log,
                                      compute::function* func,
                                      std::pmr::vector<expressions::param_storage> args)
-        : operator_aggregate_t(context)
+        : operator_aggregate_t(resource, std::move(log))
         , args_(std::move(args))
         , func_(func) {
         assert(func);

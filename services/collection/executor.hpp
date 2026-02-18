@@ -6,12 +6,12 @@
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <services/collection/context_storage.hpp>
 #include <core/btree/btree.hpp>
+#include <services/collection/context_storage.hpp>
 #include <stack>
 
 namespace services::collection::executor {
@@ -21,11 +21,7 @@ namespace services::collection::executor {
         components::operators::operator_write_data_t::updated_types_map_t updates;
     };
 
-    struct function_result_t {
-        std::string function_name;
-        components::compute::function_uid function_id;
-        std::vector<components::compute::kernel_signature_t> function_signatures;
-    };
+    using function_result_t = components::compute::function_uid;
 
     struct plan_t {
         std::stack<components::operators::operator_ptr> sub_plans;
@@ -56,8 +52,8 @@ namespace services::collection::executor {
                                                      components::logical_plan::storage_parameters parameters,
                                                      services::context_storage_t context_storage);
 
-        unique_future<std::optional<function_result_t>> register_udf(components::session::session_id_t session,
-                                                                     components::compute::function_ptr function);
+        unique_future<function_result_t> register_udf(components::session::session_id_t session,
+                                                      components::compute::function_ptr function);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan, &executor_t::register_udf>;
 
@@ -69,8 +65,7 @@ namespace services::collection::executor {
                               components::logical_plan::storage_parameters&& parameters,
                               services::context_storage_t&& context_storage);
 
-        unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session,
-                                                          plan_t plan_data);
+        unique_future<execute_result_t> execute_sub_plan_(components::session::session_id_t session, plan_t plan_data);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

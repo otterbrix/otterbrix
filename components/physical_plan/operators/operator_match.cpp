@@ -1,12 +1,12 @@
 #include "operator_match.hpp"
 
-#include <components/expressions/function_expression.hpp>
 #include "predicates/predicate.hpp"
-
+#include <components/expressions/function_expression.hpp>
 
 namespace components::operators {
 
-    operator_match_t::operator_match_t(std::pmr::memory_resource* resource, log_t log,
+    operator_match_t::operator_match_t(std::pmr::memory_resource* resource,
+                                       log_t log,
                                        const expressions::expression_ptr& expression,
                                        logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::match)

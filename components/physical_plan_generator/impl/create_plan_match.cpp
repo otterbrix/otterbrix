@@ -13,33 +13,70 @@ namespace services::planner::impl {
     // Plan always creates full_scan/transfer_scan; executor may optimize
     // to index_scan based on available indexes.
     namespace {
-        components::operators::operator_ptr
-        create_plan_match_(const context_storage_t& context,
-                           const collection_full_name_t& coll_name,
-                           const components::expressions::compare_expression_ptr& expr,
-                           components::logical_plan::limit_t limit) {
+
+        bool is_pure_compare(const components::expressions::expression_ptr& expr) {
+            using namespace components::expressions;
+            if (expr->group() != expression_group::compare) {
+                return false;
+            }
+            auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
+            for (const auto& child : comp_expr->children()) {
+                if (!is_pure_compare(child)) {
+                    return false;
+                }
+            }
+
+            if (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
+                std::holds_alternative<expression_ptr>(comp_expr->right())) {
+                return false;
+            }
+            return true;
+        }
+
+        components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
+                                                               const collection_full_name_t& coll_name,
+                                                               const components::expressions::expression_ptr& expr,
+                                                               components::logical_plan::limit_t limit) {
             if (context.has_collection(coll_name)) {
-                return boost::intrusive_ptr(new components::operators::full_scan(
-                    context.resource, context.log.clone(), coll_name, expr, limit));
+                // TODO: function_expr in scans
+                if (is_pure_compare(expr)) {
+                    auto comp_expr = reinterpret_cast<const components::expressions::compare_expression_ptr&>(expr);
+                    return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                     context.log.clone(),
+                                                                                     coll_name,
+                                                                                     comp_expr,
+                                                                                     limit));
+                } else {
+                    // For now we do a full scan and apply function after
+                    auto match_operator =
+                        boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
+                                                                                         context.log.clone(),
+                                                                                         expr,
+                                                                                         limit));
+                    match_operator->set_children(
+                        boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                  context.log.clone(),
+                                                                                  coll_name,
+                                                                                  nullptr,
+                                                                                  limit)));
+                    return match_operator;
+                }
             } else {
-                return boost::intrusive_ptr(new components::operators::operator_match_t(
-                    nullptr, log_t{}, expr, limit));
+                return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, expr, limit));
             }
         }
     } // namespace
 
     components::operators::operator_ptr create_plan_match(const context_storage_t& context,
-                                                                const components::logical_plan::node_ptr& node,
-                                                                components::logical_plan::limit_t limit) {
+                                                          const components::logical_plan::node_ptr& node,
+                                                          components::logical_plan::limit_t limit) {
         if (node->expressions().empty()) {
             if (context.has_collection(node->collection_full_name())) {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(
-                        context.resource, node->collection_full_name(), limit));
+                    new components::operators::transfer_scan(context.resource, node->collection_full_name(), limit));
             } else {
                 return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(
-                        nullptr, node->collection_full_name(), limit));
+                    new components::operators::transfer_scan(nullptr, node->collection_full_name(), limit));
             }
         } else {
             return create_plan_match_(context, node->collection_full_name(), node->expressions()[0], limit);

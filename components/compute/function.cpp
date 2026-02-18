@@ -255,6 +255,14 @@ namespace components::compute {
 
     void vector_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
+    std::unique_ptr<function> vector_function::get_copy() const {
+        auto result = std::make_unique<vector_function>(name_, arity_, doc_, kernel_slots_);
+        for (const auto& kernel : kernels_) {
+            result->add_kernel(kernel);
+        }
+        return result;
+    }
+
     aggregate_function::aggregate_function(std::string name,
                                            arity fn_arity,
                                            function_doc doc,
@@ -263,10 +271,26 @@ namespace components::compute {
 
     void aggregate_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
+    std::unique_ptr<function> aggregate_function::get_copy() const {
+        auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_);
+        for (const auto& kernel : kernels_) {
+            result->add_kernel(kernel);
+        }
+        return result;
+    }
+
     row_function::row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
         : function_impl<row_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
 
     void row_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
+
+    std::unique_ptr<function> row_function::get_copy() const {
+        auto result = std::make_unique<row_function>(name_, arity_, doc_, kernel_slots_);
+        for (const auto& kernel : kernels_) {
+            result->add_kernel(kernel);
+        }
+        return result;
+    }
 
     std::once_flag function_registry_t::init_flag_;
     std::unique_ptr<function_registry_t> function_registry_t::default_registry_;

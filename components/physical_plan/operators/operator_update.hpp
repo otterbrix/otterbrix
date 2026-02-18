@@ -9,7 +9,9 @@ namespace components::operators {
 
     class operator_update final : public read_write_operator_t {
     public:
-        operator_update(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
+        operator_update(std::pmr::memory_resource* resource,
+                        log_t log,
+                        collection_full_name_t name,
                         std::pmr::vector<expressions::update_expr_ptr> updates,
                         bool upsert,
                         expressions::expression_ptr expr = nullptr);

@@ -11,7 +11,8 @@ namespace components::operators {
     public:
         using type = logical_plan::join_type;
 
-        operator_join_t(std::pmr::memory_resource* resource, log_t log,
+        operator_join_t(std::pmr::memory_resource* resource,
+                        log_t log,
                         type join_type,
                         const expressions::expression_ptr& expression);
 

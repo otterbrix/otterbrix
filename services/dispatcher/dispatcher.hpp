@@ -46,7 +46,11 @@ namespace services::dispatcher {
 
         using run_fn_t = std::function<void()>;
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log, run_fn_t run_fn = []{ std::this_thread::yield(); });
+        manager_dispatcher_t(
+            std::pmr::memory_resource*,
+            actor_zeta::scheduler_raw,
+            log_t& log,
+            run_fn_t run_fn = [] { std::this_thread::yield(); });
         ~manager_dispatcher_t();
 
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
@@ -55,14 +59,12 @@ namespace services::dispatcher {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        [[nodiscard]]
-        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+        [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(sync_pack pack);
 
-        void init_from_state(
-            std::pmr::set<database_name_t> databases,
-            loader::collection_set_t collections);
+        void init_from_state(std::pmr::set<database_name_t> databases, loader::collection_set_t collections);
 
         components::catalog::catalog& mutable_catalog() { return catalog_; }
 
@@ -95,7 +97,7 @@ namespace services::dispatcher {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
-        run_fn_t run_fn_;  // Yield function for cooperative scheduling
+        run_fn_t run_fn_; // Yield function for cooperative scheduling
         components::catalog::catalog catalog_;
 
         static constexpr std::size_t executor_pool_size_ = 4;
@@ -118,15 +120,19 @@ namespace services::dispatcher {
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
         void update_catalog(components::logical_plan::node_ptr node);
 
-        services::collection::executor::execute_result_t create_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t drop_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t create_collection_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t drop_collection_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        create_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        drop_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        create_collection_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        drop_collection_(components::logical_plan::node_ptr logical_plan);
 
-        unique_future<services::collection::executor::execute_result_t> execute_plan_impl(
-            components::session::session_id_t session,
-            components::logical_plan::node_ptr logical_plan,
-            components::logical_plan::storage_parameters parameters);
+        unique_future<services::collection::executor::execute_result_t>
+        execute_plan_impl(components::session::session_id_t session,
+                          components::logical_plan::node_ptr logical_plan,
+                          components::logical_plan::storage_parameters parameters);
 
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;

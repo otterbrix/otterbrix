@@ -213,7 +213,6 @@ namespace components::table {
         if (!f) {
             return true;
         }
-        const auto& column_ids = state.column_ids();
         // For constant comparison filters, check if any column's zonemap prunes this segment
         if (f->filter_type == expressions::compare_type::eq ||
             f->filter_type == expressions::compare_type::gt ||

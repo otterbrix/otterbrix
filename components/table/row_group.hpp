@@ -1,5 +1,7 @@
 #pragma once
 #include "column_data.hpp"
+#include "row_version_manager.hpp"
+#include "storage/data_pointer.hpp"
 
 namespace components::vector {
     class data_chunk_t;
@@ -63,9 +65,16 @@ namespace components::table {
                        uint64_t result_idx);
 
         void append_version_info(uint64_t count);
+        void append_version_info(transaction_data txn, uint64_t count);
+
+        void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
+        void revert_append(uint64_t row_group_start);
 
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count);
         uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);
+        uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
+        void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
+        void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
 
         uint64_t committed_row_count();
 
@@ -83,6 +92,9 @@ namespace components::table {
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
+        storage::row_group_pointer_t write_to_disk(storage::partial_block_manager_t& partial_block_manager);
+        void create_from_pointer(const storage::row_group_pointer_t& pointer);
+
         uint64_t allocation_size() const { return allocation_size_; }
 
         void next_vector(collection_scan_state& state);
@@ -95,6 +107,7 @@ namespace components::table {
 
     private:
         uint64_t indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
+        uint64_t indexing_vector(transaction_data txn, uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         uint64_t
         commited_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();

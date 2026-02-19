@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <components/vector/data_chunk.hpp>
 #include <random>
 
@@ -204,6 +205,20 @@ namespace components::table {
         std::vector<std::unique_ptr<std::lock_guard<std::mutex>>> locks;
         std::unique_lock<std::mutex> append_lock;
         std::unique_lock<std::mutex> segment_lock;
+    };
+
+    struct parallel_table_scan_state_t {
+        parallel_table_scan_state_t(std::vector<storage_index_t> col_ids,
+                                     const table_filter_t* flt,
+                                     uint64_t total_rg)
+            : column_ids(std::move(col_ids))
+            , filter(flt)
+            , total_row_groups(total_rg) {}
+
+        std::vector<storage_index_t> column_ids;
+        const table_filter_t* filter;
+        uint64_t total_row_groups;
+        std::atomic<uint64_t> next_row_group_idx{0};
     };
 
     struct table_append_state {

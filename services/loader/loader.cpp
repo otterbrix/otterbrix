@@ -1,6 +1,7 @@
 #include "loader.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 #include <absl/crc/crc32c.h>
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -98,11 +99,14 @@ namespace services::loader {
 
         read_wal_records(state);
 
-        trace(log_, "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records",
+        trace(log_, "loader_t::load: PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records, {} sequences, {} views, {} macros",
               state.databases.size(),
               state.collections.size(),
               state.index_definitions.size(),
-              state.wal_records.size());
+              state.wal_records.size(),
+              state.sequences.size(),
+              state.views.size(),
+              state.macros.size());
 
         return state;
     }
@@ -115,11 +119,32 @@ namespace services::loader {
             debug(log_, "loader_t: found database: {}", db_name);
             state.databases.insert(db_name);
 
-            auto collections = disk_->collections(db_name);
-            for (const auto& coll_name : collections) {
-                debug(log_, "loader_t: found collection: {}.{}", db_name, coll_name);
-                collection_full_name_t full_name(db_name, coll_name);
+            auto table_entries = disk_->table_entries(db_name);
+            for (const auto& entry : table_entries) {
+                debug(log_, "loader_t: found collection: {}.{} (mode={})", db_name, entry.name,
+                      static_cast<int>(entry.storage_mode));
+                collection_full_name_t full_name(db_name, entry.name);
                 state.collections.insert(full_name);
+
+                collection_load_info_t info;
+                info.name = full_name;
+                info.storage_mode = entry.storage_mode;
+                info.columns = entry.columns;
+                state.collection_infos.push_back(std::move(info));
+            }
+
+            // Load catalog DDL objects
+            for (auto& seq : disk_->catalog().sequences(db_name)) {
+                debug(log_, "loader_t: found sequence: {}.{}", db_name, seq.name);
+                state.sequences.emplace_back(db_name, std::move(seq));
+            }
+            for (auto& view : disk_->catalog().views(db_name)) {
+                debug(log_, "loader_t: found view: {}.{}", db_name, view.name);
+                state.views.emplace_back(db_name, std::move(view));
+            }
+            for (auto& macro : disk_->catalog().macros(db_name)) {
+                debug(log_, "loader_t: found macro: {}.{}", db_name, macro.name);
+                state.macros.emplace_back(db_name, std::move(macro));
             }
         }
     }
@@ -199,6 +224,9 @@ namespace services::loader {
 
         debug(log_, "loader_t: last_wal_id from disk checkpoint: {}", state.last_wal_id);
 
+        // Pass 1: Read all records, collect committed txn_ids
+        std::vector<wal::record_t> all_records;
+        std::unordered_set<uint64_t> committed_txn_ids;
         std::size_t total_records = 0;
         std::size_t skipped_records = 0;
 
@@ -211,6 +239,15 @@ namespace services::loader {
                     break;
                 }
 
+                if (record.is_commit_marker()) {
+                    // Collect committed txn_id
+                    if (record.transaction_id != 0) {
+                        committed_txn_ids.insert(record.transaction_id);
+                    }
+                    start_index = next_wal_index(start_index, record.size);
+                    continue;
+                }
+
                 if (!record.data) {
                     debug(log_, "loader_t: skipping WAL record at index {} - CRC mismatch (stored={:#x}, computed={:#x})",
                           start_index, record.crc32, record.last_crc32);
@@ -221,9 +258,7 @@ namespace services::loader {
                 total_records++;
 
                 if (record.id > state.last_wal_id) {
-                    debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
-                          record.id, record.data->to_string());
-                    state.wal_records.push_back(std::move(record));
+                    all_records.push_back(std::move(record));
                 } else {
                     skipped_records++;
                 }
@@ -231,12 +266,26 @@ namespace services::loader {
             }
         }
 
+        // Pass 2: Filter by committed transactions
+        for (auto& record : all_records) {
+            // Legacy records (txn_id=0) are always replayed
+            // Records with txn_id != 0 are only replayed if committed
+            if (record.transaction_id == 0 || committed_txn_ids.count(record.transaction_id) > 0) {
+                debug(log_, "loader_t: read WAL record id {} type {} (will replay)",
+                      record.id, record.data->to_string());
+                state.wal_records.push_back(std::move(record));
+            } else {
+                debug(log_, "loader_t: skipping uncommitted WAL record id {} txn_id={}",
+                      record.id, record.transaction_id);
+            }
+        }
+
         // Sort all records from all WAL files by ID for correct replay order
         std::sort(state.wal_records.begin(), state.wal_records.end(),
             [](const wal::record_t& a, const wal::record_t& b) { return a.id < b.id; });
 
-        debug(log_, "loader_t: scanned {} WAL records, skipped {} (already on disk), {} to replay",
-              total_records, skipped_records, state.wal_records.size());
+        debug(log_, "loader_t: scanned {} WAL records, skipped {} (already on disk), {} committed txns, {} to replay",
+              total_records, skipped_records, committed_txn_ids.size(), state.wal_records.size());
         trace(log_, "loader_t: read {} WAL records for replay", state.wal_records.size());
     }
 
@@ -289,15 +338,34 @@ namespace services::loader {
             auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
             if (record.crc32 == computed_crc) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
+                auto arr_size = deserializer.root_array_size();
                 record.last_crc32 = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
                 record.id = deserializer.deserialize_uint64(1);
 
-                deserializer.advance_array(2);
-                record.data = components::logical_plan::node_t::deserialize(&deserializer);
-                deserializer.pop_array();
-                deserializer.advance_array(3);
-                record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-                deserializer.pop_array();
+                if (arr_size == 3) {
+                    // COMMIT marker
+                    record.transaction_id = deserializer.deserialize_uint64(2);
+                    record.record_type = wal::wal_record_type::COMMIT;
+                    record.data = nullptr;
+                } else if (arr_size >= 5) {
+                    record.transaction_id = deserializer.deserialize_uint64(2);
+                    record.record_type = wal::wal_record_type::DATA;
+                    deserializer.advance_array(3);
+                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                    deserializer.advance_array(4);
+                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                } else {
+                    record.transaction_id = 0;
+                    record.record_type = wal::wal_record_type::DATA;
+                    deserializer.advance_array(2);
+                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                    deserializer.advance_array(3);
+                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                }
             } else {
                 record.data = nullptr;
                 record.last_crc32 = computed_crc;

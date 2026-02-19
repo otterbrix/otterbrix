@@ -2,13 +2,40 @@
 
 #include "forward.hpp"
 #include <actor-zeta.hpp>
+#include <components/table/row_version_manager.hpp>
 #include <core/pmr.hpp>
+#include <functional>
 
 namespace components::index {
 
     struct index_value_t {
         int64_t row_index;
+        uint64_t insert_id{0};
+        uint64_t delete_id{table::NOT_DELETED_ID};
+
+        index_value_t() = default;
+        explicit index_value_t(int64_t row_index)
+            : row_index(row_index)
+            , insert_id(0)
+            , delete_id(table::NOT_DELETED_ID) {}
+        index_value_t(int64_t row_index, uint64_t insert_id, uint64_t delete_id)
+            : row_index(row_index)
+            , insert_id(insert_id)
+            , delete_id(delete_id) {}
     };
+
+    /// Visibility predicate mirroring table MVCC.
+    /// txn_id==0 && start_time==0 → "see all committed" (no MVCC filter).
+    inline bool index_entry_visible(const index_value_t& e, uint64_t start_time, uint64_t txn_id) {
+        if (txn_id == 0 && start_time == 0) {
+            return (e.insert_id < table::TRANSACTION_ID_START) &&
+                   (e.delete_id == table::NOT_DELETED_ID || e.delete_id >= table::TRANSACTION_ID_START);
+        }
+        bool inserted = (e.insert_id < start_time) || (e.insert_id == txn_id);
+        bool deleted = (e.delete_id < start_time && e.delete_id < table::TRANSACTION_ID_START) ||
+                       (e.delete_id == txn_id);
+        return inserted && !deleted;
+    }
 
     class index_t {
     public:
@@ -77,6 +104,21 @@ namespace components::index {
         void set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept;
 
         std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value) const;
+        std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value,
+                                          uint64_t start_time, uint64_t txn_id) const;
+
+        void insert(value_t key, int64_t row_index, uint64_t txn_id);
+        void mark_delete(value_t key, int64_t row_index, uint64_t txn_id);
+        void commit_insert(uint64_t txn_id, uint64_t commit_id);
+        void commit_delete(uint64_t txn_id, uint64_t commit_id);
+        void revert_insert(uint64_t txn_id);
+        void cleanup_versions(uint64_t lowest_active);
+
+        // Iterate pending entries for disk mirroring (must be called before commit clears them)
+        void for_each_pending_insert(uint64_t txn_id,
+                                     const std::function<void(const value_t&, int64_t)>& fn) const;
+        void for_each_pending_delete(uint64_t txn_id,
+                                     const std::function<void(const value_t&, int64_t)>& fn) const;
 
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 
@@ -93,6 +135,17 @@ namespace components::index {
         virtual range upper_bound_impl(const value_t& value) const = 0;
         virtual iterator cbegin_impl() const = 0;
         virtual iterator cend_impl() const = 0;
+
+        virtual void insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) = 0;
+        virtual void mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) = 0;
+        virtual void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) = 0;
+        virtual void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) = 0;
+        virtual void revert_insert_impl(uint64_t txn_id) = 0;
+        virtual void cleanup_versions_impl(uint64_t lowest_active) = 0;
+        virtual void for_each_pending_insert_impl(uint64_t txn_id,
+                                                  const std::function<void(const value_t&, int64_t)>& fn) const = 0;
+        virtual void for_each_pending_delete_impl(uint64_t txn_id,
+                                                  const std::function<void(const value_t&, int64_t)>& fn) const = 0;
 
         virtual void clean_memory_to_new_elements_impl(std::size_t count) = 0;
 

@@ -28,6 +28,7 @@
 #include <services/collection/executor.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/loader/loaded_state.hpp>
+#include <components/table/transaction_manager.hpp>
 
 namespace services::dispatcher {
 
@@ -77,11 +78,21 @@ namespace services::dispatcher {
             std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
         unique_future<void> close_cursor(components::session::session_id_t session);
 
+        // Transaction lifecycle (actor-callable by executor)
+        unique_future<components::table::transaction_data> begin_transaction(components::session::session_id_t session);
+        unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
+        unique_future<void> abort_transaction(components::session::session_id_t session);
+        unique_future<uint64_t> lowest_active_start_time(components::session::session_id_t session);
+
         using dispatch_traits = actor_zeta::dispatch_traits<
             &manager_dispatcher_t::execute_plan,
             &manager_dispatcher_t::size,
             &manager_dispatcher_t::get_schema,
-            &manager_dispatcher_t::close_cursor
+            &manager_dispatcher_t::close_cursor,
+            &manager_dispatcher_t::begin_transaction,
+            &manager_dispatcher_t::commit_transaction,
+            &manager_dispatcher_t::abort_transaction,
+            &manager_dispatcher_t::lowest_active_start_time
         >;
 
         const components::catalog::catalog& current_catalog() const { return catalog_; }
@@ -108,6 +119,7 @@ namespace services::dispatcher {
 
         std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;
 
+        components::table::transaction_manager_t txn_manager_;
         recomputed_types update_result_;
 
         components::cursor::cursor_t_ptr check_namespace_exists(const components::catalog::table_id id) const;
@@ -127,7 +139,8 @@ namespace services::dispatcher {
         unique_future<services::collection::executor::execute_result_t> execute_plan_impl(
             components::session::session_id_t session,
             components::logical_plan::node_ptr logical_plan,
-            components::logical_plan::storage_parameters parameters);
+            components::logical_plan::storage_parameters parameters,
+            components::table::transaction_data txn);
 
         std::pmr::vector<unique_future<void>> pending_void_;
         std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;

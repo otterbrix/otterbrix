@@ -271,7 +271,10 @@ namespace components::sql::transform {
     void fill_with_types(Container& container, PGList& list) {
         container.reserve(list.lst.size());
         for (auto data : list.lst) {
-            auto coldef = pg_ptr_assert_cast<ColumnDef>(data.data, T_ColumnDef);
+            if (nodeTag(data.data) != T_ColumnDef) {
+                continue;
+            }
+            auto coldef = pg_ptr_cast<ColumnDef>(data.data);
             types::complex_logical_type type = get_type(coldef->typeName);
             type.set_alias(coldef->colname);
             container.emplace_back(std::move(type));
@@ -349,6 +352,79 @@ namespace components::sql::transform {
             }
         }
         return types::logical_value_t::create_array(resource, fist_type, std::move(values));
+    }
+
+    void fill_column_definitions(std::vector<table::column_definition_t>& out,
+                                 std::pmr::memory_resource* resource,
+                                 PGList& table_elts) {
+        out.reserve(table_elts.lst.size());
+        for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) != T_ColumnDef) {
+                continue;
+            }
+            auto coldef = pg_ptr_cast<ColumnDef>(data.data);
+            auto type = get_type(coldef->typeName);
+            type.set_alias(coldef->colname);
+            bool not_null = coldef->is_not_null;
+            std::unique_ptr<types::logical_value_t> default_val;
+
+            if (coldef->constraints) {
+                for (auto cdata : coldef->constraints->lst) {
+                    auto constraint = pg_ptr_cast<Constraint>(cdata.data);
+                    switch (constraint->contype) {
+                        case CONSTR_NOTNULL:
+                            not_null = true;
+                            break;
+                        case CONSTR_DEFAULT:
+                            if (constraint->raw_expr) {
+                                auto val = get_value(resource, constraint->raw_expr);
+                                default_val = std::make_unique<types::logical_value_t>(std::move(val));
+                            }
+                            break;
+                        case CONSTR_PRIMARY:
+                            not_null = true;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+
+            if (coldef->raw_default && !default_val) {
+                auto val = get_value(resource, coldef->raw_default);
+                default_val = std::make_unique<types::logical_value_t>(std::move(val));
+            }
+
+            out.emplace_back(coldef->colname, std::move(type), not_null, std::move(default_val));
+        }
+    }
+
+    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts) {
+        std::vector<table::table_constraint_t> result;
+        for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) != T_Constraint) {
+                continue;
+            }
+            auto constraint = pg_ptr_cast<Constraint>(data.data);
+            table::table_constraint_t tc;
+            switch (constraint->contype) {
+                case CONSTR_PRIMARY:
+                    tc.type = table::table_constraint_type::PRIMARY_KEY;
+                    break;
+                case CONSTR_UNIQUE:
+                    tc.type = table::table_constraint_type::UNIQUE;
+                    break;
+                default:
+                    continue;
+            }
+            if (constraint->keys) {
+                for (auto key : constraint->keys->lst) {
+                    tc.columns.emplace_back(strVal(key.data));
+                }
+            }
+            result.push_back(std::move(tc));
+        }
+        return result;
     }
 
 } // namespace components::sql::transform

@@ -37,14 +37,26 @@ namespace components::operators {
             co_return;
         }
 
-        // Search index for matching row IDs
-        auto [_s, sf] = actor_zeta::send(ctx->index_address,
-            &services::index::manager_index_t::search,
-            ctx->session, name_,
-            index::keys_base_storage_t{{expr_->primary_key()}},
-            types::logical_value_t{resource_, expr_->value()},
-            expr_->type());
-        auto row_ids_vec = co_await std::move(sf);
+        // Search index for matching row IDs (txn-aware visibility)
+        std::pmr::vector<int64_t> row_ids_vec(resource_);
+        if (ctx->txn.transaction_id != 0) {
+            auto [_s, sf] = actor_zeta::send(ctx->index_address,
+                &services::index::manager_index_t::search_txn,
+                ctx->session, name_,
+                index::keys_base_storage_t{{expr_->primary_key()}},
+                types::logical_value_t{resource_, expr_->value()},
+                expr_->type(),
+                ctx->txn.start_time, ctx->txn.transaction_id);
+            row_ids_vec = co_await std::move(sf);
+        } else {
+            auto [_s, sf] = actor_zeta::send(ctx->index_address,
+                &services::index::manager_index_t::search,
+                ctx->session, name_,
+                index::keys_base_storage_t{{expr_->primary_key()}},
+                types::logical_value_t{resource_, expr_->value()},
+                expr_->type());
+            row_ids_vec = co_await std::move(sf);
+        }
 
         // Apply limit
         size_t count = row_ids_vec.size();

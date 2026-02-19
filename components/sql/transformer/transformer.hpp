@@ -12,8 +12,9 @@
 namespace components::sql::transform {
     class transformer {
     public:
-        transformer(std::pmr::memory_resource* resource)
+        explicit transformer(std::pmr::memory_resource* resource, const char* raw_sql = nullptr)
             : resource_(resource)
+            , raw_sql_(raw_sql)
             , parameter_map_(resource_)
             , parameter_insert_rows_(resource_, {}) {}
 
@@ -22,6 +23,8 @@ namespace components::sql::transform {
     private:
         logical_plan::node_ptr transform_create_database(CreatedbStmt& node);
         logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
+        logical_plan::node_ptr transform_checkpoint(CheckPointStmt& node);
+        logical_plan::node_ptr transform_vacuum(VacuumStmt& node);
         logical_plan::node_ptr transform_create_table(CreateStmt& node);
         logical_plan::node_ptr transform_drop(DropStmt& node);
         logical_plan::node_ptr transform_select(SelectStmt& node, logical_plan::parameter_node_t* params);
@@ -31,6 +34,9 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_index(IndexStmt& node);
         logical_plan::node_ptr transform_create_type(CompositeTypeStmt& node);
         logical_plan::node_ptr transform_create_enum_type(CreateEnumStmt& node);
+        logical_plan::node_ptr transform_create_sequence(CreateSeqStmt& node);
+        logical_plan::node_ptr transform_create_view(ViewStmt& node);
+        logical_plan::node_ptr transform_create_function(CreateFunctionStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key
@@ -64,6 +70,7 @@ namespace components::sql::transform {
         core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
 
         std::pmr::memory_resource* resource_;
+        const char* raw_sql_;
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;

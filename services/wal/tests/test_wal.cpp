@@ -32,7 +32,7 @@ void test_insert_one_row(wal_replicate_t* wal, std::pmr::memory_resource* resour
         auto chunk = gen_data_chunk(1, num, resource);
         auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(chunk)});
         auto session = components::session::session_id_t();
-        wal->insert_one(session, data);
+        wal->insert_one(session, data, 0);
     }
 }
 
@@ -111,7 +111,7 @@ TEST_CASE("services::wal::insert_many_empty_test") {
         components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
 
     auto session = components::session::session_id_t();
-    test_wal.wal->insert_many(session, data);
+    test_wal.wal->insert_many(session, data, 0);
 
     wal_entry_t entry;
 
@@ -140,7 +140,7 @@ TEST_CASE("services::wal::insert_many_test") {
                                                                {database_name, collection_name},
                                                                std::move(chunk));
         auto session = components::session::session_id_t();
-        test_wal.wal->insert_many(session, data);
+        test_wal.wal->insert_many(session, data, 0);
     }
 
     std::size_t read_index = 0;
@@ -191,7 +191,7 @@ TEST_CASE("services::wal::delete_one_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_one(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        test_wal.wal->delete_one(session, data, params);
+        test_wal.wal->delete_one(session, data, params, 0);
     }
 
     std::size_t index = 0;
@@ -229,7 +229,7 @@ TEST_CASE("services::wal::delete_many_test") {
         params->add_parameter(core::parameter_id_t{1}, num);
         auto data = components::logical_plan::make_node_delete_many(&resource, {database_name, collection_name}, match);
         auto session = components::session::session_id_t();
-        test_wal.wal->delete_many(session, data, params);
+        test_wal.wal->delete_many(session, data, params, 0);
     }
 
     std::size_t index = 0;
@@ -272,7 +272,7 @@ TEST_CASE("services::wal::update_one_test") {
 
         auto data = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        test_wal.wal->update_one(session, data, params);
+        test_wal.wal->update_one(session, data, params, 0);
     }
 
     std::size_t index = 0;
@@ -323,7 +323,7 @@ TEST_CASE("services::wal::update_many_test") {
 
         auto data = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
         auto session = components::session::session_id_t();
-        test_wal.wal->update_many(session, data, params);
+        test_wal.wal->update_many(session, data, params, 0);
     }
 
     std::size_t index = 0;
@@ -398,6 +398,62 @@ TEST_CASE("services::wal::read_record") {
     REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
 }
 
+TEST_CASE("services::wal::transaction_id_round_trip") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    // Test 1: default txn_id = 0
+    {
+        auto chunk = gen_data_chunk(1, 0, &resource);
+        auto data = make_node_insert(&resource, {database_name, collection_name}, {std::move(chunk)});
+        auto params = make_parameter_node(&resource);
+        buffer_t storage;
+        pack(storage, crc32_t(0), services::wal::id_t(1), data, params);
+
+        auto payload_size = read_size_impl(storage, 0);
+        buffer_t payload(storage.begin() + static_cast<std::ptrdiff_t>(sizeof(size_tt)),
+                         storage.begin() + static_cast<std::ptrdiff_t>(sizeof(size_tt) + payload_size));
+
+        wal_entry_t entry;
+        unpack(payload, entry);
+        REQUIRE(entry.id_ == 1);
+        REQUIRE(entry.transaction_id_ == 0);
+    }
+
+    // Test 2: non-zero txn_id
+    {
+        auto chunk = gen_data_chunk(1, 0, &resource);
+        auto data = make_node_insert(&resource, {database_name, collection_name}, {std::move(chunk)});
+        auto params = make_parameter_node(&resource);
+        buffer_t storage;
+        uint64_t txn_id = 4611686018427387904ULL; // 2^62 = TRANSACTION_ID_START
+        pack(storage, crc32_t(0), services::wal::id_t(2), data, params, txn_id);
+
+        auto payload_size = read_size_impl(storage, 0);
+        buffer_t payload(storage.begin() + static_cast<std::ptrdiff_t>(sizeof(size_tt)),
+                         storage.begin() + static_cast<std::ptrdiff_t>(sizeof(size_tt) + payload_size));
+
+        wal_entry_t entry;
+        unpack(payload, entry);
+        REQUIRE(entry.id_ == 2);
+        REQUIRE(entry.transaction_id_ == txn_id);
+        REQUIRE(entry.entry_->type() == node_type::insert_t);
+    }
+}
+
+TEST_CASE("services::wal::read_record_preserves_transaction_id") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto test_wal = create_test_wal("/tmp/wal/txn_id_record", &resource);
+    test_insert_one_row(test_wal.wal.get(), &resource);
+
+    std::size_t index = 0;
+    for (int num = 1; num <= 5; ++num) {
+        auto record = test_wal.wal->test_read_record(index);
+        REQUIRE(record.data->type() == node_type::insert_t);
+        REQUIRE(record.transaction_id == 0);
+        index = test_wal.wal->test_next_record(index);
+    }
+}
+
 TEST_CASE("services::wal::large_insert_many_rows") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto test_wal = create_test_wal("/tmp/wal/large_insert_many_rows", &resource);
@@ -408,7 +464,7 @@ TEST_CASE("services::wal::large_insert_many_rows") {
                                                            {database_name, collection_name},
                                                            std::move(chunk));
     auto session = components::session::session_id_t();
-    test_wal.wal->insert_many(session, data);
+    test_wal.wal->insert_many(session, data, 0);
 
     wal_entry_t entry;
     entry.size_ = test_wal.wal->test_read_size(0);

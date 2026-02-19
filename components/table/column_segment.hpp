@@ -1,7 +1,10 @@
 #pragma once
 
+#include <optional>
+
 #include <components/vector/vector.hpp>
 
+#include "base_statistics.hpp"
 #include "segment_tree.hpp"
 #include "storage/block_handle.hpp"
 
@@ -92,6 +95,9 @@ namespace components::table {
 
         compressed_segment_state* segment_state() { return segment_state_.get(); }
 
+        const std::optional<base_statistics_t>& segment_statistics() const { return segment_statistics_; }
+        void set_segment_statistics(base_statistics_t stats) { segment_statistics_ = std::move(stats); }
+
     private:
         void scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         void
@@ -101,6 +107,7 @@ namespace components::table {
         uint64_t offset_;
         uint64_t segment_size_;
         std::unique_ptr<compressed_segment_state> segment_state_;
+        std::optional<base_statistics_t> segment_statistics_;
     };
 
 } // namespace components::table

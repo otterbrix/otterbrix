@@ -37,11 +37,24 @@ namespace components::index {
         void insert_row(const vector::data_chunk_t& chunk, size_t row);
         void delete_row(const vector::data_chunk_t& chunk, size_t row);
 
+        void insert_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id);
+        void mark_delete_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id);
+        void commit_insert(uint64_t txn_id, uint64_t commit_id);
+        void commit_delete(uint64_t txn_id, uint64_t commit_id);
+        void revert_insert(uint64_t txn_id);
+        void cleanup_versions(uint64_t lowest_active);
+
         auto indexes() -> std::vector<std::string>;
 
         // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
         void for_each_disk_op(const vector::data_chunk_t& chunk, size_t row,
                               const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const;
+
+        // Mirror pending txn entries to disk agents (call BEFORE commit clears pending maps)
+        void for_each_pending_disk_insert(uint64_t txn_id,
+            const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const;
+        void for_each_pending_disk_delete(uint64_t txn_id,
+            const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const;
 
     private:
         using comparator_t = std::less<keys_base_storage_t>;

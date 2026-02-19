@@ -16,8 +16,6 @@ namespace services::disk {
                     return actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>;
                 } else if constexpr (std::is_same_v<command_type, command_remove_collection_t>) {
                     return actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_collection>;
-                } else if constexpr (std::is_same_v<command_type, command_remove_documents_t>) {
-                    return actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>;
                 } else if constexpr (std::is_same_v<command_type, command_drop_index_t>) {
                     return actor_zeta::msg_id<index::index_agent_disk_t, &index::index_agent_disk_t::drop>;
                 }

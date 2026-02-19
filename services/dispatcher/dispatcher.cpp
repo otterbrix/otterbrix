@@ -1,9 +1,16 @@
 #include "dispatcher.hpp"
 
-#include <components/logical_plan/node_create_type.hpp>
-#include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_checkpoint.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_sequence.hpp>
+#include <components/logical_plan/node_create_type.hpp>
+#include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop_macro.hpp>
+#include <components/logical_plan/node_drop_sequence.hpp>
+#include <components/logical_plan/node_drop_view.hpp>
 
 #include <core/tracy/tracy.hpp>
 #include <core/executor.hpp>
@@ -96,6 +103,22 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::close_cursor, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::begin_transaction>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::begin_transaction, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::commit_transaction>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::commit_transaction, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::abort_transaction>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::abort_transaction, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::lowest_active_start_time>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::lowest_active_start_time, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -144,7 +167,7 @@ namespace services::dispatcher {
         executor_addresses_.reserve(executor_pool_size_);
         for (std::size_t i = 0; i < executor_pool_size_; ++i) {
             auto exec = actor_zeta::spawn<collection::executor::executor_t>(
-                resource(), address(), wal_address_, disk_address_, index_address_, log_.clone());
+                resource(), address(), wal_address_, disk_address_, index_address_, &txn_manager_, log_.clone());
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
         }
@@ -250,6 +273,15 @@ namespace services::dispatcher {
                     co_return make_cursor(resource(), operation_status_t::success);
                 }
             }
+            case node_type::checkpoint_t:
+            case node_type::vacuum_t:
+            case node_type::create_sequence_t:
+            case node_type::drop_sequence_t:
+            case node_type::create_view_t:
+            case node_type::drop_view_t:
+            case node_type::create_macro_t:
+            case node_type::drop_macro_t:
+                break;
             default: {
                 auto check_result = check_collections_format_(plan);
                 if (check_result->is_error()) {
@@ -262,6 +294,9 @@ namespace services::dispatcher {
             trace(log_, "manager_dispatcher_t::execute_plan: validation error");
             co_return std::move(error);
         }
+
+        // DML transactions are now managed by executor (Phase 8C)
+        components::table::transaction_data txn_data{0, 0};
 
         collection::executor::execute_result_t exec_result;
         switch (logic_plan->type()) {
@@ -277,9 +312,64 @@ namespace services::dispatcher {
             case node_type::drop_collection_t:
                 exec_result = drop_collection_(std::move(logic_plan));
                 break;
+            case node_type::checkpoint_t: {
+                trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                auto [_cp, cpf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::checkpoint_all, session);
+                co_await std::move(cpf);
+                co_return make_cursor(resource(), operation_status_t::success);
+            }
+            case node_type::vacuum_t: {
+                trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                auto lowest = txn_manager_.lowest_active_start_time();
+                auto [_v, vf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::vacuum_all, session, lowest);
+                co_await std::move(vf);
+                // Cleanup old index versions + rebuild (compact changes row positions)
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_cv, cvf] = actor_zeta::send(index_address_,
+                        &index::manager_index_t::cleanup_all_versions, session, lowest);
+                    co_await std::move(cvf);
+                    // Rebuild indexes for each collection (compact invalidates row positions)
+                    for (const auto& coll : collections_) {
+                        auto [_rb, rbf] = actor_zeta::send(index_address_,
+                            &index::manager_index_t::rebuild_indexes, session, coll);
+                        co_await std::move(rbf);
+                        // Re-populate indexes from storage
+                        auto [_tr, trf] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::storage_total_rows, session, coll);
+                        auto total = co_await std::move(trf);
+                        if (total > 0) {
+                            auto [_ss, ssf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::storage_scan_segment,
+                                session, coll, int64_t{0}, total);
+                            auto scan_data = co_await std::move(ssf);
+                            if (scan_data) {
+                                auto count = scan_data->size();
+                                auto [_ir, irf] = actor_zeta::send(index_address_,
+                                    &index::manager_index_t::insert_rows,
+                                    session, coll, std::move(scan_data),
+                                    uint64_t{0}, count);
+                                co_await std::move(irf);
+                            }
+                        }
+                    }
+                }
+                co_return make_cursor(resource(), operation_status_t::success);
+            }
+            case node_type::create_sequence_t:
+            case node_type::drop_sequence_t:
+            case node_type::create_view_t:
+            case node_type::drop_view_t:
+            case node_type::create_macro_t:
+            case node_type::drop_macro_t: {
+                // DDL for sequences/views/macros — catalog-only, no storage needed
+                exec_result = {make_cursor(resource(), operation_status_t::success), {}};
+                break;
+            }
             default:
                 exec_result = co_await execute_plan_impl(session, std::move(logic_plan),
-                                                          params->take_parameters());
+                                                          params->take_parameters(), txn_data);
                 break;
         }
 
@@ -356,10 +446,38 @@ namespace services::dispatcher {
                             session, plan->collection_full_name());
                         co_await std::move(csf);
                     } else {
+                        // Use column_definitions if available (includes NOT NULL + DEFAULT info)
                         std::vector<components::table::column_definition_t> storage_columns;
-                        storage_columns.reserve(create_collection->schema().size());
-                        for (const auto& type : create_collection->schema()) {
-                            storage_columns.emplace_back(type.alias(), type);
+                        if (!create_collection->column_definitions().empty()) {
+                            storage_columns.reserve(create_collection->column_definitions().size());
+                            for (const auto& cd : create_collection->column_definitions()) {
+                                storage_columns.push_back(cd.copy());
+                            }
+                        } else {
+                            storage_columns.reserve(create_collection->schema().size());
+                            for (const auto& type : create_collection->schema()) {
+                                storage_columns.emplace_back(type.alias(), type);
+                            }
+                        }
+                        // Resolve UDT references (UNKNOWN types) in storage columns
+                        for (auto& col : storage_columns) {
+                            auto& col_type = col.type();
+                            if (col_type.type() == logical_type::UNKNOWN && !check_type_exists(col_type.type_name())) {
+                                auto proper = catalog_.get_type(col_type.type_name());
+                                std::string alias = col_type.alias();
+                                col_type = std::move(proper);
+                                col_type.set_alias(alias);
+                            }
+                            if (col_type.type() == logical_type::STRUCT) {
+                                for (auto& field : col_type.child_types()) {
+                                    if (field.type() == logical_type::UNKNOWN && !check_type_exists(field.type_name())) {
+                                        auto proper = catalog_.get_type(field.type_name());
+                                        std::string fa = field.alias();
+                                        field = std::move(proper);
+                                        field.set_alias(fa);
+                                    }
+                                }
+                            }
                         }
                         auto [_cs, csf] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::create_storage_with_columns,
@@ -385,7 +503,8 @@ namespace services::dispatcher {
                 case node_type::insert_t:
                 case node_type::update_t:
                 case node_type::delete_t: {
-                    trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                    // Executor owns full DML lifecycle (begin/commit/abort + WAL + side-effects)
+                    trace(log_, "manager_dispatcher_t::execute_plan: DML {} completed by executor", to_string(plan->type()));
                     update_catalog(plan);
                     co_return result;
                 }
@@ -441,11 +560,78 @@ namespace services::dispatcher {
                     co_return result;
                 }
 
+                case node_type::create_sequence_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: create_sequence");
+                    auto seq_node = boost::static_pointer_cast<node_create_sequence_t>(plan);
+                    disk::catalog_sequence_entry_t seq_entry;
+                    seq_entry.name = seq_node->collection_name();
+                    seq_entry.start_value = seq_node->start();
+                    seq_entry.increment = seq_node->increment();
+                    seq_entry.current_value = seq_node->start();
+                    seq_entry.min_value = seq_node->min_value();
+                    seq_entry.max_value = seq_node->max_value();
+                    auto [_s1, sf1] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_append_sequence,
+                        session, seq_node->database_name(), std::move(seq_entry));
+                    co_await std::move(sf1);
+                    co_return result;
+                }
+                case node_type::drop_sequence_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: drop_sequence");
+                    auto [_s2, sf2] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_remove_sequence,
+                        session, plan->database_name(), std::string(plan->collection_name()));
+                    co_await std::move(sf2);
+                    co_return result;
+                }
+                case node_type::create_view_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: create_view");
+                    auto view_node = boost::static_pointer_cast<node_create_view_t>(plan);
+                    disk::catalog_view_entry_t view_entry;
+                    view_entry.name = view_node->collection_name();
+                    view_entry.query_sql = view_node->query_sql();
+                    auto [_v1, vf1] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_append_view,
+                        session, view_node->database_name(), std::move(view_entry));
+                    co_await std::move(vf1);
+                    co_return result;
+                }
+                case node_type::drop_view_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: drop_view");
+                    auto [_v2, vf2] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_remove_view,
+                        session, plan->database_name(), std::string(plan->collection_name()));
+                    co_await std::move(vf2);
+                    co_return result;
+                }
+                case node_type::create_macro_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: create_macro");
+                    auto macro_node = boost::static_pointer_cast<node_create_macro_t>(plan);
+                    disk::catalog_macro_entry_t macro_entry;
+                    macro_entry.name = macro_node->collection_name();
+                    macro_entry.parameters = macro_node->parameters();
+                    macro_entry.body_sql = macro_node->body_sql();
+                    auto [_m1, mf1] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_append_macro,
+                        session, macro_node->database_name(), std::move(macro_entry));
+                    co_await std::move(mf1);
+                    co_return result;
+                }
+                case node_type::drop_macro_t: {
+                    trace(log_, "manager_dispatcher_t::execute_plan: drop_macro");
+                    auto [_m2, mf2] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::catalog_remove_macro,
+                        session, plan->database_name(), std::string(plan->collection_name()));
+                    co_await std::move(mf2);
+                    co_return result;
+                }
+
                 default: {
                     trace(log_, "manager_dispatcher_t::execute_plan: non processed type - {}", to_string(plan->type()));
                 }
             }
         } else {
+            // Executor handles abort + revert for DML errors
             trace(log_, "manager_dispatcher_t::execute_plan: error: \"{}\"", result->get_error().what);
         }
 
@@ -549,7 +735,8 @@ namespace services::dispatcher {
     manager_dispatcher_t::execute_plan_impl(
         components::session::session_id_t session,
         node_ptr logical_plan,
-        storage_parameters parameters) {
+        storage_parameters parameters,
+        components::table::transaction_data txn) {
         trace(log_, "manager_dispatcher_t:execute_plan_impl: collection: {}, session: {}",
               logical_plan->collection_full_name().to_string(), session.data());
 
@@ -569,7 +756,8 @@ namespace services::dispatcher {
                                                            session,
                                                            logical_plan,
                                                            parameters,
-                                                           std::move(collections_context_storage));
+                                                           std::move(collections_context_storage),
+                                                           txn);
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
@@ -578,6 +766,31 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t:execute_plan_impl: executor returned, success: {}",
               result.cursor->is_success());
         co_return result;
+    }
+
+    manager_dispatcher_t::unique_future<components::table::transaction_data>
+    manager_dispatcher_t::begin_transaction(components::session::session_id_t session) {
+        trace(log_, "manager_dispatcher_t::begin_transaction, session: {}", session.data());
+        auto& txn = txn_manager_.begin_transaction(session);
+        co_return txn.data();
+    }
+
+    manager_dispatcher_t::unique_future<uint64_t>
+    manager_dispatcher_t::commit_transaction(components::session::session_id_t session) {
+        trace(log_, "manager_dispatcher_t::commit_transaction, session: {}", session.data());
+        co_return txn_manager_.commit(session);
+    }
+
+    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::abort_transaction(components::session::session_id_t session) {
+        trace(log_, "manager_dispatcher_t::abort_transaction, session: {}", session.data());
+        txn_manager_.abort(session);
+        co_return;
+    }
+
+    manager_dispatcher_t::unique_future<uint64_t>
+    manager_dispatcher_t::lowest_active_start_time(components::session::session_id_t /*session*/) {
+        co_return txn_manager_.lowest_active_start_time();
     }
 
     cursor_t_ptr manager_dispatcher_t::check_namespace_exists(const table_id id) const {

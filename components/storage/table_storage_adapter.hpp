@@ -75,6 +75,27 @@ namespace components::storage {
             table_.scan_table_segment(start, count, callback);
         }
 
+        uint64_t parallel_scan(const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
+            std::vector<table::storage_index_t> column_ids;
+            column_ids.reserve(table_.column_count());
+            for (size_t i = 0; i < table_.column_count(); i++) {
+                column_ids.emplace_back(static_cast<int64_t>(i));
+            }
+            auto parallel_state = table_.create_parallel_scan_state(column_ids);
+            auto types = table_.copy_types();
+            uint64_t total_rows = 0;
+            while (true) {
+                table::table_scan_state local_state(resource_);
+                vector::data_chunk_t result(resource_, types, vector::DEFAULT_VECTOR_CAPACITY);
+                if (!table_.next_parallel_chunk(*parallel_state, local_state, result)) {
+                    break;
+                }
+                total_rows += result.size();
+                callback(result);
+            }
+            return total_rows;
+        }
+
         uint64_t append(vector::data_chunk_t& data) override {
             table::table_append_state append_state(resource_);
             table_.append_lock(append_state);
@@ -85,8 +106,26 @@ namespace components::storage {
             return start_row;
         }
 
+        uint64_t append(vector::data_chunk_t& data, table::transaction_data txn) override {
+            table::table_append_state append_state(resource_);
+            table_.append_lock(append_state);
+            table_.initialize_append(append_state);
+            auto start_row = static_cast<uint64_t>(append_state.current_row);
+            table_.append(data, append_state);
+            table_.finalize_append(append_state, txn);
+            return start_row;
+        }
+
         void update(vector::vector_t& row_ids,
                     vector::data_chunk_t& data) override {
+            auto update_state = table_.initialize_update({});
+            table_.update(*update_state, row_ids, data);
+        }
+
+        void update(vector::vector_t& row_ids,
+                    vector::data_chunk_t& data,
+                    table::transaction_data /*txn*/) override {
+            // TODO: implement MVCC-aware update (delete+insert with version stamps)
             auto update_state = table_.initialize_update({});
             table_.update(*update_state, row_ids, data);
         }
@@ -94,6 +133,23 @@ namespace components::storage {
         uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) override {
             auto delete_state = table_.initialize_delete({});
             return table_.delete_rows(*delete_state, row_ids, count);
+        }
+
+        uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {
+            auto delete_state = table_.initialize_delete({});
+            return table_.delete_rows(*delete_state, row_ids, count, txn_id);
+        }
+
+        void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) override {
+            table_.commit_append(commit_id, row_start, count);
+        }
+
+        void revert_append(int64_t row_start, uint64_t count) override {
+            table_.revert_append(row_start, count);
+        }
+
+        void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {
+            table_.commit_all_deletes(txn_id, commit_id);
         }
 
         std::pmr::memory_resource* resource() const override {

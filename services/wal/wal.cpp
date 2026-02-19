@@ -127,6 +127,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_index, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::commit_txn>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::commit_txn, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -240,83 +244,101 @@ namespace services::wal {
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_one(
         session_id_t session,
-        components::logical_plan::node_insert_ptr data
+        components::logical_plan::node_insert_ptr data,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::insert_one {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()), transaction_id);
         co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_many(
         session_id_t session,
-        components::logical_plan::node_insert_ptr data
+        components::logical_plan::node_insert_ptr data,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::insert_many {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
+        write_data_(data, components::logical_plan::make_parameter_node(resource()), transaction_id);
         co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_one(
         session_id_t session,
         components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params
+        components::logical_plan::parameter_node_ptr params,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::delete_one {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, std::move(params));
+        write_data_(data, std::move(params), transaction_id);
         co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_many(
         session_id_t session,
         components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params
+        components::logical_plan::parameter_node_ptr params,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::delete_many {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, std::move(params));
+        write_data_(data, std::move(params), transaction_id);
         co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_one(
         session_id_t session,
         components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params
+        components::logical_plan::parameter_node_ptr params,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::update_one {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, std::move(params));
+        write_data_(data, std::move(params), transaction_id);
         co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_many(
         session_id_t session,
         components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params
+        components::logical_plan::parameter_node_ptr params,
+        uint64_t transaction_id
     ) {
         trace(log_,
               "wal_replicate_t::update_many {}::{}, session: {}",
               data->collection_full_name().database,
               data->collection_full_name().collection,
               session.data());
-        write_data_(data, std::move(params));
+        write_data_(data, std::move(params), transaction_id);
+        co_return services::wal::id_t(id_);
+    }
+
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::commit_txn(
+        session_id_t session,
+        uint64_t transaction_id
+    ) {
+        trace(log_, "wal_replicate_t::commit_txn txn_id={}, session: {}", transaction_id, session.data());
+        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
+        buffer_t buffer;
+        last_crc32_ = pack_commit_marker(buffer, last_crc32_, id_, transaction_id);
+        write_buffer(buffer);
         co_return services::wal::id_t(id_);
     }
 
@@ -347,10 +369,10 @@ namespace services::wal {
     }
 
     template<class T>
-    void wal_replicate_t::write_data_(T& data, components::logical_plan::parameter_node_ptr params) {
+    void wal_replicate_t::write_data_(T& data, components::logical_plan::parameter_node_ptr params, uint64_t transaction_id) {
         next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
-        last_crc32_ = pack(buffer, last_crc32_, id_, data, params);
+        last_crc32_ = pack(buffer, last_crc32_, id_, data, params, transaction_id);
         write_buffer(buffer);
     }
 
@@ -406,15 +428,34 @@ namespace services::wal {
             record.crc32 = read_crc32(output, record.size);
             if (record.crc32 == static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}))) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
+                auto arr_size = deserializer.root_array_size();
                 record.last_crc32 = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
                 record.id = deserializer.deserialize_uint64(1);
 
-                deserializer.advance_array(2);
-                record.data = components::logical_plan::node_t::deserialize(&deserializer);
-                deserializer.pop_array();
-                deserializer.advance_array(3);
-                record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-                deserializer.pop_array();
+                if (arr_size == 3) {
+                    // COMMIT marker: array(3) = [last_crc32, wal_id, txn_id]
+                    record.transaction_id = deserializer.deserialize_uint64(2);
+                    record.record_type = wal_record_type::COMMIT;
+                    record.data = nullptr;
+                } else if (arr_size >= 5) {
+                    record.transaction_id = deserializer.deserialize_uint64(2);
+                    record.record_type = wal_record_type::DATA;
+                    deserializer.advance_array(3);
+                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                    deserializer.advance_array(4);
+                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                } else {
+                    record.transaction_id = 0;
+                    record.record_type = wal_record_type::DATA;
+                    deserializer.advance_array(2);
+                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                    deserializer.advance_array(3);
+                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+                }
             } else {
                 record.data = nullptr;
                 //todo: error wal content

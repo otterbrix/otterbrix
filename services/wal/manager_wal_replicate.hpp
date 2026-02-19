@@ -60,22 +60,27 @@ namespace services::wal {
         unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
         unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
         unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
+        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_one(session_id_t session,
                                        components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_many(session_id_t session,
                                         components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> update_one(session_id_t session,
                                        components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> update_many(session_id_t session,
                                         components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
+        unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -91,7 +96,8 @@ namespace services::wal {
             &manager_wal_replicate_t::update_one,
             &manager_wal_replicate_t::update_many,
             &manager_wal_replicate_t::create_index,
-            &manager_wal_replicate_t::drop_index
+            &manager_wal_replicate_t::drop_index,
+            &manager_wal_replicate_t::commit_txn
         >;
 
     private:
@@ -144,22 +150,27 @@ namespace services::wal {
         unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
         unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
         unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data);
+        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
+        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_one(session_id_t session,
                                        components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_many(session_id_t session,
                                         components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> update_one(session_id_t session,
                                        components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> update_many(session_id_t session,
                                         components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
+        unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
 
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
@@ -175,7 +186,8 @@ namespace services::wal {
             &manager_wal_replicate_empty_t::update_one,
             &manager_wal_replicate_empty_t::update_many,
             &manager_wal_replicate_empty_t::create_index,
-            &manager_wal_replicate_empty_t::drop_index
+            &manager_wal_replicate_empty_t::drop_index,
+            &manager_wal_replicate_empty_t::commit_txn
         >;
 
     private:

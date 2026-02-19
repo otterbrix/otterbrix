@@ -38,28 +38,37 @@ namespace services::wal {
             components::logical_plan::node_drop_collection_ptr data);
 
         actor_zeta::unique_future<id_t> insert_one(session_id_t session,
-            components::logical_plan::node_insert_ptr data);
+            components::logical_plan::node_insert_ptr data,
+            uint64_t transaction_id);
         actor_zeta::unique_future<id_t> insert_many(session_id_t session,
-            components::logical_plan::node_insert_ptr data);
+            components::logical_plan::node_insert_ptr data,
+            uint64_t transaction_id);
 
         actor_zeta::unique_future<id_t> delete_one(session_id_t session,
             components::logical_plan::node_delete_ptr data,
-            components::logical_plan::parameter_node_ptr params);
+            components::logical_plan::parameter_node_ptr params,
+            uint64_t transaction_id);
         actor_zeta::unique_future<id_t> delete_many(session_id_t session,
             components::logical_plan::node_delete_ptr data,
-            components::logical_plan::parameter_node_ptr params);
+            components::logical_plan::parameter_node_ptr params,
+            uint64_t transaction_id);
 
         actor_zeta::unique_future<id_t> update_one(session_id_t session,
             components::logical_plan::node_update_ptr data,
-            components::logical_plan::parameter_node_ptr params);
+            components::logical_plan::parameter_node_ptr params,
+            uint64_t transaction_id);
         actor_zeta::unique_future<id_t> update_many(session_id_t session,
             components::logical_plan::node_update_ptr data,
-            components::logical_plan::parameter_node_ptr params);
+            components::logical_plan::parameter_node_ptr params,
+            uint64_t transaction_id);
 
         actor_zeta::unique_future<id_t> create_index(session_id_t session,
             components::logical_plan::node_create_index_ptr data);
         actor_zeta::unique_future<id_t> drop_index(session_id_t session,
             components::logical_plan::node_drop_index_ptr data);
+
+        actor_zeta::unique_future<id_t> commit_txn(session_id_t session,
+            uint64_t transaction_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_contract::load,
@@ -74,7 +83,8 @@ namespace services::wal {
             &wal_contract::update_one,
             &wal_contract::update_many,
             &wal_contract::create_index,
-            &wal_contract::drop_index
+            &wal_contract::drop_index,
+            &wal_contract::commit_txn
         >;
 
         wal_contract() = delete;

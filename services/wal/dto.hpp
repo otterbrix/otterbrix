@@ -20,6 +20,7 @@ namespace services::wal {
         components::logical_plan::parameter_node_ptr params_ = nullptr;
         crc32_t last_crc32_{};
         id_t id_{};
+        uint64_t transaction_id_{0};
         crc32_t crc32_{};
     };
 
@@ -32,7 +33,10 @@ namespace services::wal {
                  crc32_t last_crc32,
                  id_t id,
                  const components::logical_plan::node_ptr& data,
-                 const components::logical_plan::parameter_node_ptr& params);
+                 const components::logical_plan::parameter_node_ptr& params,
+                 uint64_t transaction_id = 0);
+
+    crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id);
 
     void unpack(buffer_t& storage, wal_entry_t& entry);
 

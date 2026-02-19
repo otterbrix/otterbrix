@@ -1,6 +1,8 @@
 #include "row_group.hpp"
 
+#include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_manager.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <vector/data_chunk.hpp>
 
 #include "collection.hpp"
@@ -206,7 +208,34 @@ namespace components::table {
         }
     }
 
-    bool row_group_t::check_zonemap_segments(collection_scan_state&) { return true; }
+    bool row_group_t::check_zonemap_segments(collection_scan_state& state) {
+        auto* f = state.filter();
+        if (!f) {
+            return true;
+        }
+        const auto& column_ids = state.column_ids();
+        // For constant comparison filters, check if any column's zonemap prunes this segment
+        if (f->filter_type == expressions::compare_type::eq ||
+            f->filter_type == expressions::compare_type::gt ||
+            f->filter_type == expressions::compare_type::gte ||
+            f->filter_type == expressions::compare_type::lt ||
+            f->filter_type == expressions::compare_type::lte) {
+            auto& cf = f->cast<constant_filter_t>();
+            if (!cf.table_indices.empty()) {
+                auto col_idx = cf.table_indices.front();
+                if (col_idx < get_column_count()) {
+                    auto& col = get_column(col_idx);
+                    column_scan_state dummy;
+                    auto result = col.check_zonemap(dummy, const_cast<table_filter_t&>(*f));
+                    if (result == filter_propagate_result_t::ALWAYS_FALSE) {
+                        next_vector(state);
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
 
     void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
                                       uint64_t vector_index,
@@ -231,6 +260,10 @@ namespace components::table {
                                        TYPE != table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
+        // Sync result_offset with current chunk cardinality (handles chunk reset between calls)
+        for (auto& column_state : state.column_scans) {
+            column_state.result_offset = result.size();
+        }
         while (true) {
             if (static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= state.max_row_group_row) {
                 return;
@@ -416,6 +449,37 @@ namespace components::table {
         this->count = row_group_end;
     }
 
+    void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
+        uint64_t row_group_start = this->count.load();
+        uint64_t row_group_end = row_group_start + count;
+        if (row_group_end > row_group_size()) {
+            row_group_end = row_group_size();
+        }
+        this->count = row_group_end;
+        get_or_create_version_info().append_version_info(txn, count, row_group_start, row_group_end);
+    }
+
+    void row_group_t::commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->commit_append(commit_id, row_group_start, count);
+        }
+        // Update current_version_ so that scans without explicit txn data can see committed rows
+        if (commit_id > current_version_) {
+            current_version_ = commit_id;
+        }
+    }
+
+    void row_group_t::revert_append(uint64_t row_group_start) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->revert_append(row_group_start);
+        }
+        if (row_group_start < this->count.load()) {
+            this->count = row_group_start;
+        }
+    }
+
     void row_group_t::initialize_append(row_group_append_state& append_state) {
         append_state.row_group = this;
         append_state.offset_in_row_group = count;
@@ -470,7 +534,13 @@ namespace components::table {
         col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);
     }
 
-    uint64_t row_group_t::committed_row_count() { return count; }
+    uint64_t row_group_t::committed_row_count() {
+        auto* vi = version_info_.load();
+        if (vi) {
+            return count - vi->commited_deleted_count(count);
+        }
+        return count;
+    }
 
     bool row_group_t::has_unloaded_deletes() const {
         if (deletes_pointers_.empty()) {
@@ -488,14 +558,16 @@ namespace components::table {
 
     class version_delete_state {
     public:
-        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row)
+        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row,
+                             bool is_txn = false)
             : info(info)
             , table(table)
             , current_chunk(storage::INVALID_INDEX)
             , current_version(current_version)
             , base_row(base_row)
             , delete_count(0)
-            , count(0) {}
+            , count(0)
+            , is_txn_(is_txn) {}
 
         row_group_t& info;
         data_table_t& table;
@@ -506,6 +578,7 @@ namespace components::table {
         uint64_t chunk_row;
         uint64_t delete_count;
         uint64_t count;
+        bool is_txn_;
 
         void delete_row(int64_t row_id);
         void flush();
@@ -525,6 +598,37 @@ namespace components::table {
 
     uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
         return get_or_create_version_info().delete_rows(vector_idx, ++current_version_, rows, count);
+    }
+
+    uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
+        version_delete_state del_state(*this, transaction_id, table, start, true);
+
+        for (uint64_t i = 0; i < count; i++) {
+            assert(ids[i] >= 0);
+            assert(ids[i] >= start && ids[i] < start + static_cast<int64_t>(this->count));
+            del_state.delete_row(ids[i]);
+        }
+        del_state.flush();
+        return del_state.delete_count;
+    }
+
+    void row_group_t::commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->commit_delete(vector_idx, commit_id, info);
+        }
+    }
+
+    void row_group_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->commit_all_deletes(txn_id, commit_id);
+        }
+        // Advance current_version_ past commit_id so that committed deletes
+        // are visible to scans using commited_version_operator
+        if (commit_id >= current_version_) {
+            current_version_ = commit_id + 1;
+        }
     }
 
     row_version_manager_t& row_group_t::get_or_create_version_info() {
@@ -555,6 +659,15 @@ namespace components::table {
             return max_count;
         }
         return vinfo->indexing_vector({current_version_, current_version_}, vector_idx, indexing_vector, max_count);
+    }
+
+    uint64_t
+    row_group_t::indexing_vector(transaction_data txn, uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count) {
+        auto vinfo = version_info();
+        if (!vinfo) {
+            return max_count;
+        }
+        return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
     }
 
     uint64_t row_group_t::commited_indexing_vector(uint64_t vector_idx,
@@ -615,8 +728,44 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        auto actual_delete_count = info.delete_rows(current_chunk, rows, count);
+        uint64_t actual_delete_count;
+        if (is_txn_) {
+            actual_delete_count =
+                info.get_or_create_version_info().delete_rows(current_chunk, current_version, rows, count);
+        } else {
+            actual_delete_count = info.delete_rows(current_chunk, rows, count);
+        }
         delete_count += actual_delete_count;
         count = 0;
     }
+    storage::row_group_pointer_t
+    row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
+        storage::row_group_pointer_t pointer;
+        pointer.row_start = static_cast<uint64_t>(start);
+        pointer.tuple_count = count;
+
+        auto col_count = get_column_count();
+        pointer.data_pointers.resize(col_count);
+
+        for (uint64_t i = 0; i < col_count; i++) {
+            auto persistent = columns_[i]->checkpoint(partial_block_manager);
+            pointer.data_pointers[i] = std::move(persistent.data_pointers);
+        }
+
+        return pointer;
+    }
+
+    void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
+        count = pointer.tuple_count;
+        auto col_count = get_column_count();
+        auto ptrs_count = pointer.data_pointers.size();
+        auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
+
+        for (uint64_t i = 0; i < min_count; i++) {
+            persistent_column_data_t pcd;
+            pcd.data_pointers = pointer.data_pointers[i];
+            columns_[i]->initialize_column(pcd);
+        }
+    }
+
 } // namespace components::table

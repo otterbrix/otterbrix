@@ -1,7 +1,10 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
+#include <components/logical_plan/node_drop_macro.hpp>
+#include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/logical_plan/node_drop_type.hpp>
+#include <components/logical_plan/node_drop_view.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -26,9 +29,15 @@ namespace components::sql::transform {
             return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
         }
 
+        std::vector<components::table::column_definition_t> col_defs;
+        fill_column_definitions(col_defs, resource_, *coldefs);
+        auto constraints = extract_table_constraints(*coldefs);
+
         return logical_plan::make_node_create_collection(resource_,
                                                          rangevar_to_collection(node.relation),
-                                                         std::move(columns));
+                                                         std::move(columns),
+                                                         std::move(col_defs),
+                                                         std::move(constraints));
     }
 
     logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {
@@ -112,6 +121,60 @@ namespace components::sql::transform {
                     throw parser_exception_t{"incorrect drop: arguments size", ""};
                 }
                 return logical_plan::make_node_drop_type(resource_, strVal(drop_name.back().data));
+            }
+            case OBJECT_SEQUENCE: {
+                auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
+                switch (static_cast<table_name>(drop_name.size())) {
+                    case table: {
+                        return logical_plan::make_node_drop_sequence(
+                            resource_,
+                            {database_name_t(), strVal(drop_name.front().data)});
+                    }
+                    case database_table: {
+                        auto it = drop_name.begin();
+                        auto database = strVal(it++->data);
+                        auto seq_name = strVal(it->data);
+                        return logical_plan::make_node_drop_sequence(resource_, {database, seq_name});
+                    }
+                    default:
+                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                }
+            }
+            case OBJECT_VIEW: {
+                auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
+                switch (static_cast<table_name>(drop_name.size())) {
+                    case table: {
+                        return logical_plan::make_node_drop_view(
+                            resource_,
+                            {database_name_t(), strVal(drop_name.front().data)});
+                    }
+                    case database_table: {
+                        auto it = drop_name.begin();
+                        auto database = strVal(it++->data);
+                        auto view_name = strVal(it->data);
+                        return logical_plan::make_node_drop_view(resource_, {database, view_name});
+                    }
+                    default:
+                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                }
+            }
+            case OBJECT_FUNCTION: {
+                auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
+                switch (static_cast<table_name>(drop_name.size())) {
+                    case table: {
+                        return logical_plan::make_node_drop_macro(
+                            resource_,
+                            {database_name_t(), strVal(drop_name.front().data)});
+                    }
+                    case database_table: {
+                        auto it = drop_name.begin();
+                        auto database = strVal(it++->data);
+                        auto macro_name = strVal(it->data);
+                        return logical_plan::make_node_drop_macro(resource_, {database, macro_name});
+                    }
+                    default:
+                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                }
             }
             default:
                 throw std::runtime_error("Unsupported removeType");

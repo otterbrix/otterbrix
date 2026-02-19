@@ -26,13 +26,6 @@ namespace services::disk {
         collection_name_t collection;
     };
 
-    struct command_remove_documents_t {
-        using document_ids_t = components::operators::operator_write_data_t::ids_t;
-        database_name_t database;
-        collection_name_t collection;
-        document_ids_t documents;
-    };
-
     struct command_drop_index_t {
         std::string index_name;
         actor_zeta::address_t address;
@@ -58,7 +51,6 @@ namespace services::disk {
                      command_remove_database_t,
                      command_append_collection_t,
                      command_remove_collection_t,
-                     command_remove_documents_t,
                      command_drop_index_t>
             command_;
     };

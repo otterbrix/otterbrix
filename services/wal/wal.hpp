@@ -51,25 +51,33 @@ namespace services::wal {
         unique_future<services::wal::id_t> drop_collection(session_id_t session,
                                             components::logical_plan::node_drop_collection_ptr data);
         unique_future<services::wal::id_t> insert_one(session_id_t session,
-                                       components::logical_plan::node_insert_ptr data);
+                                       components::logical_plan::node_insert_ptr data,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> insert_many(session_id_t session,
-                                        components::logical_plan::node_insert_ptr data);
+                                        components::logical_plan::node_insert_ptr data,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_one(session_id_t session,
                                        components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> delete_many(session_id_t session,
                                         components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> update_one(session_id_t session,
                                        components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params);
+                                       components::logical_plan::parameter_node_ptr params,
+                                       uint64_t transaction_id);
         unique_future<services::wal::id_t> update_many(session_id_t session,
                                         components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params);
+                                        components::logical_plan::parameter_node_ptr params,
+                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> create_index(session_id_t session,
                                          components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session,
                                         components::logical_plan::node_drop_index_ptr data);
+        unique_future<services::wal::id_t> commit_txn(session_id_t session,
+                                        uint64_t transaction_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_replicate_t::load,
@@ -84,7 +92,8 @@ namespace services::wal {
             &wal_replicate_t::update_one,
             &wal_replicate_t::update_many,
             &wal_replicate_t::create_index,
-            &wal_replicate_t::drop_index
+            &wal_replicate_t::drop_index,
+            &wal_replicate_t::commit_txn
         >;
 
         auto make_type() const noexcept -> const char*;
@@ -96,7 +105,7 @@ namespace services::wal {
         virtual void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const;
 
         template<class T>
-        void write_data_(T& data, components::logical_plan::parameter_node_ptr params);
+        void write_data_(T& data, components::logical_plan::parameter_node_ptr params, uint64_t transaction_id = 0);
 
         void init_id();
         bool find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const;

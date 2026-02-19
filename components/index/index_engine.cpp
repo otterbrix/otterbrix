@@ -159,6 +159,50 @@ namespace components::index {
         }
     }
 
+    void
+    index_engine_t::insert_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id) {
+        for (auto& index : storage_) {
+            if (is_match_column(index, chunk)) {
+                auto key = get_value_by_index(index, chunk, row);
+                index->insert(key, static_cast<int64_t>(row), txn_id);
+            }
+        }
+    }
+
+    void
+    index_engine_t::mark_delete_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id) {
+        for (auto& index : storage_) {
+            if (is_match_column(index, chunk)) {
+                auto key = get_value_by_index(index, chunk, row);
+                index->mark_delete(key, static_cast<int64_t>(row), txn_id);
+            }
+        }
+    }
+
+    void index_engine_t::commit_insert(uint64_t txn_id, uint64_t commit_id) {
+        for (auto& index : storage_) {
+            index->commit_insert(txn_id, commit_id);
+        }
+    }
+
+    void index_engine_t::commit_delete(uint64_t txn_id, uint64_t commit_id) {
+        for (auto& index : storage_) {
+            index->commit_delete(txn_id, commit_id);
+        }
+    }
+
+    void index_engine_t::revert_insert(uint64_t txn_id) {
+        for (auto& index : storage_) {
+            index->revert_insert(txn_id);
+        }
+    }
+
+    void index_engine_t::cleanup_versions(uint64_t lowest_active) {
+        for (auto& index : storage_) {
+            index->cleanup_versions(lowest_active);
+        }
+    }
+
     auto index_engine_t::indexes() -> std::vector<std::string> {
         std::vector<std::string> res;
         res.reserve(storage_.size());
@@ -175,6 +219,30 @@ namespace components::index {
             if (index->is_disk() && is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, row);
                 fn(index->disk_agent(), key);
+            }
+        }
+    }
+
+    void
+    index_engine_t::for_each_pending_disk_insert(uint64_t txn_id,
+        const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const {
+        for (const auto& index : storage_) {
+            if (index->is_disk()) {
+                index->for_each_pending_insert(txn_id, [&](const value_t& key, int64_t row_index) {
+                    fn(index->disk_agent(), key, row_index);
+                });
+            }
+        }
+    }
+
+    void
+    index_engine_t::for_each_pending_disk_delete(uint64_t txn_id,
+        const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const {
+        for (const auto& index : storage_) {
+            if (index->is_disk()) {
+                index->for_each_pending_delete(txn_id, [&](const value_t& key, int64_t row_index) {
+                    fn(index->disk_agent(), key, row_index);
+                });
             }
         }
     }

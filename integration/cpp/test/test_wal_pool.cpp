@@ -256,3 +256,203 @@ TEST_CASE("integration::cpp::test_wal_pool::update_wal_recovery") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
     }
 }
+
+
+TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/sql_dml_cycle");
+    test_clear_directory(config);
+
+    constexpr int kDocuments = 100;
+
+    INFO("phase 1: insert, delete, update via SQL with index") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        INIT_COLLECTION_WAL(database_name, collection_name);
+
+        // Create index on count column — makes index path real
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT 100 rows via SQL (count = 0..99)
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < kDocuments; ++i) {
+                query << "('name_" << i << "', " << i << ")" << (i == kDocuments - 1 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kDocuments);
+        }
+
+        // Verify insert: total + exact match + range + boundary
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", kDocuments);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;", 9);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+
+        // DELETE WHERE count > 90 (deletes 9 rows: 91..99)
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 9);
+        }
+
+        // Verify delete: deleted gone + boundary intact
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 91);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 95;", 0);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;", 0);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
+
+        // UPDATE SET count = 999 WHERE count = 50
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        // Verify update: old gone, new present, total unchanged
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 91);
+    }
+
+    INFO("phase 2: restart and verify durability") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Total rows: 91 (100 - 9 deleted)
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 91);
+
+        // Exact-match queries survived restart
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
+
+        // Deleted rows stay deleted
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 95;", 0);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;", 1); // only 999
+
+        // Updated row persisted
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
+
+        // Range query post-restart
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE count <= 10;", 11);
+    }
+}
+
+
+TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
+    auto config = test_create_config(
+        "/tmp/otterbrix/integration/test_wal_pool/constraint_enforce");
+    test_clear_directory(config);
+
+    INFO("phase 1: create table with NOT NULL, test enforcement") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Create database
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        // Create table with NOT NULL constraint
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.TestCollection "
+                "(name TEXT, score BIGINT NOT NULL);");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT valid data
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
+                "('alice', 100), ('bob', 200), ('charlie', 300);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 3);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
+
+        // Attempt INSERT with NULL in NOT NULL column — rejected (0 rows)
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) "
+                "VALUES ('dave', NULL);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+
+        // Only original 3 rows exist (violation didn't corrupt state)
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 3);
+
+        // INSERT more valid data after violation (system not broken)
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
+                "('eve', 400), ('frank', 500);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
+    }
+
+    INFO("phase 2: restart and verify constraint state persisted") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // All 5 valid rows survived restart
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
+        CHECK_FIND_SQL_WAL(
+            "SELECT * FROM TestDatabase.TestCollection WHERE score = 500;", 1);
+
+        // NOT NULL constraint still enforced after restart
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) "
+                "VALUES ('ghost', NULL);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+
+        // Still 5 rows
+        CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
+    }
+}

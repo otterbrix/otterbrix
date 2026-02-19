@@ -70,11 +70,13 @@ namespace services::wal {
                  crc32_t last_crc32,
                  id_t id,
                  const components::logical_plan::node_ptr& data,
-                 const components::logical_plan::parameter_node_ptr& params) {
+                 const components::logical_plan::parameter_node_ptr& params,
+                 uint64_t transaction_id) {
         components::serializer::msgpack_serializer_t serializer(data->resource());
-        serializer.start_array(4);
+        serializer.start_array(5);
         serializer.append(static_cast<uint64_t>(last_crc32));
         serializer.append(static_cast<uint64_t>(id));
+        serializer.append(transaction_id);
         data->serialize(&serializer);
         params->serialize(&serializer);
         serializer.end_array();
@@ -83,18 +85,42 @@ namespace services::wal {
         return pack(storage, buffer.data(), buffer.size());
     }
 
+    crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id) {
+        // Commit markers use array(3): [last_crc32, wal_id, txn_id]
+        // Distinguished from DATA records (array 4 or 5) by array size
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(&sbuf);
+        pk.pack_array(3);
+        pk.pack(static_cast<uint64_t>(last_crc32));
+        pk.pack(static_cast<uint64_t>(id));
+        pk.pack(transaction_id);
+        return pack(storage, sbuf.data(), sbuf.size());
+    }
+
     void unpack(buffer_t& storage, wal_entry_t& entry) {
         components::serializer::msgpack_deserializer_t deserializer(storage);
+        auto arr_size = deserializer.root_array_size();
 
         entry.last_crc32_ = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
         entry.id_ = deserializer.deserialize_uint64(1);
 
-        deserializer.advance_array(2);
-        entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
-        deserializer.pop_array();
-        deserializer.advance_array(3);
-        entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-        deserializer.pop_array();
+        if (arr_size >= 5) {
+            entry.transaction_id_ = deserializer.deserialize_uint64(2);
+            deserializer.advance_array(3);
+            entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
+            deserializer.pop_array();
+            deserializer.advance_array(4);
+            entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+            deserializer.pop_array();
+        } else {
+            entry.transaction_id_ = 0;
+            deserializer.advance_array(2);
+            entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
+            deserializer.pop_array();
+            deserializer.advance_array(3);
+            entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+            deserializer.pop_array();
+        }
     }
 
     id_t unpack_wal_id(buffer_t& storage) {

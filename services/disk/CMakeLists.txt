@@ -1,6 +1,7 @@
 project(disk)
 
 set(${PROJECT_NAME}_HEADERS
+        catalog_storage.hpp
         command.hpp
         disk.hpp
         agent_disk.hpp
@@ -10,6 +11,7 @@ set(${PROJECT_NAME}_HEADERS
 )
 
 set(${PROJECT_NAME}_SOURCES
+        catalog_storage.cpp
         command.cpp
         disk.cpp
         agent_disk.cpp

@@ -201,7 +201,7 @@ namespace otterbrix {
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-        transformer local_transformer(resource());
+        transformer local_transformer(resource(), query.c_str());
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
             std::holds_alternative<bind_error>(result)) {
             return make_cursor(resource(),

@@ -2,6 +2,10 @@
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog.hpp>
+#include <components/catalog/catalog_types.hpp>
+#include <components/catalog/schema.hpp>
+#include <components/catalog/table_metadata.hpp>
+#include <components/logical_plan/node_checkpoint.hpp>
 #include <core/executor.hpp>
 #include <memory>
 #include <thread>
@@ -131,21 +135,55 @@ namespace otterbrix {
                 ns.push_back(std::pmr::string(db_name.c_str(), &resource));
                 catalog.create_namespace(ns);
             }
-            for (const auto& coll_name : state.collections) {
-                trace(log_, "spaces::creating computing table: {}.{}", coll_name.database, coll_name.collection);
-                components::catalog::table_id table_id(&resource, coll_name);
-                auto err = catalog.create_computing_table(table_id);
-                if (err) {
-                    warn(log_, "spaces::failed to create computing table {}.{}: {}",
-                         coll_name.database, coll_name.collection, err.what());
+
+            // Use collection_infos for distinguishing in-memory vs disk tables
+            for (const auto& info : state.collection_infos) {
+                components::catalog::table_id table_id(&resource, info.name);
+
+                if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
+                    trace(log_, "spaces::creating computing table: {}.{}", info.name.database, info.name.collection);
+                    auto err = catalog.create_computing_table(table_id);
+                    if (err) {
+                        warn(log_, "spaces::failed to create computing table {}.{}: {}",
+                             info.name.database, info.name.collection, err.what());
+                    }
+                } else {
+                    trace(log_, "spaces::creating disk table: {}.{} ({} columns)",
+                          info.name.database, info.name.collection, info.columns.size());
+                    // Build schema from catalog columns
+                    using namespace components::types;
+                    using namespace components::catalog;
+                    std::vector<complex_logical_type> schema_cols;
+                    std::vector<field_description> descs;
+                    schema_cols.reserve(info.columns.size());
+                    descs.reserve(info.columns.size());
+                    for (size_t i = 0; i < info.columns.size(); ++i) {
+                        auto col_type = complex_logical_type(info.columns[i].type);
+                        col_type.set_alias(info.columns[i].name);
+                        schema_cols.push_back(std::move(col_type));
+                        descs.push_back(field_description(static_cast<field_id_t>(i)));
+                    }
+                    auto sch = schema(&resource,
+                                      create_struct("schema", schema_cols, std::move(descs)));
+                    auto err = catalog.create_table(table_id,
+                                                    table_metadata(&resource, std::move(sch)));
+                    if (err) {
+                        warn(log_, "spaces::failed to create disk table {}.{}: {}",
+                             info.name.database, info.name.collection, err.what());
+                    }
                 }
             }
         }
 
         // Create storages in manager_disk_t for loaded collections
         if (disk_ptr) {
-            for (const auto& full_name : state.collections) {
-                disk_ptr->create_storage_sync(full_name);
+            for (const auto& info : state.collection_infos) {
+                if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
+                    disk_ptr->create_storage_sync(info.name);
+                } else {
+                    auto otbx_path = config.disk.path / info.name.database / "main" / info.name.collection / "table.otbx";
+                    disk_ptr->load_storage_disk_sync(info.name, otbx_path);
+                }
             }
         }
 
@@ -153,6 +191,17 @@ namespace otterbrix {
         for (const auto& full_name : state.collections) {
             auto session = components::session::session_id_t();
             manager_index_->register_collection_sync(session, full_name);
+        }
+
+        // Log loaded catalog DDL objects (sequences, views, macros)
+        if (!state.sequences.empty()) {
+            trace(log_, "spaces::loaded {} sequences from catalog", state.sequences.size());
+        }
+        if (!state.views.empty()) {
+            trace(log_, "spaces::loaded {} views from catalog", state.views.size());
+        }
+        if (!state.macros.empty()) {
+            trace(log_, "spaces::loaded {} macros from catalog", state.macros.size());
         }
 
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
@@ -228,6 +277,17 @@ namespace otterbrix {
 
     base_otterbrix_t::~base_otterbrix_t() {
         trace(log_, "delete spaces");
+        // Checkpoint all disk tables before shutdown
+        if (wrapper_dispatcher_) {
+            try {
+                auto session = components::session::session_id_t();
+                auto checkpoint_node = components::logical_plan::make_node_checkpoint(&resource);
+                wrapper_dispatcher_->execute_plan(session, checkpoint_node, nullptr);
+                trace(log_, "delete spaces: checkpoint complete");
+            } catch (...) {
+                // Best-effort: don't throw from destructor
+            }
+        }
         scheduler_->stop();
         scheduler_dispatcher_->stop();
         scheduler_disk_->stop();

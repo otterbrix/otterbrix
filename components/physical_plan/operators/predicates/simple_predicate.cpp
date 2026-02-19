@@ -4,7 +4,6 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/types/operations_helper.hpp>
-#include <fmt/format.h>
 #include <regex>
 
 namespace components::operators::predicates {

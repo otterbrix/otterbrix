@@ -27,7 +27,6 @@
 #include <services/wal/wal_contract.hpp>
 #include <services/collection/executor.hpp>
 #include <services/collection/context_storage.hpp>
-#include <services/loader/loaded_state.hpp>
 #include <components/table/transaction_manager.hpp>
 
 namespace services::dispatcher {
@@ -62,7 +61,7 @@ namespace services::dispatcher {
 
         void init_from_state(
             std::pmr::set<database_name_t> databases,
-            loader::collection_set_t collections);
+            std::pmr::set<collection_full_name_t> collections);
 
         components::catalog::catalog& mutable_catalog() { return catalog_; }
 

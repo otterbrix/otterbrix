@@ -102,6 +102,19 @@ namespace services::disk {
         void load_storage_disk_sync(const collection_full_name_t& name,
                                      const std::filesystem::path& otbx_path);
 
+        // Overlay NOT NULL from catalog onto storage column definitions (after WAL replay)
+        void overlay_column_not_null_sync(const collection_full_name_t& name,
+                                          const std::string& col_name);
+
+        // Synchronous direct replay methods for physical WAL (before schedulers start, no MVCC)
+        void direct_append_sync(const collection_full_name_t& name,
+                                components::vector::data_chunk_t& data);
+        void direct_delete_sync(const collection_full_name_t& name,
+                                const std::pmr::vector<int64_t>& row_ids, uint64_t count);
+        void direct_update_sync(const collection_full_name_t& name,
+                                const std::pmr::vector<int64_t>& row_ids,
+                                components::vector::data_chunk_t& new_data);
+
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
 

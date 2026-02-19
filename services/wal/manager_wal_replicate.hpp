@@ -22,8 +22,6 @@
 #include "wal.hpp"
 #include "wal_contract.hpp"
 
-#include <components/logical_plan/param_storage.hpp>
-
 namespace services::wal {
 
     class manager_wal_replicate_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
@@ -56,48 +54,45 @@ namespace services::wal {
 
         void sync(address_pack pack);
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
-        unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
-        unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
-        unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
-        unique_future<services::wal::id_t> delete_one(session_id_t session,
-                                       components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params,
-                                       uint64_t transaction_id);
-        unique_future<services::wal::id_t> delete_many(session_id_t session,
-                                        components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params,
-                                        uint64_t transaction_id);
-        unique_future<services::wal::id_t> update_one(session_id_t session,
-                                       components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params,
-                                       uint64_t transaction_id);
-        unique_future<services::wal::id_t> update_many(session_id_t session,
-                                        components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params,
-                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
 
+        unique_future<services::wal::id_t> write_physical_insert(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+            uint64_t row_start,
+            uint64_t row_count,
+            uint64_t txn_id);
+
+        unique_future<services::wal::id_t> write_physical_delete(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::pmr::vector<int64_t> row_ids,
+            uint64_t count,
+            uint64_t txn_id);
+
+        unique_future<services::wal::id_t> write_physical_update(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::pmr::vector<int64_t> row_ids,
+            std::unique_ptr<components::vector::data_chunk_t> new_data,
+            uint64_t count,
+            uint64_t txn_id);
+
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_t::load,
-            &manager_wal_replicate_t::create_database,
-            &manager_wal_replicate_t::drop_database,
-            &manager_wal_replicate_t::create_collection,
-            &manager_wal_replicate_t::drop_collection,
-            &manager_wal_replicate_t::insert_one,
-            &manager_wal_replicate_t::insert_many,
-            &manager_wal_replicate_t::delete_one,
-            &manager_wal_replicate_t::delete_many,
-            &manager_wal_replicate_t::update_one,
-            &manager_wal_replicate_t::update_many,
             &manager_wal_replicate_t::create_index,
             &manager_wal_replicate_t::drop_index,
-            &manager_wal_replicate_t::commit_txn
+            &manager_wal_replicate_t::commit_txn,
+            &manager_wal_replicate_t::write_physical_insert,
+            &manager_wal_replicate_t::write_physical_delete,
+            &manager_wal_replicate_t::write_physical_update
         >;
 
     private:
@@ -146,48 +141,45 @@ namespace services::wal {
         void sync(address_pack pack);
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_database(session_id_t session, components::logical_plan::node_create_database_ptr data);
-        unique_future<services::wal::id_t> drop_database(session_id_t session, components::logical_plan::node_drop_database_ptr data);
-        unique_future<services::wal::id_t> create_collection(session_id_t session, components::logical_plan::node_create_collection_ptr data);
-        unique_future<services::wal::id_t> drop_collection(session_id_t session, components::logical_plan::node_drop_collection_ptr data);
-        unique_future<services::wal::id_t> insert_one(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
-        unique_future<services::wal::id_t> insert_many(session_id_t session, components::logical_plan::node_insert_ptr data, uint64_t transaction_id);
-        unique_future<services::wal::id_t> delete_one(session_id_t session,
-                                       components::logical_plan::node_delete_ptr data,
-                                       components::logical_plan::parameter_node_ptr params,
-                                       uint64_t transaction_id);
-        unique_future<services::wal::id_t> delete_many(session_id_t session,
-                                        components::logical_plan::node_delete_ptr data,
-                                        components::logical_plan::parameter_node_ptr params,
-                                        uint64_t transaction_id);
-        unique_future<services::wal::id_t> update_one(session_id_t session,
-                                       components::logical_plan::node_update_ptr data,
-                                       components::logical_plan::parameter_node_ptr params,
-                                       uint64_t transaction_id);
-        unique_future<services::wal::id_t> update_many(session_id_t session,
-                                        components::logical_plan::node_update_ptr data,
-                                        components::logical_plan::parameter_node_ptr params,
-                                        uint64_t transaction_id);
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
 
+        unique_future<services::wal::id_t> write_physical_insert(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+            uint64_t row_start,
+            uint64_t row_count,
+            uint64_t txn_id);
+
+        unique_future<services::wal::id_t> write_physical_delete(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::pmr::vector<int64_t> row_ids,
+            uint64_t count,
+            uint64_t txn_id);
+
+        unique_future<services::wal::id_t> write_physical_update(
+            session_id_t session,
+            std::string database,
+            std::string collection,
+            std::pmr::vector<int64_t> row_ids,
+            std::unique_ptr<components::vector::data_chunk_t> new_data,
+            uint64_t count,
+            uint64_t txn_id);
+
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_empty_t::load,
-            &manager_wal_replicate_empty_t::create_database,
-            &manager_wal_replicate_empty_t::drop_database,
-            &manager_wal_replicate_empty_t::create_collection,
-            &manager_wal_replicate_empty_t::drop_collection,
-            &manager_wal_replicate_empty_t::insert_one,
-            &manager_wal_replicate_empty_t::insert_many,
-            &manager_wal_replicate_empty_t::delete_one,
-            &manager_wal_replicate_empty_t::delete_many,
-            &manager_wal_replicate_empty_t::update_one,
-            &manager_wal_replicate_empty_t::update_many,
             &manager_wal_replicate_empty_t::create_index,
             &manager_wal_replicate_empty_t::drop_index,
-            &manager_wal_replicate_empty_t::commit_txn
+            &manager_wal_replicate_empty_t::commit_txn,
+            &manager_wal_replicate_empty_t::write_physical_insert,
+            &manager_wal_replicate_empty_t::write_physical_delete,
+            &manager_wal_replicate_empty_t::write_physical_update
         >;
 
     private:

@@ -2,10 +2,6 @@
 #include "predicates/predicate.hpp"
 #include <components/vector/vector_operations.hpp>
 
-#include <services/disk/manager_disk.hpp>
-#include <services/index/manager_index.hpp>
-#include <components/context/execution_context.hpp>
-
 namespace components::operators {
 
     operator_update::operator_update(std::pmr::memory_resource* resource, log_t log,
@@ -121,49 +117,6 @@ namespace components::operators {
         if (output_ && modified_ && modified_->size() > 0 && !name_.empty()) {
             async_wait();
         }
-    }
-
-    actor_zeta::unique_future<void> operator_update::await_async_and_resume(pipeline::context_t* ctx) {
-        auto& out_chunk = output_->data_chunk();
-        execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
-
-        // storage_update
-        vector::vector_t row_ids(resource_, types::logical_type::BIGINT, out_chunk.size());
-        for (uint64_t i = 0; i < out_chunk.size(); i++) {
-            row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
-        }
-        auto data_copy = std::make_unique<vector::data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*data_copy, 0);
-        auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_update,
-            exec_ctx, std::move(row_ids), std::move(data_copy));
-        co_await std::move(uf);
-
-        // Mirror to index (old+new data)
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
-                auto& sc = scan_out->data_chunk();
-                auto old_data = std::make_unique<vector::data_chunk_t>(resource_, sc.types(), sc.size());
-                sc.copy(*old_data, 0);
-                auto new_data = std::make_unique<vector::data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-                out_chunk.copy(*new_data, 0);
-                auto& mod_ids = modified_->ids();
-                auto idx_ids = std::pmr::vector<size_t>(resource_);
-                idx_ids.reserve(mod_ids.size());
-                for (size_t i = 0; i < mod_ids.size(); i++) {
-                    idx_ids.push_back(mod_ids[i]);
-                }
-                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                    &services::index::manager_index_t::update_rows_txn,
-                    exec_ctx, std::move(old_data), std::move(new_data), std::move(idx_ids));
-                co_await std::move(ixf);
-            }
-        }
-
-        // output_ already set by on_execute_impl (contains updated rows)
-        // UPDATE does NOT set append_row_start/count/delete_txn_id — storage_update handles internally
-        mark_executed();
-        co_return;
     }
 
 } // namespace components::operators

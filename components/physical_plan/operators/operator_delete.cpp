@@ -1,10 +1,6 @@
 #include "operator_delete.hpp"
 #include "predicates/predicate.hpp"
 
-#include <services/disk/manager_disk.hpp>
-#include <services/index/manager_index.hpp>
-#include <components/context/execution_context.hpp>
-
 namespace components::operators {
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t log,
@@ -89,52 +85,6 @@ namespace components::operators {
         if (modified_ && modified_->size() > 0 && !name_.empty()) {
             async_wait();
         }
-    }
-
-    actor_zeta::unique_future<void> operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
-        auto& ids = modified_->ids();
-        size_t modified_size = modified_->size();
-        execution_context_t exec_ctx{ctx->session, ctx->txn, name_};
-
-        // storage_delete_rows
-        vector::vector_t row_ids(resource_, types::logical_type::BIGINT, modified_size);
-        for (size_t i = 0; i < modified_size; i++) {
-            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
-        }
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_delete_rows,
-            exec_ctx, std::move(row_ids), static_cast<uint64_t>(modified_size));
-        co_await std::move(df);
-
-        delete_txn_id_ = ctx->txn.transaction_id;
-
-        // Mirror to index
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
-                auto& sc = scan_out->data_chunk();
-                auto idx_data = std::make_unique<vector::data_chunk_t>(resource_, sc.types(), sc.size());
-                sc.copy(*idx_data, 0);
-                auto idx_ids = std::pmr::vector<size_t>(resource_);
-                idx_ids.reserve(modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    idx_ids.push_back(i);
-                }
-                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                    &services::index::manager_index_t::delete_rows_txn,
-                    exec_ctx, std::move(idx_data), std::move(idx_ids));
-                co_await std::move(ixf);
-            }
-        }
-
-        // Build result (need types from storage)
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_types, ctx->session, name_);
-        auto types = co_await std::move(tf);
-        vector::data_chunk_t chunk(resource_, types, modified_size);
-        chunk.set_cardinality(modified_size);
-        output_ = make_operator_data(resource_, std::move(chunk));
-        mark_executed();
-        co_return;
     }
 
 } // namespace components::operators

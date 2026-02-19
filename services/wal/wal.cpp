@@ -7,15 +7,8 @@
 #include "manager_wal_replicate.hpp"
 
 #include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_index.hpp>
-#include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
-#include <components/logical_plan/node_insert.hpp>
-#include <components/logical_plan/node_update.hpp>
 #include <components/serialization/deserializer.hpp>
 
 namespace services::wal {
@@ -79,46 +72,6 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::load, msg);
                 break;
             }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_database>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_database, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_database>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_database, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_collection>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_collection, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_collection>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_collection, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::insert_one>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::insert_one, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::insert_many>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::insert_many, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::delete_one>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::delete_one, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::delete_many>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::delete_many, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::update_one>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::update_one, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::update_many>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::update_many, msg);
-                break;
-            }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_index>: {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
                 break;
@@ -129,6 +82,18 @@ namespace services::wal {
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::commit_txn>: {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::commit_txn, msg);
+                break;
+            }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::write_physical_insert>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::write_physical_insert, msg);
+                break;
+            }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::write_physical_delete>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::write_physical_delete, msg);
+                break;
+            }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::write_physical_update>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::write_physical_update, msg);
                 break;
             }
             default:
@@ -147,7 +112,7 @@ namespace services::wal {
     }
 
     wal_replicate_t::~wal_replicate_t() { trace(log_, "delete wal_replicate_t"); }
-    
+
     static size_tt read_size_impl(const char* input, size_tt index_start) {
         size_tt size_tmp = 0;
         size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
@@ -189,145 +154,6 @@ namespace services::wal {
             records.erase(records.end() - 1);
         }
         co_return records;
-    }
-
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_database(
-        session_id_t session,
-        components::logical_plan::node_create_database_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::create_database {}, session: {}",
-              data->collection_full_name().database,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_database(
-        session_id_t session,
-        components::logical_plan::node_drop_database_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::drop_database {}, session: {}",
-              data->collection_full_name().database,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_collection(
-        session_id_t session,
-        components::logical_plan::node_create_collection_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::create_collection {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_collection(
-        session_id_t session,
-        components::logical_plan::node_drop_collection_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::drop_collection {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_one(
-        session_id_t session,
-        components::logical_plan::node_insert_ptr data,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::insert_one {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()), transaction_id);
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::insert_many(
-        session_id_t session,
-        components::logical_plan::node_insert_ptr data,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::insert_many {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()), transaction_id);
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_one(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::delete_one {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, std::move(params), transaction_id);
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::delete_many(
-        session_id_t session,
-        components::logical_plan::node_delete_ptr data,
-        components::logical_plan::parameter_node_ptr params,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::delete_many {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, std::move(params), transaction_id);
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_one(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::update_one {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, std::move(params), transaction_id);
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::update_many(
-        session_id_t session,
-        components::logical_plan::node_update_ptr data,
-        components::logical_plan::parameter_node_ptr params,
-        uint64_t transaction_id
-    ) {
-        trace(log_,
-              "wal_replicate_t::update_many {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, std::move(params), transaction_id);
-        co_return services::wal::id_t(id_);
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::commit_txn(
@@ -437,6 +263,66 @@ namespace services::wal {
                     record.transaction_id = deserializer.deserialize_uint64(2);
                     record.record_type = wal_record_type::COMMIT;
                     record.data = nullptr;
+                } else if (arr_size >= 8) {
+                    // Check if element[3] is a physical record type
+                    auto type_val = deserializer.deserialize_uint64(3);
+                    auto phys_type = static_cast<wal_record_type>(type_val);
+                    if (phys_type == wal_record_type::PHYSICAL_INSERT
+                        || phys_type == wal_record_type::PHYSICAL_DELETE
+                        || phys_type == wal_record_type::PHYSICAL_UPDATE) {
+                        record.transaction_id = deserializer.deserialize_uint64(2);
+                        record.record_type = phys_type;
+                        record.data = nullptr;
+                        record.collection_name = collection_full_name_t(
+                            deserializer.deserialize_string(4),
+                            deserializer.deserialize_string(5));
+
+                        if (phys_type == wal_record_type::PHYSICAL_INSERT) {
+                            // array(9): [..., data_chunk, row_start, row_count]
+                            deserializer.advance_array(6);
+                            auto chunk = components::vector::data_chunk_t::deserialize(&deserializer);
+                            record.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+                            deserializer.pop_array();
+                            record.physical_row_start = deserializer.deserialize_uint64(7);
+                            record.physical_row_count = deserializer.deserialize_uint64(8);
+                        } else if (phys_type == wal_record_type::PHYSICAL_DELETE) {
+                            // array(8): [..., row_ids_array, count]
+                            deserializer.advance_array(6);
+                            auto ids_count = deserializer.current_array_size();
+                            record.physical_row_ids.reserve(ids_count);
+                            for (std::size_t ri = 0; ri < ids_count; ++ri) {
+                                record.physical_row_ids.push_back(
+                                    static_cast<int64_t>(deserializer.deserialize_int64(ri)));
+                            }
+                            deserializer.pop_array();
+                            record.physical_row_count = deserializer.deserialize_uint64(7);
+                        } else {
+                            // PHYSICAL_UPDATE: array(9): [..., row_ids_array, data_chunk, count]
+                            deserializer.advance_array(6);
+                            auto ids_count = deserializer.current_array_size();
+                            record.physical_row_ids.reserve(ids_count);
+                            for (std::size_t ri = 0; ri < ids_count; ++ri) {
+                                record.physical_row_ids.push_back(
+                                    static_cast<int64_t>(deserializer.deserialize_int64(ri)));
+                            }
+                            deserializer.pop_array();
+                            deserializer.advance_array(7);
+                            auto chunk = components::vector::data_chunk_t::deserialize(&deserializer);
+                            record.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+                            deserializer.pop_array();
+                            record.physical_row_count = deserializer.deserialize_uint64(8);
+                        }
+                    } else {
+                        // Legacy DATA with txn (arr_size >= 5 but also >= 8 somehow)
+                        record.transaction_id = deserializer.deserialize_uint64(2);
+                        record.record_type = wal_record_type::DATA;
+                        deserializer.advance_array(3);
+                        record.data = components::logical_plan::node_t::deserialize(&deserializer);
+                        deserializer.pop_array();
+                        deserializer.advance_array(4);
+                        record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
+                        deserializer.pop_array();
+                    }
                 } else if (arr_size >= 5) {
                     record.transaction_id = deserializer.deserialize_uint64(2);
                     record.record_type = wal_record_type::DATA;
@@ -464,6 +350,56 @@ namespace services::wal {
             record.data = nullptr;
         }
         return record;
+    }
+
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_insert(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+        uint64_t row_start,
+        uint64_t row_count,
+        uint64_t txn_id
+    ) {
+        trace(log_, "wal_replicate_t::write_physical_insert {}::{}, session: {}", database, collection, session.data());
+        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
+        buffer_t buffer;
+        last_crc32_ = pack_physical_insert(buffer, resource(), last_crc32_, id_, txn_id, database, collection, *data_chunk, row_start, row_count);
+        write_buffer(buffer);
+        co_return services::wal::id_t(id_);
+    }
+
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_delete(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::pmr::vector<int64_t> row_ids,
+        uint64_t count,
+        uint64_t txn_id
+    ) {
+        trace(log_, "wal_replicate_t::write_physical_delete {}::{}, session: {}", database, collection, session.data());
+        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
+        buffer_t buffer;
+        last_crc32_ = pack_physical_delete(buffer, last_crc32_, id_, txn_id, database, collection, row_ids, count);
+        write_buffer(buffer);
+        co_return services::wal::id_t(id_);
+    }
+
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_update(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::pmr::vector<int64_t> row_ids,
+        std::unique_ptr<components::vector::data_chunk_t> new_data,
+        uint64_t count,
+        uint64_t txn_id
+    ) {
+        trace(log_, "wal_replicate_t::write_physical_update {}::{}, session: {}", database, collection, session.data());
+        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
+        buffer_t buffer;
+        last_crc32_ = pack_physical_update(buffer, resource(), last_crc32_, id_, txn_id, database, collection, row_ids, *new_data, count);
+        write_buffer(buffer);
+        co_return services::wal::id_t(id_);
     }
 
 #ifdef DEV_MODE

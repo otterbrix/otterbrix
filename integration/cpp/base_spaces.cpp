@@ -1,23 +1,114 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
+#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/catalog/catalog.hpp>
 #include <components/catalog/catalog_types.hpp>
 #include <components/catalog/schema.hpp>
 #include <components/catalog/table_metadata.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
+#include <components/serialization/deserializer.hpp>
 #include <core/executor.hpp>
+#include <core/file/file_handle.hpp>
+#include <core/file/local_file_system.hpp>
 #include <memory>
 #include <thread>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/dispatcher/dispatcher.hpp>
-#include <services/loader/loader.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <services/wal/wal_reader.hpp>
 
 namespace otterbrix {
 
     using services::dispatcher::manager_dispatcher_t;
+
+    namespace {
+
+        struct collection_load_info_t {
+            collection_full_name_t name;
+            services::disk::table_storage_mode_t storage_mode{services::disk::table_storage_mode_t::IN_MEMORY};
+            std::vector<services::disk::catalog_column_entry_t> columns;
+        };
+
+        bool is_index_valid(const std::filesystem::path& index_path) {
+            if (!std::filesystem::exists(index_path) || !std::filesystem::is_directory(index_path)) {
+                return false;
+            }
+            auto metadata_path = index_path / "metadata";
+            if (!std::filesystem::exists(metadata_path)) {
+                return false;
+            }
+            if (std::filesystem::file_size(metadata_path) == 0) {
+                return false;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
+                if (entry.is_regular_file() && entry.path().filename() != "metadata") {
+                    if (std::filesystem::file_size(entry.path()) == 0) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        std::pmr::vector<components::logical_plan::node_create_index_ptr>
+        read_index_definitions(const std::filesystem::path& disk_path,
+                               std::pmr::memory_resource* resource,
+                               log_t& log) {
+            std::pmr::vector<components::logical_plan::node_create_index_ptr> defs(resource);
+            auto indexes_path = disk_path / "indexes_METADATA";
+            if (!std::filesystem::exists(indexes_path)) {
+                return defs;
+            }
+            core::filesystem::local_file_system_t fs;
+            auto metafile = core::filesystem::open_file(fs, indexes_path,
+                                                        core::filesystem::file_flags::READ,
+                                                        core::filesystem::file_lock_type::NO_LOCK);
+
+            constexpr auto count_byte_by_size = sizeof(size_t);
+            size_t size;
+            size_t offset = 0;
+            std::unique_ptr<char[]> size_str(new char[count_byte_by_size]);
+
+            while (true) {
+                metafile->seek(offset);
+                auto bytes_read = metafile->read(size_str.get(), count_byte_by_size);
+                if (bytes_read == count_byte_by_size) {
+                    offset += count_byte_by_size;
+                    std::memcpy(&size, size_str.get(), count_byte_by_size);
+
+                    std::pmr::string buf(resource);
+                    buf.resize(size);
+                    metafile->read(buf.data(), size, offset);
+                    offset += size;
+
+                    components::serializer::msgpack_deserializer_t deserializer(buf);
+                    deserializer.advance_array(0);
+                    auto index = components::logical_plan::node_t::deserialize(&deserializer);
+                    deserializer.pop_array();
+
+                    auto index_ptr = boost::polymorphic_pointer_downcast<
+                        components::logical_plan::node_create_index_t>(index);
+
+                    auto index_path = disk_path / index_ptr->collection_full_name().database /
+                                      index_ptr->collection_full_name().collection / index_ptr->name();
+                    if (is_index_valid(index_path)) {
+                        debug(log, "read_index_definitions: found valid index: {} on {}",
+                              index_ptr->name(), index_ptr->collection_full_name().to_string());
+                        defs.push_back(std::move(index_ptr));
+                    } else {
+                        warn(log, "read_index_definitions: skipping corrupted index: {} on {}",
+                             index_ptr->name(), index_ptr->collection_full_name().to_string());
+                    }
+                } else {
+                    break;
+                }
+            }
+            return defs;
+        }
+
+    } // anonymous namespace
 
     base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
         : main_path_(config.main_path)
@@ -42,11 +133,55 @@ namespace otterbrix {
             }
         }
 
+        // PHASE 1: Read catalog from disk (no actors needed)
+        std::pmr::set<database_name_t> databases(&resource);
+        std::pmr::set<collection_full_name_t> collections(&resource);
+        std::vector<collection_load_info_t> collection_infos;
+        std::vector<std::pair<database_name_t, services::disk::catalog_sequence_entry_t>> sequences;
+        std::vector<std::pair<database_name_t, services::disk::catalog_view_entry_t>> views;
+        std::vector<std::pair<database_name_t, services::disk::catalog_macro_entry_t>> macros;
+        services::wal::id_t last_wal_id{0};
 
-        services::loader::loader_t loader(config.disk, config.wal, &resource, log_);
-        auto state = loader.load();
-        auto index_definitions = std::move(state.index_definitions);  // save before move
-        auto wal_records = std::move(state.wal_records);  // save WAL records before move
+        std::unique_ptr<services::disk::disk_t> disk;
+        if (!config.disk.path.empty() && std::filesystem::exists(config.disk.path)) {
+            disk = std::make_unique<services::disk::disk_t>(config.disk.path, &resource);
+
+            auto db_names = disk->databases();
+            for (const auto& db_name : db_names) {
+                databases.insert(db_name);
+                auto table_entries = disk->table_entries(db_name);
+                for (const auto& entry : table_entries) {
+                    collection_full_name_t full_name(db_name, entry.name);
+                    collections.insert(full_name);
+                    collection_load_info_t info;
+                    info.name = full_name;
+                    info.storage_mode = entry.storage_mode;
+                    info.columns = entry.columns;
+                    collection_infos.push_back(std::move(info));
+                }
+                for (auto& seq : disk->catalog().sequences(db_name)) {
+                    sequences.emplace_back(db_name, std::move(seq));
+                }
+                for (auto& view : disk->catalog().views(db_name)) {
+                    views.emplace_back(db_name, std::move(view));
+                }
+                for (auto& macro : disk->catalog().macros(db_name)) {
+                    macros.emplace_back(db_name, std::move(macro));
+                }
+            }
+            last_wal_id = disk->wal_id();
+        }
+
+        auto index_definitions = config.disk.path.empty()
+            ? std::pmr::vector<components::logical_plan::node_create_index_ptr>(&resource)
+            : read_index_definitions(config.disk.path, &resource, log_);
+
+        // Read WAL records via wal_reader_t
+        services::wal::wal_reader_t wal_reader(config.wal, &resource, log_);
+        auto wal_records = wal_reader.read_committed_records(last_wal_id);
+
+        trace(log_, "spaces::PHASE 1 complete - loaded {} databases, {} collections, {} index definitions, {} WAL records",
+              databases.size(), collections.size(), index_definitions.size(), wal_records.size());
 
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
@@ -127,9 +262,9 @@ namespace otterbrix {
 
         manager_index_->sync(std::make_tuple(manager_disk_address));
 
-        if (!state.databases.empty() || !state.collections.empty()) {
+        if (!databases.empty() || !collections.empty()) {
             auto& catalog = manager_dispatcher_->mutable_catalog();
-            for (const auto& db_name : state.databases) {
+            for (const auto& db_name : databases) {
                 trace(log_, "spaces::creating namespace: {}", db_name);
                 components::catalog::table_namespace_t ns(&resource);
                 ns.push_back(std::pmr::string(db_name.c_str(), &resource));
@@ -137,7 +272,7 @@ namespace otterbrix {
             }
 
             // Use collection_infos for distinguishing in-memory vs disk tables
-            for (const auto& info : state.collection_infos) {
+            for (const auto& info : collection_infos) {
                 components::catalog::table_id table_id(&resource, info.name);
 
                 if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
@@ -177,7 +312,7 @@ namespace otterbrix {
 
         // Create storages in manager_disk_t for loaded collections
         if (disk_ptr) {
-            for (const auto& info : state.collection_infos) {
+            for (const auto& info : collection_infos) {
                 if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
                     disk_ptr->create_storage_sync(info.name);
                 } else {
@@ -188,66 +323,78 @@ namespace otterbrix {
         }
 
         // Register loaded collections in manager_index_t
-        for (const auto& full_name : state.collections) {
+        for (const auto& full_name : collections) {
             auto session = components::session::session_id_t();
             manager_index_->register_collection_sync(session, full_name);
         }
 
         // Log loaded catalog DDL objects (sequences, views, macros)
-        if (!state.sequences.empty()) {
-            trace(log_, "spaces::loaded {} sequences from catalog", state.sequences.size());
+        if (!sequences.empty()) {
+            trace(log_, "spaces::loaded {} sequences from catalog", sequences.size());
         }
-        if (!state.views.empty()) {
-            trace(log_, "spaces::loaded {} views from catalog", state.views.size());
+        if (!views.empty()) {
+            trace(log_, "spaces::loaded {} views from catalog", views.size());
         }
-        if (!state.macros.empty()) {
-            trace(log_, "spaces::loaded {} macros from catalog", state.macros.size());
+        if (!macros.empty()) {
+            trace(log_, "spaces::loaded {} macros from catalog", macros.size());
         }
 
         trace(log_, "spaces::PHASE 2.3 - Initializing manager_dispatcher from loaded state");
         manager_dispatcher_->init_from_state(
-            std::move(state.databases),
-            std::move(state.collections));
+            std::move(databases),
+            std::move(collections));
+
+        // Replay physical WAL records directly to storage (before schedulers start)
+        if (disk_ptr && !wal_records.empty()) {
+            uint64_t physical_count = 0;
+            for (auto& record : wal_records) {
+                if (!record.is_physical()) continue;
+                ++physical_count;
+                trace(log_, "spaces::replaying physical WAL record id {} type {} (collection {})",
+                      record.id, static_cast<int>(record.record_type),
+                      record.collection_name.to_string());
+                switch (record.record_type) {
+                    case services::wal::wal_record_type::PHYSICAL_INSERT:
+                        if (record.physical_data) {
+                            disk_ptr->direct_append_sync(record.collection_name,
+                                                         *record.physical_data);
+                        }
+                        break;
+                    case services::wal::wal_record_type::PHYSICAL_DELETE:
+                        disk_ptr->direct_delete_sync(record.collection_name,
+                                                     record.physical_row_ids,
+                                                     record.physical_row_count);
+                        break;
+                    case services::wal::wal_record_type::PHYSICAL_UPDATE:
+                        if (record.physical_data) {
+                            disk_ptr->direct_update_sync(record.collection_name,
+                                                         record.physical_row_ids,
+                                                         *record.physical_data);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (physical_count > 0) {
+                trace(log_, "spaces::replayed {} physical WAL records", physical_count);
+            }
+        }
 
         scheduler_dispatcher_->start();
         scheduler_->start();
         scheduler_disk_->start();
 
-        if (!wal_records.empty()) {
-            // Group WAL records by collection for parallel replay
-            std::unordered_map<collection_full_name_t,
-                               std::vector<services::wal::record_t*>,
-                               collection_name_hash> grouped_records;
-            for (auto& record : wal_records) {
-                if (record.data) {
-                    grouped_records[record.data->collection_full_name()].push_back(&record);
+        // Overlay NOT NULL constraints from catalog onto storage column definitions.
+        if (disk_ptr) {
+            for (const auto& info : collection_infos) {
+                for (const auto& col : info.columns) {
+                    if (col.not_null) {
+                        disk_ptr->overlay_column_not_null_sync(info.name, col.name);
+                    }
                 }
             }
-            trace(log_, "spaces::replaying {} WAL records across {} collection groups",
-                  wal_records.size(), grouped_records.size());
-
-            std::vector<std::thread> replay_threads;
-            replay_threads.reserve(grouped_records.size());
-            for (auto& [coll_name, records] : grouped_records) {
-                replay_threads.emplace_back([this, &records, &coll_name] {
-                    auto session = components::session::session_id_t();
-                    for (auto* record : records) {
-                        trace(log_, "spaces::replaying WAL record id {} type {} (collection {})",
-                              record->id, record->data->to_string(), coll_name.to_string());
-                        auto cursor = wrapper_dispatcher_->execute_plan(
-                            session, record->data, record->params);
-                        if (cursor->is_error()) {
-                            warn(log_, "spaces::failed to replay WAL record {}: {}",
-                                 record->id, cursor->get_error().what);
-                        }
-                    }
-                });
-            }
-            for (auto& t : replay_threads) {
-                t.join();
-            }
         }
-        trace(log_, "spaces::PHASE 2.5 complete");
 
         if (!wal_records.empty()) {
             trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());

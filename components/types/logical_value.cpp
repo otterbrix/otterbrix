@@ -1396,6 +1396,9 @@ namespace components::types {
                 result = create_struct(r, type, std::move(nested_values));
                 break;
             }
+            case logical_type::NA:
+                // Null value — already initialized as NA
+                break;
             default:
                 assert(false);
                 return logical_value_t{r, complex_logical_type{logical_type::NA}};

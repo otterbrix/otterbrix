@@ -24,6 +24,7 @@ namespace components::storage {
         virtual size_t column_count() const = 0;
         virtual bool has_schema() const = 0;
         virtual void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) = 0;
+        virtual void overlay_not_null(const std::string& col_name) = 0;
 
         virtual uint64_t total_rows() const = 0;
         virtual uint64_t calculate_size() = 0;

@@ -1,4 +1,5 @@
 #include "dto.hpp"
+#include "record.hpp"
 
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
@@ -128,6 +129,91 @@ namespace services::wal {
         msgpack::unpack(msg, storage.data(), storage.size());
         const auto& o = msg.get();
         return o.via.array.ptr[1].as<id_t>();
+    }
+
+    // Physical WAL: INSERT = array(9) [last_crc32, id, txn_id, type(10), db, coll, data_chunk_blob, row_start, row_count]
+    crc32_t pack_physical_insert(buffer_t& storage,
+                                 std::pmr::memory_resource* resource,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const components::vector::data_chunk_t& data_chunk,
+                                 uint64_t row_start,
+                                 uint64_t row_count) {
+        components::serializer::msgpack_serializer_t serializer(resource);
+        serializer.start_array(9);
+        serializer.append(static_cast<uint64_t>(last_crc32));
+        serializer.append(static_cast<uint64_t>(id));
+        serializer.append(txn_id);
+        serializer.append(static_cast<uint64_t>(wal_record_type::PHYSICAL_INSERT));
+        serializer.append(database);
+        serializer.append(collection);
+        data_chunk.serialize(&serializer);
+        serializer.append(row_start);
+        serializer.append(row_count);
+        serializer.end_array();
+        auto buffer = serializer.result();
+        return pack(storage, buffer.data(), buffer.size());
+    }
+
+    // Physical WAL: DELETE = array(8) [last_crc32, id, txn_id, type(11), db, coll, row_ids_array, count]
+    crc32_t pack_physical_delete(buffer_t& storage,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const std::pmr::vector<int64_t>& row_ids,
+                                 uint64_t count) {
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(&sbuf);
+        pk.pack_array(8);
+        pk.pack(static_cast<uint64_t>(last_crc32));
+        pk.pack(static_cast<uint64_t>(id));
+        pk.pack(txn_id);
+        pk.pack(static_cast<uint64_t>(wal_record_type::PHYSICAL_DELETE));
+        pk.pack(database);
+        pk.pack(collection);
+        pk.pack_array(static_cast<uint32_t>(row_ids.size()));
+        for (auto rid : row_ids) {
+            pk.pack(rid);
+        }
+        pk.pack(count);
+        return pack(storage, sbuf.data(), sbuf.size());
+    }
+
+    // Physical WAL: UPDATE = array(9) [last_crc32, id, txn_id, type(12), db, coll, row_ids_array, data_chunk_blob, count]
+    crc32_t pack_physical_update(buffer_t& storage,
+                                 std::pmr::memory_resource* resource,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const std::pmr::vector<int64_t>& row_ids,
+                                 const components::vector::data_chunk_t& new_data,
+                                 uint64_t count) {
+        components::serializer::msgpack_serializer_t serializer(resource);
+        serializer.start_array(9);
+        serializer.append(static_cast<uint64_t>(last_crc32));
+        serializer.append(static_cast<uint64_t>(id));
+        serializer.append(txn_id);
+        serializer.append(static_cast<uint64_t>(wal_record_type::PHYSICAL_UPDATE));
+        serializer.append(database);
+        serializer.append(collection);
+        // row_ids sub-array
+        serializer.start_array(row_ids.size());
+        for (auto rid : row_ids) {
+            serializer.append(static_cast<int64_t>(rid));
+        }
+        serializer.end_array();
+        new_data.serialize(&serializer);
+        serializer.append(count);
+        serializer.end_array();
+        auto buffer = serializer.result();
+        return pack(storage, buffer.data(), buffer.size());
     }
 
 } //namespace services::wal

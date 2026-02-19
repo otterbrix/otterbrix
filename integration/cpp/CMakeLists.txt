@@ -20,7 +20,6 @@ set(otterbrix_LIBS
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree
-        otterbrix_loader
         otterbrix_catalog
 )
 

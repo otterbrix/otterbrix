@@ -6,11 +6,9 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
-#include <components/logical_plan/node_insert.hpp>
-#include <components/logical_plan/node_update.hpp>
-#include <components/logical_plan/node_delete.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -204,23 +202,31 @@ namespace services::collection::executor {
 
         plan->set_as_root();
 
-        auto wal_params = components::logical_plan::make_parameter_node(resource());
-        wal_params->set_parameters(parameters);
-
         auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
 
         // Step 2: Execute physical plan
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
 
         if (is_dml && result.cursor->is_success()) {
-            // Step 3: WAL DATA
+            // Step 3: WAL DATA (physical format — stores post-compute data for direct replay)
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                auto& cname = result.wal_collection;
                 switch (logical_plan->type()) {
                     case node_type::insert_t: {
-                        trace(log_, "executor::execute_plan: WAL insert_many");
-                        auto insert = boost::static_pointer_cast<node_insert_t>(logical_plan);
+                        if (result.append_row_count == 0 || !result.wal_insert_data) {
+                            trace(log_, "executor::execute_plan: INSERT produced 0 rows, skipping WAL");
+                            break;
+                        }
+                        trace(log_, "executor::execute_plan: WAL physical_insert");
                         auto [_w1, wf1] = actor_zeta::send(wal_address_,
-                            &wal::manager_wal_replicate_t::insert_many, session, insert, txn_data.transaction_id);
+                            &wal::manager_wal_replicate_t::write_physical_insert,
+                            session,
+                            std::string(cname.database),
+                            std::string(cname.collection),
+                            std::move(result.wal_insert_data),
+                            static_cast<uint64_t>(result.append_row_start),
+                            result.append_row_count,
+                            txn_data.transaction_id);
                         auto wal_id = co_await std::move(wf1);
                         auto [_d1, df1] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::flush, session, wal_id);
@@ -228,10 +234,17 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::update_t: {
-                        trace(log_, "executor::execute_plan: WAL update_many");
-                        auto update = boost::static_pointer_cast<node_update_t>(logical_plan);
+                        trace(log_, "executor::execute_plan: WAL physical_update");
+                        auto upd_count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w2, wf2] = actor_zeta::send(wal_address_,
-                            &wal::manager_wal_replicate_t::update_many, session, update, wal_params, txn_data.transaction_id);
+                            &wal::manager_wal_replicate_t::write_physical_update,
+                            session,
+                            std::string(cname.database),
+                            std::string(cname.collection),
+                            std::move(result.wal_row_ids),
+                            std::move(result.wal_update_data),
+                            upd_count,
+                            txn_data.transaction_id);
                         auto wal_id = co_await std::move(wf2);
                         auto [_d2, df2] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::flush, session, wal_id);
@@ -239,10 +252,16 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::delete_t: {
-                        trace(log_, "executor::execute_plan: WAL delete_many");
-                        auto delete_node = boost::static_pointer_cast<node_delete_t>(logical_plan);
+                        trace(log_, "executor::execute_plan: WAL physical_delete");
+                        auto count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w3, wf3] = actor_zeta::send(wal_address_,
-                            &wal::manager_wal_replicate_t::delete_many, session, delete_node, wal_params, txn_data.transaction_id);
+                            &wal::manager_wal_replicate_t::write_physical_delete,
+                            session,
+                            std::string(cname.database),
+                            std::string(cname.collection),
+                            std::move(result.wal_row_ids),
+                            count,
+                            txn_data.transaction_id);
                         auto wal_id = co_await std::move(wf3);
                         auto [_d3, df3] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::flush, session, wal_id);
@@ -362,9 +381,8 @@ namespace services::collection::executor {
 
         cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
-        int64_t append_row_start = 0;
-        uint64_t append_row_count = 0;
-        uint64_t delete_txn_id = 0;
+        sub_plan_result_t result_tracking;
+        result_tracking.wal_row_ids = std::pmr::vector<int64_t>(resource());
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();
@@ -397,8 +415,14 @@ namespace services::collection::executor {
                     break;
                 }
                 trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                co_await waiting_op->await_async_and_resume(&pipeline_context);
-                trace(log_, "executor: after await_async_and_resume completed");
+                if (waiting_op->type() == components::operators::operator_type::insert ||
+                    waiting_op->type() == components::operators::operator_type::remove ||
+                    waiting_op->type() == components::operators::operator_type::update) {
+                    co_await intercept_dml_io_(waiting_op, &pipeline_context, result_tracking);
+                } else {
+                    co_await waiting_op->await_async_and_resume(&pipeline_context);
+                }
+                trace(log_, "executor: after await completed");
                 // Re-execute: completed scan allows parent to proceed, may find next waiting scan
                 plan->on_execute(&pipeline_context);
             }
@@ -480,27 +504,180 @@ namespace services::collection::executor {
                 }
             }
 
-            // Accumulate MVCC tracking from DML operators (stored in operator fields)
-            if (plan->type() == components::operators::operator_type::insert) {
-                auto* ins = static_cast<components::operators::operator_insert*>(plan.get());
-                if (ins->append_row_count() > 0) {
-                    append_row_start = ins->append_row_start();
-                    append_row_count = ins->append_row_count();
-                }
-            }
-            if (plan->type() == components::operators::operator_type::remove) {
-                auto* del = static_cast<components::operators::operator_delete*>(plan.get());
-                if (del->delete_txn_id() != 0) {
-                    delete_txn_id = del->delete_txn_id();
-                }
-            }
-
             plan_data.sub_plans.pop();
         }
 
         trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());
-        co_return sub_plan_result_t{std::move(cursor), std::move(accumulated_updates),
-                                     append_row_start, append_row_count, delete_txn_id};
+        result_tracking.cursor = std::move(cursor);
+        result_tracking.updates = std::move(accumulated_updates);
+        co_return std::move(result_tracking);
+    }
+
+    executor_t::unique_future<void> executor_t::intercept_dml_io_(
+        components::operators::operator_t::ptr waiting_op,
+        components::pipeline::context_t* ctx,
+        sub_plan_result_t& result) {
+
+        using namespace components::operators;
+        using components::vector::data_chunk_t;
+        using components::vector::vector_t;
+
+        switch (waiting_op->type()) {
+            case operator_type::insert: {
+                auto& out_chunk = waiting_op->output()->data_chunk();
+                auto* ins = static_cast<operator_insert*>(waiting_op.get());
+                components::execution_context_t exec_ctx{ctx->session, ctx->txn, ins->collection_name()};
+
+                // Capture WAL data BEFORE storage_append moves it
+                result.wal_insert_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                out_chunk.copy(*result.wal_insert_data, 0);
+                result.wal_collection = ins->collection_name();
+
+                // storage_append (handles schema adoption, _id dedup)
+                auto data_copy = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                out_chunk.copy(*data_copy, 0);
+                auto [_a, af] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_append, exec_ctx, std::move(data_copy));
+                auto [start_row, actual_count] = co_await std::move(af);
+
+                result.append_row_start = static_cast<int64_t>(start_row);
+                result.append_row_count = actual_count;
+
+                if (actual_count == 0) {
+                    result.wal_insert_data.reset();
+                    waiting_op->set_output(nullptr);
+                    waiting_op->mark_executed();
+                    break;
+                }
+
+                // Mirror to index (txn-aware)
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto idx_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                    out_chunk.copy(*idx_data, 0);
+                    auto [_ix, ixf] = actor_zeta::send(index_address_,
+                        &index::manager_index_t::insert_rows_txn,
+                        exec_ctx, std::move(idx_data), static_cast<uint64_t>(start_row), actual_count);
+                    co_await std::move(ixf);
+                }
+
+                // Build result chunk
+                data_chunk_t res_chunk(resource(), {}, actual_count);
+                res_chunk.set_cardinality(actual_count);
+                waiting_op->set_output(make_operator_data(resource(), std::move(res_chunk)));
+                waiting_op->mark_executed();
+                break;
+            }
+
+            case operator_type::remove: {
+                auto* del_op = static_cast<operator_delete*>(waiting_op.get());
+                auto& ids = waiting_op->modified()->ids();
+                size_t modified_size = waiting_op->modified()->size();
+                components::execution_context_t exec_ctx{ctx->session, ctx->txn, del_op->collection_name()};
+
+                // Capture WAL data: row IDs for physical delete
+                result.wal_row_ids.reserve(modified_size);
+                for (size_t i = 0; i < modified_size; i++) {
+                    result.wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
+                }
+                result.wal_collection = del_op->collection_name();
+
+                // storage_delete_rows
+                vector_t row_ids(resource(), components::types::logical_type::BIGINT, modified_size);
+                for (size_t i = 0; i < modified_size; i++) {
+                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+                }
+                auto [_d, df] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_delete_rows,
+                    exec_ctx, std::move(row_ids), static_cast<uint64_t>(modified_size));
+                co_await std::move(df);
+
+                result.delete_txn_id = ctx->txn.transaction_id;
+
+                // Mirror to index
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    if (auto scan_out = waiting_op->left() ? waiting_op->left()->output() : nullptr) {
+                        auto& sc = scan_out->data_chunk();
+                        auto idx_data = std::make_unique<data_chunk_t>(resource(), sc.types(), sc.size());
+                        sc.copy(*idx_data, 0);
+                        auto idx_ids = std::pmr::vector<size_t>(resource());
+                        idx_ids.reserve(modified_size);
+                        for (size_t i = 0; i < modified_size; i++) {
+                            idx_ids.push_back(i);
+                        }
+                        auto [_ix, ixf] = actor_zeta::send(index_address_,
+                            &index::manager_index_t::delete_rows_txn,
+                            exec_ctx, std::move(idx_data), std::move(idx_ids));
+                        co_await std::move(ixf);
+                    }
+                }
+
+                // Build result (need types from storage)
+                auto [_t, tf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_types, ctx->session, del_op->collection_name());
+                auto types = co_await std::move(tf);
+                data_chunk_t chunk(resource(), types, modified_size);
+                chunk.set_cardinality(modified_size);
+                waiting_op->set_output(make_operator_data(resource(), std::move(chunk)));
+                waiting_op->mark_executed();
+                break;
+            }
+
+            case operator_type::update: {
+                auto* upd = static_cast<operator_update*>(waiting_op.get());
+                auto& out_chunk = waiting_op->output()->data_chunk();
+                components::execution_context_t exec_ctx{ctx->session, ctx->txn, upd->collection_name()};
+
+                // Capture WAL data: row_ids + updated data for physical update
+                result.wal_row_ids.reserve(out_chunk.size());
+                for (uint64_t i = 0; i < out_chunk.size(); i++) {
+                    result.wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+                }
+                result.wal_update_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                out_chunk.copy(*result.wal_update_data, 0);
+                result.wal_collection = upd->collection_name();
+
+                // storage_update
+                vector_t row_ids(resource(), components::types::logical_type::BIGINT, out_chunk.size());
+                for (uint64_t i = 0; i < out_chunk.size(); i++) {
+                    row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
+                }
+                auto data_copy = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                out_chunk.copy(*data_copy, 0);
+                auto [_u, uf] = actor_zeta::send(disk_address_,
+                    &disk::manager_disk_t::storage_update,
+                    exec_ctx, std::move(row_ids), std::move(data_copy));
+                co_await std::move(uf);
+
+                // Mirror to index (old+new data)
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    if (auto scan_out = waiting_op->left() ? waiting_op->left()->output() : nullptr) {
+                        auto& sc = scan_out->data_chunk();
+                        auto old_data = std::make_unique<data_chunk_t>(resource(), sc.types(), sc.size());
+                        sc.copy(*old_data, 0);
+                        auto new_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
+                        out_chunk.copy(*new_data, 0);
+                        auto& mod_ids = waiting_op->modified()->ids();
+                        auto idx_ids = std::pmr::vector<size_t>(resource());
+                        idx_ids.reserve(mod_ids.size());
+                        for (size_t i = 0; i < mod_ids.size(); i++) {
+                            idx_ids.push_back(mod_ids[i]);
+                        }
+                        auto [_ix, ixf] = actor_zeta::send(index_address_,
+                            &index::manager_index_t::update_rows_txn,
+                            exec_ctx, std::move(old_data), std::move(new_data), std::move(idx_ids));
+                        co_await std::move(ixf);
+                    }
+                }
+
+                // output_ already set by on_execute_impl (contains updated rows)
+                waiting_op->mark_executed();
+                break;
+            }
+
+            default:
+                break;
+        }
+        co_return;
     }
 
 } // namespace services::collection::executor

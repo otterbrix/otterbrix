@@ -177,7 +177,7 @@ namespace services::dispatcher {
 
     void manager_dispatcher_t::init_from_state(
         std::pmr::set<database_name_t> databases,
-        loader::collection_set_t collections) {
+        std::pmr::set<collection_full_name_t> collections) {
         trace(log_, "manager_dispatcher_t::init_from_state: populating storage");
 
         databases_ = std::move(databases);
@@ -387,13 +387,10 @@ namespace services::dispatcher {
                     auto [_d1, df1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::append_database,
                                      session, plan->database_name());
                     co_await std::move(df1);
-                    auto create_database = boost::static_pointer_cast<node_create_database_t>(plan);
-                    auto [_w1, wf1] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::create_database, session, create_database);
-                    auto wal_id = co_await std::move(wf1);
+                    auto [_fd, fdf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal::id_t{0});
+                    co_await std::move(fdf);
                     update_catalog(plan);
-                    auto [_d2, df2] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
-                    co_await std::move(df2);
                     co_return result;
                 }
 
@@ -416,20 +413,14 @@ namespace services::dispatcher {
                             co_await std::move(drf);
                         }
                     }
-                    // WAL write
-                    auto drop_db = boost::static_pointer_cast<node_drop_database_t>(plan);
-                    auto [_w, wf] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::drop_database, session, drop_db);
-                    auto wal_id = co_await std::move(wf);
                     // Remove database from disk metadata
                     auto [_rd, rdf] = actor_zeta::send(disk_address_,
                         &disk::manager_disk_t::remove_database, session, db_name);
                     co_await std::move(rdf);
+                    auto [_fdd, fddf] = actor_zeta::send(disk_address_,
+                        &disk::manager_disk_t::flush, session, wal::id_t{0});
+                    co_await std::move(fddf);
                     update_catalog(plan);
-                    // Flush
-                    auto [_f, ff] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::flush, session, wal_id);
-                    co_await std::move(ff);
                     co_return result;
                 }
 
@@ -491,12 +482,12 @@ namespace services::dispatcher {
                             session, plan->collection_full_name());
                         co_await std::move(rif);
                     }
-                    auto [_c2, cf2] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::create_collection, session, create_collection);
-                    auto wal_id = co_await std::move(cf2);
+                    {
+                        auto [_fc, fcf] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::flush, session, wal::id_t{0});
+                        co_await std::move(fcf);
+                    }
                     update_catalog(plan);
-                    auto [_c3, cf3] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
-                    co_await std::move(cf3);
                     co_return result;
                 }
 
@@ -526,13 +517,12 @@ namespace services::dispatcher {
                     auto [_dr1, drf1] = actor_zeta::send(disk_address_, &disk::manager_disk_t::remove_collection,
                                      session, plan->database_name(), plan->collection_name());
                     co_await std::move(drf1);
-                    auto drop_collection = boost::static_pointer_cast<node_drop_collection_t>(plan);
-                    auto [_dr2, drf2] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::drop_collection, session, drop_collection);
-                    auto wal_id = co_await std::move(drf2);
+                    {
+                        auto [_fdc, fdcf] = actor_zeta::send(disk_address_,
+                            &disk::manager_disk_t::flush, session, wal::id_t{0});
+                        co_await std::move(fdcf);
+                    }
                     update_catalog(plan);
-                    auto [_dr3, drf3] = actor_zeta::send(disk_address_, &disk::manager_disk_t::flush, session, wal_id);
-                    co_await std::move(drf3);
                     co_return result;
                 }
 

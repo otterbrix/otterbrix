@@ -22,6 +22,7 @@ namespace components::table {
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> copy_types() const;
         const std::vector<column_definition_t>& columns() const;
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types);
+        void overlay_not_null(const std::string& col_name);
 
         void initialize_scan(table_scan_state& state,
                              const std::vector<storage_index_t>& column_ids,

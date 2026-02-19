@@ -492,20 +492,22 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::checkpoint_all(session_id_t session) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {}", session.data());
 
-        // Checkpoint all DISK tables and collect their schemas
+        // Checkpoint DISK tables and collect schemas from ALL tables
         std::vector<std::pair<collection_full_name_t,
                               std::vector<catalog_column_entry_t>>> schemas;
         for (auto& [name, entry] : storages_) {
             if (entry->table_storage.mode() == storage_mode_t::DISK) {
                 trace(log_, "manager_disk_t::checkpoint_all checkpointing : {}", name.to_string());
                 entry->table_storage.checkpoint();
+            }
 
-                // Collect current schema for catalog update
-                const auto& cols = entry->table_storage.table().columns();
+            // Collect schema from all tables (including IN_MEMORY) for catalog persistence
+            const auto& cols = entry->table_storage.table().columns();
+            if (!cols.empty()) {
                 std::vector<catalog_column_entry_t> catalog_cols;
                 catalog_cols.reserve(cols.size());
                 for (const auto& col : cols) {
-                    catalog_cols.push_back({col.name(), col.type().type()});
+                    catalog_cols.push_back({col.name(), col.type().type(), col.is_not_null(), col.has_default_value()});
                 }
                 schemas.emplace_back(name, std::move(catalog_cols));
             }
@@ -686,6 +688,143 @@ namespace services::disk {
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
     }
 
+    void manager_disk_t::overlay_column_not_null_sync(
+        const collection_full_name_t& name,
+        const std::string& col_name) {
+        auto* s = get_storage(name);
+        if (s) s->overlay_not_null(col_name);
+    }
+
+    // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
+
+    namespace {
+        // Deep-copy a data_chunk into a new one using the target resource.
+        // Required because deserialized chunks may use a different pmr resource
+        // than the storage, and internal validity_mask_t asserts same resource on assign.
+        components::vector::data_chunk_t rebuild_chunk(
+            std::pmr::memory_resource* target_resource,
+            components::vector::data_chunk_t& src) {
+            auto count = src.size();
+            components::vector::data_chunk_t dst(target_resource, src.types(), count);
+            dst.set_cardinality(count);
+            for (uint64_t col = 0; col < src.column_count(); col++) {
+                for (uint64_t row = 0; row < count; row++) {
+                    dst.data[col].set_value(row, src.data[col].value(row));
+                }
+            }
+            return dst;
+        }
+    } // anonymous namespace
+
+    void manager_disk_t::direct_append_sync(
+        const collection_full_name_t& name,
+        components::vector::data_chunk_t& data) {
+        auto* s = get_storage(name);
+        if (!s || data.size() == 0) return;
+
+        // Rebuild data with storage-compatible resource
+        auto local = rebuild_chunk(resource(), data);
+
+        // Schema adoption for computing tables
+        if (!s->has_schema() && local.column_count() > 0) {
+            s->adopt_schema(local.types());
+        }
+
+        // Column expansion
+        const auto& table_columns = s->columns();
+        if (!table_columns.empty() && local.column_count() < table_columns.size()) {
+            std::pmr::vector<components::types::complex_logical_type> full_types(resource());
+            for (const auto& col_def : table_columns) {
+                full_types.push_back(col_def.type());
+            }
+
+            std::vector<components::vector::vector_t> expanded_data;
+            expanded_data.reserve(table_columns.size());
+            for (size_t t = 0; t < table_columns.size(); t++) {
+                bool found = false;
+                for (uint64_t col = 0; col < local.column_count(); col++) {
+                    if (local.data[col].type().has_alias() &&
+                        local.data[col].type().alias() == table_columns[t].name()) {
+                        expanded_data.push_back(std::move(local.data[col]));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    expanded_data.emplace_back(resource(), full_types[t], local.size());
+                    expanded_data.back().validity().set_all_invalid(local.size());
+                }
+            }
+            local.data = std::move(expanded_data);
+        }
+
+        // Direct append — no dedup, no NOT NULL enforcement, no MVCC
+        s->append(local);
+    }
+
+    void manager_disk_t::direct_delete_sync(
+        const collection_full_name_t& name,
+        const std::pmr::vector<int64_t>& row_ids, uint64_t count) {
+        auto* s = get_storage(name);
+        if (!s || row_ids.empty()) return;
+
+        // Build a vector_t from row_ids for the storage API
+        components::vector::vector_t ids_vec(resource(),
+            components::types::complex_logical_type(components::types::logical_type::BIGINT),
+            count);
+        for (uint64_t i = 0; i < count && i < row_ids.size(); i++) {
+            ids_vec.set_value(i, components::types::logical_value_t(resource(), row_ids[i]));
+        }
+        s->delete_rows(ids_vec, count);
+    }
+
+    void manager_disk_t::direct_update_sync(
+        const collection_full_name_t& name,
+        const std::pmr::vector<int64_t>& row_ids,
+        components::vector::data_chunk_t& new_data) {
+        auto* s = get_storage(name);
+        if (!s || row_ids.empty()) return;
+
+        // Build update data matching storage columns (by name).
+        // The WAL update chunk may have extra columns from update expressions.
+        const auto& table_columns = s->columns();
+        auto rows = new_data.size();
+        std::pmr::vector<components::types::complex_logical_type> matched_types(resource());
+        matched_types.reserve(table_columns.size());
+        for (const auto& col_def : table_columns) {
+            matched_types.push_back(col_def.type());
+        }
+        components::vector::data_chunk_t local(resource(), matched_types, rows);
+        local.set_cardinality(rows);
+        for (size_t t = 0; t < table_columns.size(); t++) {
+            bool found = false;
+            for (uint64_t c = 0; c < new_data.column_count(); c++) {
+                if (new_data.data[c].type().has_alias() &&
+                    new_data.data[c].type().alias() == table_columns[t].name()) {
+                    // Copy values from source to local
+                    for (uint64_t row = 0; row < rows; row++) {
+                        local.data[t].set_value(row, new_data.data[c].value(row));
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Column not in update data — mark all rows as null
+                local.data[t].validity().set_all_invalid(rows);
+            }
+        }
+
+        auto count = static_cast<uint64_t>(row_ids.size());
+        components::vector::vector_t ids_vec(resource(),
+            components::types::complex_logical_type(components::types::logical_type::BIGINT),
+            count);
+        for (uint64_t i = 0; i < count; i++) {
+            ids_vec.set_value(i, components::types::logical_value_t(resource(), row_ids[i]));
+        }
+        s->update(ids_vec, local);
+    }
+
     // --- Storage management ---
 
     components::storage::storage_t* manager_disk_t::get_storage(const collection_full_name_t& name) {
@@ -823,9 +962,9 @@ namespace services::disk {
             s->adopt_schema(data->types());
         }
 
-        // 2. Column expansion — expand incoming data if storage has more columns
+        // 2. Column expansion — reorder/expand incoming data to match storage columns
         const auto& table_columns = s->columns();
-        if (!table_columns.empty() && data->column_count() < table_columns.size()) {
+        if (!table_columns.empty() && data->column_count() > 0) {
             std::pmr::vector<components::types::complex_logical_type> full_types(resource());
             for (const auto& col_def : table_columns) {
                 full_types.push_back(col_def.type());
@@ -935,19 +1074,28 @@ namespace services::disk {
             }
         }
 
-        // 4. Type compatibility check — computing tables may evolve types per column,
-        //    but columnar storage is fixed-type. Skip append if types don't match.
+        // 4. Numeric type promotion (e.g. FLOAT→DOUBLE)
         if (s->has_schema() && !table_columns.empty()) {
-            bool types_match = true;
+            using components::types::is_numeric;
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
-                if (data->data[i].type().type() != table_columns[i].type().type()) {
-                    types_match = false;
-                    break;
+                auto src_type = data->data[i].type().type();
+                auto tgt_type = table_columns[i].type().type();
+                if (src_type != tgt_type && is_numeric(src_type) && is_numeric(tgt_type)) {
+                    auto& src_vec = data->data[i];
+                    auto target_type = table_columns[i].type();
+                    if (src_vec.type().has_alias()) {
+                        target_type.set_alias(src_vec.type().alias());
+                    }
+                    components::vector::vector_t casted(resource(), target_type, data->size());
+                    for (uint64_t row = 0; row < data->size(); row++) {
+                        if (src_vec.validity().row_is_valid(row)) {
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                        } else {
+                            casted.validity().set_invalid(row);
+                        }
+                    }
+                    data->data[i] = std::move(casted);
                 }
-            }
-            if (!types_match) {
-                trace(log_, "storage_append: column type mismatch, skipping append (type evolution)");
-                co_return std::make_pair(s->total_rows(), uint64_t{0});
             }
         }
 

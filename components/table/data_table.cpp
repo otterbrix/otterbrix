@@ -95,6 +95,15 @@ namespace components::table {
         row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
     }
 
+    void data_table_t::overlay_not_null(const std::string& col_name) {
+        for (auto& col : column_definitions_) {
+            if (col.name() == col_name) {
+                col.set_not_null(true);
+                return;
+            }
+        }
+    }
+
     void data_table_t::initialize_scan(table_scan_state& state,
                                        const std::vector<storage_index_t>& column_ids,
                                        const table_filter_t* filter) {
@@ -474,6 +483,7 @@ namespace components::table {
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
             writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
+            writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
         }
 
         // write row group count and pointers
@@ -497,7 +507,8 @@ namespace components::table {
         for (uint32_t i = 0; i < col_count; i++) {
             auto col_name = reader.read_string();
             auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
-            columns.emplace_back(std::move(col_name), logical_type);
+            auto not_null = reader.read<uint8_t>() != 0;
+            columns.emplace_back(std::move(col_name), logical_type, not_null);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

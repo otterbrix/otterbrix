@@ -32,6 +32,10 @@ namespace components::storage {
             table_.adopt_schema(t);
         }
 
+        void overlay_not_null(const std::string& col_name) override {
+            table_.overlay_not_null(col_name);
+        }
+
         uint64_t total_rows() const override {
             return table_.row_group()->total_rows();
         }

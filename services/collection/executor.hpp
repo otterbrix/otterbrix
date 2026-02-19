@@ -1,8 +1,10 @@
 #pragma once
 
+#include <components/base/collection_full_name.hpp>
 #include <components/catalog/table_metadata.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/vector/data_chunk.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
@@ -42,6 +44,12 @@ namespace services::collection::executor {
         int64_t append_row_start{0};
         uint64_t append_row_count{0};
         uint64_t delete_txn_id{0};
+
+        // Physical WAL data (captured in intercept_dml_io_ for physical WAL writes)
+        std::unique_ptr<components::vector::data_chunk_t> wal_insert_data;
+        std::pmr::vector<int64_t> wal_row_ids{std::pmr::get_default_resource()};
+        std::unique_ptr<components::vector::data_chunk_t> wal_update_data;
+        collection_full_name_t wal_collection;
     };
 
     class executor_t final : public actor_zeta::basic_actor<executor_t> {
@@ -79,6 +87,10 @@ namespace services::collection::executor {
         unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,
                                                          plan_t plan_data,
                                                          components::table::transaction_data txn);
+
+        unique_future<void> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
+                                              components::pipeline::context_t* ctx,
+                                              sub_plan_result_t& result);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

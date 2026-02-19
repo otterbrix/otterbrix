@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <components/session/session.hpp>
 #include <components/table/transaction.hpp>
 #include <memory>

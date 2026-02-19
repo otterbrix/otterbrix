@@ -1,10 +1,13 @@
 #include "wal.hpp"
 #include <absl/crc/crc32c.h>
+#include <algorithm>
+#include <cstdio>
 #include <unistd.h>
 #include <utility>
 
 #include "dto.hpp"
 #include "manager_wal_replicate.hpp"
+#include "wal_utils.hpp"
 
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -18,6 +21,12 @@ namespace services::wal {
 
     static std::string wal_file_name(int worker_index) {
         return ".wal_" + std::to_string(worker_index);
+    }
+
+    static std::string wal_segment_name(int worker_index, int segment_idx) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), ".wal_%d_%06d", worker_index, segment_idx);
+        return std::string(buf);
     }
 
     bool file_exist_(const std::filesystem::path& path) {
@@ -38,8 +47,30 @@ namespace services::wal {
         , pending_id_(resource) {
         if (config_.sync_to_disk) {
             std::filesystem::create_directories(config_.path);
+
+            // Migrate legacy single file .wal_N → .wal_N_000000
+            auto legacy_path = config_.path / wal_file_name(worker_index_);
+            auto first_segment_path = config_.path / wal_segment_name(worker_index_, 0);
+            if (std::filesystem::exists(legacy_path) && !std::filesystem::exists(first_segment_path)) {
+                std::filesystem::rename(legacy_path, first_segment_path);
+                trace(log_, "wal: migrated legacy {} → {}", legacy_path.string(), first_segment_path.string());
+            }
+
+            // Discover existing segments, find highest segment index
+            auto segments = discover_segments_();
+            if (!segments.empty()) {
+                // Parse segment index from last segment filename
+                auto last_name = segments.back().filename().string();
+                // Format: .wal_N_SSSSSS — extract SSSSSS
+                auto last_underscore = last_name.rfind('_');
+                if (last_underscore != std::string::npos) {
+                    current_segment_idx_ = std::stoi(last_name.substr(last_underscore + 1));
+                }
+            }
+
+            // Open current segment file
             file_ = open_file(fs_,
-                              config_.path / wal_file_name(worker_index_),
+                              config_.path / wal_segment_name(worker_index_, current_segment_idx_),
                               file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
                               file_lock_type::NO_LOCK);
             file_->seek(file_->file_size());
@@ -84,6 +115,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::commit_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::truncate_before>: {
+                co_await actor_zeta::dispatch(this, &wal_replicate_t::truncate_before, msg);
+                break;
+            }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::write_physical_insert, msg);
                 break;
@@ -104,7 +139,12 @@ namespace services::wal {
     auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
 
-    void wal_replicate_t::write_buffer(buffer_t& buffer) { file_->write(buffer.data(), buffer.size()); }
+    void wal_replicate_t::write_buffer(buffer_t& buffer) {
+        if (file_->file_size() + buffer.size() > config_.max_segment_size) {
+            rotate_segment_();
+        }
+        file_->write(buffer.data(), buffer.size());
+    }
 
     void wal_replicate_t::read_buffer(buffer_t& buffer, size_t start_index, size_t size) const {
         buffer.resize(size);
@@ -113,21 +153,11 @@ namespace services::wal {
 
     wal_replicate_t::~wal_replicate_t() { trace(log_, "delete wal_replicate_t"); }
 
-    static size_tt read_size_impl(const char* input, size_tt index_start) {
-        size_tt size_tmp = 0;
-        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
-        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
-        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
-        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
-        return size_tmp;
-    }
-
     size_tt wal_replicate_t::read_size(size_t start_index) const {
         auto size_read = sizeof(size_tt);
         buffer_t buffer;
         read_buffer(buffer, start_index, size_read);
-        auto size_blob = read_size_impl(buffer.data(), 0);
-        return size_blob;
+        return read_size_raw(buffer.data(), 0);
     }
 
     buffer_t wal_replicate_t::read(size_t start_index, size_t finish_index) const {
@@ -203,15 +233,34 @@ namespace services::wal {
     }
 
     void wal_replicate_t::init_id() {
-        std::size_t start_index = 0;
-        auto id = read_id(start_index);
-        while (id > 0) {
-            id_ = id;
-            start_index = next_index(start_index, read_size(start_index));
-            id = read_id(start_index);
+        // Scan all segment files to find the highest WAL ID
+        auto segments = discover_segments_();
+        for (const auto& seg_path : segments) {
+            auto seg_file = open_file(fs_, seg_path, file_flags::READ, file_lock_type::NO_LOCK);
+            std::size_t start_index = 0;
+            while (true) {
+                auto size_read = sizeof(size_tt);
+                buffer_t size_buf;
+                size_buf.resize(size_read);
+                if (!seg_file->read(size_buf.data(), size_read, uint64_t(start_index))) {
+                    break;
+                }
+                auto size = read_size_raw(size_buf.data(), 0);
+                if (size == 0) break;
+
+                auto start = start_index + sizeof(size_tt);
+                auto finish = start + size;
+                buffer_t data_buf;
+                data_buf.resize(finish - start);
+                seg_file->read(data_buf.data(), data_buf.size(), uint64_t(start));
+                auto id = unpack_wal_id(data_buf);
+                if (id > 0) {
+                    id_ = id;
+                }
+                start_index = next_index(start_index, size);
+            }
         }
         // Align id_ so that next next_id() call produces the correct worker partition
-        // If no records exist (id_ == 0), set id_ = worker_index_ (next call will add worker_count_)
         if (static_cast<services::wal::id_t>(id_) == 0) {
             id_ = static_cast<services::wal::id_t>(worker_index_);
         }
@@ -251,7 +300,7 @@ namespace services::wal {
             auto start = start_index + sizeof(size_tt);
             auto finish = start + record.size + sizeof(crc32_t);
             auto output = read(start, finish);
-            record.crc32 = read_crc32(output, record.size);
+            record.crc32 = read_crc32_raw(output, record.size);
             if (record.crc32 == static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}))) {
                 components::serializer::msgpack_deserializer_t deserializer(output);
                 auto arr_size = deserializer.root_array_size();
@@ -343,13 +392,42 @@ namespace services::wal {
                     deserializer.pop_array();
                 }
             } else {
+                auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
+                error(log_, "wal: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
+                      start_index, record.crc32, computed_crc);
                 record.data = nullptr;
-                //todo: error wal content
+                record.is_corrupt = true;
+                record.size = 0;
             }
         } else {
             record.data = nullptr;
         }
         return record;
+    }
+
+    wal_replicate_t::unique_future<void> wal_replicate_t::truncate_before(
+        session_id_t session,
+        services::wal::id_t checkpoint_wal_id
+    ) {
+        trace(log_, "wal_replicate_t::truncate_before session: {}, wal_id: {}", session.data(), checkpoint_wal_id);
+        if (!file_ || checkpoint_wal_id == 0) {
+            co_return;
+        }
+        // Delete old segment files whose last record ID <= checkpoint_wal_id
+        auto segments = discover_segments_();
+        for (auto& seg_path : segments) {
+            // Never delete the segment we're currently writing to
+            if (seg_path == config_.path / wal_segment_name_(current_segment_idx_)) {
+                continue;
+            }
+            auto last_id = last_id_in_file_(seg_path);
+            if (last_id > 0 && last_id <= checkpoint_wal_id) {
+                trace(log_, "wal_replicate_t::truncate_before deleting segment: {}", seg_path.string());
+                std::filesystem::remove(seg_path);
+            }
+        }
+        trace(log_, "wal_replicate_t::truncate_before WAL trimmed up to id {}", checkpoint_wal_id);
+        co_return;
     }
 
     wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_insert(
@@ -400,6 +478,65 @@ namespace services::wal {
         last_crc32_ = pack_physical_update(buffer, resource(), last_crc32_, id_, txn_id, database, collection, row_ids, *new_data, count);
         write_buffer(buffer);
         co_return services::wal::id_t(id_);
+    }
+
+    std::string wal_replicate_t::wal_segment_name_(int segment_idx) const {
+        return wal_segment_name(worker_index_, segment_idx);
+    }
+
+    void wal_replicate_t::rotate_segment_() {
+        file_.reset();
+        ++current_segment_idx_;
+        trace(log_, "wal: rotating to segment {}", wal_segment_name_(current_segment_idx_));
+        file_ = open_file(fs_,
+                          config_.path / wal_segment_name_(current_segment_idx_),
+                          file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
+                          file_lock_type::NO_LOCK);
+        // last_crc32_ carries over (chain is not reset)
+    }
+
+    std::vector<std::filesystem::path> wal_replicate_t::discover_segments_() const {
+        std::vector<std::filesystem::path> result;
+        if (!std::filesystem::exists(config_.path)) {
+            return result;
+        }
+        std::string prefix = ".wal_" + std::to_string(worker_index_) + "_";
+        for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
+            if (!entry.is_regular_file()) continue;
+            auto name = entry.path().filename().string();
+            if (name.size() > prefix.size() && name.substr(0, prefix.size()) == prefix) {
+                result.push_back(entry.path());
+            }
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    services::wal::id_t wal_replicate_t::last_id_in_file_(const std::filesystem::path& path) {
+        services::wal::id_t last_id = 0;
+        auto seg_file = open_file(fs_, path, file_flags::READ, file_lock_type::NO_LOCK);
+        std::size_t start_index = 0;
+        while (true) {
+            buffer_t size_buf;
+            size_buf.resize(sizeof(size_tt));
+            if (!seg_file->read(size_buf.data(), sizeof(size_tt), uint64_t(start_index))) {
+                break;
+            }
+            auto size = read_size_raw(size_buf.data(), 0);
+            if (size == 0) break;
+
+            auto start = start_index + sizeof(size_tt);
+            auto finish = start + size;
+            buffer_t data_buf;
+            data_buf.resize(finish - start);
+            seg_file->read(data_buf.data(), data_buf.size(), uint64_t(start));
+            auto id = unpack_wal_id(data_buf);
+            if (id > 0) {
+                last_id = id;
+            }
+            start_index = next_index(start_index, size);
+        }
+        return last_id;
     }
 
 #ifdef DEV_MODE

@@ -30,12 +30,18 @@ namespace services::index {
         result upper_bound(const value_t& value) const;
 
         void drop();
+        void force_flush();
 
     private:
+        void flush_if_needed();
+
         std::filesystem::path path_;
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
+        bool dirty_{false};
+        uint64_t ops_since_flush_{0};
+        static constexpr uint64_t flush_threshold_{1000};
     };
 
 } // namespace services::index

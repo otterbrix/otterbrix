@@ -314,9 +314,22 @@ namespace services::dispatcher {
                 break;
             case node_type::checkpoint_t: {
                 trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
+                // Flush all dirty index btrees before table checkpoint
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_fi, fif] = actor_zeta::send(index_address_,
+                        &index::manager_index_t::flush_all_indexes, session);
+                    co_await std::move(fif);
+                }
                 auto [_cp, cpf] = actor_zeta::send(disk_address_,
                     &disk::manager_disk_t::checkpoint_all, session);
-                co_await std::move(cpf);
+                auto checkpoint_wal_id = co_await std::move(cpf);
+                // After checkpoint, trim old WAL segments (id=0 means no-op: IN_MEMORY tables need WAL)
+                if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_wt, wtf] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::truncate_before,
+                        session, checkpoint_wal_id);
+                    co_await std::move(wtf);
+                }
                 co_return make_cursor(resource(), operation_status_t::success);
             }
             case node_type::vacuum_t: {

@@ -44,7 +44,7 @@ namespace services::disk {
 
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
-        actor_zeta::unique_future<void> checkpoint_all(session_id_t session);
+        actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session);
         actor_zeta::unique_future<void> vacuum_all(session_id_t session,
                                                         uint64_t lowest_active_start_time);
         actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx,
@@ -101,7 +101,8 @@ namespace services::disk {
         storage_scan(session_id_t session,
                      collection_full_name_t name,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit);
+                     int limit,
+                     components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
@@ -116,7 +117,7 @@ namespace services::disk {
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>> storage_append(
             execution_context_t ctx,
             std::unique_ptr<components::vector::data_chunk_t> data);
-        actor_zeta::unique_future<void> storage_update(
+        actor_zeta::unique_future<std::pair<int64_t, uint64_t>> storage_update(
             execution_context_t ctx,
             components::vector::vector_t row_ids,
             std::unique_ptr<components::vector::data_chunk_t> data);

@@ -46,6 +46,7 @@ namespace services::index {
         unique_future<void> insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
         unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
         unique_future<index_disk_t::result> find(session_id_t session, value_t value, components::expressions::compare_type compare);
+        unique_future<void> force_flush(session_id_t session);
 
 
         using dispatch_traits = actor_zeta::dispatch_traits<
@@ -53,7 +54,8 @@ namespace services::index {
             &index_agent_disk_t::insert,
             &index_agent_disk_t::insert_many,
             &index_agent_disk_t::remove,
-            &index_agent_disk_t::find
+            &index_agent_disk_t::find,
+            &index_agent_disk_t::force_flush
         >;
 
         auto make_type() const noexcept -> const char*;

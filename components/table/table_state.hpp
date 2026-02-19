@@ -9,6 +9,7 @@
 
 #include "column_data.hpp"
 #include "column_state.hpp"
+#include "row_version_manager.hpp"
 
 namespace components::vector {
     class data_chunk_t;
@@ -165,6 +166,7 @@ namespace components::table {
         int64_t max_row;
         uint64_t batch_index;
         vector::indexing_vector_t valid_indexing;
+        transaction_data txn{0, 0};
 
         std::random_device random;
 

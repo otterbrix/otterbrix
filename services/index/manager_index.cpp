@@ -165,6 +165,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::search_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -782,6 +786,24 @@ namespace services::index {
         for (const auto& index : indexes) {
             write_index_to_metafile(index);
         }
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
+        trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
+        for (auto& agent : disk_agents_) {
+            if (agent && !agent->is_dropped()) {
+                auto [needs_sched, f] = actor_zeta::send(agent->address(),
+                    &index_agent_disk_t::force_flush, session);
+                schedule_agent(agent->address(), needs_sched);
+                pending_void_.push_back(std::move(f));
+            }
+        }
+        // Await all flushes
+        for (auto& f : pending_void_) {
+            co_await std::move(f);
+        }
+        pending_void_.clear();
+        co_return;
     }
 
 } // namespace services::index

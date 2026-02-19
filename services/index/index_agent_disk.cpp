@@ -35,6 +35,9 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::find, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
+                break;
             default:
                 break;
         }
@@ -117,6 +120,14 @@ namespace services::index {
                 break;
         }
         co_return res;
+    }
+
+    index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
+        trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
+        if (index_disk_ && !is_dropped_) {
+            index_disk_->force_flush();
+        }
+        co_return;
     }
 
 } //namespace services::index

@@ -42,6 +42,8 @@ namespace services::wal {
         unique_future<services::wal::id_t> commit_txn(session_id_t session,
                                         uint64_t transaction_id);
 
+        unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
+
         // Physical WAL write methods
         unique_future<services::wal::id_t> write_physical_insert(
             session_id_t session,
@@ -74,6 +76,7 @@ namespace services::wal {
             &wal_replicate_t::create_index,
             &wal_replicate_t::drop_index,
             &wal_replicate_t::commit_txn,
+            &wal_replicate_t::truncate_before,
             &wal_replicate_t::write_physical_insert,
             &wal_replicate_t::write_physical_delete,
             &wal_replicate_t::write_physical_update
@@ -97,7 +100,7 @@ namespace services::wal {
         size_tt read_size(size_t start_index) const;
         buffer_t read(size_t start_index, size_t finish_index) const;
 
-        log_t log_;
+        mutable log_t log_;
         configuration::config_wal config_;
         core::filesystem::local_file_system_t fs_;
         int worker_index_{0};
@@ -105,6 +108,12 @@ namespace services::wal {
         atomic_id_t id_{0};
         crc32_t last_crc32_{0};
         file_ptr file_;
+        int current_segment_idx_{0};
+
+        std::string wal_segment_name_(int segment_idx) const;
+        void rotate_segment_();
+        std::vector<std::filesystem::path> discover_segments_() const;
+        services::wal::id_t last_id_in_file_(const std::filesystem::path& path);
 
         std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
         std::pmr::vector<unique_future<services::wal::id_t>> pending_id_;

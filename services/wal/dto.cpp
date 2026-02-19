@@ -21,7 +21,6 @@ namespace services::wal {
     }
 
     void append_size(buffer_t& storage, size_tt size) {
-        // Write 4 bytes (32-bit) instead of 2 bytes (16-bit)
         storage.push_back(buffer_element_t((size >> 24) & 0xff));
         storage.push_back(buffer_element_t((size >> 16) & 0xff));
         storage.push_back(buffer_element_t((size >> 8) & 0xff));
@@ -31,32 +30,6 @@ namespace services::wal {
     void append_payload(buffer_t& storage, char* ptr, size_t size) {
         storage.reserve(storage.size() + size);
         std::copy(ptr, ptr + size, std::back_inserter(storage));
-    }
-
-    crc32_t read_crc32(buffer_t& input, size_tt index_start) {
-        crc32_t crc32_tmp = 0;
-        crc32_tmp = 0xff000000 & (uint32_t(input[index_start]) << 24);
-        crc32_tmp |= 0x00ff0000 & (uint32_t(input[index_start + 1]) << 16);
-        crc32_tmp |= 0x0000ff00 & (uint32_t(input[index_start + 2]) << 8);
-        crc32_tmp |= 0x000000ff & (uint32_t(input[index_start + 3]));
-        return crc32_tmp;
-    }
-
-    buffer_t read_payload(buffer_t& input, size_tt index_start, size_tt index_stop) {
-        buffer_t buffer(input.begin() + static_cast<std::ptrdiff_t>(index_start),
-                        input.begin() + static_cast<std::ptrdiff_t>(index_stop));
-        return buffer;
-    }
-
-
-    size_tt read_size_impl(buffer_t& input, size_tt index_start) {
-        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
-        size_tt size_tmp = 0;
-        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
-        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
-        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
-        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
-        return size_tmp;
     }
 
     crc32_t pack(buffer_t& storage, char* input, size_t data_size) {
@@ -87,8 +60,6 @@ namespace services::wal {
     }
 
     crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id) {
-        // Commit markers use array(3): [last_crc32, wal_id, txn_id]
-        // Distinguished from DATA records (array 4 or 5) by array size
         msgpack::sbuffer sbuf;
         msgpack::packer<msgpack::sbuffer> pk(&sbuf);
         pk.pack_array(3);
@@ -98,32 +69,6 @@ namespace services::wal {
         return pack(storage, sbuf.data(), sbuf.size());
     }
 
-    void unpack(buffer_t& storage, wal_entry_t& entry) {
-        components::serializer::msgpack_deserializer_t deserializer(storage);
-        auto arr_size = deserializer.root_array_size();
-
-        entry.last_crc32_ = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
-        entry.id_ = deserializer.deserialize_uint64(1);
-
-        if (arr_size >= 5) {
-            entry.transaction_id_ = deserializer.deserialize_uint64(2);
-            deserializer.advance_array(3);
-            entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
-            deserializer.pop_array();
-            deserializer.advance_array(4);
-            entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-            deserializer.pop_array();
-        } else {
-            entry.transaction_id_ = 0;
-            deserializer.advance_array(2);
-            entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
-            deserializer.pop_array();
-            deserializer.advance_array(3);
-            entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-            deserializer.pop_array();
-        }
-    }
-
     id_t unpack_wal_id(buffer_t& storage) {
         msgpack::unpacked msg;
         msgpack::unpack(msg, storage.data(), storage.size());
@@ -131,7 +76,6 @@ namespace services::wal {
         return o.via.array.ptr[1].as<id_t>();
     }
 
-    // Physical WAL: INSERT = array(9) [last_crc32, id, txn_id, type(10), db, coll, data_chunk_blob, row_start, row_count]
     crc32_t pack_physical_insert(buffer_t& storage,
                                  std::pmr::memory_resource* resource,
                                  crc32_t last_crc32,
@@ -158,7 +102,6 @@ namespace services::wal {
         return pack(storage, buffer.data(), buffer.size());
     }
 
-    // Physical WAL: DELETE = array(8) [last_crc32, id, txn_id, type(11), db, coll, row_ids_array, count]
     crc32_t pack_physical_delete(buffer_t& storage,
                                  crc32_t last_crc32,
                                  id_t id,
@@ -184,7 +127,6 @@ namespace services::wal {
         return pack(storage, sbuf.data(), sbuf.size());
     }
 
-    // Physical WAL: UPDATE = array(9) [last_crc32, id, txn_id, type(12), db, coll, row_ids_array, data_chunk_blob, count]
     crc32_t pack_physical_update(buffer_t& storage,
                                  std::pmr::memory_resource* resource,
                                  crc32_t last_crc32,
@@ -203,7 +145,6 @@ namespace services::wal {
         serializer.append(static_cast<uint64_t>(wal_record_type::PHYSICAL_UPDATE));
         serializer.append(database);
         serializer.append(collection);
-        // row_ids sub-array
         serializer.start_array(row_ids.size());
         for (auto rid : row_ids) {
             serializer.append(static_cast<int64_t>(rid));

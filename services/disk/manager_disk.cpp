@@ -87,8 +87,11 @@ namespace services::disk {
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         // Set meta_block_ so write_header() persists it
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
+        // Serialize free list to metadata blocks
+        auto free_list_ptr = disk_bm->serialize_free_list();
         components::table::storage::database_header_t header;
         header.initialize();
+        header.free_list = free_list_ptr.block_pointer;
         disk_bm->write_header(header);
         disk_bm->file_sync();
     }
@@ -489,7 +492,7 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::checkpoint_all(session_id_t session) {
+    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {}", session.data());
 
         // Checkpoint DISK tables and collect schemas from ALL tables
@@ -541,10 +544,13 @@ namespace services::disk {
                 }
                 co_await std::move(future2);
             }
+
+            trace(log_, "manager_disk_t::checkpoint_all complete");
+            co_return has_in_memory ? wal::id_t{0} : wal::id_t{max_wal_id_};
         }
 
-        trace(log_, "manager_disk_t::checkpoint_all complete");
-        co_return;
+        trace(log_, "manager_disk_t::checkpoint_all complete (no agents)");
+        co_return wal::id_t{0};
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(
@@ -914,12 +920,13 @@ namespace services::disk {
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan(
         session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit) {
+        std::unique_ptr<components::table::table_filter_t> filter, int limit,
+        components::table::transaction_data txn) {
         auto* s = get_storage(name);
         if (!s) co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan(*result, filter.get(), limit);
+        s->scan(*result, filter.get(), limit, txn);
         co_return std::move(result);
     }
 
@@ -1110,13 +1117,13 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_update(
+    manager_disk_t::unique_future<std::pair<int64_t, uint64_t>> manager_disk_t::storage_update(
         execution_context_t ctx,
         components::vector::vector_t row_ids,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(ctx.name);
-        if (s) s->update(row_ids, *data, ctx.txn);
-        co_return;
+        if (!s) co_return std::pair<int64_t, uint64_t>{0, 0};
+        co_return s->update(row_ids, *data, ctx.txn);
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(
@@ -1460,12 +1467,13 @@ namespace services::disk {
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_empty_t::storage_scan(
         session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit) {
+        std::unique_ptr<components::table::table_filter_t> filter, int limit,
+        components::table::transaction_data txn) {
         auto* s = get_storage(name);
         if (!s) co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan(*result, filter.get(), limit);
+        s->scan(*result, filter.get(), limit, txn);
         co_return std::move(result);
     }
 
@@ -1613,13 +1621,13 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::storage_update(
+    manager_disk_empty_t::unique_future<std::pair<int64_t, uint64_t>> manager_disk_empty_t::storage_update(
         execution_context_t ctx,
         components::vector::vector_t row_ids,
         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(ctx.name);
-        if (s) s->update(row_ids, *data, ctx.txn);
-        co_return;
+        if (!s) co_return std::pair<int64_t, uint64_t>{0, 0};
+        co_return s->update(row_ids, *data, ctx.txn);
     }
 
     manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_delete_rows(

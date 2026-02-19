@@ -7,6 +7,9 @@
 #include <absl/crc/crc32c.h>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/metadata_writer.hpp>
+#include <components/table/storage/metadata_reader.hpp>
 
 namespace components::table::storage {
 
@@ -92,7 +95,7 @@ namespace components::table::storage {
         }
 
         if (active.free_list != INVALID_INDEX) {
-            // TODO: deserialize free list from metadata blocks
+            deserialize_free_list(meta_block_pointer_t{active.free_list, 0});
         }
     }
 
@@ -258,6 +261,34 @@ namespace components::table::storage {
         if (handle_) {
             auto file_end = block_location(max_block_);
             handle_->truncate(static_cast<int64_t>(file_end));
+        }
+    }
+
+    // --- Phase 14D: Free List Persistence ---
+
+    meta_block_pointer_t single_file_block_manager_t::serialize_free_list() {
+        if (free_list_.empty()) {
+            return meta_block_pointer_t{}; // INVALID_INDEX
+        }
+        metadata_manager_t meta_mgr(*this);
+        metadata_writer_t writer(meta_mgr);
+        writer.write<uint64_t>(free_list_.size());
+        for (auto block_id : free_list_) {
+            writer.write<uint64_t>(block_id);
+        }
+        writer.flush();
+        return writer.get_block_pointer();
+    }
+
+    void single_file_block_manager_t::deserialize_free_list(meta_block_pointer_t pointer) {
+        if (!pointer.is_valid()) {
+            return;
+        }
+        metadata_manager_t meta_mgr(*this);
+        metadata_reader_t reader(meta_mgr, pointer);
+        auto count = reader.read<uint64_t>();
+        for (uint64_t i = 0; i < count && !reader.finished(); ++i) {
+            free_list_.insert(reader.read<uint64_t>());
         }
     }
 

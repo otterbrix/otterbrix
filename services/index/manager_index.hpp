@@ -125,6 +125,8 @@ namespace services::index {
                                        collection_full_name_t name,
                                        index_name_t index_name);
 
+        unique_future<void> flush_all_indexes(session_id_t session);
+
         using dispatch_traits = actor_zeta::implements<
             index_contract,
             &manager_index_t::register_collection,
@@ -144,7 +146,8 @@ namespace services::index {
             &manager_index_t::drop_index,
             &manager_index_t::search,
             &manager_index_t::search_txn,
-            &manager_index_t::has_index
+            &manager_index_t::has_index,
+            &manager_index_t::flush_all_indexes
         >;
 
     private:

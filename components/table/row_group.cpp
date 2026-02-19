@@ -278,7 +278,9 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                count = state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                count = (state.txn.transaction_id != 0 || state.txn.start_time != 0)
+                    ? state.row_group->indexing_vector(state.txn, state.vector_index, state.valid_indexing, max_count)
+                    : state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;

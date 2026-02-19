@@ -94,6 +94,9 @@ namespace components::table::storage {
 
         void write_header(const database_header_t& header);
 
+        meta_block_pointer_t serialize_free_list();
+        void deserialize_free_list(meta_block_pointer_t pointer);
+
         core::filesystem::file_handle_t& handle() const { return *handle_; }
 
     private:

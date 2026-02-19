@@ -57,6 +57,7 @@ namespace services::wal {
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
+        unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
 
         unique_future<services::wal::id_t> write_physical_insert(
             session_id_t session,
@@ -90,6 +91,7 @@ namespace services::wal {
             &manager_wal_replicate_t::create_index,
             &manager_wal_replicate_t::drop_index,
             &manager_wal_replicate_t::commit_txn,
+            &manager_wal_replicate_t::truncate_before,
             &manager_wal_replicate_t::write_physical_insert,
             &manager_wal_replicate_t::write_physical_delete,
             &manager_wal_replicate_t::write_physical_update
@@ -144,6 +146,7 @@ namespace services::wal {
         unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
         unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
+        unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
 
         unique_future<services::wal::id_t> write_physical_insert(
             session_id_t session,
@@ -177,6 +180,7 @@ namespace services::wal {
             &manager_wal_replicate_empty_t::create_index,
             &manager_wal_replicate_empty_t::drop_index,
             &manager_wal_replicate_empty_t::commit_txn,
+            &manager_wal_replicate_empty_t::truncate_before,
             &manager_wal_replicate_empty_t::write_physical_insert,
             &manager_wal_replicate_empty_t::write_physical_delete,
             &manager_wal_replicate_empty_t::write_physical_update

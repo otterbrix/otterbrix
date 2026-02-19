@@ -636,7 +636,7 @@ namespace services::collection::executor {
                 out_chunk.copy(*result.wal_update_data, 0);
                 result.wal_collection = upd->collection_name();
 
-                // storage_update
+                // storage_update (MVCC: delete old rows + insert new rows)
                 vector_t row_ids(resource(), components::types::logical_type::BIGINT, out_chunk.size());
                 for (uint64_t i = 0; i < out_chunk.size(); i++) {
                     row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
@@ -646,7 +646,10 @@ namespace services::collection::executor {
                 auto [_u, uf] = actor_zeta::send(disk_address_,
                     &disk::manager_disk_t::storage_update,
                     exec_ctx, std::move(row_ids), std::move(data_copy));
-                co_await std::move(uf);
+                auto [upd_row_start, upd_row_count] = co_await std::move(uf);
+                result.append_row_start = upd_row_start;
+                result.append_row_count = upd_row_count;
+                result.delete_txn_id = ctx->txn.transaction_id;
 
                 // Mirror to index (old+new data)
                 if (index_address_ != actor_zeta::address_t::empty_address()) {

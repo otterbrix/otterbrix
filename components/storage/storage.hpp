@@ -32,6 +32,13 @@ namespace components::storage {
         virtual void scan(vector::data_chunk_t& output,
                           const table::table_filter_t* filter,
                           int limit) = 0;
+        virtual void scan(vector::data_chunk_t& output,
+                          const table::table_filter_t* filter,
+                          int limit,
+                          table::transaction_data txn) {
+            (void)txn;
+            scan(output, filter, limit);
+        }
 
         virtual void fetch(vector::data_chunk_t& output,
                            const vector::vector_t& row_ids,
@@ -47,11 +54,12 @@ namespace components::storage {
 
         virtual void update(vector::vector_t& row_ids,
                             vector::data_chunk_t& data) = 0;
-        virtual void update(vector::vector_t& row_ids,
+        virtual std::pair<int64_t, uint64_t> update(vector::vector_t& row_ids,
                             vector::data_chunk_t& data,
                             table::transaction_data txn) {
             (void)txn;
             update(row_ids, data);
+            return {0, 0};
         }
 
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;

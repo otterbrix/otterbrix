@@ -26,7 +26,7 @@ namespace services::wal {
         std::size_t next_wal_index(std::size_t start_index, size_tt size) const;
 
         std::pmr::memory_resource* resource_;
-        log_t log_;
+        mutable log_t log_;
         core::filesystem::local_file_system_t fs_;
         std::vector<std::unique_ptr<core::filesystem::file_handle_t>> wal_files_;
     };

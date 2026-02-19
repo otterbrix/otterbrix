@@ -147,7 +147,7 @@ namespace services::disk {
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
-        unique_future<void> checkpoint_all(session_id_t session);
+        unique_future<wal::id_t> checkpoint_all(session_id_t session);
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         unique_future<void> maybe_cleanup(execution_context_t ctx,
                                           uint64_t lowest_active_start_time);
@@ -196,7 +196,8 @@ namespace services::disk {
         storage_scan(session_id_t session,
                      collection_full_name_t name,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit);
+                     int limit,
+                     components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
@@ -209,7 +210,7 @@ namespace services::disk {
                              uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>> storage_append(execution_context_t ctx,
                                                 std::unique_ptr<components::vector::data_chunk_t> data);
-        unique_future<void> storage_update(execution_context_t ctx,
+        unique_future<std::pair<int64_t, uint64_t>> storage_update(execution_context_t ctx,
                                             components::vector::vector_t row_ids,
                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
@@ -406,7 +407,7 @@ namespace services::disk {
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
-        unique_future<void> checkpoint_all(session_id_t /*session*/) { co_return; }
+        unique_future<wal::id_t> checkpoint_all(session_id_t /*session*/) { co_return wal::id_t{0}; }
         unique_future<void> vacuum_all(session_id_t /*session*/, uint64_t /*lowest_active_start_time*/) { co_return; }
         unique_future<void> maybe_cleanup(execution_context_t /*ctx*/,
                                           uint64_t /*lowest_active_start_time*/) { co_return; }
@@ -455,7 +456,8 @@ namespace services::disk {
         storage_scan(session_id_t session,
                      collection_full_name_t name,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit);
+                     int limit,
+                     components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
@@ -468,7 +470,7 @@ namespace services::disk {
                              uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>> storage_append(execution_context_t ctx,
                                                 std::unique_ptr<components::vector::data_chunk_t> data);
-        unique_future<void> storage_update(execution_context_t ctx,
+        unique_future<std::pair<int64_t, uint64_t>> storage_update(execution_context_t ctx,
                                             components::vector::vector_t row_ids,
                                             std::unique_ptr<components::vector::data_chunk_t> data);
         unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
@@ -478,15 +480,27 @@ namespace services::disk {
                                                        collection_full_name_t /*name*/) { co_return 0; }
 
         // MVCC commit/revert
-        unique_future<void> storage_commit_append(execution_context_t /*ctx*/,
-                                                   uint64_t /*commit_id*/,
-                                                   int64_t /*row_start*/,
-                                                   uint64_t /*count*/) { co_return; }
-        unique_future<void> storage_revert_append(execution_context_t /*ctx*/,
-                                                   int64_t /*row_start*/,
-                                                   uint64_t /*count*/) { co_return; }
-        unique_future<void> storage_commit_delete(execution_context_t /*ctx*/,
-                                                   uint64_t /*commit_id*/) { co_return; }
+        unique_future<void> storage_commit_append(execution_context_t ctx,
+                                                   uint64_t commit_id,
+                                                   int64_t row_start,
+                                                   uint64_t count) {
+            auto* s = get_storage(ctx.name);
+            if (s) s->commit_append(commit_id, row_start, count);
+            co_return;
+        }
+        unique_future<void> storage_revert_append(execution_context_t ctx,
+                                                   int64_t row_start,
+                                                   uint64_t count) {
+            auto* s = get_storage(ctx.name);
+            if (s) s->revert_append(row_start, count);
+            co_return;
+        }
+        unique_future<void> storage_commit_delete(execution_context_t ctx,
+                                                   uint64_t commit_id) {
+            auto* s = get_storage(ctx.name);
+            if (s) s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
+            co_return;
+        }
 
         using dispatch_traits = actor_zeta::implements<
             disk_contract,

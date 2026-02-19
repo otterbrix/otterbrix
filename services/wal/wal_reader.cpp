@@ -17,27 +17,43 @@ namespace services::wal {
         : resource_(resource)
         , log_(log.clone())
         , fs_(local_file_system_t()) {
-        if (config.path.empty()) {
+        if (config.path.empty() || !std::filesystem::exists(config.path)) {
             return;
         }
         for (int i = 0; i < config.agent; ++i) {
-            auto wal_file_path = config.path / (".wal_" + std::to_string(i));
-            if (std::filesystem::exists(wal_file_path)) {
-                trace(log_, "wal_reader_t: opening WAL at {}", wal_file_path.string());
-                wal_files_.push_back(open_file(fs_,
-                                               wal_file_path,
-                                               file_flags::READ,
-                                               file_lock_type::NO_LOCK));
+            // Discover segment files .wal_N_SSSSSS for worker i
+            std::string prefix = ".wal_" + std::to_string(i) + "_";
+            std::vector<std::filesystem::path> segments;
+            for (const auto& entry : std::filesystem::directory_iterator(config.path)) {
+                if (!entry.is_regular_file()) continue;
+                auto name = entry.path().filename().string();
+                if (name.size() > prefix.size() && name.substr(0, prefix.size()) == prefix) {
+                    segments.push_back(entry.path());
+                }
+            }
+            std::sort(segments.begin(), segments.end());
+
+            if (!segments.empty()) {
+                for (const auto& seg_path : segments) {
+                    trace(log_, "wal_reader_t: opening segment WAL at {}", seg_path.string());
+                    wal_files_.push_back(open_file(fs_, seg_path, file_flags::READ, file_lock_type::NO_LOCK));
+                }
+            } else {
+                // Fallback: legacy non-segmented .wal_N file
+                auto wal_file_path = config.path / (".wal_" + std::to_string(i));
+                if (std::filesystem::exists(wal_file_path)) {
+                    trace(log_, "wal_reader_t: opening legacy WAL at {}", wal_file_path.string());
+                    wal_files_.push_back(open_file(fs_, wal_file_path, file_flags::READ, file_lock_type::NO_LOCK));
+                }
             }
         }
         // Legacy single .wal file for backward compatibility
-        auto legacy_wal_path = config.path / ".wal";
-        if (wal_files_.empty() && std::filesystem::exists(legacy_wal_path)) {
-            trace(log_, "wal_reader_t: opening legacy WAL at {}", legacy_wal_path.string());
-            wal_files_.push_back(open_file(fs_,
-                                           legacy_wal_path,
-                                           file_flags::READ,
-                                           file_lock_type::NO_LOCK));
+        if (wal_files_.empty()) {
+            auto legacy_wal_path = config.path / ".wal";
+            if (std::filesystem::exists(legacy_wal_path)) {
+                trace(log_, "wal_reader_t: opening legacy WAL at {}", legacy_wal_path.string());
+                wal_files_.push_back(open_file(fs_, legacy_wal_path, file_flags::READ, file_lock_type::NO_LOCK));
+            }
         }
     }
 
@@ -49,11 +65,16 @@ namespace services::wal {
         // Pass 1: Read all records, collect committed txn_ids
         std::vector<record_t> all_records;
         std::unordered_set<uint64_t> committed_txn_ids;
+        uint64_t corrupt_count = 0;
 
         for (auto& wal_file : wal_files_) {
             std::size_t start_index = 0;
             while (true) {
                 auto record = read_wal_record(wal_file.get(), start_index);
+                if (record.is_corrupt) {
+                    ++corrupt_count;
+                    break;
+                }
                 if (!record.is_valid()) {
                     break;
                 }
@@ -88,6 +109,9 @@ namespace services::wal {
         std::sort(committed.begin(), committed.end(),
             [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
+        if (corrupt_count > 0) {
+            error(log_, "wal_reader_t: encountered {} corrupt WAL record(s) with CRC32 mismatch", corrupt_count);
+        }
         debug(log_, "wal_reader_t: read {} committed physical WAL records (after id {})",
               committed.size(), after_id);
         return committed;
@@ -199,7 +223,11 @@ namespace services::wal {
                     record.data = nullptr;
                 }
             } else {
+                error(log_, "wal_reader_t: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
+                      start_index, record.crc32, computed_crc);
                 record.data = nullptr;
+                record.is_corrupt = true;
+                record.size = 0;
             }
         } else {
             record.data = nullptr;

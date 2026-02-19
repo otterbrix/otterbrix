@@ -4,6 +4,10 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/metadata_reader.hpp>
+#include <components/table/storage/metadata_writer.hpp>
+
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -164,4 +168,104 @@ TEST_CASE("single_file_block_manager: header validation") {
     header.magic = main_header_t::MAGIC_NUMBER;
     header.version = main_header_t::CURRENT_VERSION + 1;
     REQUIRE_FALSE(header.validate());
+}
+
+TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    uint64_t free_blocks_after_serialize = 0;
+
+    // Phase 1: allocate 5 blocks, free 3 of them, serialize + persist
+    // Note: serialize_free_list() itself allocates metadata block(s) from the free list
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.create_new_database();
+
+        // Allocate 5 blocks (ids 0..4), write dummy data to each
+        for (int i = 0; i < 5; i++) {
+            uint64_t id = bm.free_block_id();
+            auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
+                                                  static_cast<uint64_t>(bm.block_size()));
+            std::memset(blk->buffer(), static_cast<int>(i), blk->size());
+            bm.write(*blk, id);
+        }
+
+        REQUIRE(bm.total_blocks() == 5);
+
+        // Free blocks 1, 2, and 3
+        bm.mark_as_free(1);
+        bm.mark_as_free(2);
+        bm.mark_as_free(3);
+        REQUIRE(bm.free_blocks() == 3);
+
+        // Serialize free list (may consume some freed blocks for metadata)
+        auto free_list_ptr = bm.serialize_free_list();
+        free_blocks_after_serialize = bm.free_blocks();
+        REQUIRE(free_blocks_after_serialize > 0);
+
+        database_header_t header;
+        header.initialize();
+        header.free_list = free_list_ptr.block_pointer;
+        bm.write_header(header);
+    }
+
+    // Phase 2: reopen and verify free list persisted
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.load_existing_database();
+
+        REQUIRE(bm.free_blocks() == free_blocks_after_serialize);
+
+        // Allocate from free list — should reuse freed block IDs (not allocate new)
+        uint64_t reused = bm.free_block_id();
+        REQUIRE(reused < 5); // must be a previously freed block, not a new one
+        REQUIRE(bm.free_blocks() == free_blocks_after_serialize - 1);
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("single_file_block_manager: empty free list persistence") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+
+    // Phase 1: allocate 3 blocks, free none, persist
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.create_new_database();
+
+        for (int i = 0; i < 3; i++) {
+            uint64_t id = bm.free_block_id();
+            auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
+                                                  static_cast<uint64_t>(bm.block_size()));
+            std::memset(blk->buffer(), 0, blk->size());
+            bm.write(*blk, id);
+        }
+
+        REQUIRE(bm.total_blocks() == 3);
+        REQUIRE(bm.free_blocks() == 0);
+
+        auto free_list_ptr = bm.serialize_free_list();
+        database_header_t header;
+        header.initialize();
+        header.free_list = free_list_ptr.block_pointer;
+        bm.write_header(header);
+    }
+
+    // Phase 2: reopen and verify empty free list
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.load_existing_database();
+
+        REQUIRE(bm.free_blocks() == 0);
+        // Next alloc should give block 3 (next after 0,1,2)
+        uint64_t next = bm.free_block_id();
+        REQUIRE(next == 3);
+    }
+
+    cleanup_test_file();
 }

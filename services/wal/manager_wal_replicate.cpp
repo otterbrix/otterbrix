@@ -82,6 +82,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::commit_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::truncate_before>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::truncate_before, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_insert, msg);
                 break;
@@ -176,6 +180,20 @@ namespace services::wal {
         co_return last_id;
     }
 
+    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(
+        session_id_t session,
+        services::wal::id_t checkpoint_wal_id) {
+        trace(log_, "manager_wal_replicate_t::truncate_before checkpoint_wal_id={}", checkpoint_wal_id);
+        for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
+            auto [needs_sched, future] = actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::truncate_before, session, checkpoint_wal_id);
+            if (needs_sched) {
+                scheduler_->enqueue(dispatchers_[i].get());
+            }
+            co_await std::move(future);
+        }
+        co_return;
+    }
+
     manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::write_physical_insert(
         session_id_t session,
         std::string database,
@@ -266,6 +284,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::commit_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::truncate_before>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::truncate_before, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_insert, msg);
                 break;
@@ -313,6 +335,12 @@ namespace services::wal {
         session_id_t /*session*/, uint64_t /*transaction_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::commit_txn - return success");
         co_return services::wal::id_t{0};
+    }
+
+    manager_wal_replicate_empty_t::unique_future<void> manager_wal_replicate_empty_t::truncate_before(
+        session_id_t /*session*/, services::wal::id_t /*checkpoint_wal_id*/) {
+        trace(log_, "manager_wal_replicate_empty_t::truncate_before - no-op");
+        co_return;
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::write_physical_insert(

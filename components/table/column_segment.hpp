@@ -5,6 +5,7 @@
 #include <components/vector/vector.hpp>
 
 #include "base_statistics.hpp"
+#include "compression/compression_type.hpp"
 #include "segment_tree.hpp"
 #include "storage/block_handle.hpp"
 
@@ -98,6 +99,9 @@ namespace components::table {
         const std::optional<base_statistics_t>& segment_statistics() const { return segment_statistics_; }
         void set_segment_statistics(base_statistics_t stats) { segment_statistics_ = std::move(stats); }
 
+        compression::compression_type compression() const { return compression_; }
+        void set_compression(compression::compression_type c) { compression_ = c; }
+
     private:
         void scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         void
@@ -108,6 +112,7 @@ namespace components::table {
         uint64_t segment_size_;
         std::unique_ptr<compressed_segment_state> segment_state_;
         std::optional<base_statistics_t> segment_statistics_;
+        compression::compression_type compression_{compression::compression_type::UNCOMPRESSED};
     };
 
 } // namespace components::table

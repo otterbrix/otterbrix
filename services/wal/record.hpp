@@ -33,7 +33,10 @@ namespace services::wal {
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};
 
-        bool is_valid() const { return size > 0; }
+        // Error tracking
+        bool is_corrupt{false};
+
+        bool is_valid() const { return size > 0 && !is_corrupt; }
         bool is_commit_marker() const { return record_type == wal_record_type::COMMIT; }
         bool is_physical() const {
             return record_type == wal_record_type::PHYSICAL_INSERT

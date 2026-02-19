@@ -345,39 +345,54 @@ namespace otterbrix {
             std::move(collections));
 
         // Replay physical WAL records directly to storage (before schedulers start)
+        // Group by collection and replay per-collection in parallel for faster recovery
         if (disk_ptr && !wal_records.empty()) {
-            uint64_t physical_count = 0;
+            std::unordered_map<collection_full_name_t,
+                               std::vector<services::wal::record_t*>,
+                               collection_name_hash> by_collection;
             for (auto& record : wal_records) {
                 if (!record.is_physical()) continue;
-                ++physical_count;
-                trace(log_, "spaces::replaying physical WAL record id {} type {} (collection {})",
-                      record.id, static_cast<int>(record.record_type),
-                      record.collection_name.to_string());
-                switch (record.record_type) {
-                    case services::wal::wal_record_type::PHYSICAL_INSERT:
-                        if (record.physical_data) {
-                            disk_ptr->direct_append_sync(record.collection_name,
-                                                         *record.physical_data);
+                by_collection[record.collection_name].push_back(&record);
+            }
+
+            std::vector<std::thread> workers;
+            workers.reserve(by_collection.size());
+            for (auto& [name, records] : by_collection) {
+                workers.emplace_back([disk_ptr, &name, &records] {
+                    for (auto* r : records) {
+                        switch (r->record_type) {
+                            case services::wal::wal_record_type::PHYSICAL_INSERT:
+                                if (r->physical_data) {
+                                    disk_ptr->direct_append_sync(name, *r->physical_data);
+                                }
+                                break;
+                            case services::wal::wal_record_type::PHYSICAL_DELETE:
+                                disk_ptr->direct_delete_sync(name, r->physical_row_ids,
+                                                             r->physical_row_count);
+                                break;
+                            case services::wal::wal_record_type::PHYSICAL_UPDATE:
+                                if (r->physical_data) {
+                                    disk_ptr->direct_update_sync(name, r->physical_row_ids,
+                                                                 *r->physical_data);
+                                }
+                                break;
+                            default:
+                                break;
                         }
-                        break;
-                    case services::wal::wal_record_type::PHYSICAL_DELETE:
-                        disk_ptr->direct_delete_sync(record.collection_name,
-                                                     record.physical_row_ids,
-                                                     record.physical_row_count);
-                        break;
-                    case services::wal::wal_record_type::PHYSICAL_UPDATE:
-                        if (record.physical_data) {
-                            disk_ptr->direct_update_sync(record.collection_name,
-                                                         record.physical_row_ids,
-                                                         *record.physical_data);
-                        }
-                        break;
-                    default:
-                        break;
-                }
+                    }
+                });
+            }
+            for (auto& w : workers) {
+                w.join();
+            }
+
+            uint64_t physical_count = 0;
+            for (auto& [name, records] : by_collection) {
+                physical_count += records.size();
             }
             if (physical_count > 0) {
-                trace(log_, "spaces::replayed {} physical WAL records", physical_count);
+                trace(log_, "spaces::replayed {} physical WAL records across {} collections in parallel",
+                      physical_count, by_collection.size());
             }
         }
 

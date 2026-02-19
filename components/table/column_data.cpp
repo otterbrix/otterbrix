@@ -676,6 +676,7 @@ namespace components::table {
                 static_cast<uint32_t>(dp.block_pointer.block_id),
                 dp.block_pointer.offset,
                 dp.segment_size);
+            segment->set_compression(dp.compression);
             if (i < persistent_data.segment_statistics.size() &&
                 persistent_data.segment_statistics[i].has_value()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i].value());

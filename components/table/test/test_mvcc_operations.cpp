@@ -76,6 +76,22 @@ namespace {
         return total;
     }
 
+    uint64_t scan_count_txn(data_table_t& table, test_env& env, transaction_data txn) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+        scan_state.table_state.txn = txn;
+
+        auto types = table.copy_types();
+        auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        uint64_t total = 0;
+        table.scan(result, scan_state);
+        total += result.size();
+        return total;
+    }
+
 } // anonymous namespace
 
 TEST_CASE("components::table::mvcc::append_commit_visible") {
@@ -353,4 +369,100 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
 
     // Total rows should now be 50 (reduced allocation)
     REQUIRE(table->row_group()->total_rows() == 50);
+}
+
+TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_to_other_txn") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    transaction_manager_t mgr;
+
+    // Txn1 appends 10 rows, does NOT commit
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 10, txn1.data());
+
+    // Txn2 scans — should see 0 rows (txn1 uncommitted)
+    auto s2 = components::session::session_id_t::generate_uid();
+    auto& txn2 = mgr.begin_transaction(s2);
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
+
+    // Commit txn1
+    auto commit_id = mgr.commit(s1);
+    table->commit_append(commit_id, 0, 10);
+
+    // Txn3 scans — should see 10 rows
+    auto s3 = components::session::session_id_t::generate_uid();
+    auto& txn3 = mgr.begin_transaction(s3);
+    REQUIRE(scan_count_txn(*table, env, txn3.data()) == 10);
+
+    mgr.abort(s2);
+    mgr.abort(s3);
+}
+
+TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    // Append 10 rows (non-txn, immediately visible)
+    append_rows(*table, env, 0, 10);
+    REQUIRE(scan_count(*table, env) == 10);
+
+    transaction_manager_t mgr;
+
+    // Txn1 deletes rows 0..4 (does NOT commit yet)
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+
+    std::pmr::vector<complex_logical_type> id_type(&env.resource);
+    id_type.emplace_back(logical_type::BIGINT);
+    auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 5);
+    for (uint64_t i = 0; i < 5; i++) {
+        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+    }
+    row_ids_chunk.set_cardinality(5);
+
+    auto txn_id = txn1.data().transaction_id;
+    table_delete_state del_state(&env.resource);
+    table->delete_rows(del_state, row_ids_chunk.data[0], 5, txn_id);
+
+    // Txn2 scans — should still see 10 rows (delete uncommitted)
+    auto s2 = components::session::session_id_t::generate_uid();
+    auto& txn2 = mgr.begin_transaction(s2);
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 10);
+    mgr.abort(s2);
+
+    // Commit delete
+    auto commit_id = mgr.commit(s1);
+    table->commit_all_deletes(txn_id, commit_id);
+
+    // Txn3 scans — should see 5 rows
+    auto s3 = components::session::session_id_t::generate_uid();
+    auto& txn3 = mgr.begin_transaction(s3);
+    REQUIRE(scan_count_txn(*table, env, txn3.data()) == 5);
+    mgr.abort(s3);
+}
+
+TEST_CASE("components::table::mvcc::txn_sees_own_writes") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    transaction_manager_t mgr;
+
+    // Txn1 appends 5 rows
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 5, txn1.data());
+
+    // Same txn scans — should see 5 rows (own writes)
+    REQUIRE(scan_count_txn(*table, env, txn1.data()) == 5);
+
+    // Different txn scans — should see 0 rows (txn1 uncommitted)
+    auto s2 = components::session::session_id_t::generate_uid();
+    auto& txn2 = mgr.begin_transaction(s2);
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 0);
+
+    mgr.abort(s1);
+    table->revert_append(0, 5);
+    mgr.abort(s2);
 }

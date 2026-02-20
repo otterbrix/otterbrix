@@ -38,8 +38,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                            manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
 
-        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(100); });
-        manager_disk_->set_run_fn([this]{ scheduler_->run(100); });
+        manager_dispatcher_->set_run_fn([this]{ scheduler_->run(10000); });
+        manager_disk_->set_run_fn([this]{ scheduler_->run(10000); });
     }
 
     ~test_dispatcher() {
@@ -62,8 +62,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     }
 
     void execute_sql(const std::string& query) {
-        std::pmr::monotonic_buffer_resource parser_arena(resource_);
-        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
+        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
         auto view = std::get<components::sql::transform::result_view>(
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
@@ -84,6 +84,7 @@ private:
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
+    std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };
 

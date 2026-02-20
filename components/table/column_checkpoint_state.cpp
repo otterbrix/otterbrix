@@ -258,7 +258,7 @@ namespace components::table {
     }
 
     persistent_column_data_t column_checkpoint_state_t::get_persistent_data() const {
-        persistent_column_data_t result;
+        persistent_column_data_t result(column_data_.resource());
         result.data_pointers = data_pointers_;
         return result;
     }

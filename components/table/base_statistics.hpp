@@ -18,6 +18,8 @@ namespace components::table {
 
     class base_statistics_t {
     public:
+        explicit base_statistics_t(std::pmr::memory_resource* resource);
+
         base_statistics_t(std::pmr::memory_resource* resource, types::logical_type type);
 
         base_statistics_t(std::pmr::memory_resource* resource,

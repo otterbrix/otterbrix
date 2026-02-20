@@ -763,7 +763,7 @@ namespace components::table {
         auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
 
         for (uint64_t i = 0; i < min_count; i++) {
-            persistent_column_data_t pcd;
+            persistent_column_data_t pcd(columns_[i]->resource());
             pcd.data_pointers = pointer.data_pointers[i];
             columns_[i]->initialize_column(pcd);
         }

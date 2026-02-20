@@ -1,7 +1,5 @@
 #pragma once
 
-#include <optional>
-
 #include <components/vector/vector.hpp>
 
 #include "base_statistics.hpp"
@@ -96,7 +94,7 @@ namespace components::table {
 
         compressed_segment_state* segment_state() { return segment_state_.get(); }
 
-        const std::optional<base_statistics_t>& segment_statistics() const { return segment_statistics_; }
+        const base_statistics_t& segment_statistics() const { return segment_statistics_; }
         void set_segment_statistics(base_statistics_t stats) { segment_statistics_ = std::move(stats); }
 
         compression::compression_type compression() const { return compression_; }
@@ -111,7 +109,7 @@ namespace components::table {
         uint64_t offset_;
         uint64_t segment_size_;
         std::unique_ptr<compressed_segment_state> segment_state_;
-        std::optional<base_statistics_t> segment_statistics_;
+        base_statistics_t segment_statistics_;
         compression::compression_type compression_{compression::compression_type::UNCOMPRESSED};
     };
 

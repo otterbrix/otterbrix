@@ -106,10 +106,10 @@ namespace components::table {
     }
 
     filter_propagate_result_t column_data_t::check_segment_zonemap(column_scan_state& state, table_filter_t& filter) {
-        if (!state.current || !state.current->segment_statistics().has_value()) {
+        if (!state.current || !state.current->segment_statistics().has_stats()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        auto& seg_stats = state.current->segment_statistics().value();
+        auto& seg_stats = state.current->segment_statistics();
         if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
@@ -349,8 +349,8 @@ namespace components::table {
         if (state.current) {
             base_statistics_t batch_stats(resource_, type_.type());
             batch_stats.update(vector, count);
-            if (state.current->segment_statistics().has_value()) {
-                auto merged = state.current->segment_statistics().value();
+            if (state.current->segment_statistics().has_stats()) {
+                auto merged = state.current->segment_statistics();
                 merged.merge(batch_stats);
                 state.current->set_segment_statistics(std::move(merged));
             } else {
@@ -678,8 +678,8 @@ namespace components::table {
                 dp.segment_size);
             segment->set_compression(dp.compression);
             if (i < persistent_data.segment_statistics.size() &&
-                persistent_data.segment_statistics[i].has_value()) {
-                segment->set_segment_statistics(persistent_data.segment_statistics[i].value());
+                persistent_data.segment_statistics[i].has_stats()) {
+                segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
             data_.append_segment(l, std::move(segment));
         }
@@ -690,8 +690,8 @@ namespace components::table {
             }
             count_ = total;
         }
-        if (persistent_data.statistics.has_value()) {
-            statistics_ = persistent_data.statistics.value();
+        if (persistent_data.statistics.has_stats()) {
+            statistics_ = persistent_data.statistics;
         }
     }
 

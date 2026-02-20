@@ -202,6 +202,12 @@ namespace components::table {
 
     } // anonymous namespace
 
+    base_statistics_t::base_statistics_t(std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , type_(types::logical_type::NA)
+        , min_(resource, types::complex_logical_type{types::logical_type::NA})
+        , max_(resource, types::complex_logical_type{types::logical_type::NA}) {}
+
     base_statistics_t::base_statistics_t(std::pmr::memory_resource* resource, types::logical_type type)
         : resource_(resource)
         , type_(type)

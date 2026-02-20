@@ -305,8 +305,8 @@ TEST_CASE("per-segment statistics: populated during append") {
 
     // The current segment should have per-segment statistics
     REQUIRE(append_state.current != nullptr);
-    REQUIRE(append_state.current->segment_statistics().has_value());
-    auto& seg_stats = append_state.current->segment_statistics().value();
+    REQUIRE(append_state.current->segment_statistics().has_stats());
+    auto& seg_stats = append_state.current->segment_statistics();
     CHECK(seg_stats.has_stats());
     CHECK(seg_stats.min_value().value<int64_t>() == 1);
     CHECK(seg_stats.max_value().value<int64_t>() == 100);

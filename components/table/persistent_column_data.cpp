@@ -19,9 +19,9 @@ namespace components::table {
         }
 
         // statistics (v2 field)
-        writer.write<uint8_t>(statistics.has_value() ? 1 : 0);
-        if (statistics.has_value()) {
-            statistics->serialize(writer);
+        writer.write<uint8_t>(statistics.has_stats() ? 1 : 0);
+        if (statistics.has_stats()) {
+            statistics.serialize(writer);
         }
 
         // per-segment statistics (v3 field)
@@ -29,9 +29,9 @@ namespace components::table {
         if (!segment_statistics.empty()) {
             writer.write<uint32_t>(static_cast<uint32_t>(segment_statistics.size()));
             for (const auto& seg_stats : segment_statistics) {
-                writer.write<uint8_t>(seg_stats.has_value() ? 1 : 0);
-                if (seg_stats.has_value()) {
-                    seg_stats->serialize(writer);
+                writer.write<uint8_t>(seg_stats.has_stats() ? 1 : 0);
+                if (seg_stats.has_stats()) {
+                    seg_stats.serialize(writer);
                 }
             }
         }
@@ -40,7 +40,7 @@ namespace components::table {
     persistent_column_data_t
     persistent_column_data_t::deserialize(std::pmr::memory_resource* resource,
                                            storage::metadata_reader_t& reader) {
-        persistent_column_data_t result;
+        persistent_column_data_t result(resource);
 
         auto dp_count = reader.read<uint32_t>();
         result.data_pointers.resize(dp_count);
@@ -68,11 +68,13 @@ namespace components::table {
             auto has_seg_stats_flag = reader.read<uint8_t>();
             if (has_seg_stats_flag != 0) {
                 auto seg_count = reader.read<uint32_t>();
-                result.segment_statistics.resize(seg_count);
+                result.segment_statistics.reserve(seg_count);
                 for (uint32_t i = 0; i < seg_count; i++) {
                     auto has_this = reader.read<uint8_t>();
                     if (has_this != 0) {
-                        result.segment_statistics[i] = base_statistics_t::deserialize(resource, reader);
+                        result.segment_statistics.push_back(base_statistics_t::deserialize(resource, reader));
+                    } else {
+                        result.segment_statistics.push_back(base_statistics_t(resource));
                     }
                 }
             }

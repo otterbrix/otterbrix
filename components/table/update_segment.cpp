@@ -391,6 +391,27 @@ namespace components::table {
         return check_row(pin.update_info(), row_in_vector, filter);
     }
 
+    bool update_segment_t::row_is_updated(int64_t row_id) {
+        uint64_t vector_index = static_cast<uint64_t>(row_id - column_data_->start()) / vector::DEFAULT_VECTOR_CAPACITY;
+        auto entry = update_node(vector_index);
+        if (!entry.is_set()) {
+            return false;
+        }
+        uint64_t row_in_vector =
+            static_cast<uint64_t>(row_id - column_data_->start()) - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        auto pin = entry.pin();
+        auto& info = pin.update_info();
+        bool found = false;
+        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
+            auto tuples = current->tuples();
+            auto it = std::lower_bound(tuples, tuples + current->N, static_cast<uint32_t>(row_in_vector));
+            if (it != tuples + current->N && *it == static_cast<uint32_t>(row_in_vector)) {
+                found = true;
+            }
+        });
+        return found;
+    }
+
     void update_segment_t::cleanup_update_internal(update_info_t& info) {
         assert(info.has_prev());
         auto prev = info.prev;

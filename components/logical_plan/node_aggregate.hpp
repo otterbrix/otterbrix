@@ -10,7 +10,11 @@ namespace components::logical_plan {
 
         static boost::intrusive_ptr<node_aggregate_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
 
+        void set_distinct(bool d) { distinct_ = d; }
+        bool is_distinct() const { return distinct_; }
+
     private:
+        bool distinct_{false};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
         void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;

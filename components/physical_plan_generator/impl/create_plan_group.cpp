@@ -9,6 +9,8 @@
 #include <components/physical_plan/operators/aggregate/operator_min.hpp>
 #include <components/physical_plan/operators/aggregate/operator_sum.hpp>
 #include <components/physical_plan/operators/get/simple_value.hpp>
+#include <components/physical_plan/operators/get/coalesce_value.hpp>
+#include <components/physical_plan/operators/get/case_when_value.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
 namespace services::planner::impl {
@@ -16,7 +18,8 @@ namespace services::planner::impl {
     namespace {
 
         void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
-                              const components::expressions::scalar_expression_t* expr) {
+                              const components::expressions::scalar_expression_t* expr,
+                              const components::logical_plan::storage_parameters* storage_params) {
             using components::expressions::scalar_type;
 
             switch (expr->type()) {
@@ -28,6 +31,20 @@ namespace services::planner::impl {
                                      : std::get<components::expressions::key_t>(expr->params().front());
                     group->add_key(expr->key().storage().back(),
                                    components::operators::get::simple_value_t::create(field));
+                    break;
+                }
+                case scalar_type::coalesce: {
+                    std::vector<components::expressions::param_storage> params(
+                        expr->params().begin(), expr->params().end());
+                    group->add_key(expr->key().storage().back(),
+                                   components::operators::get::coalesce_value_t::create(
+                                       std::move(params), storage_params));
+                    break;
+                }
+                case scalar_type::case_when: {
+                    group->add_key(expr->key().storage().back(),
+                                   components::operators::get::case_when_value_t::create(
+                                       expr->params(), storage_params));
                     break;
                 }
                 default:
@@ -43,10 +60,19 @@ namespace services::planner::impl {
 
             switch (expr->type()) {
                 case aggregate_type::count: {
-                    group->add_value(
-                        expr->key().as_pmr_string(),
-                        boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
-                            resource, log)));
+                    if (expr->is_distinct() && !expr->params().empty() &&
+                        std::holds_alternative<components::expressions::key_t>(expr->params().front())) {
+                        auto field = std::get<components::expressions::key_t>(expr->params().front());
+                        group->add_value(
+                            expr->key().as_pmr_string(),
+                            boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
+                                resource, log, true, std::move(field))));
+                    } else {
+                        group->add_value(
+                            expr->key().as_pmr_string(),
+                            boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
+                                resource, log)));
+                    }
                     break;
                 }
                 case aggregate_type::sum: {
@@ -102,7 +128,8 @@ namespace services::planner::impl {
     } // namespace
 
     components::operators::operator_ptr create_plan_group(const context_storage_t& context,
-                                                                const components::logical_plan::node_ptr& node) {
+                                                                const components::logical_plan::node_ptr& node,
+                                                                const components::logical_plan::storage_parameters* params) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
@@ -117,7 +144,8 @@ namespace services::planner::impl {
                           if (expr->group() == components::expressions::expression_group::scalar) {
                               add_group_scalar(
                                   group,
-                                  static_cast<const components::expressions::scalar_expression_t*>(expr.get()));
+                                  static_cast<const components::expressions::scalar_expression_t*>(expr.get()),
+                                  params);
                           } else if (expr->group() == components::expressions::expression_group::aggregate) {
                               add_group_aggregate(
                                   known ? context.resource : node->resource(),

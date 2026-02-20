@@ -33,11 +33,28 @@ namespace components::sql::transform {
         fill_column_definitions(col_defs, resource_, *coldefs);
         auto constraints = extract_table_constraints(*coldefs);
 
+        // Parse WITH (storage = 'disk') clause
+        bool disk_storage = false;
+        if (node.options) {
+            for (auto data : node.options->lst) {
+                auto def = pg_ptr_cast<DefElem>(data.data);
+                if (!def->defname) continue;
+                std::string opt_name(def->defname);
+                if (opt_name == "storage" && def->arg) {
+                    std::string val(strVal(def->arg));
+                    if (val == "disk") {
+                        disk_storage = true;
+                    }
+                }
+            }
+        }
+
         return logical_plan::make_node_create_collection(resource_,
                                                          rangevar_to_collection(node.relation),
                                                          std::move(columns),
                                                          std::move(col_defs),
-                                                         std::move(constraints));
+                                                         std::move(constraints),
+                                                         disk_storage);
     }
 
     logical_plan::node_ptr transformer::transform_drop(DropStmt& node) {

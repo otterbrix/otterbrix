@@ -270,6 +270,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_with_columns, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_disk, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage, msg);
                 break;
@@ -492,15 +496,15 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session) {
-        trace(log_, "manager_disk_t::checkpoint_all , session : {}", session.data());
+    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session, wal::id_t current_wal_id) {
+        trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
         // Checkpoint DISK tables and collect schemas from ALL tables
-        std::vector<std::pair<collection_full_name_t,
-                              std::vector<catalog_column_entry_t>>> schemas;
+        std::vector<catalog_schema_update_t> schemas;
         for (auto& [name, entry] : storages_) {
             if (entry->table_storage.mode() == storage_mode_t::DISK) {
                 trace(log_, "manager_disk_t::checkpoint_all checkpointing : {}", name.to_string());
+                entry->table_storage.table().compact();
                 entry->table_storage.checkpoint();
             }
 
@@ -512,7 +516,10 @@ namespace services::disk {
                 for (const auto& col : cols) {
                     catalog_cols.push_back({col.name(), col.type().type(), col.is_not_null(), col.has_default_value()});
                 }
-                schemas.emplace_back(name, std::move(catalog_cols));
+                // Convert storage_mode_t -> table_storage_mode_t
+                auto catalog_mode = entry->table_storage.mode() == storage_mode_t::DISK
+                    ? table_storage_mode_t::DISK : table_storage_mode_t::IN_MEMORY;
+                schemas.push_back({name, std::move(catalog_cols), catalog_mode});
             }
         }
 
@@ -536,9 +543,9 @@ namespace services::disk {
                     break;
                 }
             }
-            if (max_wal_id_ > 0 && !has_in_memory) {
+            if (current_wal_id > 0 && !has_in_memory) {
                 auto [needs_sched2, future2] = actor_zeta::otterbrix::send(
-                    agent(), &agent_disk_t::fix_wal_id, max_wal_id_);
+                    agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
                 if (needs_sched2) {
                     scheduler_->enqueue(agents_[0].get());
                 }
@@ -546,7 +553,7 @@ namespace services::disk {
             }
 
             trace(log_, "manager_disk_t::checkpoint_all complete");
-            co_return has_in_memory ? wal::id_t{0} : wal::id_t{max_wal_id_};
+            co_return has_in_memory ? wal::id_t{0} : current_wal_id;
         }
 
         trace(log_, "manager_disk_t::checkpoint_all complete (no agents)");
@@ -854,6 +861,16 @@ namespace services::disk {
         std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns , session : {} , name : {}", session.data(), name.to_string());
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void> manager_disk_t::create_storage_disk(
+        session_id_t session, collection_full_name_t name,
+        std::vector<components::table::column_definition_t> columns) {
+        trace(log_, "manager_disk_t::create_storage_disk , session : {} , name : {}", session.data(), name.to_string());
+        auto otbx_path = config_.path / name.database / "main" / name.collection / "table.otbx";
+        std::filesystem::create_directories(otbx_path.parent_path());
+        storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
         co_return;
     }
 
@@ -1239,6 +1256,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::create_storage_with_columns>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::create_storage_with_columns, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::create_storage_disk>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::create_storage_disk, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::drop_storage>: {

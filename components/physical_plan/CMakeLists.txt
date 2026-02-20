@@ -18,6 +18,8 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/get/operator_get.cpp
         operators/get/simple_value.cpp
+        operators/get/coalesce_value.cpp
+        operators/get/case_when_value.cpp
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
@@ -34,6 +36,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_delete.cpp
         operators/operator_update.cpp
         operators/operator_match.cpp
+        operators/operator_distinct.cpp
         operators/operator_group.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp

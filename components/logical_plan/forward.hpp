@@ -37,6 +37,7 @@ namespace components::logical_plan {
         drop_macro_t,
         checkpoint_t,
         vacuum_t,
+        having_t,
         unused
     };
 
@@ -102,6 +103,8 @@ namespace components::logical_plan {
                 return "checkpoint_t";
             case node_type::vacuum_t:
                 return "vacuum_t";
+            case node_type::having_t:
+                return "having_t";
             default:
                 return "unused";
         }

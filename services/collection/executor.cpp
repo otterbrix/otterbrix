@@ -188,7 +188,7 @@ namespace services::collection::executor {
             }
         }
 
-        components::operators::operator_ptr plan = planner::create_plan(context_storage, logical_plan, limit);
+        components::operators::operator_ptr plan = planner::create_plan(context_storage, logical_plan, limit, &parameters);
 
         if (!plan) {
             if (is_dml) {

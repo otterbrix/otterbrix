@@ -508,7 +508,9 @@ namespace components::table {
             auto col_name = reader.read_string();
             auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
             auto not_null = reader.read<uint8_t>() != 0;
-            columns.emplace_back(std::move(col_name), logical_type, not_null);
+            types::complex_logical_type col_type(logical_type);
+            col_type.set_alias(col_name);
+            columns.emplace_back(col_name, std::move(col_type), not_null);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

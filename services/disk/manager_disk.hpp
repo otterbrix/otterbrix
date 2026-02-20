@@ -147,7 +147,7 @@ namespace services::disk {
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
-        unique_future<wal::id_t> checkpoint_all(session_id_t session);
+        unique_future<wal::id_t> checkpoint_all(session_id_t session, wal::id_t current_wal_id);
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         unique_future<void> maybe_cleanup(execution_context_t ctx,
                                           uint64_t lowest_active_start_time);
@@ -177,6 +177,9 @@ namespace services::disk {
         unique_future<void> create_storage_with_columns(session_id_t session,
                                                          collection_full_name_t name,
                                                          std::vector<components::table::column_definition_t> columns);
+        unique_future<void> create_storage_disk(session_id_t session,
+                                                 collection_full_name_t name,
+                                                 std::vector<components::table::column_definition_t> columns);
         unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
 
         // Storage queries
@@ -252,6 +255,7 @@ namespace services::disk {
             // Storage management
             &manager_disk_t::create_storage,
             &manager_disk_t::create_storage_with_columns,
+            &manager_disk_t::create_storage_disk,
             &manager_disk_t::drop_storage,
             // Storage queries
             &manager_disk_t::storage_types,
@@ -407,7 +411,7 @@ namespace services::disk {
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
-        unique_future<wal::id_t> checkpoint_all(session_id_t /*session*/) { co_return wal::id_t{0}; }
+        unique_future<wal::id_t> checkpoint_all(session_id_t /*session*/, wal::id_t /*current_wal_id*/) { co_return wal::id_t{0}; }
         unique_future<void> vacuum_all(session_id_t /*session*/, uint64_t /*lowest_active_start_time*/) { co_return; }
         unique_future<void> maybe_cleanup(execution_context_t /*ctx*/,
                                           uint64_t /*lowest_active_start_time*/) { co_return; }
@@ -437,6 +441,9 @@ namespace services::disk {
         unique_future<void> create_storage_with_columns(session_id_t session,
                                                          collection_full_name_t name,
                                                          std::vector<components::table::column_definition_t> columns);
+        unique_future<void> create_storage_disk(session_id_t /*session*/,
+                                                 collection_full_name_t /*name*/,
+                                                 std::vector<components::table::column_definition_t> /*columns*/) { co_return; }
         unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
 
         // Storage queries
@@ -524,6 +531,7 @@ namespace services::disk {
             // Storage management
             &manager_disk_empty_t::create_storage,
             &manager_disk_empty_t::create_storage_with_columns,
+            &manager_disk_empty_t::create_storage_disk,
             &manager_disk_empty_t::drop_storage,
             // Storage queries
             &manager_disk_empty_t::storage_types,

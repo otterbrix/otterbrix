@@ -35,8 +35,55 @@ namespace components::operators {
                 }
                 return filter;
             }
+            case expressions::compare_type::union_not: {
+                auto filter = std::make_unique<table::conjunction_not_filter_t>();
+                filter->child_filters.reserve(expression->children().size());
+                for (const auto& child : expression->children()) {
+                    auto child_filter = transform_predicate(
+                        reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                        types,
+                        parameters);
+                    if (child_filter) {
+                        filter->child_filters.emplace_back(std::move(child_filter));
+                    }
+                }
+                if (filter->child_filters.empty()) {
+                    return nullptr;
+                }
+                return filter;
+            }
             case expressions::compare_type::invalid:
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
+            case expressions::compare_type::is_null:
+            case expressions::compare_type::is_not_null: {
+                std::vector<uint64_t> indices;
+                auto* local_types = types.data();
+                size_t size = types.size();
+                bool path_valid = true;
+                for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
+                    auto it =
+                        std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
+                            return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
+                        });
+                    if (it == local_types + size) {
+                        path_valid = false;
+                        break;
+                    }
+                    indices.emplace_back(it - local_types);
+                    if (i + 1 != expression->primary_key().storage().size()) {
+                        if (it->child_types().empty()) {
+                            path_valid = false;
+                            break;
+                        }
+                        local_types = it->child_types().data();
+                        size = it->child_types().size();
+                    }
+                }
+                if (!path_valid) {
+                    return nullptr;
+                }
+                return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
+            }
             default: {
                 std::vector<uint64_t> indices;
                 // pointer + size to avoid std::vector and std::pmr::vector clashing

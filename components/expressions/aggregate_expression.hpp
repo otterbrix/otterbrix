@@ -22,12 +22,16 @@ namespace components::expressions {
 
         void append_param(const param_storage& param);
 
+        void set_distinct(bool d) { distinct_ = d; }
+        bool is_distinct() const { return distinct_; }
+
         static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
 
     private:
         aggregate_type type_;
         key_t key_;
         std::pmr::vector<param_storage> params_;
+        bool distinct_{false};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

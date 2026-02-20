@@ -405,10 +405,24 @@ namespace components::table {
         auto segment = data_.get_segment(row_id);
         if (updates_ &&
             updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
-            return updates_->check_row(row_id, filter);
+            // The vector has some updated rows. Check if THIS specific row is updated.
+            if (updates_->row_is_updated(row_id)) {
+                // Row is in the update overlay — check against the updated value only
+                return updates_->check_row(row_id, filter);
+            }
+            // Row is NOT updated — fall back to base segment data
+            return segment->check_predicate(row_id, filter);
         } else {
             return segment->check_predicate(row_id, filter);
         }
+    }
+
+    bool column_data_t::check_validity(int64_t row_id) {
+        // Fetch a single row to check validity
+        column_fetch_state fetch_state;
+        vector::vector_t result(resource_, type_, 1);
+        fetch_row(fetch_state, row_id, result, 0);
+        return result.validity().row_is_valid(0);
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

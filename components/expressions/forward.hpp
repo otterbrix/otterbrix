@@ -35,7 +35,9 @@ namespace components::expressions {
         union_or,
         union_not,
         all_true,
-        all_false
+        all_false,
+        is_null,
+        is_not_null
     };
 
     enum class aggregate_type : uint8_t
@@ -64,7 +66,9 @@ namespace components::expressions {
         abs,
         mod,
         pow,
-        sqrt
+        sqrt,
+        coalesce,
+        case_when
     };
 
     enum class sort_order : std::int8_t

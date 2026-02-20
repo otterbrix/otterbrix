@@ -320,11 +320,18 @@ namespace services::dispatcher {
                         &index::manager_index_t::flush_all_indexes, session);
                     co_await std::move(fif);
                 }
+                // Query WAL for current max ID before checkpoint
+                services::wal::id_t wal_max_id{0};
+                if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_wi, wif] = actor_zeta::send(wal_address_,
+                        &wal::manager_wal_replicate_t::current_wal_id, session);
+                    wal_max_id = co_await std::move(wif);
+                }
                 auto [_cp, cpf] = actor_zeta::send(disk_address_,
-                    &disk::manager_disk_t::checkpoint_all, session);
+                    &disk::manager_disk_t::checkpoint_all, session, wal_max_id);
                 auto checkpoint_wal_id = co_await std::move(cpf);
                 // After checkpoint, trim old WAL segments (id=0 means no-op: IN_MEMORY tables need WAL)
-                if (wal_address_ != actor_zeta::address_t::empty_address()) {
+                if (checkpoint_wal_id > 0 && wal_address_ != actor_zeta::address_t::empty_address()) {
                     auto [_wt, wtf] = actor_zeta::send(wal_address_,
                         &wal::manager_wal_replicate_t::truncate_before,
                         session, checkpoint_wal_id);
@@ -483,10 +490,17 @@ namespace services::dispatcher {
                                 }
                             }
                         }
-                        auto [_cs, csf] = actor_zeta::send(disk_address_,
-                            &disk::manager_disk_t::create_storage_with_columns,
-                            session, plan->collection_full_name(), std::move(storage_columns));
-                        co_await std::move(csf);
+                        if (create_collection->is_disk_storage()) {
+                            auto [_cs, csf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::create_storage_disk,
+                                session, plan->collection_full_name(), std::move(storage_columns));
+                            co_await std::move(csf);
+                        } else {
+                            auto [_cs, csf] = actor_zeta::send(disk_address_,
+                                &disk::manager_disk_t::create_storage_with_columns,
+                                session, plan->collection_full_name(), std::move(storage_columns));
+                            co_await std::move(csf);
+                        }
                     }
                     // Register collection in manager_index_t
                     if (index_address_ != actor_zeta::address_t::empty_address()) {

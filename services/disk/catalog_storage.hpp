@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include <components/base/collection_full_name.hpp>
 #include <components/types/types.hpp>
 #include <core/file/local_file_system.hpp>
 
@@ -46,6 +47,12 @@ namespace services::disk {
         std::string name;
         std::vector<std::string> parameters;
         std::string body_sql;
+    };
+
+    struct catalog_schema_update_t {
+        collection_full_name_t name;
+        std::vector<catalog_column_entry_t> columns;
+        table_storage_mode_t mode;
     };
 
     struct catalog_database_entry_t {
@@ -167,6 +174,9 @@ namespace services::disk {
         // Schema update (for adopt_schema on computing tables)
         void update_table_columns(const std::string& db, const std::string& table,
                                   const std::vector<catalog_column_entry_t>& columns);
+        void update_table_columns_and_mode(const std::string& db, const std::string& table,
+                                           const std::vector<catalog_column_entry_t>& columns,
+                                           table_storage_mode_t mode);
 
         // Sequence operations
         std::vector<catalog_sequence_entry_t> sequences(const std::string& db) const;
@@ -185,6 +195,11 @@ namespace services::disk {
 
     private:
         void save_();
+
+        catalog_database_entry_t* find_database_(const std::string& name);
+        const catalog_database_entry_t* find_database_(const std::string& name) const;
+        catalog_table_entry_t* find_table_(const std::string& db, const std::string& table);
+        const catalog_table_entry_t* find_table_(const std::string& db, const std::string& table) const;
 
         core::filesystem::local_file_system_t& fs_;
         std::filesystem::path path_;

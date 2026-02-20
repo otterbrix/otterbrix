@@ -256,6 +256,42 @@ namespace services::disk {
         std::filesystem::rename(tmp_path, path_);
     }
 
+    // ---- Private helpers ----
+
+    catalog_database_entry_t* catalog_storage_t::find_database_(const std::string& name) {
+        for (auto& db : databases_) {
+            if (db.name == name) return &db;
+        }
+        return nullptr;
+    }
+
+    const catalog_database_entry_t* catalog_storage_t::find_database_(const std::string& name) const {
+        for (const auto& db : databases_) {
+            if (db.name == name) return &db;
+        }
+        return nullptr;
+    }
+
+    catalog_table_entry_t* catalog_storage_t::find_table_(const std::string& db, const std::string& table) {
+        if (auto* d = find_database_(db)) {
+            for (auto& t : d->tables) {
+                if (t.name == table) return &t;
+            }
+        }
+        return nullptr;
+    }
+
+    const catalog_table_entry_t* catalog_storage_t::find_table_(const std::string& db, const std::string& table) const {
+        if (const auto* d = find_database_(db)) {
+            for (const auto& t : d->tables) {
+                if (t.name == table) return &t;
+            }
+        }
+        return nullptr;
+    }
+
+    // ---- Database operations ----
+
     std::vector<std::string> catalog_storage_t::databases() const {
         std::vector<std::string> result;
         result.reserve(databases_.size());
@@ -266,12 +302,11 @@ namespace services::disk {
     }
 
     bool catalog_storage_t::database_exists(const std::string& name) const {
-        return std::any_of(databases_.begin(), databases_.end(),
-                           [&](const auto& db) { return db.name == name; });
+        return find_database_(name) != nullptr;
     }
 
     void catalog_storage_t::append_database(const std::string& name) {
-        if (!database_exists(name)) {
+        if (!find_database_(name)) {
             databases_.push_back({name, {}});
             save_();
         }
@@ -286,24 +321,21 @@ namespace services::disk {
         }
     }
 
+    // ---- Table operations ----
+
     std::vector<catalog_table_entry_t> catalog_storage_t::tables(const std::string& db) const {
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                return d.tables;
-            }
+        if (const auto* d = find_database_(db)) {
+            return d->tables;
         }
         return {};
     }
 
     std::vector<std::string> catalog_storage_t::collection_names(const std::string& db) const {
         std::vector<std::string> result;
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                result.reserve(d.tables.size());
-                for (const auto& t : d.tables) {
-                    result.push_back(t.name);
-                }
-                break;
+        if (const auto* d = find_database_(db)) {
+            result.reserve(d->tables.size());
+            for (const auto& t : d->tables) {
+                result.push_back(t.name);
             }
         }
         return result;
@@ -311,101 +343,74 @@ namespace services::disk {
 
     const catalog_table_entry_t* catalog_storage_t::find_table(const std::string& db,
                                                                 const std::string& table) const {
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                for (const auto& t : d.tables) {
-                    if (t.name == table) {
-                        return &t;
-                    }
-                }
-                break;
-            }
-        }
-        return nullptr;
+        return find_table_(db, table);
     }
 
     void catalog_storage_t::append_table(const std::string& db, const catalog_table_entry_t& entry) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                // Check not already exists
-                for (const auto& t : d.tables) {
-                    if (t.name == entry.name) {
-                        return;
-                    }
-                }
-                d.tables.push_back(entry);
-                save_();
-                return;
+        if (auto* d = find_database_(db)) {
+            for (const auto& t : d->tables) {
+                if (t.name == entry.name) return;
             }
+            d->tables.push_back(entry);
+            save_();
         }
     }
 
     void catalog_storage_t::remove_table(const std::string& db, const std::string& table) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                auto it = std::remove_if(d.tables.begin(), d.tables.end(),
-                                         [&](const auto& t) { return t.name == table; });
-                if (it != d.tables.end()) {
-                    d.tables.erase(it, d.tables.end());
-                    save_();
-                }
-                return;
+        if (auto* d = find_database_(db)) {
+            auto it = std::remove_if(d->tables.begin(), d->tables.end(),
+                                     [&](const auto& t) { return t.name == table; });
+            if (it != d->tables.end()) {
+                d->tables.erase(it, d->tables.end());
+                save_();
             }
         }
     }
 
     void catalog_storage_t::update_table_columns(const std::string& db, const std::string& table,
                                                   const std::vector<catalog_column_entry_t>& columns) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                for (auto& t : d.tables) {
-                    if (t.name == table) {
-                        t.columns = columns;
-                        save_();
-                        return;
-                    }
-                }
-                return;
-            }
+        if (auto* t = find_table_(db, table)) {
+            t->columns = columns;
+            save_();
+        }
+    }
+
+    void catalog_storage_t::update_table_columns_and_mode(const std::string& db, const std::string& table,
+                                                           const std::vector<catalog_column_entry_t>& columns,
+                                                           table_storage_mode_t mode) {
+        if (auto* t = find_table_(db, table)) {
+            t->columns = columns;
+            t->storage_mode = mode;
+            save_();
         }
     }
 
     // ---- Sequence operations ----
 
     std::vector<catalog_sequence_entry_t> catalog_storage_t::sequences(const std::string& db) const {
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                return d.sequences;
-            }
+        if (const auto* d = find_database_(db)) {
+            return d->sequences;
         }
         return {};
     }
 
     void catalog_storage_t::append_sequence(const std::string& db, const catalog_sequence_entry_t& entry) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                for (const auto& s : d.sequences) {
-                    if (s.name == entry.name) {
-                        return;
-                    }
-                }
-                d.sequences.push_back(entry);
-                save_();
-                return;
+        if (auto* d = find_database_(db)) {
+            for (const auto& s : d->sequences) {
+                if (s.name == entry.name) return;
             }
+            d->sequences.push_back(entry);
+            save_();
         }
     }
 
     void catalog_storage_t::remove_sequence(const std::string& db, const std::string& name) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                auto it = std::remove_if(d.sequences.begin(), d.sequences.end(),
-                                         [&](const auto& s) { return s.name == name; });
-                if (it != d.sequences.end()) {
-                    d.sequences.erase(it, d.sequences.end());
-                    save_();
-                }
-                return;
+        if (auto* d = find_database_(db)) {
+            auto it = std::remove_if(d->sequences.begin(), d->sequences.end(),
+                                     [&](const auto& s) { return s.name == name; });
+            if (it != d->sequences.end()) {
+                d->sequences.erase(it, d->sequences.end());
+                save_();
             }
         }
     }
@@ -413,39 +418,29 @@ namespace services::disk {
     // ---- View operations ----
 
     std::vector<catalog_view_entry_t> catalog_storage_t::views(const std::string& db) const {
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                return d.views;
-            }
+        if (const auto* d = find_database_(db)) {
+            return d->views;
         }
         return {};
     }
 
     void catalog_storage_t::append_view(const std::string& db, const catalog_view_entry_t& entry) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                for (const auto& v : d.views) {
-                    if (v.name == entry.name) {
-                        return;
-                    }
-                }
-                d.views.push_back(entry);
-                save_();
-                return;
+        if (auto* d = find_database_(db)) {
+            for (const auto& v : d->views) {
+                if (v.name == entry.name) return;
             }
+            d->views.push_back(entry);
+            save_();
         }
     }
 
     void catalog_storage_t::remove_view(const std::string& db, const std::string& name) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                auto it = std::remove_if(d.views.begin(), d.views.end(),
-                                         [&](const auto& v) { return v.name == name; });
-                if (it != d.views.end()) {
-                    d.views.erase(it, d.views.end());
-                    save_();
-                }
-                return;
+        if (auto* d = find_database_(db)) {
+            auto it = std::remove_if(d->views.begin(), d->views.end(),
+                                     [&](const auto& v) { return v.name == name; });
+            if (it != d->views.end()) {
+                d->views.erase(it, d->views.end());
+                save_();
             }
         }
     }
@@ -453,39 +448,29 @@ namespace services::disk {
     // ---- Macro operations ----
 
     std::vector<catalog_macro_entry_t> catalog_storage_t::macros(const std::string& db) const {
-        for (const auto& d : databases_) {
-            if (d.name == db) {
-                return d.macros;
-            }
+        if (const auto* d = find_database_(db)) {
+            return d->macros;
         }
         return {};
     }
 
     void catalog_storage_t::append_macro(const std::string& db, const catalog_macro_entry_t& entry) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                for (const auto& m : d.macros) {
-                    if (m.name == entry.name) {
-                        return;
-                    }
-                }
-                d.macros.push_back(entry);
-                save_();
-                return;
+        if (auto* d = find_database_(db)) {
+            for (const auto& m : d->macros) {
+                if (m.name == entry.name) return;
             }
+            d->macros.push_back(entry);
+            save_();
         }
     }
 
     void catalog_storage_t::remove_macro(const std::string& db, const std::string& name) {
-        for (auto& d : databases_) {
-            if (d.name == db) {
-                auto it = std::remove_if(d.macros.begin(), d.macros.end(),
-                                         [&](const auto& m) { return m.name == name; });
-                if (it != d.macros.end()) {
-                    d.macros.erase(it, d.macros.end());
-                    save_();
-                }
-                return;
+        if (auto* d = find_database_(db)) {
+            auto it = std::remove_if(d->macros.begin(), d->macros.end(),
+                                     [&](const auto& m) { return m.name == name; });
+            if (it != d->macros.end()) {
+                d->macros.erase(it, d->macros.end());
+                save_();
             }
         }
     }

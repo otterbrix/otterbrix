@@ -14,6 +14,16 @@ namespace components::table {
 
     namespace {
 
+        // Custom comparator for std::vector<std::byte> keys — avoids GCC 14
+        // false-positive -Wstringop-overread from std::vector<std::byte>::operator<=>
+        struct byte_vector_less {
+            bool operator()(const std::vector<std::byte>& a, const std::vector<std::byte>& b) const {
+                if (a.size() != b.size()) return a.size() < b.size();
+                if (a.empty()) return false;
+                return std::memcmp(a.data(), b.data(), a.size()) < 0;
+            }
+        };
+
         // Check if all fixed-size values in a buffer are identical.
         bool is_constant_data(const std::byte* data, uint64_t type_size, uint64_t count) {
             if (count <= 1) {
@@ -89,14 +99,14 @@ namespace components::table {
             uint16_t num_unique{0};
             uint64_t compressed_size{0};
             // value→index mapping stored as byte key
-            std::map<std::vector<std::byte>, uint16_t> value_map;
+            std::map<std::vector<std::byte>, uint16_t, byte_vector_less> value_map;
         };
 
         dict_analysis_t analyze_dictionary(const std::byte* data, uint64_t type_size, uint64_t count) {
             dict_analysis_t result;
             if (count == 0) return result;
 
-            std::map<std::vector<std::byte>, uint16_t> mapping;
+            std::map<std::vector<std::byte>, uint16_t, byte_vector_less> mapping;
             for (uint64_t i = 0; i < count; i++) {
                 std::vector<std::byte> key(data + i * type_size, data + (i + 1) * type_size);
                 if (mapping.find(key) == mapping.end()) {

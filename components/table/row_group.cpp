@@ -193,8 +193,28 @@ namespace components::table {
                 }
                 return true;
             }
+            case expressions::compare_type::union_not: {
+                auto& conjunction_not = filter->cast<conjunction_not_filter_t>();
+                for (auto& child_filter : conjunction_not.child_filters) {
+                    if (check_predicate(row_id, child_filter.get())) {
+                        return false;
+                    }
+                }
+                return true;
+            }
             case expressions::compare_type::invalid: {
                 throw std::logic_error("invalid type for filter selection");
+            }
+            case expressions::compare_type::is_null:
+            case expressions::compare_type::is_not_null: {
+                auto& null_filter = filter->cast<is_null_filter_t>();
+                column_data_t* column = &get_column(null_filter.table_indices.front());
+                for (size_t i = 1; i < null_filter.table_indices.size(); i++) {
+                    column =
+                        static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
+                }
+                bool is_valid = column->check_validity(row_id);
+                return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
             }
             default: {
                 auto& constant_filter = filter->cast<constant_filter_t>();

@@ -22,6 +22,7 @@ set(SOURCE_${PROJECT_NAME}
         node_drop_view.cpp
         node_function.cpp
         node_group.cpp
+        node_having.cpp
         node_insert.cpp
         node_join.cpp
         node_limit.cpp

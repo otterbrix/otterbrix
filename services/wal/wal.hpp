@@ -82,6 +82,8 @@ namespace services::wal {
             &wal_replicate_t::write_physical_update
         >;
 
+        services::wal::id_t current_id() const { return id_.load(); }
+
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

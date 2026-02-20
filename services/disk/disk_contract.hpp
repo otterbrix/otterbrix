@@ -44,7 +44,7 @@ namespace services::disk {
 
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 
-        actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session);
+        actor_zeta::unique_future<services::wal::id_t> checkpoint_all(session_id_t session, services::wal::id_t current_wal_id);
         actor_zeta::unique_future<void> vacuum_all(session_id_t session,
                                                         uint64_t lowest_active_start_time);
         actor_zeta::unique_future<void> maybe_cleanup(execution_context_t ctx,
@@ -74,6 +74,10 @@ namespace services::disk {
         actor_zeta::unique_future<void> create_storage(session_id_t session,
                                                        collection_full_name_t name);
         actor_zeta::unique_future<void> create_storage_with_columns(
+            session_id_t session,
+            collection_full_name_t name,
+            std::vector<components::table::column_definition_t> columns);
+        actor_zeta::unique_future<void> create_storage_disk(
             session_id_t session,
             collection_full_name_t name,
             std::vector<components::table::column_definition_t> columns);
@@ -165,6 +169,7 @@ namespace services::disk {
             // Storage management
             &disk_contract::create_storage,
             &disk_contract::create_storage_with_columns,
+            &disk_contract::create_storage_disk,
             &disk_contract::drop_storage,
             // Storage queries
             &disk_contract::storage_types,

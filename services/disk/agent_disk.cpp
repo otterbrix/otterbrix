@@ -107,8 +107,9 @@ namespace services::disk {
 
     agent_disk_t::unique_future<void> agent_disk_t::append_collection(command_t command) {
         auto& cmd = command.get<command_append_collection_t>();
-        trace(log_, "agent_disk::append_collection , database : {} , collection : {}", cmd.database, cmd.collection);
-        disk_.append_collection(cmd.database, cmd.collection);
+        trace(log_, "agent_disk::append_collection , database : {} , collection : {} , mode : {}",
+              cmd.database, cmd.collection, static_cast<int>(cmd.mode));
+        disk_.append_collection(cmd.database, cmd.collection, cmd.mode, {});
         co_return;
     }
 
@@ -126,11 +127,10 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::update_catalog_schemas(
-        std::vector<std::pair<collection_full_name_t,
-                              std::vector<catalog_column_entry_t>>> schemas) {
+        std::vector<catalog_schema_update_t> schemas) {
         trace(log_, "agent_disk::update_catalog_schemas : {} entries", schemas.size());
-        for (auto& [name, columns] : schemas) {
-            disk_.catalog().update_table_columns(name.database, name.collection, columns);
+        for (auto& s : schemas) {
+            disk_.catalog().update_table_columns_and_mode(s.name.database, s.name.collection, s.columns, s.mode);
         }
         co_return;
     }

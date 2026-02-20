@@ -31,6 +31,8 @@ namespace services::wal {
         actor_zeta::unique_future<void> truncate_before(session_id_t session,
             id_t checkpoint_wal_id);
 
+        actor_zeta::unique_future<id_t> current_wal_id(session_id_t session);
+
         actor_zeta::unique_future<id_t> write_physical_insert(
             session_id_t session,
             std::string database,
@@ -63,6 +65,7 @@ namespace services::wal {
             &wal_contract::drop_index,
             &wal_contract::commit_txn,
             &wal_contract::truncate_before,
+            &wal_contract::current_wal_id,
             &wal_contract::write_physical_insert,
             &wal_contract::write_physical_delete,
             &wal_contract::write_physical_update

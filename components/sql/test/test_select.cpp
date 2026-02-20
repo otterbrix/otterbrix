@@ -138,7 +138,7 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
                        R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
-                       vec({v(&resource, "pattern")}));
+                       vec({v(&resource, "^pattern$")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
                        R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}})_",
@@ -153,6 +153,39 @@ TEST_CASE("components::sql::select_from_where") {
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection WHERE array_field[1] = 10;)_",
                        R"_($aggregate: {$match: {"array_field/1": {$eq: #0}}})_",
                        vec({v(&resource, 10l)}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NULL;)_",
+                       R"_($aggregate: {$match: {"name": {$is_null: #0}}})_",
+                       vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL;)_",
+                       R"_($aggregate: {$match: {"name": {$is_not_null: #0}}})_",
+                       vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE count IN (1, 2, 3);)_",
+                       R"_($aggregate: {$match: {$or: ["count": {$eq: #0}, "count": {$eq: #1}, "count": {$eq: #2}]}})_",
+                       vec({v(&resource, 1l), v(&resource, 2l), v(&resource, 3l)}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE count NOT IN (1, 2);)_",
+                       R"_($aggregate: {$match: {$and: ["count": {$ne: #0}, "count": {$ne: #1}]}})_",
+                       vec({v(&resource, 1l), v(&resource, 2l)}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
+                       R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
+                       vec({v(&resource, "^.*test.*$")}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
+                       R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
+                       vec({v(&resource, "^pre.fix$")}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
+                       R"_($aggregate: {$match: {$not: ["name": {$regex: #0}]}})_",
+                       vec({v(&resource, "^.*test.*$")}));
+
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",
+        R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #0}, $or: ["count": {$eq: #1}, "count": {$eq: #2}]]}})_",
+        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA}), v(&resource, 1l), v(&resource, 2l)}));
 }
 
 TEST_CASE("components::sql::select_from_order_by") {

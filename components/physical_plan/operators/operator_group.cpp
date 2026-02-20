@@ -40,7 +40,11 @@ namespace components::operators {
             for (const auto& key : keys_) {
                 auto values = key.getter->values(matrix.front());
                 for (const auto& val : values) {
-                    result_types_.emplace_back(val.type());
+                    auto t = val.type();
+                    if (key.name != "*") {
+                        t.set_alias(std::string{key.name});
+                    }
+                    result_types_.emplace_back(std::move(t));
                 }
             }
         }
@@ -96,7 +100,9 @@ namespace components::operators {
                 aggregator->on_execute(pipeline_context);
                 aggregator->set_value(transposed_output_[i], value.name);
             }
-            result_types_.emplace_back(aggregator->value().type());
+            auto agg_type = aggregator->value().type();
+            agg_type.set_alias(std::string{value.name});
+            result_types_.emplace_back(std::move(agg_type));
         }
     }
 

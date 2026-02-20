@@ -42,8 +42,7 @@ namespace services::disk {
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
         unique_future<void> update_catalog_schemas(
-            std::vector<std::pair<collection_full_name_t,
-                                  std::vector<catalog_column_entry_t>>> schemas);
+            std::vector<catalog_schema_update_t> schemas);
 
         unique_future<void> append_sequence(database_name_t database, catalog_sequence_entry_t entry);
         unique_future<void> remove_sequence(database_name_t database, std::string name);

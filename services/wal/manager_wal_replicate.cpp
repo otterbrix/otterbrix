@@ -86,6 +86,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::truncate_before, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::current_wal_id>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::current_wal_id, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_insert, msg);
                 break;
@@ -194,6 +198,15 @@ namespace services::wal {
         co_return;
     }
 
+    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::current_wal_id(
+        session_id_t /*session*/) {
+        services::wal::id_t max_id{0};
+        for (const auto& w : dispatchers_) {
+            max_id = std::max(max_id, w->current_id());
+        }
+        co_return max_id;
+    }
+
     manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::write_physical_insert(
         session_id_t session,
         std::string database,
@@ -288,6 +301,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::truncate_before, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::current_wal_id>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::current_wal_id, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_insert, msg);
                 break;
@@ -341,6 +358,11 @@ namespace services::wal {
         session_id_t /*session*/, services::wal::id_t /*checkpoint_wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::truncate_before - no-op");
         co_return;
+    }
+
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::current_wal_id(
+        session_id_t /*session*/) {
+        co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::write_physical_insert(

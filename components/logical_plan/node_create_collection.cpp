@@ -10,19 +10,23 @@ namespace components::logical_plan {
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
-                                                       std::pmr::vector<types::complex_logical_type> schema)
+                                                       std::pmr::vector<types::complex_logical_type> schema,
+                                                       bool disk_storage)
         : node_t(resource, node_type::create_collection_t, collection)
-        , schema_(std::move(schema)) {}
+        , schema_(std::move(schema))
+        , disk_storage_(disk_storage) {}
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
                                                        std::pmr::vector<types::complex_logical_type> schema,
                                                        std::vector<table::column_definition_t> column_definitions,
-                                                       std::vector<table::table_constraint_t> constraints)
+                                                       std::vector<table::table_constraint_t> constraints,
+                                                       bool disk_storage)
         : node_t(resource, node_type::create_collection_t, collection)
         , schema_(std::move(schema))
         , column_definitions_(std::move(column_definitions))
-        , constraints_(std::move(constraints)) {}
+        , constraints_(std::move(constraints))
+        , disk_storage_(disk_storage) {}
 
     node_create_collection_ptr node_create_collection_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         return make_node_create_collection(deserializer->resource(), deserializer->deserialize_collection(1));
@@ -65,9 +69,11 @@ namespace components::logical_plan {
                                                            const collection_full_name_t& collection,
                                                            std::pmr::vector<types::complex_logical_type> schema,
                                                            std::vector<table::column_definition_t> column_definitions,
-                                                           std::vector<table::table_constraint_t> constraints) {
+                                                           std::vector<table::table_constraint_t> constraints,
+                                                           bool disk_storage) {
         return {new node_create_collection_t{resource, collection, std::move(schema),
-                                             std::move(column_definitions), std::move(constraints)}};
+                                             std::move(column_definitions), std::move(constraints),
+                                             disk_storage}};
     }
 
 } // namespace components::logical_plan

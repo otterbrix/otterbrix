@@ -51,6 +51,9 @@ namespace components::sql::transform {
                                                             const name_collection_t& names,
                                                             logical_plan::parameter_node_t* params);
 
+        expressions::expression_ptr
+        transform_null_test(NullTest* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+
         logical_plan::node_ptr
         transform_function(RangeFunction& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
         logical_plan::node_ptr

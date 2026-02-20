@@ -166,6 +166,7 @@ namespace components::sql::transform {
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
+    std::string like_to_regex(const std::string& pattern);
 
     types::complex_logical_type get_type(TypeName* type);
     std::vector<types::complex_logical_type> get_types(PGList& list);

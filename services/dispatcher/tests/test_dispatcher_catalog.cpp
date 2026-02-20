@@ -22,13 +22,14 @@ using namespace components::cursor;
 using namespace components::types;
 
 struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
-    test_dispatcher(std::pmr::memory_resource* resource)
+    test_dispatcher(std::pmr::memory_resource* resource, const std::string& disk_path)
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
         , resource_(resource)
+        , disk_path_(disk_path)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
-        , disk_config_("/tmp/test_dispatcher_disk")
+        , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_)) {
         manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
@@ -44,7 +45,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     ~test_dispatcher() {
         scheduler_->stop();
-        std::filesystem::remove_all("/tmp/test_dispatcher_disk");
+        std::filesystem::remove_all(disk_path_);
         delete scheduler_;
     }
 
@@ -78,6 +79,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
 private:
     std::pmr::memory_resource* resource_;
+    std::string disk_path_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
@@ -89,13 +91,13 @@ private:
 };
 
 TEST_CASE("services::dispatcher::schemeful_operations") {
-    auto mr = std::pmr::synchronized_pool_resource();
-    test_dispatcher test(&mr);
+    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
 
     test.execute_sql("CREATE DATABASE test;");
     test.step();
 
-    table_id id(&mr, {"test"}, "test");
+    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
     test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
         REQUIRE(catalog.table_exists(id));
@@ -138,13 +140,13 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
 }
 
 TEST_CASE("services::dispatcher::computed_operations") {
-    auto mr = std::pmr::synchronized_pool_resource();
-    test_dispatcher test(&mr);
+    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
 
     test.execute_sql("CREATE DATABASE test;");
     test.step();
 
-    table_id id(&mr, {"test"}, "test");
+    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test();");
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         REQUIRE(cur->is_success());

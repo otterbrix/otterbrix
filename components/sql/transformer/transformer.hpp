@@ -16,6 +16,7 @@ namespace components::sql::transform {
             : resource_(resource)
             , raw_sql_(raw_sql)
             , parameter_map_(resource_)
+            , parameter_insert_map_(resource_)
             , parameter_insert_rows_(resource_, {}) {}
 
         transform_result transform(Node& node);

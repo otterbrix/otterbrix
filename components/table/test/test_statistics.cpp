@@ -66,8 +66,8 @@ TEST_CASE("statistics: update from vector") {
         stats.update(vec, 100);
 
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<double>() == 0.0);
-        CHECK(stats.max_value().value<double>() == 49.5);
+        CHECK(stats.min_value().value<double>() == Approx(0.0));
+        CHECK(stats.max_value().value<double>() == Approx(49.5));
         CHECK(stats.null_count() == 0);
     }
 

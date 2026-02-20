@@ -21,19 +21,31 @@ namespace components::table {
             T local_max{};
             uint64_t null_count = 0;
 
-            for (uint64_t i = 0; i < count; i++) {
-                if (!validity.row_is_valid(i)) {
-                    null_count++;
-                    continue;
-                }
-                T val = data[i];
-                if (!found_valid) {
+            if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
+                // CONSTANT vector: data[0] is the single value for all rows
+                if (!validity.row_is_valid(0)) {
+                    null_count = count;
+                } else {
+                    T val = data[0];
                     local_min = val;
                     local_max = val;
                     found_valid = true;
-                } else {
-                    if (val < local_min) local_min = val;
-                    if (val > local_max) local_max = val;
+                }
+            } else {
+                for (uint64_t i = 0; i < count; i++) {
+                    if (!validity.row_is_valid(i)) {
+                        null_count++;
+                        continue;
+                    }
+                    T val = data[i];
+                    if (!found_valid) {
+                        local_min = val;
+                        local_max = val;
+                        found_valid = true;
+                    } else {
+                        if (val < local_min) local_min = val;
+                        if (val > local_max) local_max = val;
+                    }
                 }
             }
 
@@ -66,19 +78,31 @@ namespace components::table {
             std::string local_max;
             uint64_t null_count = 0;
 
-            for (uint64_t i = 0; i < count; i++) {
-                if (!validity.row_is_valid(i)) {
-                    null_count++;
-                    continue;
-                }
-                std::string val(data[i]);
-                if (!found_valid) {
+            if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
+                // CONSTANT vector: data[0] is the single value for all rows
+                if (!validity.row_is_valid(0)) {
+                    null_count = count;
+                } else {
+                    std::string val(data[0]);
                     local_min = val;
                     local_max = val;
                     found_valid = true;
-                } else {
-                    if (val < local_min) local_min = val;
-                    if (val > local_max) local_max = val;
+                }
+            } else {
+                for (uint64_t i = 0; i < count; i++) {
+                    if (!validity.row_is_valid(i)) {
+                        null_count++;
+                        continue;
+                    }
+                    std::string val(data[i]);
+                    if (!found_valid) {
+                        local_min = val;
+                        local_max = val;
+                        found_valid = true;
+                    } else {
+                        if (val < local_min) local_min = val;
+                        if (val > local_max) local_max = val;
+                    }
                 }
             }
 
@@ -302,9 +326,13 @@ namespace components::table {
                 {
                     const auto& validity = vec.validity();
                     uint64_t null_count = 0;
-                    for (uint64_t i = 0; i < count; i++) {
-                        if (!validity.row_is_valid(i)) {
-                            null_count++;
+                    if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
+                        null_count = validity.row_is_valid(0) ? 0 : count;
+                    } else {
+                        for (uint64_t i = 0; i < count; i++) {
+                            if (!validity.row_is_valid(i)) {
+                                null_count++;
+                            }
                         }
                     }
                     null_count_ += null_count;

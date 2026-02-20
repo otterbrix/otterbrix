@@ -30,8 +30,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_("/tmp/test_dispatcher_disk")
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
-        , transformer_(resource) {
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_)) {
         manager_dispatcher_->sync(std::make_tuple(manager_wal_->address(),
                                                    manager_disk_->address(),
                                                    actor_zeta::address_t::empty_address()));
@@ -65,8 +64,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     void execute_sql(const std::string& query) {
         std::pmr::monotonic_buffer_resource parser_arena(resource_);
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        components::sql::transform::transformer local_transformer(resource_);
         auto view = std::get<components::sql::transform::result_view>(
-            transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
+            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                   &manager_dispatcher_t::execute_plan,
@@ -84,7 +84,6 @@ private:
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    components::sql::transform::transformer transformer_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };
 

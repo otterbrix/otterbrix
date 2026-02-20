@@ -307,7 +307,7 @@ namespace services::disk {
 
     void catalog_storage_t::append_database(const std::string& name) {
         if (!find_database_(name)) {
-            databases_.push_back({name, {}});
+            databases_.push_back({name, {}, {}, {}, {}});
             save_();
         }
     }

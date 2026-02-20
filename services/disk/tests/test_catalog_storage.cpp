@@ -234,7 +234,7 @@ TEST_CASE("services::disk::catalog_storage::checksum_validation") {
         std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
         file.seekp(10); // somewhere in the payload
-        char bad = 0xFF;
+        char bad = static_cast<char>(0xFF);
         file.write(&bad, 1);
         file.close();
     }

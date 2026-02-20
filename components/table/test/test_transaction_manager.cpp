@@ -82,7 +82,7 @@ TEST_CASE("components::table::transaction_manager::lowest_active_start_time") {
 
     transaction_manager_t mgr;
 
-    auto baseline = mgr.lowest_active_start_time();
+    [[maybe_unused]] auto baseline = mgr.lowest_active_start_time();
 
     auto s1 = session_id_t::generate_uid();
     auto& txn1 = mgr.begin_transaction(s1);

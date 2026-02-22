@@ -93,7 +93,10 @@ find_package(Sanitizers REQUIRED)
 
 if (ENABLE_ASAN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=address")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O0 -g -DNDEBUG" CACHE STRING "" FORCE)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+    # Guarantee -O0 comes last (overrides any -O3 from toolchain/build-type defaults)
+    add_compile_options(-O0)
 endif()
 
 if (ENABLE_TSAN)
@@ -130,6 +133,21 @@ if (ENABLE_ASAN)
             URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.1.zip
     )
     FetchContent_MakeAvailable(absl)
+    # Fix: abseil 20230802.1 on Apple ARM64 produces -Xarch_x86_64 -maes -msse4.1
+    # where CMake deduplicates the second -Xarch_x86_64, leaving bare -msse4.1
+    # which fails on ARM64. Override to ARM64-only flags on affected targets.
+    if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+        get_target_property(_opts absl_random_internal_randen_hwaes_impl COMPILE_OPTIONS)
+        if(_opts)
+            list(REMOVE_ITEM _opts "-Xarch_x86_64" "-maes" "-msse4.1")
+            set_target_properties(absl_random_internal_randen_hwaes_impl PROPERTIES COMPILE_OPTIONS "${_opts}")
+        endif()
+        get_target_property(_opts2 absl_random_internal_randen_hwaes COMPILE_OPTIONS)
+        if(_opts2)
+            list(REMOVE_ITEM _opts2 "-Xarch_x86_64" "-maes" "-msse4.1")
+            set_target_properties(absl_random_internal_randen_hwaes PROPERTIES COMPILE_OPTIONS "${_opts2}")
+        endif()
+    endif()
 else()
     find_package(absl 20230802.1 REQUIRED)
 endif()

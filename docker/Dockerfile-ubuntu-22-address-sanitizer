@@ -18,7 +18,7 @@ RUN apt update && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 cmake && \
+RUN    pip3 install --no-cache-dir conan==2.15.0 pytest==6.2.5 "cmake<4" && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -41,7 +41,7 @@ WORKDIR /app/build
 
 RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake \
     -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_ASAN=ON && \
-    cmake --build . --target all -- -j $(nproc)
+    cmake --build . --target all -- -j2
 
 RUN ctest -C Release -V --output-on-failure --timeout 60
 

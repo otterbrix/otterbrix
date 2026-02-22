@@ -43,6 +43,7 @@ namespace services::collection::executor {
         components::operators::operator_write_data_t::updated_types_map_t updates;
         int64_t append_row_start{0};
         uint64_t append_row_count{0};
+        size_t delete_count{0};
         uint64_t delete_txn_id{0};
 
         // Physical WAL data (captured in intercept_dml_io_ for physical WAL writes)
@@ -88,9 +89,8 @@ namespace services::collection::executor {
                                                          plan_t plan_data,
                                                          components::table::transaction_data txn);
 
-        unique_future<void> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
-                                              components::pipeline::context_t* ctx,
-                                              sub_plan_result_t& result);
+        unique_future<sub_plan_result_t> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
+                                                          components::pipeline::context_t* ctx);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

@@ -49,6 +49,7 @@ namespace services::dispatcher {
         , collections_(resource_ptr)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
+        , update_result_(resource_ptr)
         , pending_void_(resource_ptr)
         , pending_cursor_(resource_ptr)
         , pending_size_(resource_ptr)
@@ -985,7 +986,7 @@ namespace services::dispatcher {
                 if (catalog_.table_computes(id)) {
                     auto& sch = catalog_.get_computing_table_schema(id);
                     for (const auto& [name_type, refcount] : update_result_) {
-                        sch.drop_n(name_type.first, name_type.second, refcount);
+                        sch.drop_n(std::pmr::string(name_type.first, resource()), name_type.second, refcount);
                     }
                     update_result_.clear();
                 }

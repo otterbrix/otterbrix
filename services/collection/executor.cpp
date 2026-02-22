@@ -382,7 +382,6 @@ namespace services::collection::executor {
         cursor_t_ptr cursor;
         components::operators::operator_write_data_t::updated_types_map_t accumulated_updates(resource());
         sub_plan_result_t result_tracking;
-        result_tracking.wal_row_ids = std::pmr::vector<int64_t>(resource());
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();
@@ -418,7 +417,7 @@ namespace services::collection::executor {
                 if (waiting_op->type() == components::operators::operator_type::insert ||
                     waiting_op->type() == components::operators::operator_type::remove ||
                     waiting_op->type() == components::operators::operator_type::update) {
-                    co_await intercept_dml_io_(waiting_op, &pipeline_context, result_tracking);
+                    result_tracking = co_await intercept_dml_io_(waiting_op, &pipeline_context);
                 } else {
                     co_await waiting_op->await_async_and_resume(&pipeline_context);
                 }
@@ -513,14 +512,16 @@ namespace services::collection::executor {
         co_return std::move(result_tracking);
     }
 
-    executor_t::unique_future<void> executor_t::intercept_dml_io_(
+    executor_t::unique_future<sub_plan_result_t> executor_t::intercept_dml_io_(
         components::operators::operator_t::ptr waiting_op,
-        components::pipeline::context_t* ctx,
-        sub_plan_result_t& result) {
+        components::pipeline::context_t* ctx) {
 
         using namespace components::operators;
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
+
+        sub_plan_result_t result;
+        result.wal_row_ids = std::pmr::vector<int64_t>(resource());
 
         switch (waiting_op->type()) {
             case operator_type::insert: {
@@ -571,7 +572,8 @@ namespace services::collection::executor {
             case operator_type::remove: {
                 auto* del_op = static_cast<operator_delete*>(waiting_op.get());
                 auto& ids = waiting_op->modified()->ids();
-                size_t modified_size = waiting_op->modified()->size();
+                result.delete_count = waiting_op->modified()->size();
+                size_t modified_size = result.delete_count;
                 components::execution_context_t exec_ctx{ctx->session, ctx->txn, del_op->collection_name()};
 
                 // Capture WAL data: row IDs for physical delete
@@ -680,7 +682,7 @@ namespace services::collection::executor {
             default:
                 break;
         }
-        co_return;
+        co_return std::move(result);
     }
 
 } // namespace services::collection::executor

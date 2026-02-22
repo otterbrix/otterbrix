@@ -175,6 +175,8 @@ namespace services::disk {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
+        fprintf(stderr, "[DIAG-DISK] enqueue_impl: command=%lu msg=%p\n",
+            static_cast<unsigned long>(msg->command()), static_cast<void*>(msg.get()));
         std::lock_guard<std::mutex> guard(mutex_);
         current_behavior_ = behavior(msg.get());
 
@@ -317,7 +319,9 @@ namespace services::disk {
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>: {
+                fprintf(stderr, "[DIAG-DISK] behavior: matched storage_append case\n");
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_append, msg);
+                fprintf(stderr, "[DIAG-DISK] behavior: dispatch returned for storage_append\n");
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>: {
@@ -346,6 +350,8 @@ namespace services::disk {
                 break;
             }
             default:
+                fprintf(stderr, "[DIAG-DISK] behavior: DEFAULT case, command=%lu\n",
+                    static_cast<unsigned long>(msg->command()));
                 break;
         }
     }
@@ -976,10 +982,17 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_t::storage_append(
         execution_context_t ctx,
         std::unique_ptr<components::vector::data_chunk_t> data) {
+        fprintf(stderr, "[DIAG-DISK] storage_append ENTER: data=%p size=%lu\n",
+            static_cast<void*>(data.get()),
+            data ? static_cast<unsigned long>(data->size()) : 0UL);
         auto& name = ctx.name;
         auto& txn = ctx.txn;
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        fprintf(stderr, "[DIAG-DISK] storage_append: s=%p\n", static_cast<void*>(s));
+        if (!s || !data || data->size() == 0) {
+            fprintf(stderr, "[DIAG-DISK] storage_append: EARLY RETURN (guard)\n");
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        }
 
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -1030,6 +1043,7 @@ namespace services::disk {
                         if (!data->data[col].validity().row_is_valid(row)) {
                             trace(log_, "storage_append: NOT NULL violation on column '{}'",
                                   table_columns[col].name());
+                            fprintf(stderr, "[DIAG-DISK] storage_append: EARLY RETURN (NOT NULL)\n");
                             co_return std::make_pair(uint64_t{0}, uint64_t{0});
                         }
                     }
@@ -1080,6 +1094,7 @@ namespace services::disk {
                     }
 
                     if (keep_rows.empty()) {
+                        fprintf(stderr, "[DIAG-DISK] storage_append: EARLY RETURN (dedup empty)\n");
                         co_return std::make_pair(uint64_t{0}, uint64_t{0});
                     }
 
@@ -1098,13 +1113,18 @@ namespace services::disk {
             }
         }
 
-        // 4. Numeric type promotion (e.g. FLOAT→DOUBLE)
+        fprintf(stderr, "[DIAG-DISK] storage_append: passed dedup, data size=%lu\n",
+            static_cast<unsigned long>(data->size()));
+        // 4. Type promotion/conversion (numeric↔numeric, numeric↔string)
         if (s->has_schema() && !table_columns.empty()) {
             using components::types::is_numeric;
+            using components::types::logical_type;
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
                 auto src_type = data->data[i].type().type();
                 auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type && is_numeric(src_type) && is_numeric(tgt_type)) {
+                if (src_type != tgt_type &&
+                    (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                     auto& src_vec = data->data[i];
                     auto target_type = table_columns[i].type();
                     if (src_vec.type().has_alias()) {
@@ -1124,13 +1144,21 @@ namespace services::disk {
         }
 
         // 5. Append
+        fprintf(stderr, "[DIAG-DISK] storage_append: reached section 5 (append)\n");
         auto actual_count = data->size();
+        fprintf(stderr, "[DIAG-DISK] storage_append: BEFORE s->append() s=%p actual_count=%lu txn_id=%lu\n",
+            static_cast<void*>(s), static_cast<unsigned long>(actual_count),
+            static_cast<unsigned long>(txn.transaction_id));
         uint64_t start_row;
         if (txn.transaction_id != 0) {
             start_row = s->append(*data, txn);
         } else {
             start_row = s->append(*data);
         }
+        fprintf(stderr, "[DIAG-DISK] storage_append: AFTER s->append() start_row=%lu\n",
+            static_cast<unsigned long>(start_row));
+        fprintf(stderr, "[DIAG-DISK] storage_append: start_row=%lu actual_count=%lu\n",
+            static_cast<unsigned long>(start_row), static_cast<unsigned long>(actual_count));
         co_return std::make_pair(start_row, actual_count);
     }
 
@@ -1633,6 +1661,34 @@ namespace services::disk {
                         }
                         data = std::move(filtered);
                     }
+                }
+            }
+        }
+
+        // Type promotion/conversion (numeric↔numeric, numeric↔string)
+        if (s->has_schema() && !table_columns.empty()) {
+            using components::types::is_numeric;
+            using components::types::logical_type;
+            for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
+                auto src_type = data->data[i].type().type();
+                auto tgt_type = table_columns[i].type().type();
+                if (src_type != tgt_type &&
+                    (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                    auto& src_vec = data->data[i];
+                    auto target_type = table_columns[i].type();
+                    if (src_vec.type().has_alias()) {
+                        target_type.set_alias(src_vec.type().alias());
+                    }
+                    components::vector::vector_t casted(resource(), target_type, data->size());
+                    for (uint64_t row = 0; row < data->size(); row++) {
+                        if (src_vec.validity().row_is_valid(row)) {
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                        } else {
+                            casted.validity().set_invalid(row);
+                        }
+                    }
+                    data->data[i] = std::move(casted);
                 }
             }
         }

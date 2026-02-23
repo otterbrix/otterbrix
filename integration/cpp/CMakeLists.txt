@@ -45,7 +45,6 @@ target_link_libraries(
         ${PROJECT_NAME}_shared PRIVATE
         ${otterbrix_LIBS}
         spdlog::spdlog
-        pybind11::pybind11
         msgpackc-cxx
         #CONAN_PKG::date
         absl::crc32c

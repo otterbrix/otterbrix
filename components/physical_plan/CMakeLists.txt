@@ -16,6 +16,13 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
+        operators/predicates/simple_predicate_eq.cpp
+        operators/predicates/simple_predicate_ne.cpp
+        operators/predicates/simple_predicate_gt.cpp
+        operators/predicates/simple_predicate_gte.cpp
+        operators/predicates/simple_predicate_lt.cpp
+        operators/predicates/simple_predicate_lte.cpp
+        operators/predicates/simple_predicate_regex.cpp
         operators/predicates/function_predicate.cpp
         operators/predicates/utils.cpp
 

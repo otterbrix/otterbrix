@@ -62,8 +62,8 @@ namespace components::compute {
         virtual void visit(const row_function& func) = 0;
     };
 
-    template<typename T, std::enable_if_t<std::is_move_constructible_v<T>, bool> = true>
-    class function_visitor_with_result : public function_visitor {
+    template<typename T>
+    requires std::is_move_constructible_v<T> class function_visitor_with_result : public function_visitor {
     public:
         T result;
 

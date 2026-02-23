@@ -38,23 +38,24 @@ namespace components::operators::predicates {
         template<>
         struct regex<void> {};
 
-        template<typename COMP, typename T, typename U, std::enable_if_t<!std::is_same_v<COMP, regex<>>, bool> = true>
-        bool evaluate_comp(T left, U right) {
+        template<typename COMP, typename T, typename U>
+        bool evaluate_comp(T left, U right) requires(!std::is_same_v<COMP, regex<>>) {
             return COMP{}(left, right);
         }
 
-        template<typename COMP, typename T, typename U, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
-        bool evaluate_comp(T, U) {
+        template<typename COMP, typename T, typename U>
+        bool evaluate_comp(T, U) requires(std::is_same_v<COMP, regex<>>) {
             throw std::runtime_error("incorrect argument type for regex");
         }
 
-        template<typename COMP, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
-        bool evaluate_comp(std::string_view left, std::string_view right) {
+        template<typename COMP>
+        bool evaluate_comp(std::string_view left, std::string_view right) requires(std::is_same_v<COMP, regex<>>) {
             return std::regex_search(std::string(left), std::regex(std::string(right)));
         }
 
-        template<typename COMP, std::enable_if_t<std::is_same_v<COMP, regex<>>, bool> = true>
-        bool evaluate_comp(const types::logical_value_t& left, const types::logical_value_t& right) {
+        template<typename COMP>
+        bool evaluate_comp(const types::logical_value_t& left,
+                           const types::logical_value_t& right) requires(std::is_same_v<COMP, regex<>>) {
             return evaluate_comp<COMP>(left.value<std::string_view>(), right.value<std::string_view>());
         }
 
@@ -63,12 +64,9 @@ namespace components::operators::predicates {
 
         template<>
         struct create_simple_comparator_t<void> {
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            template<typename LeftType, typename RightType, typename COMP>
             auto operator()(COMP&&, const expressions::key_t& key_left, const expressions::key_t& key_right) const
-                -> simple_predicate::check_function_t {
+                -> simple_predicate::check_function_t requires core::CanCompare<LeftType, RightType> {
                 if (key_left.side() == expressions::side_t::left) {
                     if (key_right.side() == expressions::side_t::left) {
                         return [column_path_left = key_left.path(),
@@ -116,12 +114,9 @@ namespace components::operators::predicates {
                     }
                 }
             }
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            template<typename LeftType, typename RightType, typename COMP>
             auto operator()(COMP&&, const expressions::key_t& key_left, types::logical_value_t&& value) const
-                -> simple_predicate::check_function_t {
+                -> simple_predicate::check_function_t requires core::CanCompare<LeftType, RightType> {
                 if (key_left.side() == expressions::side_t::left) {
                     return [column_path = key_left.path(),
                             value = std::move(value)](const vector::data_chunk_t& chunk_left,
@@ -142,12 +137,9 @@ namespace components::operators::predicates {
                     };
                 }
             }
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            template<typename LeftType, typename RightType, typename COMP>
             auto operator()(COMP&&, types::logical_value_t&& value, const expressions::key_t& key_right) const
-                -> simple_predicate::check_function_t {
+                -> simple_predicate::check_function_t requires core::CanCompare<LeftType, RightType> {
                 if (key_right.side() == expressions::side_t::left) {
                     return [column_path = key_right.path(),
                             value = std::move(value)](const vector::data_chunk_t& chunk_left,
@@ -168,12 +160,9 @@ namespace components::operators::predicates {
                     };
                 }
             }
-            template<typename LeftType,
-                     typename RightType,
-                     typename COMP,
-                     std::enable_if_t<core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            template<typename LeftType, typename RightType, typename COMP>
             auto operator()(COMP&&, types::logical_value_t&& value_left, types::logical_value_t&& value_right) const
-                -> simple_predicate::check_function_t {
+                -> simple_predicate::check_function_t requires core::CanCompare<LeftType, RightType> {
                 return [value_left = std::move(value_left.value<LeftType>()),
                         value_right = std::move(value_right.value<RightType>())](const vector::data_chunk_t&,
                                                                                  const vector::data_chunk_t&,
@@ -183,10 +172,7 @@ namespace components::operators::predicates {
                 };
             }
             // SFINAE unable to compare types
-            template<typename LeftType,
-                     typename RightType,
-                     typename... Args,
-                     std::enable_if_t<!core::has_equality_operator<LeftType, RightType>::value, bool> = true>
+            template<typename LeftType, typename RightType, typename... Args>
             auto operator()(Args&&...) const -> simple_predicate::check_function_t {
                 throw std::runtime_error("invalid expression in create_simple_comparator");
             }

@@ -53,7 +53,8 @@ namespace components::expressions {
         abs,
         mod,
         pow,
-        sqrt
+        sqrt,
+        case_expr
     };
 
     enum class sort_order : std::int8_t

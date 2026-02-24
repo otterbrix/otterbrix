@@ -662,6 +662,14 @@ namespace components::types {
             return value1;
         }
 
+        if (!value1.is_null() && !value2.is_null() &&
+            value1.type().type() != value2.type().type() &&
+            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            return sum(value1.cast_as(complex_logical_type(promoted)),
+                       value2.cast_as(complex_logical_type(promoted)));
+        }
+
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
         switch (type) {
             case logical_type::BOOLEAN:
@@ -710,6 +718,14 @@ namespace components::types {
             return value1;
         }
 
+        if (!value1.is_null() && !value2.is_null() &&
+            value1.type().type() != value2.type().type() &&
+            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            return subtract(value1.cast_as(complex_logical_type(promoted)),
+                            value2.cast_as(complex_logical_type(promoted)));
+        }
+
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
         switch (type) {
             case logical_type::BOOLEAN:
@@ -756,6 +772,14 @@ namespace components::types {
             return value1;
         }
 
+        if (!value1.is_null() && !value2.is_null() &&
+            value1.type().type() != value2.type().type() &&
+            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            return mult(value1.cast_as(complex_logical_type(promoted)),
+                        value2.cast_as(complex_logical_type(promoted)));
+        }
+
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
         switch (type) {
             case logical_type::BOOLEAN:
@@ -794,6 +818,24 @@ namespace components::types {
             return value1;
         }
 
+        // Division by zero: return 0 of the appropriate type
+        if (!value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            auto zero = logical_value_t{r, value2.type()};
+            if (value2 == zero) {
+                auto result_type = value1.is_null() ? value2.type() : value1.type();
+                return logical_value_t{r, result_type};
+            }
+        }
+
+        if (!value1.is_null() && !value2.is_null() &&
+            value1.type().type() != value2.type().type() &&
+            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            return divide(value1.cast_as(complex_logical_type(promoted)),
+                          value2.cast_as(complex_logical_type(promoted)));
+        }
+
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
         switch (type) {
             case logical_type::BOOLEAN:
@@ -830,6 +872,14 @@ namespace components::types {
     logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
         if (value1.is_null() && value2.is_null()) {
             return value1;
+        }
+
+        if (!value1.is_null() && !value2.is_null() &&
+            value1.type().type() != value2.type().type() &&
+            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            return modulus(value1.cast_as(complex_logical_type(promoted)),
+                           value2.cast_as(complex_logical_type(promoted)));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();

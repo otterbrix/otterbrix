@@ -146,6 +146,19 @@ namespace components::sql::transform {
         return types::logical_type::UNKNOWN;
     }
 
+    inline bool is_arithmetic_operator(std::string_view op) {
+        return op == "+" || op == "-" || op == "*" || op == "/" || op == "%";
+    }
+
+    inline expressions::scalar_type get_arithmetic_scalar_type(std::string_view op) {
+        if (op == "+") return expressions::scalar_type::add;
+        if (op == "-") return expressions::scalar_type::subtract;
+        if (op == "*") return expressions::scalar_type::multiply;
+        if (op == "/") return expressions::scalar_type::divide;
+        if (op == "%") return expressions::scalar_type::mod;
+        throw parser_exception_t{"Unknown arithmetic operator: " + std::string(op), ""};
+    }
+
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
 
@@ -155,5 +168,8 @@ namespace components::sql::transform {
 
     types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);
     types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list);
+
+    // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
+    types::logical_value_t evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
 
 } // namespace components::sql::transform

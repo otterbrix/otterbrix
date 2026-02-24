@@ -52,6 +52,19 @@ namespace components::sql::transform {
                             par.emplace_back(std::move(loc));
                             parameter_insert_map_.emplace(ref->number, std::move(par));
                         }
+                    } else if (nodeTag(it_value->data) == T_A_Expr) {
+                        // Evaluate constant arithmetic at parse time
+                        auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
+                        auto it =
+                            std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
+                                return column.type().alias() == it_field->first.as_string();
+                            });
+                        size_t column_index = it - chunk.data.begin();
+                        if (it == chunk.data.end()) {
+                            value.set_alias(it_field->first.as_string());
+                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                        }
+                        chunk.set_value(column_index, row_index, std::move(value));
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
                         auto it =

@@ -26,6 +26,7 @@ message(STATUS "ARCH : ${CMAKE_SYSTEM_NAME}")
 option(DEV_MODE "developer mode" OFF)
 option(ENABLE_ASAN "address sanitizer" OFF)
 option(ENABLE_TSAN "thread sanitizer" OFF)
+option(ENABLE_UBSAN "undefined behavior sanitizer" OFF)
 option(EXAMPLE "Example" OFF)
 option(ALLOW_BENCHMARK "Allow benchmark" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
@@ -56,7 +57,7 @@ endif()
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
 # 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>>>")
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
@@ -101,6 +102,11 @@ if (ENABLE_TSAN)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
 endif()
 
+if (ENABLE_UBSAN)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=undefined -fno-sanitize-recover=undefined")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=undefined")
+endif()
+
 
 #clang tools
 #############################################################################################
@@ -122,8 +128,8 @@ find_package(BZip2 1.0.8 REQUIRED)
 find_package(magic_enum 0.8.1 REQUIRED)
 find_package(actor-zeta REQUIRED)
 
-if (ENABLE_ASAN)
-    # build abseil-cpp locally to avoid ABI issues
+if (ENABLE_ASAN AND NOT APPLE)
+    # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags)
     include(FetchContent)
     FetchContent_Declare(
             absl

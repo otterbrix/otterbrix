@@ -7,7 +7,7 @@ class OtterbrixConan(ConanFile):
     version = "1.0"
     settings = "os", "compiler", "build_type", "arch"
     options = {"build_python": [True, False]}
-    default_options = {"build_python": True}
+    default_options = {"build_python": False}
 
     def configure(self):
         self.requires("boost/1.87.0", override=True)

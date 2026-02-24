@@ -28,7 +28,7 @@ option(ENABLE_ASAN "address sanitizer" OFF)
 option(ENABLE_TSAN "thread sanitizer" OFF)
 option(EXAMPLE "Example" OFF)
 option(ALLOW_BENCHMARK "Allow benchmark" OFF)
-option(BUILD_PYTHON "Build Python bindings" ON)
+option(BUILD_PYTHON "Build Python bindings" OFF)
 option(CONAN_EXPERIMENTAL_INCLUDE "CONAN EXPERIMENT INCLUDE" ON)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

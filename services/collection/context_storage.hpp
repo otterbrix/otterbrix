@@ -15,9 +15,7 @@ namespace services {
             : resource(resource)
             , log(std::move(log)) {}
 
-        bool has_collection(const collection_full_name_t& name) const {
-            return known_collections.count(name) > 0;
-        }
+        bool has_collection(const collection_full_name_t& name) const { return known_collections.count(name) > 0; }
     };
 
 } //namespace services

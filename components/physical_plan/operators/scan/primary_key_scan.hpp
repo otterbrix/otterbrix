@@ -6,8 +6,7 @@ namespace components::operators {
 
     class primary_key_scan final : public read_only_operator_t {
     public:
-        explicit primary_key_scan(std::pmr::memory_resource* resource,
-                                  collection_full_name_t name = {});
+        explicit primary_key_scan(std::pmr::memory_resource* resource, collection_full_name_t name = {});
 
         void append(size_t id);
 

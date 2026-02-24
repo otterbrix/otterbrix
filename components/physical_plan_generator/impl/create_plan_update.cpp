@@ -10,7 +10,7 @@
 namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_update(const context_storage_t& context,
-                                                                 const components::logical_plan::node_ptr& node) {
+                                                           const components::logical_plan::node_ptr& node) {
         const auto* node_update = static_cast<const components::logical_plan::node_update_t*>(node.get());
 
         components::logical_plan::node_ptr node_match = nullptr;
@@ -28,37 +28,40 @@ namespace services::planner::impl {
         auto limit = static_cast<components::logical_plan::node_limit_t*>(node_limit.get())->limit();
         auto coll_name = node->collection_full_name();
         if (node_update->collection_from().empty() && !node_raw_data) {
-            auto plan = boost::intrusive_ptr(
-                new components::operators::operator_update(
-                    context.resource, context.log.clone(), coll_name,
-                    node_update->updates(),
-                    node_update->upsert()));
+            auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
+                                                                                        context.log.clone(),
+                                                                                        coll_name,
+                                                                                        node_update->updates(),
+                                                                                        node_update->upsert()));
             plan->set_children(create_plan_match(context, node_match, limit));
 
             return plan;
         } else {
-            auto& expr =
-                reinterpret_cast<const components::expressions::compare_expression_ptr&>(node_match->expressions()[0]);
-
-            auto plan = boost::intrusive_ptr(
-                new components::operators::operator_update(
-                    context.resource, context.log.clone(), coll_name,
-                    node_update->updates(),
-                    node_update->upsert(),
-                    expr));
+            auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
+                                                                                        context.log.clone(),
+                                                                                        coll_name,
+                                                                                        node_update->updates(),
+                                                                                        node_update->upsert(),
+                                                                                        node_match->expressions()[0]));
             if (node_raw_data) {
-                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log.clone(), coll_name,
-                                       nullptr, limit)),
+                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                             context.log.clone(),
+                                                                                             coll_name,
+                                                                                             nullptr,
+                                                                                             limit)),
                                    create_plan_data(node_raw_data));
             } else {
                 auto coll_from = node_update->collection_from();
-                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log.clone(), coll_name,
-                                       nullptr, limit)),
-                                   boost::intrusive_ptr(new components::operators::full_scan(
-                                       context.resource, context.log.clone(), coll_from,
-                                       nullptr, limit)));
+                plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                             context.log.clone(),
+                                                                                             coll_name,
+                                                                                             nullptr,
+                                                                                             limit)),
+                                   boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                             context.log.clone(),
+                                                                                             coll_from,
+                                                                                             nullptr,
+                                                                                             limit)));
             }
 
             return plan;

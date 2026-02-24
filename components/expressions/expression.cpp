@@ -27,6 +27,10 @@ namespace components::expressions {
 
     bool expression_i::operator!=(const expression_i& rhs) const { return !operator==(rhs); }
 
+    const std::string& expression_i::result_alias() const { return result_alias_; }
+
+    void expression_i::set_result_alias(const std::string& alias) { result_alias_ = alias; }
+
     void expression_i::serialize(serializer::msgpack_serializer_t* serializer) const {
         return serialize_impl(serializer);
     }
@@ -56,7 +60,8 @@ namespace components::expressions {
     {
         parameter_id,
         key,
-        expression
+        expression,
+        null
     };
 
     param_storage deserialize_param_storage(serializer::msgpack_deserializer_t* deserializer, size_t index) {
@@ -69,8 +74,10 @@ namespace components::expressions {
             deserializer->advance_array(1);
             res = expressions::expression_i::deserialize(deserializer);
             deserializer->pop_array();
-        } else {
+        } else if (tag == param_storage_tag::key) {
             res = deserializer->deserialize_key(1);
+        } else {
+            res = nullptr;
         }
         deserializer->pop_array();
         return res;
@@ -88,14 +95,25 @@ namespace components::expressions {
                     serializer->append_enum(param_storage_tag::key);
                     serializer->append(value);
                 } else if constexpr (std::is_same_v<param_type, expressions::expression_ptr>) {
-                    serializer->append_enum(param_storage_tag::expression);
-                    value->serialize(serializer);
+                    if (value) {
+                        serializer->append_enum(param_storage_tag::expression);
+                        value->serialize(serializer);
+                    } else {
+                        serializer->append_enum(param_storage_tag::null);
+                        serializer->append_null();
+                    }
                 } else {
                     assert(false);
                 }
                 serializer->end_array();
             },
             param);
+    }
+
+    std::string to_string(const param_storage& param) {
+        std::stringstream stream;
+        stream << param;
+        return stream.str();
     }
 
 } // namespace components::expressions

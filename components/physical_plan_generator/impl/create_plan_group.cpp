@@ -3,11 +3,9 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 
-#include <components/physical_plan/operators/aggregate/operator_avg.hpp>
-#include <components/physical_plan/operators/aggregate/operator_count.hpp>
-#include <components/physical_plan/operators/aggregate/operator_max.hpp>
-#include <components/physical_plan/operators/aggregate/operator_min.hpp>
-#include <components/physical_plan/operators/aggregate/operator_sum.hpp>
+#include <components/physical_plan/operators/operator_group.hpp>
+
+#include <components/physical_plan/operators/aggregate/operator_func.hpp>
 #include <components/physical_plan/operators/get/simple_value.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
@@ -31,78 +29,29 @@ namespace services::planner::impl {
                     break;
                 }
                 default:
-                    assert(false && "not implemented create plan to scalar exression");
                     break;
             }
         }
 
-        void add_group_aggregate(std::pmr::memory_resource* resource, log_t log,
+        void add_group_aggregate(std::pmr::memory_resource* resource,
+                                 log_t log,
+                                 const components::compute::function_registry_t& function_registry,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
-            using components::expressions::aggregate_type;
-
-            switch (expr->type()) {
-                case aggregate_type::count: {
-                    group->add_value(
-                        expr->key().as_pmr_string(),
-                        boost::intrusive_ptr(new components::operators::aggregate::operator_count_t(
-                            resource, log)));
-                    break;
-                }
-                case aggregate_type::sum: {
-                    assert(std::holds_alternative<components::expressions::key_t>(expr->params().front()) &&
-                           "[add_group_aggregate] aggregate_type::sum:  variant intermediate_store_ holds the "
-                           "alternative components::expressions::key_t");
-                    auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_pmr_string(),
-                                     boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_sum_t(
-                                             resource, log, field)));
-                    break;
-                }
-                case aggregate_type::avg: {
-                    assert(std::holds_alternative<components::expressions::key_t>(expr->params().front()) &&
-                           "[add_group_aggregate] aggregate_type::avg:  variant intermediate_store_ holds the "
-                           "alternative components::expressions::key_t");
-                    auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_pmr_string(),
-                                     boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_avg_t(
-                                             resource, log, field)));
-                    break;
-                }
-                case aggregate_type::min: {
-                    assert(std::holds_alternative<components::expressions::key_t>(expr->params().front()) &&
-                           "[add_group_aggregate] aggregate_type::min:  variant intermediate_store_ holds the "
-                           "alternative components::expressions::key_t");
-                    auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_pmr_string(),
-                                     boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_min_t(
-                                             resource, log, field)));
-                    break;
-                }
-                case aggregate_type::max: {
-                    assert(std::holds_alternative<components::expressions::key_t>(expr->params().front()) &&
-                           "[add_group_aggregate] aggregate_type::max:  variant intermediate_store_ holds the "
-                           "alternative components::expressions::key_t");
-                    auto field = std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_value(expr->key().as_pmr_string(),
-                                     boost::intrusive_ptr(
-                                         new components::operators::aggregate::operator_max_t(
-                                             resource, log, field)));
-                    break;
-                }
-                default:
-                    assert(false && "not implemented create plan to aggregate exression");
-                    break;
-            }
+            group->add_value(expr->key().as_pmr_string(),
+                             boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
+                                 resource,
+                                 log,
+                                 function_registry.get_function(expr->function_uid()),
+                                 expr->params())));
         }
 
     } // namespace
 
-    components::operators::operator_ptr create_plan_group(const context_storage_t& context,
-                                                                const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_group(const context_storage_t& context,
+                      const components::compute::function_registry_t& function_registry,
+                      const components::logical_plan::node_ptr& node) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
@@ -122,6 +71,7 @@ namespace services::planner::impl {
                               add_group_aggregate(
                                   known ? context.resource : node->resource(),
                                   known ? context.log.clone() : log_t{},
+                                  function_registry,
                                   group,
                                   static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
                           }

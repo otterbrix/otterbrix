@@ -242,11 +242,11 @@ TEST_CASE("components::sql::select_from_fields") {
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name as title FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$group: {number, title: "$name"}})_",
+                       R"_($aggregate: {$group: {number, title: "name"}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT number, name title FROM TestDatabase.TestCollection;)_",
-                       R"_($aggregate: {$group: {number, title: "$name"}})_",
+                       R"_($aggregate: {$group: {number, title: "name"}})_",
                        vec());
 
     TEST_SIMPLE_SELECT(

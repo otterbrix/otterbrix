@@ -2,10 +2,10 @@
 #include "result.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <chrono>
-#include <thread>
-#include <unordered_set>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
+#include <thread>
+#include <unordered_set>
 
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -247,13 +247,15 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::load_indexes(session_id_t session,
-                                                                      actor_zeta::address_t /*dispatcher_address*/) {
-        trace(log_, "manager_disk_t::load_indexes , session : {} (no-op, indexes handled by manager_index_t)", session.data());
+                                                                     actor_zeta::address_t /*dispatcher_address*/) {
+        trace(log_,
+              "manager_disk_t::load_indexes , session : {} (no-op, indexes handled by manager_index_t)",
+              session.data());
         co_return;
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::append_database(session_id_t session,
-                                                                         database_name_t database) {
+                                                                        database_name_t database) {
         trace(log_, "manager_disk_t::append_database , session : {} , database : {}", session.data(), database);
         command_append_database_t command{database};
         append_command(commands_, session, command_t(command));
@@ -261,16 +263,15 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::remove_database(session_id_t session,
-                                                                         database_name_t database) {
+                                                                        database_name_t database) {
         trace(log_, "manager_disk_t::remove_database , session : {} , database : {}", session.data(), database);
         command_remove_database_t command{database};
         append_command(commands_, session, command_t(command));
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::append_collection(session_id_t session,
-                                                                           database_name_t database,
-                                                                           collection_name_t collection) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::append_collection(session_id_t session, database_name_t database, collection_name_t collection) {
         trace(log_,
               "manager_disk_t::append_collection , session : {} , database : {} , collection : {}",
               session.data(),
@@ -281,9 +282,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::remove_collection(session_id_t session,
-                                                                           database_name_t database,
-                                                                           collection_name_t collection) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::remove_collection(session_id_t session, database_name_t database, collection_name_t collection) {
         trace(log_,
               "manager_disk_t::remove_collection , session : {} , database : {} , collection : {}",
               session.data(),
@@ -295,9 +295,9 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::remove_documents(session_id_t session,
-                                                                          database_name_t database,
-                                                                          collection_name_t collection,
-                                                                          document_ids_t documents) {
+                                                                         database_name_t database,
+                                                                         collection_name_t collection,
+                                                                         document_ids_t documents) {
         trace(log_,
               "manager_disk_t::remove_documents , session : {} , database : {} , collection : {}",
               session.data(),
@@ -308,10 +308,11 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::write_data_chunk(session_id_t session,
-                                                                          database_name_t database,
-                                                                          collection_name_t collection,
-                                                                          std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::write_data_chunk(session_id_t session,
+                                     database_name_t database,
+                                     collection_name_t collection,
+                                     std::unique_ptr<components::vector::data_chunk_t> data) {
         trace(log_,
               "manager_disk_t::write_data_chunk , session : {} , database : {} , collection : {} , rows : {}",
               session.data(),
@@ -353,7 +354,8 @@ namespace services::disk {
         for (const auto& command : batch) {
             switch (command.name()) {
                 case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_database>: {
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_database, command);
+                    auto [needs_sched, future] =
+                        actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_database, command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -361,7 +363,8 @@ namespace services::disk {
                     break;
                 }
                 case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_database>: {
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_database, command);
+                    auto [needs_sched, future] =
+                        actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_database, command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -369,7 +372,8 @@ namespace services::disk {
                     break;
                 }
                 case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::append_collection>: {
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_collection, command);
+                    auto [needs_sched, future] =
+                        actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_collection, command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -377,7 +381,8 @@ namespace services::disk {
                     break;
                 }
                 case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_collection>: {
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection, command);
+                    auto [needs_sched, future] =
+                        actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_collection, command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -385,7 +390,8 @@ namespace services::disk {
                     break;
                 }
                 case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::remove_documents>: {
-                    auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_documents, command);
+                    auto [needs_sched, future] =
+                        actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_documents, command);
                     if (needs_sched) {
                         scheduler_->enqueue(agents_[0].get());
                     }
@@ -411,9 +417,8 @@ namespace services::disk {
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource()));
     }
 
-    void manager_disk_t::create_storage_with_columns_sync(
-        const collection_full_name_t& name,
-        std::vector<components::table::column_definition_t> columns) {
+    void manager_disk_t::create_storage_with_columns_sync(const collection_full_name_t& name,
+                                                          std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_with_columns_sync , name : {}", name.to_string());
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
     }
@@ -429,23 +434,27 @@ namespace services::disk {
         return it->second->storage.get();
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::create_storage(
-        session_id_t session, collection_full_name_t name) {
+    manager_disk_t::unique_future<void> manager_disk_t::create_storage(session_id_t session,
+                                                                       collection_full_name_t name) {
         trace(log_, "manager_disk_t::create_storage , session : {} , name : {}", session.data(), name.to_string());
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource()));
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::create_storage_with_columns(
-        session_id_t session, collection_full_name_t name,
-        std::vector<components::table::column_definition_t> columns) {
-        trace(log_, "manager_disk_t::create_storage_with_columns , session : {} , name : {}", session.data(), name.to_string());
+    manager_disk_t::unique_future<void>
+    manager_disk_t::create_storage_with_columns(session_id_t session,
+                                                collection_full_name_t name,
+                                                std::vector<components::table::column_definition_t> columns) {
+        trace(log_,
+              "manager_disk_t::create_storage_with_columns , session : {} , name : {}",
+              session.data(),
+              name.to_string());
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::drop_storage(
-        session_id_t session, collection_full_name_t name) {
+    manager_disk_t::unique_future<void> manager_disk_t::drop_storage(session_id_t session,
+                                                                     collection_full_name_t name) {
         trace(log_, "manager_disk_t::drop_storage , session : {} , name : {}", session.data(), name.to_string());
         storages_.erase(name);
         co_return;
@@ -456,28 +465,32 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_t::storage_types(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return std::pmr::vector<components::types::complex_logical_type>(resource());
+        if (!s)
+            co_return std::pmr::vector<components::types::complex_logical_type>(resource());
         co_return s->types();
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_total_rows(session_id_t /*session*/,
+                                                                               collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->total_rows();
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_calculate_size(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_calculate_size(session_id_t /*session*/,
+                                                                                   collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->calculate_size();
     }
 
     manager_disk_t::unique_future<std::vector<components::table::column_definition_t>>
     manager_disk_t::storage_columns(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return std::vector<components::table::column_definition_t>{};
+        if (!s)
+            co_return std::vector<components::table::column_definition_t>{};
         const auto& cols = s->columns();
         std::vector<components::table::column_definition_t> result;
         result.reserve(cols.size());
@@ -487,29 +500,34 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<bool> manager_disk_t::storage_has_schema(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_t::unique_future<bool> manager_disk_t::storage_has_schema(session_id_t /*session*/,
+                                                                           collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return false;
+        if (!s)
+            co_return false;
         co_return s->has_schema();
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_adopt_schema(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::pmr::vector<components::types::complex_logical_type> types) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_adopt_schema(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         std::pmr::vector<components::types::complex_logical_type> types) {
         auto* s = get_storage(name);
-        if (s) s->adopt_schema(types);
+        if (s)
+            s->adopt_schema(types);
         co_return;
     }
 
     // --- Storage data operations ---
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit) {
+    manager_disk_t::storage_scan(session_id_t /*session*/,
+                                 collection_full_name_t name,
+                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                 int limit) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit);
@@ -517,11 +535,13 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_fetch(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_t::storage_fetch(session_id_t /*session*/,
+                                  collection_full_name_t name,
+                                  components::vector::vector_t row_ids,
+                                  uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
         s->fetch(*result, row_ids, count);
@@ -529,24 +549,26 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan_segment(
-        session_id_t /*session*/, collection_full_name_t name,
-        int64_t start, uint64_t count) {
+    manager_disk_t::storage_scan_segment(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         int64_t start,
+                                         uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) {
-            result->append(chunk);
-        });
+        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_t::storage_append(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_t::storage_append(session_id_t /*session*/,
+                                   collection_full_name_t name,
+                                   std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        if (!s || !data || data->size() == 0)
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
 
         // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -585,21 +607,18 @@ namespace services::disk {
         if (s->total_rows() > 0) {
             int64_t id_col = -1;
             for (uint64_t col = 0; col < data->column_count(); col++) {
-                if (data->data[col].type().has_alias() &&
-                    data->data[col].type().alias() == "_id") {
+                if (data->data[col].type().has_alias() && data->data[col].type().alias() == "_id") {
                     id_col = static_cast<int64_t>(col);
                     break;
                 }
             }
             if (id_col >= 0) {
-                auto existing = std::make_unique<components::vector::data_chunk_t>(
-                    resource(), s->types(), 0);
+                auto existing = std::make_unique<components::vector::data_chunk_t>(resource(), s->types(), 0);
                 s->scan(*existing, nullptr, -1);
 
                 int64_t existing_id_col = -1;
                 for (uint64_t col = 0; col < existing->column_count(); col++) {
-                    if (existing->data[col].type().has_alias() &&
-                        existing->data[col].type().alias() == "_id") {
+                    if (existing->data[col].type().has_alias() && existing->data[col].type().alias() == "_id") {
                         existing_id_col = static_cast<int64_t>(col);
                         break;
                     }
@@ -618,7 +637,8 @@ namespace services::disk {
                     keep_rows.reserve(data->size());
                     for (uint64_t i = 0; i < data->size(); i++) {
                         auto val = data->data[static_cast<size_t>(id_col)].value(i);
-                        if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
+                        if (val.is_null() ||
+                            existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
                             keep_rows.push_back(i);
                         }
                     }
@@ -628,8 +648,9 @@ namespace services::disk {
                     }
 
                     if (keep_rows.size() < data->size()) {
-                        auto filtered = std::make_unique<components::vector::data_chunk_t>(
-                            resource(), data->types(), keep_rows.size());
+                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                           data->types(),
+                                                                                           keep_rows.size());
                         for (uint64_t col = 0; col < data->column_count(); col++) {
                             for (uint64_t i = 0; i < keep_rows.size(); i++) {
                                 auto val = data->data[col].value(keep_rows[i]);
@@ -664,20 +685,24 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_update(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_update(session_id_t /*session*/,
+                                   collection_full_name_t name,
+                                   components::vector::vector_t row_ids,
+                                   std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (s) s->update(row_ids, *data);
+        if (s)
+            s->update(row_ids, *data);
         co_return;
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(session_id_t /*session*/,
+                                                                                collection_full_name_t name,
+                                                                                components::vector::vector_t row_ids,
+                                                                                uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->delete_rows(row_ids, count);
     }
 
@@ -693,21 +718,19 @@ namespace services::disk {
 
     auto manager_disk_empty_t::make_type() const noexcept -> const char* { return "manager_disk"; }
 
-    void manager_disk_empty_t::sync(address_pack /*pack*/) {
-    }
+    void manager_disk_empty_t::sync(address_pack /*pack*/) {}
 
-    void manager_disk_empty_t::create_agent(int) {
-    }
+    void manager_disk_empty_t::create_agent(int) {}
 
     actor_zeta::behavior_t manager_disk_empty_t::behavior(actor_zeta::mailbox::message* msg) {
-        pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(),
-                           [](const auto& f) { return !f.valid() || f.available(); }),
-            pending_void_.end());
-        pending_load_.erase(
-            std::remove_if(pending_load_.begin(), pending_load_.end(),
-                           [](const auto& f) { return !f.valid() || f.available(); }),
-            pending_load_.end());
+        pending_void_.erase(std::remove_if(pending_void_.begin(),
+                                           pending_void_.end(),
+                                           [](const auto& f) { return !f.valid() || f.available(); }),
+                            pending_void_.end());
+        pending_load_.erase(std::remove_if(pending_load_.begin(),
+                                           pending_load_.end(),
+                                           [](const auto& f) { return !f.valid() || f.available(); }),
+                            pending_load_.end());
 
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::load>: {
@@ -818,45 +841,52 @@ namespace services::disk {
         co_return result_load_t::empty();
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::load_indexes(
-        session_id_t /*session*/, actor_zeta::address_t /*dispatcher_address*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::load_indexes(session_id_t /*session*/, actor_zeta::address_t /*dispatcher_address*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_database(
-        session_id_t /*session*/, database_name_t /*database*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_database(session_id_t /*session*/,
+                                                                                    database_name_t /*database*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_database(
-        session_id_t /*session*/, database_name_t /*database*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_database(session_id_t /*session*/,
+                                                                                    database_name_t /*database*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::append_collection(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::append_collection(session_id_t /*session*/,
+                                            database_name_t /*database*/,
+                                            collection_name_t /*collection*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_collection(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::remove_collection(session_id_t /*session*/,
+                                            database_name_t /*database*/,
+                                            collection_name_t /*collection*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::write_data_chunk(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/,
-        std::unique_ptr<components::vector::data_chunk_t> /*data*/) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::write_data_chunk(session_id_t /*session*/,
+                                           database_name_t /*database*/,
+                                           collection_name_t /*collection*/,
+                                           std::unique_ptr<components::vector::data_chunk_t> /*data*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_documents(
-        session_id_t /*session*/, database_name_t /*database*/, collection_name_t /*collection*/,
-        document_ids_t /*documents*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_documents(session_id_t /*session*/,
+                                                                                     database_name_t /*database*/,
+                                                                                     collection_name_t /*collection*/,
+                                                                                     document_ids_t /*documents*/) {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::flush(
-        session_id_t /*session*/, wal::id_t /*wal_id*/) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::flush(session_id_t /*session*/,
+                                                                          wal::id_t /*wal_id*/) {
         co_return;
     }
 
@@ -864,56 +894,60 @@ namespace services::disk {
 
     components::storage::storage_t* manager_disk_empty_t::get_storage(const collection_full_name_t& name) {
         auto it = storages_.find(name);
-        if (it == storages_.end()) return nullptr;
+        if (it == storages_.end())
+            return nullptr;
         return it->second->storage.get();
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::create_storage(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::create_storage(session_id_t /*session*/,
+                                                                                   collection_full_name_t name) {
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource()));
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::create_storage_with_columns(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::vector<components::table::column_definition_t> columns) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::create_storage_with_columns(session_id_t /*session*/,
+                                                      collection_full_name_t name,
+                                                      std::vector<components::table::column_definition_t> columns) {
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::drop_storage(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::drop_storage(session_id_t /*session*/,
+                                                                                 collection_full_name_t name) {
         storages_.erase(name);
         co_return;
     }
 
     manager_disk_empty_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
-    manager_disk_empty_t::storage_types(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::storage_types(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return std::pmr::vector<components::types::complex_logical_type>(resource());
+        if (!s)
+            co_return std::pmr::vector<components::types::complex_logical_type>(resource());
         co_return s->types();
     }
 
-    manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_total_rows(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::unique_future<uint64_t>
+    manager_disk_empty_t::storage_total_rows(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->total_rows();
     }
 
-    manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_calculate_size(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::unique_future<uint64_t>
+    manager_disk_empty_t::storage_calculate_size(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->calculate_size();
     }
 
     manager_disk_empty_t::unique_future<std::vector<components::table::column_definition_t>>
-    manager_disk_empty_t::storage_columns(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::storage_columns(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return std::vector<components::table::column_definition_t>{};
+        if (!s)
+            co_return std::vector<components::table::column_definition_t>{};
         const auto& cols = s->columns();
         std::vector<components::table::column_definition_t> result;
         result.reserve(cols.size());
@@ -923,27 +957,32 @@ namespace services::disk {
         co_return result;
     }
 
-    manager_disk_empty_t::unique_future<bool> manager_disk_empty_t::storage_has_schema(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_empty_t::unique_future<bool> manager_disk_empty_t::storage_has_schema(session_id_t /*session*/,
+                                                                                       collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) co_return false;
+        if (!s)
+            co_return false;
         co_return s->has_schema();
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::storage_adopt_schema(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::pmr::vector<components::types::complex_logical_type> types) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::storage_adopt_schema(session_id_t /*session*/,
+                                               collection_full_name_t name,
+                                               std::pmr::vector<components::types::complex_logical_type> types) {
         auto* s = get_storage(name);
-        if (s) s->adopt_schema(types);
+        if (s)
+            s->adopt_schema(types);
         co_return;
     }
 
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_empty_t::storage_scan(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit) {
+    manager_disk_empty_t::storage_scan(session_id_t /*session*/,
+                                       collection_full_name_t name,
+                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       int limit) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit);
@@ -951,11 +990,13 @@ namespace services::disk {
     }
 
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_empty_t::storage_fetch(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_empty_t::storage_fetch(session_id_t /*session*/,
+                                        collection_full_name_t name,
+                                        components::vector::vector_t row_ids,
+                                        uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->fetch(*result, row_ids, count);
@@ -963,24 +1004,26 @@ namespace services::disk {
     }
 
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_empty_t::storage_scan_segment(
-        session_id_t /*session*/, collection_full_name_t name,
-        int64_t start, uint64_t count) {
+    manager_disk_empty_t::storage_scan_segment(session_id_t /*session*/,
+                                               collection_full_name_t name,
+                                               int64_t start,
+                                               uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return nullptr;
+        if (!s)
+            co_return nullptr;
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) {
-            result->append(chunk);
-        });
+        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
         co_return std::move(result);
     }
 
-    manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_empty_t::storage_append(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_empty_t::storage_append(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        if (!s || !data || data->size() == 0)
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
 
         // Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -1018,20 +1061,17 @@ namespace services::disk {
         if (s->total_rows() > 0) {
             int64_t id_col = -1;
             for (uint64_t col = 0; col < data->column_count(); col++) {
-                if (data->data[col].type().has_alias() &&
-                    data->data[col].type().alias() == "_id") {
+                if (data->data[col].type().has_alias() && data->data[col].type().alias() == "_id") {
                     id_col = static_cast<int64_t>(col);
                     break;
                 }
             }
             if (id_col >= 0) {
-                auto existing = std::make_unique<components::vector::data_chunk_t>(
-                    resource(), s->types(), 0);
+                auto existing = std::make_unique<components::vector::data_chunk_t>(resource(), s->types(), 0);
                 s->scan(*existing, nullptr, -1);
                 int64_t existing_id_col = -1;
                 for (uint64_t col = 0; col < existing->column_count(); col++) {
-                    if (existing->data[col].type().has_alias() &&
-                        existing->data[col].type().alias() == "_id") {
+                    if (existing->data[col].type().has_alias() && existing->data[col].type().alias() == "_id") {
                         existing_id_col = static_cast<int64_t>(col);
                         break;
                     }
@@ -1048,14 +1088,17 @@ namespace services::disk {
                     keep_rows.reserve(data->size());
                     for (uint64_t i = 0; i < data->size(); i++) {
                         auto val = data->data[static_cast<size_t>(id_col)].value(i);
-                        if (val.is_null() || existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
+                        if (val.is_null() ||
+                            existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
                             keep_rows.push_back(i);
                         }
                     }
-                    if (keep_rows.empty()) co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    if (keep_rows.empty())
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
                     if (keep_rows.size() < data->size()) {
-                        auto filtered = std::make_unique<components::vector::data_chunk_t>(
-                            resource(), data->types(), keep_rows.size());
+                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                           data->types(),
+                                                                                           keep_rows.size());
                         for (uint64_t col = 0; col < data->column_count(); col++) {
                             for (uint64_t i = 0; i < keep_rows.size(); i++) {
                                 auto val = data->data[col].value(keep_rows[i]);
@@ -1073,20 +1116,25 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::storage_update(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::storage_update(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         components::vector::vector_t row_ids,
+                                         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(name);
-        if (s) s->update(row_ids, *data);
+        if (s)
+            s->update(row_ids, *data);
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_delete_rows(
-        session_id_t /*session*/, collection_full_name_t name,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_empty_t::unique_future<uint64_t>
+    manager_disk_empty_t::storage_delete_rows(session_id_t /*session*/,
+                                              collection_full_name_t name,
+                                              components::vector::vector_t row_ids,
+                                              uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) co_return 0;
+        if (!s)
+            co_return 0;
         co_return s->delete_rows(row_ids, count);
     }
 

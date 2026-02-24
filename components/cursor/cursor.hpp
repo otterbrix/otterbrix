@@ -29,12 +29,16 @@ namespace components::cursor {
         collection_already_exists = 3,
         collection_not_exists = 4,
         index_create_fail = 5,
-        collection_dropped = 6,
-        sql_parse_error = 7,
-        create_physical_plan_error = 8,
-        schema_error = 9,
-        incompatible_storage_types = 10,
-        index_not_exists = 11,
+        index_not_exists = 6,
+        collection_dropped = 7,
+        sql_parse_error = 8,
+        create_physical_plan_error = 9,
+        schema_error = 10,
+        unrecognized_function = 11,
+        incorrect_function_argument = 12,
+        incorrect_function_return_type = 13,
+        ambiguous_name = 14,
+        field_not_exists = 15
     };
 
     struct error_t {

@@ -63,6 +63,7 @@ namespace components::table {
         CONJUNCTION_AND = 4
     };
 
+    // TODO: support function_expr in order to avoid full_scans
     class table_filter_t {
     public:
         explicit table_filter_t(expressions::compare_type filter_type)

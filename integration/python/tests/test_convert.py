@@ -46,7 +46,7 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {_id: "$name"}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {_id: "name"}}'
 
     example = [
         {
@@ -57,7 +57,7 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {sum: {$sum: "$count"}}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {sum: {$sum: "count"}}}'
 
     example = [
         {
@@ -71,7 +71,7 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {total: {$multiply: ["$price", "$count"]}}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {total: {$multiply: ["price", "count"]}}}'
 
     example = [
         {
@@ -85,7 +85,7 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {total: {$multiply: ["$price", #0]}}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {total: {$multiply: ["price", #0]}}}'
 
     example = [
         {
@@ -97,7 +97,7 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {_id: "$name", sum: {$sum: "$count"}}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {_id: "name", sum: {$sum: "count"}}}'
 
     example = [
         {
@@ -115,8 +115,8 @@ def test_convert_aggregate_group():
             }
         }
     ]
-    assert to_aggregate(example) == '$aggregate: {$group: {_id: "$name", type: #0, total: {$sum: {$multiply: '\
-                                    '["$price", "$count"]}}}}'
+    assert to_aggregate(example) == '$aggregate: {$group: {_id: "name", type: #0, total: {$sum: {$multiply: '\
+                                    '["price", "count"]}}}}'
 
 
 def test_convert_aggregate_sort():
@@ -165,7 +165,7 @@ def test_convert_aggregate():
     ]
     assert to_aggregate(example) == '$aggregate: {'\
                                     '$match: {"size": {$eq: #0}}, '\
-                                    '$group: {total: {$multiply: ["$price", #1]}}, '\
+                                    '$group: {total: {$multiply: ["price", #1]}}, '\
                                     '$sort: {name: 1}'\
                                     '}'
 
@@ -205,7 +205,7 @@ def test_convert_aggregate():
     assert to_aggregate(example) == '$aggregate: {'\
                                     '$match: {$and: ["size": {$eq: #0}, "count": {$lt: #1}, '\
                                     '"name": {$regex: #2}]}, '\
-                                    '$group: {_id: "$name", type: #3, total: {$sum: {$multiply: '\
-                                    '["$price", "$count"]}}}, '\
+                                    '$group: {_id: "name", type: #3, total: {$sum: {$multiply: '\
+                                    '["price", "count"]}}}, '\
                                     '$sort: {name: 1, count: -1}'\
                                     '}'

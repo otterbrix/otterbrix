@@ -1,8 +1,8 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
-#include <services/wal/base.hpp>
 #include <memory_resource>
+#include <services/wal/base.hpp>
 #include <vector>
 
 namespace services::disk {
@@ -26,7 +26,9 @@ namespace services::disk {
 
     public:
         result_load_t() = default;
-        result_load_t(std::pmr::memory_resource* resource, const std::vector<database_name_t>& databases, wal::id_t wal_id);
+        result_load_t(std::pmr::memory_resource* resource,
+                      const std::vector<database_name_t>& databases,
+                      wal::id_t wal_id);
         const result_t& operator*() const;
         result_t& operator*();
         std::vector<database_name_t> name_databases() const;

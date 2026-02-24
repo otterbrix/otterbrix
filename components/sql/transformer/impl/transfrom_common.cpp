@@ -39,7 +39,8 @@ namespace components::sql::transform {
             if (auto it = parameter_map_.find(ref->number); it != parameter_map_.end()) {
                 return it->second;
             } else {
-                auto id = params->add_parameter(types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                auto id = params->add_parameter(
+                    types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
                 parameter_map_.emplace(ref->number, id);
                 return id;
             }
@@ -88,43 +89,37 @@ namespace components::sql::transform {
                 if (nodeTag(node) == T_A_Indirection) {
                     return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, params);
                 }
-                if (nodeTag(node->lexpr) == T_ColumnRef || nodeTag(node->lexpr) == T_A_Indirection) {
-                    auto key_left =
-                        nodeTag(node->lexpr) == T_ColumnRef
-                            ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names)
-                            : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->lexpr), names);
-                    key_left.deduce_side(names);
-                    if (nodeTag(node->rexpr) == T_ColumnRef || nodeTag(node->rexpr) == T_A_Indirection) {
-                        auto key_right =
-                            nodeTag(node->rexpr) == T_ColumnRef
-                                ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->rexpr), names)
-                                : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->rexpr), names);
-                        key_right.deduce_side(names);
-                        return make_compare_expression(params->parameters().resource(),
-                                                       get_compare_type(strVal(node->name->lst.front().data)),
-                                                       key_left.field,
-                                                       key_right.field);
-                    }
-                    return make_compare_expression(params->parameters().resource(),
-                                                   get_compare_type(strVal(node->name->lst.front().data)),
-                                                   key_left.field,
-                                                   add_param_value(node->rexpr, params));
-                } else {
-                    if (nodeTag(node->rexpr) != T_ColumnRef || nodeTag(node->rexpr) == T_A_Indirection) {
-                        throw parser_exception_t(
-                            {"Unsupported expression: at least one side must be a column reference"},
-                            {});
-                    }
+                auto comp_type = get_compare_type(strVal(node->name->lst.front().data));
 
-                    auto key = nodeTag(node->rexpr) == T_ColumnRef
-                                   ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->rexpr), names)
-                                   : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->rexpr), names);
-                    key.deduce_side(names);
-                    return make_compare_expression(params->parameters().resource(),
-                                                   get_compare_type(strVal(node->name->lst.back().data)),
-                                                   key.field,
-                                                   add_param_value(node->rexpr, params));
-                }
+                auto get_arg = [this, &names, &params](Node* node) -> param_storage {
+                    switch (nodeTag(node)) {
+                        case T_ColumnRef: {
+                            auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
+                            key.deduce_side(names);
+                            return key.field;
+                        }
+                        // TODO: indirection can hide every other type besides T_ColumnRef
+                        case T_A_Indirection: {
+                            auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node), names);
+                            key.deduce_side(names);
+                            return key.field;
+                        }
+                        case T_ParamRef:
+                        case T_A_Const:
+                        case T_TypeCast:
+                        case T_RowExpr:
+                        case T_A_ArrayExpr:
+                            return add_param_value(node, params);
+                        case T_FuncCall:
+                            return transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, params);
+                        default:
+                            return nullptr;
+                    }
+                };
+
+                param_storage left = get_arg(node->lexpr);
+                param_storage right = get_arg(node->rexpr);
+                return make_compare_expression(params->parameters().resource(), comp_type, left, right);
             }
             case AEXPR_NOT: {
                 assert(nodeTag(node->rexpr) == T_A_Expr || nodeTag(node->rexpr) == T_A_Indirection);
@@ -171,6 +166,8 @@ namespace components::sql::transform {
                 auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
                 key.deduce_side(names);
                 args.emplace_back(std::move(key.field));
+            } else if (nodeTag(arg.data) == T_FuncCall) {
+                args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, params));
             } else {
                 args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
             }

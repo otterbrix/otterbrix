@@ -26,6 +26,8 @@ namespace components::catalog {
                              bool is_append,
                              size_t n = 1);
 
+        // TODO: preserve field order
+        // random order causes issues in computing schema
         versioned_trie<std::pmr::string, types::complex_logical_type> fields_;
         std::pmr::unordered_map<std::pmr::string, refcounted_entry_t> existing_versions_;
     };

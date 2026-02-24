@@ -1,7 +1,6 @@
 #include "operator_sort.hpp"
 #include "transformation.hpp"
 
-
 namespace components::operators {
 
     operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t log)
@@ -23,9 +22,9 @@ namespace components::operators {
             // TODO: sort inplace
             auto matrix = impl::transpose(left_->output()->resource(), chunk);
             std::sort(matrix.begin(), matrix.end(), sorter_);
-            output_ = operators::make_operator_data(
-                left_->output()->resource(),
-                impl::transpose(left_->output()->resource(), matrix, chunk.types()));
+            output_ =
+                operators::make_operator_data(left_->output()->resource(),
+                                              impl::transpose(left_->output()->resource(), matrix, chunk.types()));
         }
     }
 

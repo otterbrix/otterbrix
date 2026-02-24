@@ -7,6 +7,6 @@
 namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
-                                                               const components::logical_plan::node_ptr& node);
+                                                         const components::logical_plan::node_ptr& node);
 
 }

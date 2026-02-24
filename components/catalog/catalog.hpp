@@ -26,6 +26,7 @@ namespace components::catalog {
         [[nodiscard]] std::pmr::vector<table_id> list_tables(const table_namespace_t& namespace_name) const;
         [[nodiscard]] const schema& get_table_schema(const table_id& id) const;
         [[nodiscard]] computed_schema& get_computing_table_schema(const table_id& id);
+        [[nodiscard]] const computed_schema& get_computing_table_schema(const table_id& id) const;
 
         [[nodiscard]] catalog_error create_table(const table_id& id, table_metadata meta);
         [[nodiscard]] catalog_error create_computing_table(const table_id& id);
@@ -45,6 +46,18 @@ namespace components::catalog {
         [[nodiscard]] bool type_exists(const std::string& alias) const;
 
         [[nodiscard]] const types::complex_logical_type& get_type(const std::string& alias) const;
+
+        // function operations
+        void create_function(const std::string& alias, compute::registered_func_id uid);
+        void drop_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs);
+        [[nodiscard]] bool check_function_conflicts(const std::string& alias,
+                                                    const std::vector<compute::kernel_signature_t>& signatures) const;
+        [[nodiscard]] bool function_name_exists(const std::string& alias) const;
+        [[nodiscard]] bool function_exists(const std::string& alias,
+                                           const std::pmr::vector<types::complex_logical_type>& inputs) const;
+
+        [[nodiscard]] std::pair<compute::function_uid, compute::kernel_signature_t>
+        get_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) const;
 
         transaction_scope begin_transaction(const table_id& id);
 

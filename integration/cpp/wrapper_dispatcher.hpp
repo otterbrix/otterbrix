@@ -1,20 +1,21 @@
 #pragma once
 
 #include <atomic>
-#include <mutex>
 #include <condition_variable>
-#include <vector>
 #include <functional>
+#include <mutex>
+#include <vector>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/catalog/table_id.hpp>
+#include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/update_expression.hpp>
 #include <components/log/log.hpp>
@@ -80,6 +81,10 @@ namespace otterbrix {
                          bool upsert) -> components::cursor::cursor_t_ptr;
         auto size(const session_id_t& session, const database_name_t& database, const collection_name_t& collection)
             -> size_t;
+        auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> bool;
+        auto unregister_udf(const session_id_t& session,
+                            const std::string& function_name,
+                            const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto create_index(const session_id_t& session, components::logical_plan::node_create_index_ptr node)
             -> components::cursor::cursor_t_ptr;
         auto drop_index(const session_id_t& session, components::logical_plan::node_drop_index_ptr node)

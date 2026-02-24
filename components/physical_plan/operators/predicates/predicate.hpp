@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -8,6 +9,10 @@ namespace components::operators::predicates {
 
     class predicate : public boost::intrusive_ref_counter<predicate> {
     public:
+        using check_function_t = std::function<bool(const vector::data_chunk_t& chunk_left,
+                                                    const vector::data_chunk_t& chunk_right,
+                                                    size_t index_left,
+                                                    size_t index_right)>;
         predicate() = default;
         predicate(const predicate&) = delete;
         predicate& operator=(const predicate&) = delete;
@@ -29,7 +34,8 @@ namespace components::operators::predicates {
     using predicate_ptr = boost::intrusive_ptr<predicate>;
 
     predicate_ptr create_predicate(std::pmr::memory_resource* resource,
-                                   const expressions::compare_expression_ptr& expr,
+                                   const compute::function_registry_t* function_registry,
+                                   const expressions::expression_ptr& expr,
                                    const std::pmr::vector<types::complex_logical_type>& types_left,
                                    const std::pmr::vector<types::complex_logical_type>& types_right,
                                    const logical_plan::storage_parameters* parameters);

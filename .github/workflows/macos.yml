@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir build && cd build
           cp ../conanfile.py .
-          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu20 -o build_python=False
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu20 -o build_python=True
 
       - name: build
         env:

@@ -28,8 +28,7 @@ TEST_CASE("integration::cpp::test_join") {
         }
         {
             std::stringstream query;
-            query << "INSERT INTO " << database_name << "." << collection_name_1
-                  << " (name, key_1, key_2) VALUES ";
+            query << "INSERT INTO " << database_name << "." << collection_name_1 << " (name, key_1, key_2) VALUES ";
             for (int num = 0, reversed = 100; num < 101; ++num, --reversed) {
                 query << "('Name " << num << "', " << num << ", " << reversed << ")" << (reversed == 0 ? ";" : ", ");
             }

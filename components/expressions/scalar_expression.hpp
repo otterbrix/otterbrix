@@ -17,7 +17,9 @@ namespace components::expressions {
         scalar_expression_t(std::pmr::memory_resource* resource, scalar_type type, const key_t& key);
 
         scalar_type type() const;
+        key_t& key();
         const key_t& key() const;
+        std::pmr::vector<param_storage>& params();
         const std::pmr::vector<param_storage>& params() const;
 
         void append_param(const param_storage& param);

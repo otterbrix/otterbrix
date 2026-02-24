@@ -2,7 +2,9 @@
 
 namespace services::disk {
 
-    result_load_t::result_load_t(std::pmr::memory_resource* resource, const std::vector<database_name_t>& databases, wal::id_t wal_id)
+    result_load_t::result_load_t(std::pmr::memory_resource* resource,
+                                 const std::vector<database_name_t>& databases,
+                                 wal::id_t wal_id)
         : resource_(resource)
         , wal_id_(wal_id) {
         databases_.reserve(databases.size());

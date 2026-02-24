@@ -1,11 +1,11 @@
 #pragma once
 
+#include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/context/context.hpp>
 #include <components/log/log.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
-#include <actor-zeta/detail/future.hpp>
 
 namespace components::expressions {
     class key_t;
@@ -32,8 +32,8 @@ namespace components::operators {
     };
 
     inline bool is_scan(operator_type t) {
-        return t == operator_type::full_scan || t == operator_type::transfer_scan ||
-               t == operator_type::index_scan || t == operator_type::primary_key_scan;
+        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan ||
+               t == operator_type::primary_key_scan;
     }
 
     enum class operator_state

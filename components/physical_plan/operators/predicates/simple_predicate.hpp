@@ -7,10 +7,6 @@ namespace components::operators::predicates {
 
     class simple_predicate final : public predicate {
     public:
-        using check_function_t = std::function<bool(const vector::data_chunk_t& chunk_left,
-                                                    const vector::data_chunk_t& chunk_right,
-                                                    size_t index_left,
-                                                    size_t index_right)>;
         explicit simple_predicate(check_function_t func);
         simple_predicate(std::vector<predicate_ptr>&& nested, expressions::compare_type nested_type);
 
@@ -26,6 +22,7 @@ namespace components::operators::predicates {
     };
 
     predicate_ptr create_simple_predicate(std::pmr::memory_resource* resource,
+                                          const compute::function_registry_t* function_registry,
                                           const expressions::compare_expression_ptr& expr,
                                           const std::pmr::vector<types::complex_logical_type>& types_left,
                                           const std::pmr::vector<types::complex_logical_type>& types_right,

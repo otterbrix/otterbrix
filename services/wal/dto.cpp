@@ -47,7 +47,6 @@ namespace services::wal {
         return buffer;
     }
 
-
     size_tt read_size_impl(buffer_t& input, size_tt index_start) {
         // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
         size_tt size_tmp = 0;

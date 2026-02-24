@@ -22,6 +22,10 @@ namespace components::logical_plan {
 
     const std::pmr::vector<expressions::param_storage>& node_function_t::args() const noexcept { return args_; }
 
+    void node_function_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+
+    compute::function_uid node_function_t::function_uid() const { return function_uid_; }
+
     node_function_ptr node_function_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
         auto name = deserializer->deserialize_string(1);
         std::pmr::vector<expressions::param_storage> args(deserializer->resource());

@@ -16,6 +16,7 @@ target_link_libraries(
         actor-zeta::actor-zeta
         magic_enum::magic_enum
         msgpackc-cxx
+        absl::int128
 )
 
 include(CTest)

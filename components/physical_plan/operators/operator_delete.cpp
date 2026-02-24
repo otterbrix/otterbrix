@@ -3,12 +3,13 @@
 
 namespace components::operators {
 
-    operator_delete::operator_delete(std::pmr::memory_resource* resource, log_t log,
+    operator_delete::operator_delete(std::pmr::memory_resource* resource,
+                                     log_t log,
                                      collection_full_name_t name,
-                                     expressions::compare_expression_ptr expr)
+                                     expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::remove)
         , name_(std::move(name))
-        , compare_expression_(std::move(expr)) {}
+        , expression_(std::move(expr)) {}
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
         // Predicate matching only — table.delete_rows() is now handled by executor via
@@ -21,12 +22,13 @@ namespace components::operators {
             auto types_right = chunk_right.types();
             auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, ids_capacity);
-            auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                                compare_expression_,
-                                                                                types_left,
-                                                                                types_right,
-                                                                                &pipeline_context->parameters)
-                                                 : predicates::create_all_true_predicate(left_->output()->resource());
+            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                        pipeline_context->function_registry,
+                                                                        expression_,
+                                                                        types_left,
+                                                                        types_right,
+                                                                        &pipeline_context->parameters)
+                                         : predicates::create_all_true_predicate(output_->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -54,12 +56,13 @@ namespace components::operators {
             auto types = chunk.types();
 
             vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
-            auto predicate = compare_expression_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                                compare_expression_,
-                                                                                types,
-                                                                                types,
-                                                                                &pipeline_context->parameters)
-                                                 : predicates::create_all_true_predicate(left_->output()->resource());
+            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                        pipeline_context->function_registry,
+                                                                        expression_,
+                                                                        types,
+                                                                        types,
+                                                                        &pipeline_context->parameters)
+                                         : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;
             for (size_t i = 0; i < chunk.size(); i++) {

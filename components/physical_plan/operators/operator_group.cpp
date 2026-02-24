@@ -13,7 +13,6 @@ namespace components::operators {
         , result_types_(resource_)
         , transposed_output_(resource_) {}
 
-
     void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
         keys_.push_back({name, std::move(getter)});
     }

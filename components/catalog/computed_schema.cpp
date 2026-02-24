@@ -52,6 +52,7 @@ namespace components::catalog {
         std::vector<types::complex_logical_type> retval;
         retval.reserve(existing_versions_.size());
         for (const auto& [name, entry] : existing_versions_) {
+            assert(!name.empty());
             auto& v = entry.get();
             if (auto id = v.latest_version_id(); static_cast<bool>(id) && v.get_version(*id).is_alive()) {
                 retval.push_back(v.get_version(id.value()).value);

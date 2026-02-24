@@ -175,9 +175,7 @@ std::string wrapper_cursor::print() {
     return "{}";
 }
 
-wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) {
-    return *this;
-}
+wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) { return *this; }
 
 void wrapper_cursor::execute(std::string& query) {
     ptr_ = dispatcher_->execute_sql(components::session::session_id_t(), query);
@@ -207,7 +205,6 @@ py::object wrapper_cursor::get_(std::size_t index) const {
     }
     return row_to_dict(ptr_->chunk_data(), index);
 }
-
 
 py::object wrapper_cursor::fetch_current_row_() {
     const auto& chunk = ptr_->chunk_data();

@@ -39,7 +39,8 @@ namespace services::loader {
         using size_tt = wal::size_tt;
         using crc32_t = wal::crc32_t;
         size_tt read_wal_size(core::filesystem::file_handle_t* file, std::size_t start_index) const;
-        std::pmr::string read_wal_data(core::filesystem::file_handle_t* file, std::size_t start, std::size_t finish) const;
+        std::pmr::string
+        read_wal_data(core::filesystem::file_handle_t* file, std::size_t start, std::size_t finish) const;
         wal::id_t read_wal_id(core::filesystem::file_handle_t* file, std::size_t start_index) const;
         wal::record_t read_wal_record(core::filesystem::file_handle_t* file, std::size_t start_index) const;
         std::size_t next_wal_index(std::size_t start_index, size_tt size) const;

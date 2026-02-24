@@ -366,11 +366,10 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 components::logical_plan::make_node_match(
                     dispatcher->resource(),
                     {database_name, collection_name},
-                    components::expressions::make_compare_expression(
-                        dispatcher->resource(),
-                        compare_type::gt,
-                        key{dispatcher->resource(), "count", side_t::left},
-                        id_par{1})));
+                    components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                     compare_type::gt,
+                                                                     key{dispatcher->resource(), "count", side_t::left},
+                                                                     id_par{1})));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(session, del, params);
@@ -390,20 +389,17 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
             auto match = components::logical_plan::make_node_match(
                 dispatcher->resource(),
                 {database_name, collection_name},
-                components::expressions::make_compare_expression(
-                    dispatcher->resource(),
-                    compare_type::eq,
-                    key{dispatcher->resource(), "count", side_t::left},
-                    id_par{1}));
-            components::expressions::update_expr_ptr update_expr =
-                new components::expressions::update_expr_set_t(
-                    components::expressions::key_t{dispatcher->resource(), "count"});
+                components::expressions::make_compare_expression(dispatcher->resource(),
+                                                                 compare_type::eq,
+                                                                 key{dispatcher->resource(), "count", side_t::left},
+                                                                 id_par{1}));
+            components::expressions::update_expr_ptr update_expr = new components::expressions::update_expr_set_t(
+                components::expressions::key_t{dispatcher->resource(), "count"});
             update_expr->left() = new components::expressions::update_expr_get_const_value_t(id_par{2});
-            auto upd = components::logical_plan::make_node_update_many(
-                dispatcher->resource(),
-                {database_name, collection_name},
-                match,
-                {update_expr});
+            auto upd = components::logical_plan::make_node_update_many(dispatcher->resource(),
+                                                                       {database_name, collection_name},
+                                                                       match,
+                                                                       {update_expr});
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
             params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));

@@ -89,10 +89,12 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        auto arr = components::types::logical_value_t::create_array(&arena_resource, components::types::logical_type::BIGINT,
-                                                                    {components::types::logical_value_t{&arena_resource, 1l},
-                                                                     components::types::logical_value_t{&arena_resource, 2l},
-                                                                     components::types::logical_value_t{&arena_resource, 3l}});
+        auto arr =
+            components::types::logical_value_t::create_array(&arena_resource,
+                                                             components::types::logical_type::BIGINT,
+                                                             {components::types::logical_value_t{&arena_resource, 1l},
+                                                              components::types::logical_value_t{&arena_resource, 2l},
+                                                              components::types::logical_value_t{&arena_resource, 3l}});
         REQUIRE(chunk.value(0, 0) == arr);
     }
 

@@ -72,13 +72,13 @@ TEST_CASE("components::serialization::expressions") {
         auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
         scalar_expr->append_param(key(&resource, "date"));
         expressions.emplace_back(std::move(scalar_expr));
-        auto agg_expr = make_aggregate_expression(&resource, aggregate_type::sum, key(&resource, "total"));
+        auto agg_expr = make_aggregate_expression(&resource, "sum", key(&resource, "total"));
         auto expr_multiply = make_scalar_expression(&resource, scalar_type::multiply);
         expr_multiply->append_param(key(&resource, "price"));
         expr_multiply->append_param(key(&resource, "quantity"));
         agg_expr->append_param(std::move(expr_multiply));
         expressions.emplace_back(std::move(agg_expr));
-        agg_expr = make_aggregate_expression(&resource, aggregate_type::avg, key(&resource, "avg_quantity"));
+        agg_expr = make_aggregate_expression(&resource, "avg", key(&resource, "avg_quantity"));
         agg_expr->append_param(key(&resource, "quantity"));
         expressions.emplace_back(std::move(agg_expr));
         auto node_group = make_node_group(&resource, get_name(), expressions);

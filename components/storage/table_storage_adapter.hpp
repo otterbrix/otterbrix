@@ -12,37 +12,21 @@ namespace components::storage {
             : table_(table)
             , resource_(resource) {}
 
-        std::pmr::vector<types::complex_logical_type> types() const override {
-            return table_.copy_types();
-        }
+        std::pmr::vector<types::complex_logical_type> types() const override { return table_.copy_types(); }
 
-        const std::vector<table::column_definition_t>& columns() const override {
-            return table_.columns();
-        }
+        const std::vector<table::column_definition_t>& columns() const override { return table_.columns(); }
 
-        size_t column_count() const override {
-            return table_.column_count();
-        }
+        size_t column_count() const override { return table_.column_count(); }
 
-        bool has_schema() const override {
-            return !table_.columns().empty();
-        }
+        bool has_schema() const override { return !table_.columns().empty(); }
 
-        void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override {
-            table_.adopt_schema(t);
-        }
+        void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
 
-        uint64_t total_rows() const override {
-            return table_.row_group()->total_rows();
-        }
+        uint64_t total_rows() const override { return table_.row_group()->total_rows(); }
 
-        uint64_t calculate_size() override {
-            return table_.calculate_size();
-        }
+        uint64_t calculate_size() override { return table_.calculate_size(); }
 
-        void scan(vector::data_chunk_t& output,
-                  const table::table_filter_t* filter,
-                  int limit) override {
+        void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int limit) override {
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());
             for (size_t i = 0; i < table_.column_count(); i++) {
@@ -52,14 +36,11 @@ namespace components::storage {
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
             if (limit >= 0) {
-                output.set_cardinality(
-                    std::min(output.size(), static_cast<uint64_t>(limit)));
+                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
         }
 
-        void fetch(vector::data_chunk_t& output,
-                   const vector::vector_t& row_ids,
-                   uint64_t count) override {
+        void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
             table::column_fetch_state state;
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());
@@ -85,8 +66,7 @@ namespace components::storage {
             return start_row;
         }
 
-        void update(vector::vector_t& row_ids,
-                    vector::data_chunk_t& data) override {
+        void update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
             auto update_state = table_.initialize_update({});
             table_.update(*update_state, row_ids, data);
         }
@@ -96,9 +76,7 @@ namespace components::storage {
             return table_.delete_rows(*delete_state, row_ids, count);
         }
 
-        std::pmr::memory_resource* resource() const override {
-            return resource_;
-        }
+        std::pmr::memory_resource* resource() const override { return resource_; }
 
         table::data_table_t& table() { return table_; }
 

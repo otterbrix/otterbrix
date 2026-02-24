@@ -6,6 +6,10 @@
 #include <components/session/session.hpp>
 #include <vector>
 
+namespace components::compute {
+    class function_registry_t;
+} // namespace components::compute
+
 namespace components::pipeline {
 
     class context_t {
@@ -14,31 +18,27 @@ namespace components::pipeline {
 
         session::session_id_t session;
         actor_zeta::address_t current_message_sender{actor_zeta::address_t::empty_address()};
+        const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
         actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
-        context_t(context_t&& context);
+        context_t(context_t&& context) noexcept;
         context_t(session::session_id_t session,
                   actor_zeta::address_t address,
                   actor_zeta::address_t sender,
+                  const compute::function_registry_t* function_registry,
                   logical_plan::storage_parameters init_parameters);
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 
-        void add_pending_disk_future(disk_future_t&& future) {
-            pending_disk_futures_.push_back(std::move(future));
-        }
-        
-        std::vector<disk_future_t> take_pending_disk_futures() {
-            return std::move(pending_disk_futures_);
-        }
-        
-        bool has_pending_disk_futures() const noexcept {
-            return !pending_disk_futures_.empty();
-        }
+        void add_pending_disk_future(disk_future_t&& future) { pending_disk_futures_.push_back(std::move(future)); }
+
+        std::vector<disk_future_t> take_pending_disk_futures() { return std::move(pending_disk_futures_); }
+
+        bool has_pending_disk_futures() const noexcept { return !pending_disk_futures_.empty(); }
 
     private:
         actor_zeta::address_t address_{actor_zeta::address_t::empty_address()};

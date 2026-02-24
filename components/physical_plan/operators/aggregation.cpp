@@ -27,9 +27,9 @@ namespace components::operators {
                 executor = std::move(match_);
             }
         } else {
-            executor = match_ ? std::move(match_)
-                              : static_cast<operator_ptr>(boost::intrusive_ptr(
-                                    new transfer_scan(resource_, name_, limit_)));
+            executor =
+                match_ ? std::move(match_)
+                       : static_cast<operator_ptr>(boost::intrusive_ptr(new transfer_scan(resource_, name_, limit_)));
         }
         if (group_) {
             group_->set_children(std::move(executor));

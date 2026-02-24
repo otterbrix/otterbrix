@@ -2,8 +2,7 @@
 
 namespace components::operators {
 
-    operator_insert::operator_insert(std::pmr::memory_resource* resource, log_t log,
-                                     collection_full_name_t name)
+    operator_insert::operator_insert(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name)
         : read_write_operator_t(resource, log, operator_type::insert)
         , name_(std::move(name)) {}
 

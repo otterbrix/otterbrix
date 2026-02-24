@@ -13,7 +13,7 @@ namespace core::non_thread_scheduler {
         while (run() > 0) {
             clock_.trigger_timeouts();
         }
-        
+
         auto& queue = data().queue;
         std::unique_lock<std::mutex> guard(data().lock);
         while (!queue.empty()) {
@@ -34,12 +34,10 @@ namespace core::non_thread_scheduler {
 
         auto result = job->resume(max_throughput());
         switch (result.result) {
-            case actor_zeta::scheduler::resume_result::resume:
-                {
-                    std::unique_lock<std::mutex> re_guard(data().lock);
-                    data().queue.push_back(job.release());
-                }
-                break;
+            case actor_zeta::scheduler::resume_result::resume: {
+                std::unique_lock<std::mutex> re_guard(data().lock);
+                data().queue.push_back(job.release());
+            } break;
             case actor_zeta::scheduler::resume_result::done:
             case actor_zeta::scheduler::resume_result::awaiting:
                 break;
@@ -57,8 +55,6 @@ namespace core::non_thread_scheduler {
         return res;
     }
 
-    size_t scheduler_test_t::advance_time(clock_test::duration_type time) {
-        return clock_.advance_time(time);
-    }
+    size_t scheduler_test_t::advance_time(clock_test::duration_type time) { return clock_.advance_time(time); }
 
 } // namespace core::non_thread_scheduler

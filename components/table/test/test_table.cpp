@@ -155,13 +155,19 @@ TEST_CASE("components::table::data_table") {
                     case 0:
                         chunk.set_value(7,
                                         i,
-                                        logical_value_t::create_union(&resource, union_fields, 0, logical_value_t{&resource, i % 2 == 0}));
+                                        logical_value_t::create_union(&resource,
+                                                                      union_fields,
+                                                                      0,
+                                                                      logical_value_t{&resource, i % 2 == 0}));
                         break;
                     case 1:
                         chunk.set_value(
                             7,
                             i,
-                            logical_value_t::create_union(&resource, union_fields, 1, logical_value_t{&resource, static_cast<int32_t>(i)}));
+                            logical_value_t::create_union(&resource,
+                                                          union_fields,
+                                                          1,
+                                                          logical_value_t{&resource, static_cast<int32_t>(i)}));
                         break;
                     case 2:
                         chunk.set_value(
@@ -171,7 +177,8 @@ TEST_CASE("components::table::data_table") {
                                 &resource,
                                 union_fields,
                                 2,
-                                logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}}));
+                                logical_value_t{&resource,
+                                                std::string{"long_string_with_index_" + std::to_string(i)}}));
                         break;
                     default:
                         // unreachable

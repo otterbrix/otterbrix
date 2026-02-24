@@ -7,8 +7,7 @@ namespace components::operators {
 
     class transfer_scan final : public read_only_operator_t {
     public:
-        transfer_scan(std::pmr::memory_resource* resource, collection_full_name_t name,
-                      logical_plan::limit_t limit);
+        transfer_scan(std::pmr::memory_resource* resource, collection_full_name_t name, logical_plan::limit_t limit);
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
         const logical_plan::limit_t& limit() const { return limit_; }

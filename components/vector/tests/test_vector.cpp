@@ -32,9 +32,7 @@ TEST_CASE("components::vector::vector") {
         components::types::complex_logical_type::create_struct("struct", fields, "test_struct");
 
     INFO("sixed size") {
-        components::vector::vector_t v(&resource,
-                                       components::types::logical_type::UBIGINT,
-                                       test_size);
+        components::vector::vector_t v(&resource, components::types::logical_type::UBIGINT, test_size);
         for (size_t i = 0; i < test_size; i++) {
             components::types::logical_value_t value{&resource, uint64_t(i)};
             v.set_value(i, value);
@@ -47,11 +45,10 @@ TEST_CASE("components::vector::vector") {
         }
     }
     INFO("string") {
-        components::vector::vector_t v(&resource,
-                                       components::types::logical_type::STRING_LITERAL,
-                                       test_size);
+        components::vector::vector_t v(&resource, components::types::logical_type::STRING_LITERAL, test_size);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value{v.resource(), std::string{"long_string_with_index_" + std::to_string(i)}};
+            components::types::logical_value_t value{v.resource(),
+                                                     std::string{"long_string_with_index_" + std::to_string(i)}};
             v.set_value(i, value);
         }
 
@@ -73,9 +70,10 @@ TEST_CASE("components::vector::vector") {
             for (size_t j = 0; j < array_size; j++) {
                 arr.emplace_back(v.resource(), uint64_t{i * array_size + j});
             }
-            v.set_value(
-                i,
-                components::types::logical_value_t::create_array(v.resource(), components::types::logical_type::UBIGINT, arr));
+            v.set_value(i,
+                        components::types::logical_value_t::create_array(v.resource(),
+                                                                         components::types::logical_type::UBIGINT,
+                                                                         arr));
         }
 
         for (size_t i = 0; i < test_size; i++) {
@@ -97,11 +95,14 @@ TEST_CASE("components::vector::vector") {
             std::vector<components::types::logical_value_t> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(v.resource(), std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
+                arr.emplace_back(v.resource(),
+                                 std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
             }
             v.set_value(
                 i,
-                components::types::logical_value_t::create_array(v.resource(), components::types::logical_type::STRING_LITERAL, arr));
+                components::types::logical_value_t::create_array(v.resource(),
+                                                                 components::types::logical_type::STRING_LITERAL,
+                                                                 arr));
         }
 
         for (size_t i = 0; i < test_size; i++) {
@@ -126,9 +127,10 @@ TEST_CASE("components::vector::vector") {
             for (size_t j = 0; j < list_length(i); j++) {
                 list.emplace_back(v.resource(), uint64_t{i * list_length(i) + j});
             }
-            v.set_value(
-                i,
-                components::types::logical_value_t::create_list(v.resource(), components::types::logical_type::UBIGINT, list));
+            v.set_value(i,
+                        components::types::logical_value_t::create_list(v.resource(),
+                                                                        components::types::logical_type::UBIGINT,
+                                                                        list));
         }
 
         for (size_t i = 0; i < test_size; i++) {
@@ -150,11 +152,13 @@ TEST_CASE("components::vector::vector") {
             // test that each list entry can be a different length
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(v.resource(), std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
+                list.emplace_back(v.resource(),
+                                  std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
             }
-            v.set_value(
-                i,
-                components::types::logical_value_t::create_list(v.resource(), components::types::logical_type::STRING_LITERAL, list));
+            v.set_value(i,
+                        components::types::logical_value_t::create_list(v.resource(),
+                                                                        components::types::logical_type::STRING_LITERAL,
+                                                                        list));
         }
 
         for (size_t i = 0; i < test_size; i++) {
@@ -193,7 +197,9 @@ TEST_CASE("components::vector::vector") {
             value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].number});
             value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].name});
             value_fiels.emplace_back(
-                components::types::logical_value_t::create_list(v.resource(), components::types::logical_type::USMALLINT, arr));
+                components::types::logical_value_t::create_list(v.resource(),
+                                                                components::types::logical_type::USMALLINT,
+                                                                arr));
             components::types::logical_value_t value =
                 components::types::logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
             v.set_value(i, value);
@@ -237,7 +243,8 @@ TEST_CASE("components::vector::vector") {
                                                   components::types::logical_type::STRING_LITERAL,
                                                   string_count);
         for (size_t i = 0; i < string_count; i++) {
-            components::types::logical_value_t value{string_array.resource(), std::string{"long_string_with_index_" + std::to_string(i)}};
+            components::types::logical_value_t value{string_array.resource(),
+                                                     std::string{"long_string_with_index_" + std::to_string(i)}};
             string_array.set_value(i, value);
         }
 
@@ -246,9 +253,7 @@ TEST_CASE("components::vector::vector") {
             indexing.set_index(i, indices[i]);
         }
 
-        components::vector::vector_t dictionary(&resource,
-                                                components::types::logical_type::STRING_LITERAL,
-                                                test_size);
+        components::vector::vector_t dictionary(&resource, components::types::logical_type::STRING_LITERAL, test_size);
         dictionary.slice(string_array, indexing, test_size);
         for (size_t i = 0; i < test_size; i++) {
             indexing.set_index(i, indices[i]);
@@ -271,20 +276,22 @@ TEST_CASE("components::vector::vector") {
         for (size_t i = 0; i < test_size; i++) {
             switch (i % 3) {
                 case 0:
-                    union_vector.set_value(i,
-                                           components::types::logical_value_t::create_union(
-                                               union_vector.resource(),
-                                               union_fields,
-                                               0,
-                                               components::types::logical_value_t{union_vector.resource(), i % 2 == 0}));
+                    union_vector.set_value(
+                        i,
+                        components::types::logical_value_t::create_union(
+                            union_vector.resource(),
+                            union_fields,
+                            0,
+                            components::types::logical_value_t{union_vector.resource(), i % 2 == 0}));
                     break;
                 case 1:
-                    union_vector.set_value(i,
-                                           components::types::logical_value_t::create_union(
-                                               union_vector.resource(),
-                                               union_fields,
-                                               1,
-                                               components::types::logical_value_t{union_vector.resource(), static_cast<int32_t>(i)}));
+                    union_vector.set_value(
+                        i,
+                        components::types::logical_value_t::create_union(
+                            union_vector.resource(),
+                            union_fields,
+                            1,
+                            components::types::logical_value_t{union_vector.resource(), static_cast<int32_t>(i)}));
                     break;
                 case 2:
                     union_vector.set_value(i,
@@ -293,7 +300,8 @@ TEST_CASE("components::vector::vector") {
                                                union_fields,
                                                2,
                                                components::types::logical_value_t{
-                                                   union_vector.resource(), std::string{"long_string_with_index_" + std::to_string(i)}}));
+                                                   union_vector.resource(),
+                                                   std::string{"long_string_with_index_" + std::to_string(i)}}));
                     break;
                 default:
                     continue;

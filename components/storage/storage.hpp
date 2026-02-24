@@ -27,13 +27,9 @@ namespace components::storage {
         virtual uint64_t total_rows() const = 0;
         virtual uint64_t calculate_size() = 0;
 
-        virtual void scan(vector::data_chunk_t& output,
-                          const table::table_filter_t* filter,
-                          int limit) = 0;
+        virtual void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int limit) = 0;
 
-        virtual void fetch(vector::data_chunk_t& output,
-                           const vector::vector_t& row_ids,
-                           uint64_t count) = 0;
+        virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
 
         virtual void scan_segment(int64_t start,
                                   uint64_t count,
@@ -41,8 +37,7 @@ namespace components::storage {
 
         virtual uint64_t append(vector::data_chunk_t& data) = 0;
 
-        virtual void update(vector::vector_t& row_ids,
-                            vector::data_chunk_t& data) = 0;
+        virtual void update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
 
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;
 

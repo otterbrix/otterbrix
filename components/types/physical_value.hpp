@@ -16,15 +16,14 @@ namespace components::types {
         // currently supported values
         // TODO: add memory ownership
         explicit physical_value() = default; // std::nullptr_t
-        explicit physical_value(std::nullptr_t);
         // string-like
         template<typename T>
-        physical_value(const T& value, typename std::enable_if<core::is_buffer_like<T>>::type* = nullptr)
+        requires(core::IsBufferLike<T>) explicit physical_value(const T& value)
             : physical_value(value.data(), static_cast<uint32_t>(value.size())) {}
         explicit physical_value(const char* data, uint32_t size);
         // all integral types
         template<typename T>
-        physical_value(T value, typename std::enable_if<!core::is_buffer_like<T>>::type* = nullptr)
+        requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
             std::memcpy(&data_, &value, sizeof(value));
         }

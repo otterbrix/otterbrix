@@ -3,7 +3,10 @@
 
 namespace services::disk {
 
-    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource, manager_disk_t* /*manager*/, const path_t& path_db, log_t& log)
+    agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
+                               manager_disk_t* /*manager*/,
+                               const path_t& path_db,
+                               log_t& log)
         : actor_zeta::basic_actor<agent_disk_t>(resource)
         , log_(log.clone())
         , disk_(path_db, this->resource())

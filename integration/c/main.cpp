@@ -1,7 +1,7 @@
 #include "otterbrix.h"
 
-#include <integration/cpp/base_spaces.hpp>
 #include <components/types/logical_value.hpp>
+#include <integration/cpp/base_spaces.hpp>
 
 using cursor_t = components::cursor::cursor_t;
 using logical_value_t = components::types::logical_value_t;
@@ -21,7 +21,8 @@ namespace {
 
     struct value_storage_t {
         state_t state;
-        logical_value_t value{std::pmr::null_memory_resource(), components::types::complex_logical_type{components::types::logical_type::NA}};
+        logical_value_t value{std::pmr::null_memory_resource(),
+                              components::types::complex_logical_type{components::types::logical_type::NA}};
     };
 
     configuration::config create_config() { return configuration::config::default_config(); }
@@ -176,8 +177,7 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
     auto storage = convert_cursor(ptr);
     const auto& chunk = storage->cursor->chunk_data();
 
-    if (static_cast<size_t>(row_index) >= chunk.size() ||
-        static_cast<size_t>(column_index) >= chunk.column_count()) {
+    if (static_cast<size_t>(row_index) >= chunk.size() || static_cast<size_t>(column_index) >= chunk.column_count()) {
         return nullptr;
     }
 
@@ -220,26 +220,21 @@ extern "C" bool value_is_bool(value_ptr ptr) {
 extern "C" bool value_is_int(value_ptr ptr) {
     auto storage = convert_value(ptr);
     auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::INT8 ||
-           pt == components::types::physical_type::INT16 ||
-           pt == components::types::physical_type::INT32 ||
-           pt == components::types::physical_type::INT64;
+    return pt == components::types::physical_type::INT8 || pt == components::types::physical_type::INT16 ||
+           pt == components::types::physical_type::INT32 || pt == components::types::physical_type::INT64;
 }
 
 extern "C" bool value_is_uint(value_ptr ptr) {
     auto storage = convert_value(ptr);
     auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::UINT8 ||
-           pt == components::types::physical_type::UINT16 ||
-           pt == components::types::physical_type::UINT32 ||
-           pt == components::types::physical_type::UINT64;
+    return pt == components::types::physical_type::UINT8 || pt == components::types::physical_type::UINT16 ||
+           pt == components::types::physical_type::UINT32 || pt == components::types::physical_type::UINT64;
 }
 
 extern "C" bool value_is_double(value_ptr ptr) {
     auto storage = convert_value(ptr);
     auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::FLOAT ||
-           pt == components::types::physical_type::DOUBLE;
+    return pt == components::types::physical_type::FLOAT || pt == components::types::physical_type::DOUBLE;
 }
 
 extern "C" bool value_is_string(value_ptr ptr) {

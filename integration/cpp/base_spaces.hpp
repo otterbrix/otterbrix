@@ -1,10 +1,10 @@
 #pragma once
 
 #include "wrapper_dispatcher.hpp"
+#include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <core/executor.hpp>
-#include <actor-zeta/detail/memory.hpp>
 
 #include <core/config.hpp>
 #include <core/file/file_system.hpp>
@@ -65,9 +65,7 @@ namespace otterbrix {
             void do_deallocate(void* p, size_t bytes, size_t align) override {
                 std::pmr::new_delete_resource()->deallocate(p, bytes, align);
             }
-            bool do_is_equal(const memory_resource& other) const noexcept override {
-                return this == &other;
-            }
+            bool do_is_equal(const memory_resource& other) const noexcept override { return this == &other; }
         } resource;
 #else
         std::pmr::synchronized_pool_resource resource;

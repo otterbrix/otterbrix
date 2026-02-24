@@ -52,7 +52,7 @@ namespace components::expressions {
         switch (type) {
             case update_expr_type::set:
                 return update_expr_set_t::deserialize(deserializer);
-            case update_expr_type::get_value_doc:
+            case update_expr_type::get_value:
                 return update_expr_get_value_t::deserialize(deserializer);
             case update_expr_type::get_value_params:
                 return update_expr_get_const_value_t::deserialize(deserializer);
@@ -97,7 +97,7 @@ namespace components::expressions {
             case update_expr_type::set:
                 return *reinterpret_cast<const update_expr_set_ptr&>(lhs) ==
                        *reinterpret_cast<const update_expr_set_ptr&>(rhs);
-            case update_expr_type::get_value_doc:
+            case update_expr_type::get_value:
                 return *reinterpret_cast<const update_expr_get_value_ptr&>(lhs) ==
                        *reinterpret_cast<const update_expr_get_value_ptr&>(rhs);
             case update_expr_type::get_value_params:
@@ -131,6 +131,8 @@ namespace components::expressions {
         : update_expr_t(update_expr_type::set)
         , key_(std::move(key)) {}
 
+    key_t& update_expr_set_t::key() noexcept { return key_; }
+
     const key_t& update_expr_set_t::key() const noexcept { return key_; }
 
     bool update_expr_set_t::operator==(const update_expr_set_t& rhs) const {
@@ -160,19 +162,20 @@ namespace components::expressions {
                                          size_t,
                                          const logical_plan::storage_parameters*) {
         if (left_) {
-            auto indices = to.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            auto prev_value = to.value(indices, row_to);
+            assert(key_.path().front() != size_t(-1));
+            auto prev_value = to.value(key_.path(), row_to);
             auto res = prev_value != left_->output().value();
-            to.set_value(indices, row_to, left_->output().value());
+            to.set_value(key_.path(), row_to, left_->output().value());
             return res;
         }
         return false;
     }
 
     update_expr_get_value_t::update_expr_get_value_t(key_t key)
-        : update_expr_t(update_expr_type::get_value_doc)
+        : update_expr_t(update_expr_type::get_value)
         , key_(std::move(key)) {}
+
+    key_t& update_expr_get_value_t::key() noexcept { return key_; }
 
     const key_t& update_expr_get_value_t::key() const noexcept { return key_; }
 
@@ -218,13 +221,11 @@ namespace components::expressions {
             }
         }
         if (side == side_t::right) {
-            auto indices = from.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            output_ = from.value(indices, row_from);
+            assert(key_.path().front() != size_t(-1));
+            output_ = from.value(key_.path(), row_from);
         } else if (side == side_t::left) {
-            auto indices = to.sub_column_indices(key_.storage());
-            assert(indices.front() != size_t(-1));
-            output_ = to.value(indices, row_to);
+            assert(key_.path().front() != size_t(-1));
+            output_ = to.value(key_.path(), row_to);
         }
         return false;
     }

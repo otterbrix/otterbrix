@@ -14,7 +14,7 @@ namespace components::expressions {
             if (!expr->key().is_null()) {
                 stream << expr->key() << ": ";
             }
-            stream << "{$" << magic_enum::enum_name(expr->type()) << ": ";
+            stream << "{$" << expr->function_name() << ": ";
             if (expr->params().size() > 1) {
                 stream << "[";
                 bool is_first = true;
@@ -36,23 +36,29 @@ namespace components::expressions {
     }
 
     aggregate_expression_t::aggregate_expression_t(std::pmr::memory_resource* resource,
-                                                   aggregate_type type,
+                                                   const std::string& function_name,
                                                    const key_t& key)
         : expression_i(expression_group::aggregate)
-        , type_(type)
+        , function_name_(function_name)
         , key_(key)
         , params_(resource) {}
 
-    aggregate_type aggregate_expression_t::type() const { return type_; }
-
     const key_t& aggregate_expression_t::key() const { return key_; }
+
+    const std::string& aggregate_expression_t::function_name() const { return function_name_; }
+
+    void aggregate_expression_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+
+    compute::function_uid aggregate_expression_t::function_uid() const { return function_uid_; }
+
+    std::pmr::vector<param_storage>& aggregate_expression_t::params() { return params_; }
 
     const std::pmr::vector<param_storage>& aggregate_expression_t::params() const { return params_; }
 
     void aggregate_expression_t::append_param(const param_storage& param) { params_.push_back(param); }
 
     expression_ptr aggregate_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<aggregate_type>(1);
+        auto func = deserializer->deserialize_string(1);
         auto key = deserializer->deserialize_key(2);
         std::pmr::vector<expressions::param_storage> params(deserializer->resource());
         deserializer->advance_array(3);
@@ -61,7 +67,7 @@ namespace components::expressions {
             params.emplace_back(expressions::deserialize_param_storage(deserializer, i));
         }
         deserializer->pop_array();
-        auto res = make_aggregate_expression(deserializer->resource(), type, key);
+        auto res = make_aggregate_expression(deserializer->resource(), func, key);
         for (const auto& param : params) {
             res->append_param(param);
         }
@@ -70,7 +76,7 @@ namespace components::expressions {
 
     hash_t aggregate_expression_t::hash_impl() const {
         hash_t hash_{0};
-        boost::hash_combine(hash_, type_);
+        boost::hash_combine(hash_, std::hash<std::string>{}(function_name_));
         boost::hash_combine(hash_, key_.hash());
         for (const auto& param : params_) {
             auto param_hash = std::visit(
@@ -98,14 +104,15 @@ namespace components::expressions {
 
     bool aggregate_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const aggregate_expression_t*>(rhs);
-        return type_ == other->type_ && key_ == other->key_ && params_.size() == other->params_.size() &&
+        return function_name_ == other->function_name_ && key_ == other->key_ &&
+               params_.size() == other->params_.size() &&
                std::equal(params_.begin(), params_.end(), other->params_.begin());
     }
 
     void aggregate_expression_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
         serializer->start_array(4);
         serializer->append_enum(serializer::serialization_type::expression_aggregate);
-        serializer->append_enum(type_);
+        serializer->append(function_name_);
         serializer->append(key_);
         serializer->start_array(params_.size());
         for (const auto& p : params_) {
@@ -114,33 +121,23 @@ namespace components::expressions {
         serializer->end_array();
         serializer->end_array();
     }
-
     aggregate_expression_ptr
-    make_aggregate_expression(std::pmr::memory_resource* resource, aggregate_type type, const key_t& key) {
-        return new aggregate_expression_t(resource, type, key);
-    }
-
-    aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource, aggregate_type type) {
-        return make_aggregate_expression(resource, type, key_t(resource));
+    make_aggregate_expression(std::pmr::memory_resource* resource, const std::string& function_name, const key_t& key) {
+        return new aggregate_expression_t(resource, function_name, key);
     }
 
     aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource,
-                                                       aggregate_type type,
+                                                       const std::string& function_name) {
+        return make_aggregate_expression(resource, function_name, key_t(resource));
+    }
+
+    aggregate_expression_ptr make_aggregate_expression(std::pmr::memory_resource* resource,
+                                                       const std::string& function_name,
                                                        const key_t& key,
                                                        const key_t& field) {
-        auto expr = make_aggregate_expression(resource, type, key);
+        auto expr = make_aggregate_expression(resource, function_name, key);
         expr->append_param(field);
         return expr;
     }
-
-    aggregate_type get_aggregate_type(const std::string& key) {
-        auto type = magic_enum::enum_cast<aggregate_type>(key);
-        if (type.has_value()) {
-            return type.value();
-        }
-        return aggregate_type::invalid;
-    }
-
-    bool is_aggregate_type(const std::string& key) { return magic_enum::enum_cast<aggregate_type>(key).has_value(); }
 
 } // namespace components::expressions

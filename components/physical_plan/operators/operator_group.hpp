@@ -1,10 +1,11 @@
 #pragma once
 
-#include "transformation.hpp"
-
 #include <components/expressions/expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <memory_resource>
+#include <unordered_map>
+
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
 #include <components/physical_plan/operators/get/operator_get.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -51,16 +52,17 @@ namespace components::operators {
         std::pmr::vector<computed_column_t> computed_columns_;
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         expressions::expression_ptr having_;
-        std::pmr::vector<impl::value_matrix_t> inputs_;
-        std::pmr::vector<types::complex_logical_type> result_types_;
-        impl::value_matrix_t transposed_output_;
+
+        std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
+        std::pmr::unordered_map<size_t, std::pmr::vector<size_t>> group_index_;
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         void create_list_rows();
-        void calc_aggregate_values(pipeline::context_t* pipeline_context);
-        void calc_post_aggregates(pipeline::context_t* pipeline_context);
-        void filter_having(pipeline::context_t* pipeline_context);
+        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
+        void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
+        void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };
 
 } // namespace components::operators

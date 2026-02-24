@@ -66,6 +66,10 @@ namespace components::vector {
         data[col_idx].set_value(index, val);
     }
 
+    void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, types::logical_value_t&& val) {
+        data[col_idx].set_value(index, std::move(val));
+    }
+
     void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_indices,
                                  uint64_t index,
                                  const types::logical_value_t& val) {
@@ -366,6 +370,23 @@ namespace components::vector {
             indexing.set_index(i, offset + i);
         }
         slice(indexing, slice_count);
+    }
+
+    data_chunk_t
+    data_chunk_t::slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const {
+        auto result_types = types();
+        auto count = static_cast<uint64_t>(row_ids.size());
+        uint64_t cap = count > 0 ? count : 1;
+        data_chunk_t result(resource, result_types, cap);
+        if (row_ids.empty()) {
+            return result;
+        }
+        indexing_vector_t indexing(resource, count);
+        for (uint64_t i = 0; i < count; i++) {
+            indexing.set_index(i, row_ids[i]);
+        }
+        copy(result, indexing, count, 0);
+        return result;
     }
 
     std::vector<unified_vector_format> data_chunk_t::to_unified_format(std::pmr::memory_resource* resource) {

@@ -550,6 +550,10 @@ namespace components::vector {
         }
     }
 
+    void vector_t::set_value(uint64_t index, types::logical_value_t&& val) {
+        set_value(index, static_cast<const types::logical_value_t&>(val));
+    }
+
     bool try_get_union_tag(const vector_t& vector, uint64_t index, uint8_t& result) {
         // tag is always the first struct child.
         auto& tag_vector = vector.entries()[0];

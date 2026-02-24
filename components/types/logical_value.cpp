@@ -2,6 +2,7 @@
 #include "operations_helper.hpp"
 #include <components/serialization/deserializer.hpp>
 
+#include <boost/container_hash/hash.hpp>
 #include <stdexcept>
 
 namespace std {
@@ -329,8 +330,55 @@ namespace components::types {
 
     void logical_value_t::set_alias(const std::string& alias) { type_.set_alias(alias); }
 
+    size_t logical_value_t::hash() const noexcept {
+        size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(type_.type()));
+        switch (type_.type()) {
+            case logical_type::NA:
+                break;
+            case logical_type::BOOLEAN:
+            case logical_type::TINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::BIGINT:
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+            case logical_type::POINTER:
+                boost::hash_combine(h, data_);
+                break;
+            case logical_type::FLOAT: {
+                float f = value<float>();
+                boost::hash_combine(h, f);
+                break;
+            }
+            case logical_type::DOUBLE: {
+                double d = value<double>();
+                boost::hash_combine(h, d);
+                break;
+            }
+            case logical_type::STRING_LITERAL:
+                if (data_) {
+                    boost::hash_combine(h, std::hash<std::string>{}(*str_ptr()));
+                }
+                break;
+            default:
+                boost::hash_combine(h, data_);
+                break;
+        }
+        return h;
+    }
+
+    size_t hash_row(const std::pmr::vector<logical_value_t>& row) noexcept {
+        size_t h = 0;
+        for (const auto& val : row) {
+            boost::hash_combine(h, val.hash());
+        }
+        return h;
+    }
+
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
-        if (type_ != rhs.type_) {
+        if (type_.type() != rhs.type_.type()) {
             if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
                 (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());

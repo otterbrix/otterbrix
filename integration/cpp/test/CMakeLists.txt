@@ -53,3 +53,29 @@ target_link_libraries(
 include(CTest)
 include(Catch)
 catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 1800)
+
+# Profiling binary for arithmetic
+add_executable(profile_arithmetic profile_arithmetic.cpp)
+target_link_libraries(profile_arithmetic PRIVATE
+        cpp_otterbrix
+        otterbrix::test_generaty
+        otterbrix::log
+        otterbrix::collection
+        otterbrix::cursor
+        otterbrix::session
+        otterbrix::dispatcher
+        otterbrix::wal
+        otterbrix::disk
+        otterbrix::locks
+        spdlog::spdlog
+        msgpackc-cxx
+        Catch2::Catch2
+        absl::crc32c
+        absl::int128
+        benchmark::benchmark
+        actor-zeta::actor-zeta
+        Boost::boost
+        fmt::fmt
+        ZLIB::ZLIB
+        BZip2::BZip2
+)

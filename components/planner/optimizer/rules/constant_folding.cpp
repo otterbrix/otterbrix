@@ -179,7 +179,10 @@ namespace components::planner::optimizer {
             }
         }
 
-        // Promote a folded scalar expression_ptr to parameter_id_t
+        // Promote a folded scalar expression_ptr to parameter_id_t.
+        // IMPORTANT: extract the id by value BEFORE assigning to slot,
+        // because the assignment destroys the expression_ptr which may
+        // free the scalar expression (use-after-free if we hold a reference).
         void try_promote_scalar(param_storage& slot) {
             if (!std::holds_alternative<expression_ptr>(slot)) {
                 return;
@@ -191,7 +194,8 @@ namespace components::planner::optimizer {
             auto* ns = static_cast<scalar_expression_t*>(nested.get());
             if (ns->params().size() == 1 &&
                 std::holds_alternative<core::parameter_id_t>(ns->params()[0])) {
-                slot = std::get<core::parameter_id_t>(ns->params()[0]);
+                auto id = std::get<core::parameter_id_t>(ns->params()[0]);
+                slot = id;
             }
         }
 

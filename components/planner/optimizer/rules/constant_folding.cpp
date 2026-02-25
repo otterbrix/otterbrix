@@ -199,73 +199,80 @@ namespace components::planner::optimizer {
             }
         }
 
-        // Recursively fold expressions in a single expression tree
+        void fold_expression(std::pmr::memory_resource* resource,
+                             const expression_ptr& expr,
+                             parameter_node_t* parameters);
+
+        void fold_scalar(std::pmr::memory_resource* resource,
+                         scalar_expression_t* scalar,
+                         parameter_node_t* parameters) {
+            for (auto& param : scalar->params()) {
+                if (!std::holds_alternative<expression_ptr>(param)) {
+                    continue;
+                }
+                fold_expression(resource, std::get<expression_ptr>(param), parameters);
+                try_promote_scalar(param);
+            }
+            try_fold_scalar(resource, *scalar, parameters);
+        }
+
+        void fold_compare(std::pmr::memory_resource* resource,
+                          compare_expression_t* comp,
+                          parameter_node_t* parameters) {
+            for (const auto& child : comp->children()) {
+                fold_expression(resource, child, parameters);
+            }
+            if (std::holds_alternative<expression_ptr>(comp->left())) {
+                fold_expression(resource, std::get<expression_ptr>(comp->left()), parameters);
+                try_promote_scalar(comp->left());
+            }
+            if (std::holds_alternative<expression_ptr>(comp->right())) {
+                fold_expression(resource, std::get<expression_ptr>(comp->right()), parameters);
+                try_promote_scalar(comp->right());
+            }
+            try_fold_compare(*comp, parameters);
+            simplify_union(comp);
+        }
+
         void fold_expression(std::pmr::memory_resource* resource,
                              const expression_ptr& expr,
                              parameter_node_t* parameters) {
             if (!expr) {
                 return;
             }
-
             if (expr->group() == expression_group::scalar) {
-                auto* scalar = static_cast<scalar_expression_t*>(expr.get());
-
-                // First recurse into nested expression params
-                for (auto& param : scalar->params()) {
-                    if (std::holds_alternative<expression_ptr>(param)) {
-                        fold_expression(resource, std::get<expression_ptr>(param), parameters);
-                        try_promote_scalar(param);
-                    }
-                }
-
-                // Then try to fold this expression itself
-                try_fold_scalar(resource, *scalar, parameters);
-
+                fold_scalar(resource, static_cast<scalar_expression_t*>(expr.get()), parameters);
             } else if (expr->group() == expression_group::compare) {
-                auto* comp = static_cast<compare_expression_t*>(expr.get());
-
-                // Recurse into children (union_and/or/not have children)
-                for (const auto& child : comp->children()) {
-                    fold_expression(resource, child, parameters);
-                }
-
-                // Recurse into left/right if they are expressions
-                if (std::holds_alternative<expression_ptr>(comp->left())) {
-                    fold_expression(resource, std::get<expression_ptr>(comp->left()), parameters);
-                    try_promote_scalar(comp->left());
-                }
-                if (std::holds_alternative<expression_ptr>(comp->right())) {
-                    fold_expression(resource, std::get<expression_ptr>(comp->right()), parameters);
-                    try_promote_scalar(comp->right());
-                }
-
-                // Try to fold this compare
-                try_fold_compare(*comp, parameters);
-
-                // Simplify union expressions after children are folded
-                simplify_union(comp);
+                fold_compare(resource, static_cast<compare_expression_t*>(expr.get()), parameters);
             }
         }
 
     } // namespace
 
-    void fold_constants_recursive(std::pmr::memory_resource* resource,
-                                  const logical_plan::node_ptr& node,
-                                  logical_plan::parameter_node_t* parameters) {
+    void fold_constants(std::pmr::memory_resource* resource,
+                        const logical_plan::node_ptr& node,
+                        logical_plan::parameter_node_t* parameters) {
         if (!node) {
             return;
         }
 
-        // Recurse into children first (bottom-up)
-        for (const auto& child : node->children()) {
-            fold_constants_recursive(resource, child, parameters);
+        // BFS collect all nodes, then process in reverse (bottom-up)
+        std::vector<logical_plan::node_ptr> stack{node};
+        std::vector<logical_plan::node_ptr> order;
+        while (!stack.empty()) {
+            auto current = std::move(stack.back());
+            stack.pop_back();
+            for (const auto& child : current->children()) {
+                stack.push_back(child);
+            }
+            order.push_back(std::move(current));
         }
 
-        // Only fold expressions in match nodes (WHERE clauses).
-        // Group/sort/aggregate expressions are used for computation and
-        // must keep their structure for the physical plan evaluator.
-        if (node->type() == logical_plan::node_type::match_t) {
-            for (const auto& expr : node->expressions()) {
+        for (auto it = order.rbegin(); it != order.rend(); ++it) {
+            if ((*it)->type() != logical_plan::node_type::match_t) {
+                continue;
+            }
+            for (const auto& expr : (*it)->expressions()) {
                 fold_expression(resource, expr, parameters);
             }
         }

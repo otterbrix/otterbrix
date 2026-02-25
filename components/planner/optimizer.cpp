@@ -14,7 +14,7 @@ namespace components::planner {
 
         // Constant folding: resolve arithmetic on parameters at plan time
         if (parameters) {
-            optimizer::fold_constants_recursive(resource, node, parameters);
+            optimizer::fold_constants(resource, node, parameters);
         }
 
         return node;

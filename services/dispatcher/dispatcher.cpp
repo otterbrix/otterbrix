@@ -686,7 +686,7 @@ namespace services::dispatcher {
 
     node_ptr manager_dispatcher_t::create_logic_plan(node_ptr plan) {
         components::planner::planner_t planner;
-        return planner.create_plan(resource(), std::move(plan));
+        return planner.create_plan(resource(), std::move(plan), &catalog_);
     }
 
     void manager_dispatcher_t::update_catalog(node_ptr node) {

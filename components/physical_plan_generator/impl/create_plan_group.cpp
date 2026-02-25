@@ -7,7 +7,6 @@
 #include <components/physical_plan/operators/operator_group.hpp>
 
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
-#include <components/physical_plan/operators/get/simple_value.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
 namespace services::planner::impl {
@@ -56,11 +55,7 @@ namespace services::planner::impl {
                 case scalar_type::group_field:
                     break;
                 case scalar_type::get_field: {
-                    auto field = expr->params().empty()
-                                     ? expr->key()
-                                     : std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_key(expr->key().storage().back(),
-                                   components::operators::get::simple_value_t::create(field));
+                    group->add_key(std::pmr::string(expr->key().as_string(), resource));
                     break;
                 }
                 default: {
@@ -81,8 +76,7 @@ namespace services::planner::impl {
                             group->add_computed_column(std::move(comp));
                             // Also add as key for output projection
                             group->add_key(
-                                std::pmr::string(expr->key().as_string(), resource),
-                                components::operators::get::simple_value_t::create(expr->key()));
+                                std::pmr::string(expr->key().as_string(), resource));
                         }
                     }
                     break;

@@ -72,6 +72,9 @@ namespace components::vector {
 
         data_chunk_t slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const;
 
+        data_chunk_t slice_contiguous(std::pmr::memory_resource* resource,
+                                       uint64_t offset, uint64_t count) const;
+
         void reset();
 
         void hash(vector_t& result);

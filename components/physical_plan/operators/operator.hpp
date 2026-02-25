@@ -87,6 +87,7 @@ namespace components::operators {
         const operator_write_data_ptr& modified() const;
         const operator_write_data_ptr& no_modified() const;
         void set_children(ptr left, ptr right = nullptr);
+        void set_output(operator_data_ptr data);
         void take_output(ptr& src);
         void clear(); //todo: replace by copy
 

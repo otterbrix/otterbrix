@@ -389,6 +389,20 @@ namespace components::vector {
         return result;
     }
 
+    data_chunk_t data_chunk_t::slice_contiguous(
+        std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
+        assert(offset + count <= size());
+        std::pmr::vector<types::complex_logical_type> empty_types(resource);
+        data_chunk_t result(resource, empty_types, 0);
+        result.capacity_ = count;
+        result.count_ = count;
+        result.data.reserve(column_count());
+        for (uint64_t c = 0; c < column_count(); c++) {
+            result.data.emplace_back(data[c], offset, count);
+        }
+        return result;
+    }
+
     std::vector<unified_vector_format> data_chunk_t::to_unified_format(std::pmr::memory_resource* resource) {
         std::vector<unified_vector_format> unified_data;
         unified_data.reserve(column_count());

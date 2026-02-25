@@ -42,7 +42,7 @@ namespace components::operators {
                 indexing.set_index(i, indices[i]);
             }
 
-            // 4. Create result via copy with indexing (no transpose needed)
+            // 4. Create result via copy with indexing
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);
             chunk.copy(result, indexing, num_rows, 0);
 

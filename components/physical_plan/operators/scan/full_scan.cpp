@@ -1,6 +1,5 @@
 #include "full_scan.hpp"
 
-#include <components/physical_plan/operators/transformation.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {

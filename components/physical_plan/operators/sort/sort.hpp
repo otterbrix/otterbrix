@@ -19,6 +19,7 @@ namespace components::sort {
             std::string col_name;
             order order_ = order::ascending;
             bool by_name = false;
+            std::vector<std::string> child_path; // for nested struct field extraction
         };
 
     public:
@@ -33,8 +34,8 @@ namespace components::sort {
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                auto va = chunk_->value(k.col_idx, row_a);
-                auto vb = chunk_->value(k.col_idx, row_b);
+                auto va = extract_value(k, row_a);
+                auto vb = extract_value(k, row_b);
                 auto cmp = va.compare(vb);
                 auto k_order =
                     static_cast<int>(k.order_ == order::ascending ? compare_t::more : compare_t::less);
@@ -50,6 +51,8 @@ namespace components::sort {
         }
 
     private:
+        types::logical_value_t extract_value(const sort_key& k, size_t row) const;
+
         std::vector<sort_key> keys_;
         const vector::data_chunk_t* chunk_ = nullptr;
     };

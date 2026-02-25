@@ -7,14 +7,12 @@
 #include <unordered_map>
 
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
-#include <components/physical_plan/operators/get/operator_get.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
 namespace components::operators {
 
     struct group_key_t {
         std::pmr::string name;
-        get::operator_get_ptr getter;
     };
 
     struct group_value_t {
@@ -41,7 +39,7 @@ namespace components::operators {
         operator_group_t(std::pmr::memory_resource* resource, log_t log,
                          expressions::expression_ptr having = nullptr);
 
-        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
+        void add_key(const std::pmr::string& name);
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);
@@ -61,6 +59,10 @@ namespace components::operators {
 
         void create_list_rows();
         vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
+        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context);
+        vector::data_chunk_t build_result_chunk(
+            size_t num_groups, size_t key_count,
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results);
         void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
         void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };

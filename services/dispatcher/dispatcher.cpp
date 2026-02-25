@@ -11,6 +11,7 @@
 #include <thread>
 
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer.hpp>
 #include <components/planner/planner.hpp>
 
 #include <services/collection/context_storage.hpp>
@@ -202,6 +203,8 @@ namespace services::dispatcher {
         params_for_wal->set_parameters(params->parameters());
 
         auto logic_plan = create_logic_plan(plan);
+        // Optimizer: constant folding, etc.
+        logic_plan = components::planner::optimize(resource(), logic_plan, &catalog_, params.get());
         table_id id(resource(), logic_plan->collection_full_name());
         cursor_t_ptr error;
         switch (logic_plan->type()) {
@@ -663,6 +666,19 @@ namespace services::dispatcher {
                 collections_context_storage.known_collections.insert(name);
             }
         }
+
+        // Populate index metadata for optimizer-driven index selection
+        if (index_address_ != actor_zeta::address_t::empty_address()) {
+            auto coll = logical_plan->collection_full_name();
+            if (!coll.empty()) {
+                auto [_ik, ikf] = actor_zeta::send(index_address_,
+                                                   &index::manager_index_t::get_indexed_keys,
+                                                   session,
+                                                   coll);
+                collections_context_storage.indexed_keys = co_await std::move(ikf);
+            }
+        }
+        collections_context_storage.parameters = &parameters;
 
         assert(!executors_.empty());
         auto pool_idx = collection_name_hash{}(logical_plan->collection_full_name()) % executors_.size();

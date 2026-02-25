@@ -61,6 +61,10 @@ namespace components::logical_plan {
 
         auto parameter(core::parameter_id_t id) const -> const expr_value_t&;
 
+        void set_parameter(core::parameter_id_t id, expr_value_t value) {
+            values_.parameters.insert_or_assign(id, std::move(value));
+        }
+
         void serialize(serializer::msgpack_serializer_t* serializer) const;
         static boost::intrusive_ptr<parameter_node_t> deserialize(serializer::msgpack_deserializer_t* deserilizer);
 

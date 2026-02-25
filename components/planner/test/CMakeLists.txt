@@ -2,6 +2,7 @@ project(test_translator)
 
 set(${PROJECT_NAME}_SOURCES
         test_logical_plan.cpp
+        test_optimizer.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
@@ -12,6 +13,8 @@ target_link_libraries(
         otterbrix::logical_plan
         otterbrix::test_generaty
         otterbrix::planner
+        otterbrix::vector
+        otterbrix::physical_plan_generator
         Catch2::Catch2
         actor-zeta::actor-zeta
         absl::int128

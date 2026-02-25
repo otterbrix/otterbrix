@@ -11,32 +11,60 @@ namespace components::operators {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
             return nullptr;
         }
+        if (expression->type() == expressions::compare_type::all_false) {
+            return nullptr;
+        }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
                 auto filter = std::make_unique<table::conjunction_and_filter_t>();
-                filter->child_filters.reserve(expression->children().size());
                 for (const auto& child : expression->children()) {
-                    filter->child_filters.emplace_back(
+                    auto child_filter =
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
-                                            parameters));
+                                            parameters);
+                    if (child_filter) {
+                        filter->child_filters.emplace_back(std::move(child_filter));
+                    }
+                }
+                if (filter->child_filters.empty()) {
+                    return nullptr;
+                }
+                if (filter->child_filters.size() == 1) {
+                    return std::move(filter->child_filters[0]);
                 }
                 return filter;
             }
             case expressions::compare_type::union_or: {
                 auto filter = std::make_unique<table::conjunction_or_filter_t>();
-                filter->child_filters.reserve(expression->children().size());
                 for (const auto& child : expression->children()) {
-                    filter->child_filters.emplace_back(
+                    auto child_filter =
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
-                                            parameters));
+                                            parameters);
+                    if (child_filter) {
+                        filter->child_filters.emplace_back(std::move(child_filter));
+                    }
+                }
+                if (filter->child_filters.empty()) {
+                    return nullptr;
+                }
+                if (filter->child_filters.size() == 1) {
+                    return std::move(filter->child_filters[0]);
                 }
                 return filter;
             }
             case expressions::compare_type::invalid:
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             default: {
+                // Handle expression_ptr that the optimizer didn't promote
+                if (std::holds_alternative<expressions::expression_ptr>(expression->left()) ||
+                    std::holds_alternative<expressions::expression_ptr>(expression->right())) {
+                    return nullptr;
+                }
+                if (!std::holds_alternative<expressions::key_t>(expression->left()) ||
+                    !std::holds_alternative<core::parameter_id_t>(expression->right())) {
+                    return nullptr;
+                }
                 std::vector<uint64_t> indices;
                 // pointer + size to avoid std::vector and std::pmr::vector clashing
                 auto* local_types = types.data();
@@ -56,8 +84,12 @@ namespace components::operators {
                         size = it->child_types().size();
                     }
                 }
+                auto it = parameters->parameters.find(id);
+                if (it == parameters->parameters.end()) {
+                    return nullptr;
+                }
                 return std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                  parameters->parameters.at(id),
+                                                                  it->second,
                                                                   std::move(indices));
             }
         }
@@ -82,6 +114,13 @@ namespace components::operators {
     actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
         if (log_.is_valid()) {
             trace(log(), "full_scan::await_async_and_resume on {}", name_.to_string());
+        }
+
+        // Short-circuit: if expression is all_false, return empty result immediately
+        if (expression_ && expression_->type() == expressions::compare_type::all_false) {
+            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
+            mark_executed();
+            co_return;
         }
 
         // Get types to build filter

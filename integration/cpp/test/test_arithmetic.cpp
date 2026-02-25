@@ -947,3 +947,217 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 10200);
     }
 }
+
+// ================================================================
+// Optimizer constant folding — integration tests
+// ================================================================
+
+TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
+    auto config = test_create_config("/tmp/test_optimizer_folding");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto types = gen_data_chunk(0, dispatcher->resource()).types();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_collection(session, database_name, collection_name, types);
+        }
+    }
+
+    INFO("insert test data") {
+        auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_plan(session, ins);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kNumInserts);
+    }
+
+    // ================================================================
+    // I1. WHERE with constant true
+    // ================================================================
+    INFO("I1. WHERE with constant true: 5 = 5") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 5;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kNumInserts);
+    }
+
+    // ================================================================
+    // I2. WHERE with constant false
+    // ================================================================
+    INFO("I2. WHERE with constant false: 5 = 7") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 7;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    // ================================================================
+    // I3. WHERE with constant arithmetic + field
+    // ================================================================
+    INFO("I3a. sanity: WHERE count > 5 (no arithmetic)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 5;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 95);
+    }
+
+    INFO("I3. WHERE count > 2 + 3") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 2 + 3;)_");
+        REQUIRE(cur->is_success());
+        // count > 5 means count 6..100 = 95 rows
+        REQUIRE(cur->size() == 95);
+    }
+
+    // ================================================================
+    // I4. WHERE with constant arithmetic: multiply
+    // ================================================================
+    INFO("I4. WHERE count < 5 * 2") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count < 5 * 2;)_");
+        REQUIRE(cur->is_success());
+        // count < 10 means count 1..9 = 9 rows
+        REQUIRE(cur->size() == 9);
+    }
+
+    // ================================================================
+    // I5. WHERE with constant comparison: gt true
+    // ================================================================
+    INFO("I5. WHERE 10 > 5 (constant true)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 10 > 5;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kNumInserts);
+    }
+
+    // ================================================================
+    // I6. WHERE with constant comparison: lt false
+    // ================================================================
+    INFO("I6. WHERE 3 > 10 (constant false)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 3 > 10;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    // ================================================================
+    // I7. Nested: field compare to arithmetic
+    // ================================================================
+    INFO("I7. WHERE count = 10 + 40") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 10 + 40;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+    }
+
+    // ================================================================
+    // I8. No-op: non-match expressions unchanged
+    // ================================================================
+    INFO("I8. SELECT count + 10 (projection not folded)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count + 10 AS plus FROM TestDatabase.TestCollection )_"
+                                           R"_(ORDER BY count ASC LIMIT 3;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 11);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 12);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[2] == 13);
+    }
+
+    // ================================================================
+    // I9. WHERE with AND: constant + field
+    // ================================================================
+    INFO("I9. WHERE 5 = 5 AND count > 95") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection )_"
+                                           R"_(WHERE 5 = 5 AND count > 95;)_");
+        REQUIRE(cur->is_success());
+        // count 96..100 = 5 rows
+        REQUIRE(cur->size() == 5);
+    }
+
+    // ================================================================
+    // I10. WHERE with OR: constant false + field
+    // ================================================================
+    INFO("I10. WHERE 5 = 7 OR count = 50") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection )_"
+                                           R"_(WHERE 5 = 7 OR count = 50;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+    }
+
+    // ================================================================
+    // I11. Nested arithmetic in WHERE: (2+3)*10
+    // ================================================================
+    INFO("I11. WHERE count = (2 + 3) * 10") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection )_"
+                                           R"_(WHERE count = (2 + 3) * 10;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+    }
+
+    // ================================================================
+    // I12. Double constants in WHERE
+    // ================================================================
+    INFO("I12. WHERE count > 99.5") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 99.5;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 100);
+    }
+
+    // ================================================================
+    // I13. Subtraction in WHERE
+    // ================================================================
+    INFO("I13. WHERE count = 100 - 1") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 100 - 1;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 99);
+    }
+
+    // ================================================================
+    // I14. Modulo in WHERE
+    // ================================================================
+    INFO("I14. WHERE count = 103 % 10") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 103 % 10;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 3);
+    }
+}

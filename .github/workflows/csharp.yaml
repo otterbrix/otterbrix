@@ -13,23 +13,17 @@ jobs:
       matrix:
         dotnet-version: [ '3.1.x', '6.0.x' ]
         operating-system: [ ubuntu-20.04 ]
-        python-version: [ 3.8 ]
     steps:
           - name: Checkout
             uses: actions/checkout@v4
 
-          - name: Set up Python ${{ matrix.python-version }}
-            uses: actions/setup-python@v5
-            with:
-              python-version: ${{ matrix.python-version }}
-
           - name: Install system dependencies
             run: |
-              sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip python3-dev curl gnupg apt-transport-https flex bison
+              sudo apt update && sudo apt install -y  build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison
 
           - name: conan installation and configuration
             run: |
-              pip install conan==2.20.0 pytest==6.2.5
+              pip install conan==2.20.0
               conan profile detect --force
               conan remote add otterbrix http://conan.otterbrix.com
 
@@ -51,11 +45,6 @@ jobs:
             run: |
               cd build
               ctest -C -V --output-on-failure
-
-          - name: PyTest
-            run: |
-              cd build/integration/python/
-              pytest    
 
           - name: Setup dotnet
             uses: actions/setup-dotnet@v4

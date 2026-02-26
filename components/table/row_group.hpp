@@ -69,7 +69,6 @@ namespace components::table {
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
         void revert_append(uint64_t row_group_start);
 
-        uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count);
         uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);

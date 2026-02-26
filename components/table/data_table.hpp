@@ -40,7 +40,6 @@ namespace components::table {
 
         std::unique_ptr<table_delete_state>
         initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
-        uint64_t delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count);
         uint64_t delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
 
         std::unique_ptr<table_update_state>

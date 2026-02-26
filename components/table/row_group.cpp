@@ -596,18 +596,6 @@ namespace components::table {
         void flush();
     };
 
-    uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count) {
-        version_delete_state del_state(*this, current_version_, table, start);
-
-        for (uint64_t i = 0; i < count; i++) {
-            assert(ids[i] >= 0);
-            assert(ids[i] >= start && ids[i] < start + static_cast<int64_t>(this->count));
-            del_state.delete_row(ids[i]);
-        }
-        del_state.flush();
-        return del_state.delete_count;
-    }
-
     uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
         return get_or_create_version_info().delete_rows(vector_idx, ++current_version_, rows, count);
     }

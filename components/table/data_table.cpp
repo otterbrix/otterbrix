@@ -337,35 +337,6 @@ namespace components::table {
         return result;
     }
 
-    uint64_t data_table_t::delete_rows(table_delete_state&, vector::vector_t& row_identifiers, uint64_t count) {
-        assert(row_identifiers.type().type() == types::logical_type::BIGINT);
-        if (count == 0) {
-            return 0;
-        }
-
-        row_identifiers.flatten(count);
-        auto ids = row_identifiers.data<int64_t>();
-
-        uint64_t pos = 0;
-        uint64_t delete_count = 0;
-        while (pos < count) {
-            uint64_t start = pos;
-            bool is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
-            for (pos++; pos < count; pos++) {
-                bool row_is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
-                if (row_is_transaction_delete != is_transaction_delete) {
-                    break;
-                }
-            }
-            uint64_t current_offset = start;
-            uint64_t current_count = pos - start;
-
-            vector::vector_t offset_ids(row_identifiers, current_offset, pos);
-            delete_count += row_groups_->delete_rows(*this, ids + current_offset, current_count);
-        }
-        return delete_count;
-    }
-
     uint64_t data_table_t::delete_rows(table_delete_state&, vector::vector_t& row_identifiers,
                                        uint64_t count, uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);

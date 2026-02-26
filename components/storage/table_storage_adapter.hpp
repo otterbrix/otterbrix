@@ -169,7 +169,7 @@ namespace components::storage {
 
         uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) override {
             auto delete_state = table_.initialize_delete({});
-            return table_.delete_rows(*delete_state, row_ids, count);
+            return table_.delete_rows(*delete_state, row_ids, count, 0);
         }
 
         uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {

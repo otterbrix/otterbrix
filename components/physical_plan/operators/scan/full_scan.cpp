@@ -5,6 +5,34 @@
 
 namespace components::operators {
 
+    namespace {
+        std::vector<uint64_t>
+        resolve_column_path(const expressions::compare_expression_ptr& expression,
+                            const std::pmr::vector<types::complex_logical_type>& types) {
+            std::vector<uint64_t> indices;
+            auto* local_types = types.data();
+            size_t size = types.size();
+            for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
+                auto it =
+                    std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
+                        return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
+                    });
+                if (it == local_types + size) {
+                    throw std::runtime_error("column path not found in schema");
+                }
+                indices.emplace_back(it - local_types);
+                if (i + 1 != expression->primary_key().storage().size()) {
+                    if (it->child_types().empty()) {
+                        throw std::runtime_error("column path not found in schema");
+                    }
+                    local_types = it->child_types().data();
+                    size = it->child_types().size();
+                }
+            }
+            return indices;
+        }
+    } // namespace
+
     std::unique_ptr<table::table_filter_t>
     transform_predicate(const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
@@ -48,7 +76,7 @@ namespace components::operators {
                     }
                 }
                 if (filter->child_filters.empty()) {
-                    return nullptr;
+                    throw std::runtime_error("empty NOT filter — expression construction error");
                 }
                 return filter;
             }
@@ -56,63 +84,11 @@ namespace components::operators {
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
-                std::vector<uint64_t> indices;
-                auto* local_types = types.data();
-                size_t size = types.size();
-                bool path_valid = true;
-                for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
-                    auto it =
-                        std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                            return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
-                        });
-                    if (it == local_types + size) {
-                        path_valid = false;
-                        break;
-                    }
-                    indices.emplace_back(it - local_types);
-                    if (i + 1 != expression->primary_key().storage().size()) {
-                        if (it->child_types().empty()) {
-                            path_valid = false;
-                            break;
-                        }
-                        local_types = it->child_types().data();
-                        size = it->child_types().size();
-                    }
-                }
-                if (!path_valid) {
-                    throw std::runtime_error("column path not found in schema");
-                }
+                auto indices = resolve_column_path(expression, types);
                 return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
             }
             default: {
-                std::vector<uint64_t> indices;
-                // pointer + size to avoid std::vector and std::pmr::vector clashing
-                auto* local_types = types.data();
-                size_t size = types.size();
-                bool path_valid = true;
-                for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
-                    auto it =
-                        std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                            return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
-                        });
-                    if (it == local_types + size) {
-                        path_valid = false;
-                        break;
-                    }
-                    indices.emplace_back(it - local_types);
-                    // if it isn't the last one
-                    if (i + 1 != expression->primary_key().storage().size()) {
-                        if (it->child_types().empty()) {
-                            path_valid = false;
-                            break;
-                        }
-                        local_types = it->child_types().data();
-                        size = it->child_types().size();
-                    }
-                }
-                if (!path_valid) {
-                    throw std::runtime_error("column path not found in schema");
-                }
+                auto indices = resolve_column_path(expression, types);
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(expression->value()),
                                                                   std::move(indices));

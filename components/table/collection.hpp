@@ -80,7 +80,6 @@ namespace components::table {
 
         void merge_storage(collection_t& data);
 
-        uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count);
         uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
         void update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
         void update_column(vector::vector_t& row_ids,

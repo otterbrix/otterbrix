@@ -1,6 +1,7 @@
 #include "schema.hpp"
 
 #include <unordered_set>
+#include <memory_resource>
 
 using namespace components::types;
 
@@ -15,14 +16,15 @@ namespace components::catalog {
         , resource_(resource) {
         auto& detailed_struct = to_struct(schema_struct);
         {
-            std::unordered_set<std::string> names;
+            std::pmr::unordered_set<std::pmr::string> names(resource);
             for (const auto& type : detailed_struct.child_types()) {
-                if (names.count(type.alias())) {
+                std::pmr::string alias(type.alias(), resource);
+                if (names.count(alias)) {
                     error_ = catalog_error(catalog_mistake_t::DUPLICATE_COLUMN,
                                            "Duplicate column with name \"" + type.alias() + "\", names must be unique");
                 }
 
-                names.emplace(type.alias());
+                names.emplace(std::move(alias));
             }
         }
 

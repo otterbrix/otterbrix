@@ -7,13 +7,6 @@
 
 namespace services::disk {
 
-    namespace {
-        uint32_t compute_crc32(const std::byte* data, size_t size) {
-            return static_cast<uint32_t>(
-                absl::ComputeCrc32c({reinterpret_cast<const char*>(data), size}));
-        }
-    } // namespace
-
     // ---- Serialize/Deserialize ----
 
     static constexpr uint32_t CATALOG_MAGIC = 0x5842544F; // "OTBX"
@@ -75,7 +68,8 @@ namespace services::disk {
 
         // Compute CRC32 over payload (everything after magic + version, i.e. from byte 8 onward)
         auto& data = w.data();
-        uint32_t crc = compute_crc32(data.data() + 8, data.size() - 8);
+        uint32_t crc = static_cast<uint32_t>(
+            absl::ComputeCrc32c({reinterpret_cast<const char*>(data.data() + 8), data.size() - 8}));
         w.write_u32(crc);
 
         return std::move(w.data());
@@ -99,7 +93,8 @@ namespace services::disk {
         // Verify CRC32: covers bytes [8 .. size-4), CRC is at [size-4 .. size)
         uint32_t stored_crc;
         std::memcpy(&stored_crc, data + size - 4, sizeof(stored_crc));
-        uint32_t computed_crc = compute_crc32(data + 8, size - 8 - 4);
+        uint32_t computed_crc = static_cast<uint32_t>(
+            absl::ComputeCrc32c({reinterpret_cast<const char*>(data + 8), size - 8 - 4}));
         if (stored_crc != computed_crc) {
             throw std::runtime_error("catalog checksum mismatch");
         }

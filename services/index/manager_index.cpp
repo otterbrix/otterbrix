@@ -279,7 +279,7 @@ namespace services::index {
         agent_addr_map_t insert_addrs;
         for (uint64_t i = 0; i < count; i++) {
             size_t row = static_cast<size_t>(start_row_id + i);
-            engine->insert_row(*data, row);
+            engine->insert_row(*data, row, 0);
             collect_disk_op(engine, *data, row, resource_, insert_batches, insert_addrs);
         }
         for (auto& [id, batch] : insert_batches) {
@@ -308,7 +308,7 @@ namespace services::index {
         agent_batch_map_t remove_batches;
         agent_addr_map_t remove_addrs;
         for (auto row_id : row_ids) {
-            engine->delete_row(*data, row_id);
+            engine->mark_delete_row(*data, row_id, 0);
             collect_disk_op(engine, *data, row_id, resource_, remove_batches, remove_addrs);
         }
         for (auto& [id, batch] : remove_batches) {
@@ -340,7 +340,7 @@ namespace services::index {
         agent_batch_map_t remove_batches;
         agent_addr_map_t remove_addrs;
         for (auto row_id : row_ids) {
-            engine->delete_row(*old_data, row_id);
+            engine->mark_delete_row(*old_data, row_id, 0);
             collect_disk_op(engine, *old_data, row_id, resource_, remove_batches, remove_addrs);
         }
         for (auto& [id, batch] : remove_batches) {
@@ -355,7 +355,7 @@ namespace services::index {
         agent_batch_map_t insert_batches;
         agent_addr_map_t insert_addrs;
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, row_ids[i]);
+            engine->insert_row(*new_data, row_ids[i], 0);
             collect_disk_op(engine, *new_data, row_ids[i], resource_, insert_batches, insert_addrs);
         }
         for (auto& [id, batch] : insert_batches) {

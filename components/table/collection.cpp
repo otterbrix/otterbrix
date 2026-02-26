@@ -311,26 +311,6 @@ namespace components::table {
         total_rows_ += data.total_rows_.load();
     }
 
-    uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count) {
-        uint64_t delete_count = 0;
-        uint64_t pos = 0;
-        do {
-            uint64_t start = pos;
-            auto row_group = row_groups_->get_segment(ids[start]);
-            for (pos++; pos < count; pos++) {
-                assert(ids[pos] >= 0);
-                if (ids[pos] < row_group->start) {
-                    break;
-                }
-                if (ids[pos] >= row_group->start + static_cast<int64_t>(row_group->count)) {
-                    break;
-                }
-            }
-            delete_count += row_group->delete_rows(table, ids + start, pos - start);
-        } while (pos < count);
-        return delete_count;
-    }
-
     uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;

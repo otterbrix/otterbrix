@@ -16,8 +16,8 @@ namespace components::table::storage {
         void write_data(const std::byte* data, uint64_t size);
 
         template<typename T>
+        requires std::is_trivially_copyable_v<T>
         void write(const T& value) {
-            static_assert(std::is_trivially_copyable_v<T>);
             write_data(reinterpret_cast<const std::byte*>(&value), sizeof(T));
         }
 

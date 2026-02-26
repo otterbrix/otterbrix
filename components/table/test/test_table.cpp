@@ -559,7 +559,7 @@ TEST_CASE("components::table::data_table") {
             v.set_value(i / 2, logical_value_t(&resource, int64_t(i)));
         }
         auto state = data_table->initialize_delete({});
-        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2);
+        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete") {

@@ -1,5 +1,4 @@
 #pragma once
-#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <filesystem>
 #include <services/wal/base.hpp>
 
@@ -11,7 +10,6 @@ namespace services::disk {
 
     using path_t = std::filesystem::path;
     using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
-    using btree_ptr = std::unique_ptr<core::b_plus_tree::btree_t>;
 
     class disk_t {
     public:
@@ -41,7 +39,6 @@ namespace services::disk {
         path_t path_;
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;
-        std::pmr::unordered_map<collection_full_name_t, btree_ptr, collection_name_hash> db_;
         catalog_storage_t catalog_;
         file_ptr file_wal_id_;
     };

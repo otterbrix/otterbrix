@@ -461,15 +461,6 @@ namespace components::table {
         }
     }
 
-    void row_group_t::append_version_info(uint64_t count) {
-        uint64_t row_group_start = this->count.load();
-        uint64_t row_group_end = row_group_start + count;
-        if (row_group_end > row_group_size()) {
-            row_group_end = row_group_size();
-        }
-        this->count = row_group_end;
-    }
-
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
         uint64_t row_group_start = this->count.load();
         uint64_t row_group_end = row_group_start + count;

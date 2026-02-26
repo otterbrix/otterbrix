@@ -1,8 +1,6 @@
 #include "update_expression.hpp"
 
 #include <components/logical_plan/param_storage.hpp>
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 
 namespace components::expressions {
 
@@ -46,38 +44,6 @@ namespace components::expressions {
     update_expr_t::expr_output_t& update_expr_t::output() { return output_; }
 
     const update_expr_t::expr_output_t& update_expr_t::output() const { return output_; }
-
-    update_expr_ptr update_expr_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<update_expr_type>(1);
-        switch (type) {
-            case update_expr_type::set:
-                return update_expr_set_t::deserialize(deserializer);
-            case update_expr_type::get_value_doc:
-                return update_expr_get_value_t::deserialize(deserializer);
-            case update_expr_type::get_value_params:
-                return update_expr_get_const_value_t::deserialize(deserializer);
-            case update_expr_type::add:
-            case update_expr_type::sub:
-            case update_expr_type::mult:
-            case update_expr_type::div:
-            case update_expr_type::mod:
-            case update_expr_type::exp:
-            case update_expr_type::sqr_root:
-            case update_expr_type::cube_root:
-            case update_expr_type::factorial:
-            case update_expr_type::abs:
-            case update_expr_type::AND:
-            case update_expr_type::OR:
-            case update_expr_type::XOR:
-            case update_expr_type::NOT:
-            case update_expr_type::shift_left:
-            case update_expr_type::shift_right:
-                return update_expr_calculate_t::deserialize(deserializer);
-            default:
-                assert(false && "incorrect update_expr_type");
-                return nullptr;
-        }
-    }
 
     bool operator==(const update_expr_ptr& lhs, const update_expr_ptr& rhs) {
         if (lhs.get() == rhs.get()) {
@@ -137,23 +103,6 @@ namespace components::expressions {
         return left_ == rhs.left_ && key_ == rhs.key_;
     }
 
-    void update_expr_set_t::serialize(serializer::msgpack_serializer_t* serializer) {
-        serializer->start_array(4);
-        serializer->append_enum(serializer::serialization_type::expression_update);
-        serializer->append_enum(type_);
-        serializer->append(key_);
-        left_->serialize(serializer);
-        serializer->end_array();
-    }
-
-    update_expr_ptr update_expr_set_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        update_expr_ptr res = new update_expr_set_t(deserializer->deserialize_key(2));
-        deserializer->advance_array(3);
-        res->left() = update_expr_t::deserialize(deserializer);
-        deserializer->pop_array();
-        return res;
-    }
-
     bool update_expr_set_t::execute_impl(vector::data_chunk_t& to,
                                          const vector::data_chunk_t&,
                                          size_t row_to,
@@ -178,18 +127,6 @@ namespace components::expressions {
 
     bool update_expr_get_value_t::operator==(const update_expr_get_value_t& rhs) const {
         return left_ == rhs.left_ && key_ == rhs.key_ && key_.side() == rhs.key_.side();
-    }
-
-    void update_expr_get_value_t::serialize(serializer::msgpack_serializer_t* serializer) {
-        serializer->start_array(3);
-        serializer->append_enum(serializer::serialization_type::expression_update);
-        serializer->append_enum(type_);
-        serializer->append(key_);
-        serializer->end_array();
-    }
-
-    update_expr_ptr update_expr_get_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        return {new update_expr_get_value_t(deserializer->deserialize_key(2))};
     }
 
     bool update_expr_get_value_t::execute_impl(vector::data_chunk_t& to,
@@ -239,18 +176,6 @@ namespace components::expressions {
         return id_ == rhs.id_;
     }
 
-    void update_expr_get_const_value_t::serialize(serializer::msgpack_serializer_t* serializer) {
-        serializer->start_array(3);
-        serializer->append_enum(serializer::serialization_type::expression_update);
-        serializer->append_enum(type_);
-        serializer->append(id_);
-        serializer->end_array();
-    }
-
-    update_expr_ptr update_expr_get_const_value_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        return {new update_expr_get_const_value_t(deserializer->deserialize_param_id(2))};
-    }
-
     bool update_expr_get_const_value_t::execute_impl(vector::data_chunk_t&,
                                                      const vector::data_chunk_t&,
                                                      size_t,
@@ -265,26 +190,6 @@ namespace components::expressions {
 
     bool update_expr_calculate_t::operator==(const update_expr_calculate_t& rhs) const {
         return left_ == rhs.left_ && right_ == rhs.right_;
-    }
-
-    void update_expr_calculate_t::serialize(serializer::msgpack_serializer_t* serializer) {
-        serializer->start_array(4);
-        serializer->append_enum(serializer::serialization_type::expression_update);
-        serializer->append_enum(type_);
-        left_->serialize(serializer);
-        right_->serialize(serializer);
-        serializer->end_array();
-    }
-
-    update_expr_ptr update_expr_calculate_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        update_expr_ptr res = new update_expr_calculate_t(deserializer->deserialize_enum<update_expr_type>(1));
-        deserializer->advance_array(2);
-        res->left() = update_expr_t::deserialize(deserializer);
-        deserializer->pop_array();
-        deserializer->advance_array(3);
-        res->right() = update_expr_t::deserialize(deserializer);
-        deserializer->pop_array();
-        return res;
     }
 
     bool update_expr_calculate_t::execute_impl(vector::data_chunk_t&,

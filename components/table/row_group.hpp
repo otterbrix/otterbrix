@@ -64,7 +64,6 @@ namespace components::table {
                        vector::data_chunk_t& result,
                        uint64_t result_idx);
 
-        void append_version_info(uint64_t count);
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);

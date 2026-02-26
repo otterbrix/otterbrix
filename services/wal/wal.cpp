@@ -9,19 +9,12 @@
 #include "manager_wal_replicate.hpp"
 #include "wal_utils.hpp"
 
-#include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_create_index.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
 #include <components/serialization/deserializer.hpp>
 
 namespace services::wal {
 
     using core::filesystem::file_flags;
     using core::filesystem::file_lock_type;
-
-    static std::string wal_file_name(int worker_index) {
-        return ".wal_" + std::to_string(worker_index);
-    }
 
     static std::string wal_segment_name(int worker_index, int segment_idx) {
         char buf[32];
@@ -47,14 +40,6 @@ namespace services::wal {
         , pending_id_(resource) {
         if (config_.sync_to_disk) {
             std::filesystem::create_directories(config_.path);
-
-            // Migrate legacy single file .wal_N → .wal_N_000000
-            auto legacy_path = config_.path / wal_file_name(worker_index_);
-            auto first_segment_path = config_.path / wal_segment_name(worker_index_, 0);
-            if (std::filesystem::exists(legacy_path) && !std::filesystem::exists(first_segment_path)) {
-                std::filesystem::rename(legacy_path, first_segment_path);
-                trace(log_, "wal: migrated legacy {} → {}", legacy_path.string(), first_segment_path.string());
-            }
 
             // Discover existing segments, find highest segment index
             auto segments = discover_segments_();
@@ -101,14 +86,6 @@ namespace services::wal {
         switch (msg->command()) {
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::load>: {
                 co_await actor_zeta::dispatch(this, &wal_replicate_t::load, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::create_index>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::create_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::drop_index>: {
-                co_await actor_zeta::dispatch(this, &wal_replicate_t::drop_index, msg);
                 break;
             }
             case actor_zeta::msg_id<wal_replicate_t, &wal_replicate_t::commit_txn>: {
@@ -198,40 +175,6 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::create_index(
-        session_id_t session,
-        components::logical_plan::node_create_index_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::create_index {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::drop_index(
-        session_id_t session,
-        components::logical_plan::node_drop_index_ptr data
-    ) {
-        trace(log_,
-              "wal_replicate_t::drop_index {}::{}, session: {}",
-              data->collection_full_name().database,
-              data->collection_full_name().collection,
-              session.data());
-        write_data_(data, components::logical_plan::make_parameter_node(resource()));
-        co_return services::wal::id_t(id_);
-    }
-
-    template<class T>
-    void wal_replicate_t::write_data_(T& data, components::logical_plan::parameter_node_ptr params, uint64_t transaction_id) {
-        next_id(id_, static_cast<services::wal::id_t>(worker_count_));
-        buffer_t buffer;
-        last_crc32_ = pack(buffer, last_crc32_, id_, data, params, transaction_id);
-        write_buffer(buffer);
-    }
-
     void wal_replicate_t::init_id() {
         // Scan all segment files to find the highest WAL ID
         auto segments = discover_segments_();
@@ -311,7 +254,6 @@ namespace services::wal {
                     // COMMIT marker: array(3) = [last_crc32, wal_id, txn_id]
                     record.transaction_id = deserializer.deserialize_uint64(2);
                     record.record_type = wal_record_type::COMMIT;
-                    record.data = nullptr;
                 } else if (arr_size >= 8) {
                     // Check if element[3] is a physical record type
                     auto type_val = deserializer.deserialize_uint64(3);
@@ -321,7 +263,6 @@ namespace services::wal {
                         || phys_type == wal_record_type::PHYSICAL_UPDATE) {
                         record.transaction_id = deserializer.deserialize_uint64(2);
                         record.record_type = phys_type;
-                        record.data = nullptr;
                         record.collection_name = collection_full_name_t(
                             deserializer.deserialize_string(4),
                             deserializer.deserialize_string(5));
@@ -362,45 +303,22 @@ namespace services::wal {
                             record.physical_row_count = deserializer.deserialize_uint64(8);
                         }
                     } else {
-                        // Legacy DATA with txn (arr_size >= 5 but also >= 8 somehow)
-                        record.transaction_id = deserializer.deserialize_uint64(2);
-                        record.record_type = wal_record_type::DATA;
-                        deserializer.advance_array(3);
-                        record.data = components::logical_plan::node_t::deserialize(&deserializer);
-                        deserializer.pop_array();
-                        deserializer.advance_array(4);
-                        record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-                        deserializer.pop_array();
+                        error(log_, "wal: unknown record type {} at offset {}", type_val, start_index);
+                        record.is_corrupt = true;
+                        record.size = 0;
                     }
-                } else if (arr_size >= 5) {
-                    record.transaction_id = deserializer.deserialize_uint64(2);
-                    record.record_type = wal_record_type::DATA;
-                    deserializer.advance_array(3);
-                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
-                    deserializer.pop_array();
-                    deserializer.advance_array(4);
-                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-                    deserializer.pop_array();
                 } else {
-                    record.transaction_id = 0;
-                    record.record_type = wal_record_type::DATA;
-                    deserializer.advance_array(2);
-                    record.data = components::logical_plan::node_t::deserialize(&deserializer);
-                    deserializer.pop_array();
-                    deserializer.advance_array(3);
-                    record.params = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-                    deserializer.pop_array();
+                    error(log_, "wal: unexpected array size {} at offset {}", arr_size, start_index);
+                    record.is_corrupt = true;
+                    record.size = 0;
                 }
             } else {
                 auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
                 error(log_, "wal: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
                       start_index, record.crc32, computed_crc);
-                record.data = nullptr;
                 record.is_corrupt = true;
                 record.size = 0;
             }
-        } else {
-            record.data = nullptr;
         }
         return record;
     }

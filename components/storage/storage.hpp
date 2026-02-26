@@ -35,8 +35,7 @@ namespace components::storage {
         virtual void scan(vector::data_chunk_t& output,
                           const table::table_filter_t* filter,
                           int limit,
-                          table::transaction_data txn) {
-            (void)txn;
+                          table::transaction_data /*txn*/) {
             scan(output, filter, limit);
         }
 
@@ -56,8 +55,7 @@ namespace components::storage {
                             vector::data_chunk_t& data) = 0;
         virtual std::pair<int64_t, uint64_t> update(vector::vector_t& row_ids,
                             vector::data_chunk_t& data,
-                            table::transaction_data txn) {
-            (void)txn;
+                            table::transaction_data /*txn*/) {
             update(row_ids, data);
             return {0, 0};
         }
@@ -65,12 +63,10 @@ namespace components::storage {
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;
 
         // Txn-aware overloads with default fallbacks
-        virtual uint64_t append(vector::data_chunk_t& data, table::transaction_data txn) {
-            (void)txn;
+        virtual uint64_t append(vector::data_chunk_t& data, table::transaction_data /*txn*/) {
             return append(data);
         }
-        virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) {
-            (void)txn_id;
+        virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {
             return delete_rows(row_ids, count);
         }
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}

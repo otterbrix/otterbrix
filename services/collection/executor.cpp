@@ -91,14 +91,6 @@ namespace services::collection::executor {
             auto coll_name = logical_plan->collection_full_name();
 
             if (!coll_name.empty() && index_address_ != actor_zeta::address_t::empty_address()) {
-                // WAL durability for create_index
-                if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                    auto ci_ptr = boost::static_pointer_cast<node_create_index_t>(logical_plan);
-                    auto [_w, wf] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::create_index, session, ci_ptr);
-                    co_await std::move(wf);
-                }
-
                 auto [_ix, ixf] = actor_zeta::send(index_address_,
                     &index::manager_index_t::create_index,
                     session, coll_name,
@@ -147,14 +139,6 @@ namespace services::collection::executor {
             auto coll_name = logical_plan->collection_full_name();
 
             if (!coll_name.empty() && index_address_ != actor_zeta::address_t::empty_address()) {
-                // WAL durability for drop_index
-                if (wal_address_ != actor_zeta::address_t::empty_address()) {
-                    auto di_ptr = boost::static_pointer_cast<node_drop_index_t>(logical_plan);
-                    auto [_w, wf] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::drop_index, session, di_ptr);
-                    co_await std::move(wf);
-                }
-
                 auto [_ix, ixf] = actor_zeta::send(index_address_,
                     &index::manager_index_t::drop_index,
                     session, coll_name,

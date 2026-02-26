@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <scoped_allocator>

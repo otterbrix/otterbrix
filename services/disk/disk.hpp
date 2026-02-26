@@ -38,8 +38,6 @@ namespace services::disk {
         catalog_storage_t& catalog() { return catalog_; }
 
     private:
-        void migrate_from_legacy_(const path_t& metadata_path);
-
         path_t path_;
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;

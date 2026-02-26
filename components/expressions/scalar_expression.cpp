@@ -1,6 +1,4 @@
 #include "scalar_expression.hpp"
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 #include <sstream>
 
 namespace components::expressions {
@@ -56,23 +54,6 @@ namespace components::expressions {
 
     void scalar_expression_t::append_param(const param_storage& param) { params_.push_back(param); }
 
-    expression_ptr scalar_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<scalar_type>(1);
-        auto key = deserializer->deserialize_key(2);
-        std::pmr::vector<expressions::param_storage> params(deserializer->resource());
-        deserializer->advance_array(3);
-        params.reserve(deserializer->current_array_size());
-        for (size_t i = 0; i < deserializer->current_array_size(); i++) {
-            params.emplace_back(expressions::deserialize_param_storage(deserializer, i));
-        }
-        deserializer->pop_array();
-        auto res = make_scalar_expression(deserializer->resource(), type, key);
-        for (const auto& param : params) {
-            res->append_param(param);
-        }
-        return res;
-    }
-
     hash_t scalar_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
@@ -105,18 +86,6 @@ namespace components::expressions {
         auto* other = static_cast<const scalar_expression_t*>(rhs);
         return type_ == other->type_ && key_ == other->key_ && params_.size() == other->params_.size() &&
                std::equal(params_.begin(), params_.end(), other->params_.begin());
-    }
-    void scalar_expression_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(4);
-        serializer->append_enum(serializer::serialization_type::expression_scalar);
-        serializer->append_enum(type_);
-        serializer->append(key_);
-        serializer->start_array(params_.size());
-        for (const auto& p : params_) {
-            serialize_param_storage(serializer, p);
-        }
-        serializer->end_array();
-        serializer->end_array();
     }
 
     scalar_expression_ptr

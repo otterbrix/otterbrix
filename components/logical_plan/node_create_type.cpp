@@ -1,6 +1,4 @@
 #include "node_create_type.hpp"
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 #include <components/types/logical_value.hpp>
 
 namespace components::logical_plan {
@@ -12,13 +10,6 @@ namespace components::logical_plan {
     types::complex_logical_type& node_create_type_t::type() noexcept { return type_; }
 
     const types::complex_logical_type& node_create_type_t::type() const noexcept { return type_; }
-
-    node_create_type_ptr node_create_type_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        deserializer->advance_array(1);
-        auto type = types::complex_logical_type::deserialize(deserializer->resource(), deserializer);
-        deserializer->pop_array();
-        return make_node_create_type(deserializer->resource(), std::move(type));
-    }
 
     hash_t node_create_type_t::hash_impl() const { return 0; }
 
@@ -37,13 +28,6 @@ namespace components::logical_plan {
         }
         stream << "]";
         return stream.str();
-    }
-
-    void node_create_type_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(2);
-        serializer->append_enum(serializer::serialization_type::logical_node_create_type);
-        type_.serialize(serializer);
-        serializer->end_array();
     }
 
     node_create_type_ptr make_node_create_type(std::pmr::memory_resource* resource,

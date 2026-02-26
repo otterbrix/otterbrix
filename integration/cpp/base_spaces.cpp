@@ -1,7 +1,6 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
-#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/catalog/catalog.hpp>
 #include <components/catalog/catalog_types.hpp>
 #include <components/catalog/schema.hpp>
@@ -57,7 +56,7 @@ namespace otterbrix {
                                std::pmr::memory_resource* resource,
                                log_t& log) {
             std::pmr::vector<components::logical_plan::node_create_index_ptr> defs(resource);
-            auto indexes_path = disk_path / "indexes_METADATA";
+            auto indexes_path = disk_path / services::index::INDEXES_METADATA_FILENAME;
             if (!std::filesystem::exists(indexes_path)) {
                 return defs;
             }
@@ -85,11 +84,8 @@ namespace otterbrix {
 
                     components::serializer::msgpack_deserializer_t deserializer(buf);
                     deserializer.advance_array(0);
-                    auto index = components::logical_plan::node_t::deserialize(&deserializer);
+                    auto index_ptr = components::logical_plan::node_create_index_t::deserialize(&deserializer);
                     deserializer.pop_array();
-
-                    auto index_ptr = boost::polymorphic_pointer_downcast<
-                        components::logical_plan::node_create_index_t>(index);
 
                     auto index_path = disk_path / index_ptr->collection_full_name().database /
                                       index_ptr->collection_full_name().collection / index_ptr->name();

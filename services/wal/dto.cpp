@@ -1,7 +1,6 @@
 #include "dto.hpp"
 #include "record.hpp"
 
-#include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 
 #include <absl/crc/crc32c.h>
@@ -38,25 +37,6 @@ namespace services::wal {
         append_payload(storage, input, data_size);
         append_crc32(storage, static_cast<uint32_t>(last_crc32_));
         return static_cast<uint32_t>(last_crc32_);
-    }
-
-    crc32_t pack(buffer_t& storage,
-                 crc32_t last_crc32,
-                 id_t id,
-                 const components::logical_plan::node_ptr& data,
-                 const components::logical_plan::parameter_node_ptr& params,
-                 uint64_t transaction_id) {
-        components::serializer::msgpack_serializer_t serializer(data->resource());
-        serializer.start_array(5);
-        serializer.append(static_cast<uint64_t>(last_crc32));
-        serializer.append(static_cast<uint64_t>(id));
-        serializer.append(transaction_id);
-        data->serialize(&serializer);
-        params->serialize(&serializer);
-        serializer.end_array();
-        auto buffer = serializer.result();
-
-        return pack(storage, buffer.data(), buffer.size());
     }
 
     crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id) {

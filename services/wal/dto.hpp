@@ -3,27 +3,17 @@
 #include "base.hpp"
 
 #include <components/base/collection_full_name.hpp>
-#include <components/logical_plan/node.hpp>
-#include <components/logical_plan/param_storage.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <msgpack.hpp>
 
 namespace services::wal {
 
     using buffer_t = std::pmr::string;
-    using components::logical_plan::node_type;
 
     using size_tt = std::uint32_t;
     using crc32_t = std::uint32_t;
 
     crc32_t pack(buffer_t& storage, char* data, size_t size);
-
-    crc32_t pack(buffer_t& storage,
-                 crc32_t last_crc32,
-                 id_t id,
-                 const components::logical_plan::node_ptr& data,
-                 const components::logical_plan::parameter_node_ptr& params,
-                 uint64_t transaction_id = 0);
 
     crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id);
 

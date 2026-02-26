@@ -220,15 +220,14 @@ namespace services::dispatcher {
                 if (!check_collection_exists(id)) {
                     error = make_cursor(resource(), error_code_t::collection_already_exists, "collection already exists");
                 } else {
-                    const auto& n = reinterpret_cast<const node_create_collection_ptr&>(logic_plan);
-                    for (auto& column_type : n->schema()) {
-                        if (column_type.type() == logical_type::UNKNOWN) {
-                            if (error = check_type_exists(column_type.type_name()); !error) {
-                                auto proper_type = catalog_.get_type(column_type.type_name());
-                                std::string alias = column_type.alias();
-                                column_type = std::move(proper_type);
-                                column_type.set_alias(alias);
-                            }
+                    auto& n = reinterpret_cast<node_create_collection_ptr&>(logic_plan);
+                    for (auto& col_def : n->column_definitions()) {
+                        if (col_def.type().type() == logical_type::UNKNOWN &&
+                            !(error = check_type_exists(col_def.type().type_name()))) {
+                            auto proper_type = catalog_.get_type(col_def.type().type_name());
+                            std::string alias = col_def.type().alias();
+                            col_def.type() = std::move(proper_type);
+                            col_def.type().set_alias(alias);
                         }
                     }
                 }
@@ -452,24 +451,16 @@ namespace services::dispatcher {
                     co_await std::move(cf1);
                     auto create_collection = boost::static_pointer_cast<node_create_collection_t>(plan);
                     // Create storage in manager_disk_t
-                    if (create_collection->schema().empty()) {
+                    if (create_collection->column_definitions().empty()) {
                         auto [_cs, csf] = actor_zeta::send(disk_address_,
                             &disk::manager_disk_t::create_storage,
                             session, plan->collection_full_name());
                         co_await std::move(csf);
                     } else {
-                        // Use column_definitions if available (includes NOT NULL + DEFAULT info)
                         std::vector<components::table::column_definition_t> storage_columns;
-                        if (!create_collection->column_definitions().empty()) {
-                            storage_columns.reserve(create_collection->column_definitions().size());
-                            for (const auto& cd : create_collection->column_definitions()) {
-                                storage_columns.push_back(cd.copy());
-                            }
-                        } else {
-                            storage_columns.reserve(create_collection->schema().size());
-                            for (const auto& type : create_collection->schema()) {
-                                storage_columns.emplace_back(type.alias(), type);
-                            }
+                        storage_columns.reserve(create_collection->column_definitions().size());
+                        for (const auto& cd : create_collection->column_definitions()) {
+                            storage_columns.push_back(cd.copy());
                         }
                         // Resolve UDT references (UNKNOWN types) in storage columns
                         for (auto& col : storage_columns) {
@@ -556,25 +547,11 @@ namespace services::dispatcher {
 
                 case node_type::create_index_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
-                    auto create_index = boost::static_pointer_cast<node_create_index_t>(plan);
-                    auto [_ci, cif] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::create_index, session, create_index);
-                    auto wal_id_ci = co_await std::move(cif);
-                    auto [_cid, cidf] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::flush, session, wal_id_ci);
-                    co_await std::move(cidf);
                     co_return result;
                 }
 
                 case node_type::drop_index_t: {
                     trace(log_, "manager_dispatcher_t::execute_plan: {}", to_string(plan->type()));
-                    auto drop_index = boost::static_pointer_cast<node_drop_index_t>(plan);
-                    auto [_di, dif] = actor_zeta::send(wal_address_,
-                        &wal::manager_wal_replicate_t::drop_index, session, drop_index);
-                    auto wal_id_di = co_await std::move(dif);
-                    auto [_did, didf] = actor_zeta::send(disk_address_,
-                        &disk::manager_disk_t::flush, session, wal_id_di);
-                    co_await std::move(didf);
                     co_return result;
                 }
 
@@ -939,19 +916,20 @@ namespace services::dispatcher {
                 break;
             case node_type::create_collection_t: {
                 auto node_info = boost::polymorphic_pointer_downcast<node_create_collection_t>(node);
-                if (node_info->schema().empty()) {
+                if (node_info->column_definitions().empty()) {
                     auto err = catalog_.create_computing_table(id);
                     assert(!err);
                 } else {
+                    auto types = node_info->schema();
                     std::vector<field_description> desc;
-                    desc.reserve(node_info->schema().size());
-                    for (size_t i = 0; i < node_info->schema().size();
+                    desc.reserve(types.size());
+                    for (size_t i = 0; i < types.size();
                          desc.push_back(field_description(i++)));
 
                     auto sch = schema(
                         resource(),
                         create_struct("schema",
-                            std::vector<complex_logical_type>(node_info->schema().begin(), node_info->schema().end()),
+                            std::vector<complex_logical_type>(types.begin(), types.end()),
                             std::move(desc)));
                     auto err = catalog_.create_table(id, table_metadata(resource(), std::move(sch)));
                     assert(!err);

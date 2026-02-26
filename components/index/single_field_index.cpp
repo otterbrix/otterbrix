@@ -71,7 +71,7 @@ namespace components::index {
         auto range = storage_.equal_range(key);
         for (auto it = range.first; it != range.second; ++it) {
             if (it->second.row_index == row_index && it->second.delete_id == table::NOT_DELETED_ID) {
-                const_cast<index_value_t&>(it->second).delete_id = txn_id;
+                it->second.delete_id = txn_id;
                 pending_deletes_[txn_id].emplace_back(key, row_index);
                 return;
             }
@@ -85,7 +85,7 @@ namespace components::index {
             auto range = storage_.equal_range(key);
             for (auto sit = range.first; sit != range.second; ++sit) {
                 if (sit->second.row_index == row_index && sit->second.insert_id == txn_id) {
-                    const_cast<index_value_t&>(sit->second).insert_id = commit_id;
+                    sit->second.insert_id = commit_id;
                     break;
                 }
             }
@@ -100,7 +100,7 @@ namespace components::index {
             auto range = storage_.equal_range(key);
             for (auto sit = range.first; sit != range.second; ++sit) {
                 if (sit->second.row_index == row_index && sit->second.delete_id == txn_id) {
-                    const_cast<index_value_t&>(sit->second).delete_id = commit_id;
+                    sit->second.delete_id = commit_id;
                     break;
                 }
             }

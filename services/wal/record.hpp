@@ -3,13 +3,11 @@
 #include "dto.hpp"
 
 #include <components/base/collection_full_name.hpp>
-#include <components/logical_plan/param_storage.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace services::wal {
 
     enum class wal_record_type : uint8_t {
-        DATA = 0,
         COMMIT = 1,
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
@@ -22,9 +20,7 @@ namespace services::wal {
         crc32_t last_crc32;
         id_t id;
         uint64_t transaction_id{0};
-        wal_record_type record_type{wal_record_type::DATA};
-        components::logical_plan::node_ptr data;
-        components::logical_plan::parameter_node_ptr params;
+        wal_record_type record_type{wal_record_type::COMMIT};
 
         // Physical WAL fields
         collection_full_name_t collection_name;

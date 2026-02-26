@@ -25,10 +25,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_having_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {
-        // HAVING is a runtime-only node, no serialization needed
-    }
-
     node_having_ptr make_node_having(std::pmr::memory_resource* resource,
                                      const collection_full_name_t& collection,
                                      const expressions::expression_ptr& expr) {

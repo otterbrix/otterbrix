@@ -23,14 +23,14 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
-        auto columns = get_types(resource_, *coldefs);
-
-        if (columns.empty()) {
-            return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
-        }
 
         std::vector<components::table::column_definition_t> col_defs;
         fill_column_definitions(col_defs, resource_, *coldefs);
+
+        if (col_defs.empty()) {
+            return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
+        }
+
         auto constraints = extract_table_constraints(*coldefs);
 
         // Parse WITH (storage = 'disk') clause
@@ -51,7 +51,6 @@ namespace components::sql::transform {
 
         return logical_plan::make_node_create_collection(resource_,
                                                          rangevar_to_collection(node.relation),
-                                                         std::move(columns),
                                                          std::move(col_defs),
                                                          std::move(constraints),
                                                          disk_storage);

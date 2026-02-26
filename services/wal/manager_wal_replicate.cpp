@@ -70,14 +70,6 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::load, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::create_index>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::create_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::drop_index>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::drop_index, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::commit_txn>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::commit_txn, msg);
                 break;
@@ -142,30 +134,6 @@ namespace services::wal {
         std::sort(all_records.begin(), all_records.end(),
             [](const record_t& a, const record_t& b) { return a.id < b.id; });
         co_return all_records;
-    }
-
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::create_index(
-        session_id_t session,
-        components::logical_plan::node_create_index_ptr data) {
-        trace(log_, "manager_wal_replicate_t::create_index");
-        auto idx = worker_index_for(data->collection_full_name());
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::create_index, session, std::move(data));
-        if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[idx].get());
-        }
-        co_return co_await std::move(future);
-    }
-
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::drop_index(
-        session_id_t session,
-        components::logical_plan::node_drop_index_ptr data) {
-        trace(log_, "manager_wal_replicate_t::drop_index");
-        auto idx = worker_index_for(data->collection_full_name());
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::drop_index, session, std::move(data));
-        if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[idx].get());
-        }
-        co_return co_await std::move(future);
     }
 
     manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::commit_txn(
@@ -285,14 +253,6 @@ namespace services::wal {
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::load>:
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::load, msg);
                 break;
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::create_index>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::create_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::drop_index>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::drop_index, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::commit_txn>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::commit_txn, msg);
                 break;
@@ -334,18 +294,6 @@ namespace services::wal {
         session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::load - return empty records");
         co_return std::vector<record_t>{};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::create_index(
-        session_id_t /*session*/, components::logical_plan::node_create_index_ptr /*data*/) {
-        trace(log_, "manager_wal_replicate_empty_t::create_index - return success");
-        co_return services::wal::id_t{0};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::drop_index(
-        session_id_t /*session*/, components::logical_plan::node_drop_index_ptr /*data*/) {
-        trace(log_, "manager_wal_replicate_empty_t::drop_index - return success");
-        co_return services::wal::id_t{0};
     }
 
     manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::commit_txn(

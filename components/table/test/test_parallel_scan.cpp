@@ -1,4 +1,5 @@
 #include <catch2/catch.hpp>
+#include <set>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/storage/buffer_pool.hpp>
@@ -43,7 +44,7 @@ namespace {
         table.append_lock(state);
         table.initialize_append(state);
         table.append(chunk, state);
-        table.finalize_append(state);
+        table.finalize_append(state, transaction_data{0, 0});
     }
 
 } // anonymous namespace

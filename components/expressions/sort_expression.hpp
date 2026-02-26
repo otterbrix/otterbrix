@@ -18,8 +18,6 @@ namespace components::expressions {
         sort_order order() const;
         const key_t& key() const;
 
-        static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         sort_order order_;
         key_t key_;
@@ -27,7 +25,6 @@ namespace components::expressions {
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
         bool equal_impl(const expression_i* rhs) const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
     };
 
     sort_expression_ptr make_sort_expression(const key_t& key, sort_order order);

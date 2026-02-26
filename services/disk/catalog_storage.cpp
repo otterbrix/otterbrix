@@ -1,46 +1,18 @@
 #include "catalog_storage.hpp"
 
+#include <absl/crc/crc32c.h>
 #include <algorithm>
 #include <fstream>
 #include <stdexcept>
 
 namespace services::disk {
 
-    // ---- CRC32 (ISO 3309, polynomial 0xEDB88320) ----
-
     namespace {
-        constexpr uint32_t crc32_entry(uint32_t idx) {
-            uint32_t crc = idx;
-            for (int j = 0; j < 8; ++j) {
-                if (crc & 1) {
-                    crc = (crc >> 1) ^ 0xEDB88320u;
-                } else {
-                    crc >>= 1;
-                }
-            }
-            return crc;
+        uint32_t compute_crc32(const std::byte* data, size_t size) {
+            return static_cast<uint32_t>(
+                absl::ComputeCrc32c({reinterpret_cast<const char*>(data), size}));
         }
-
-        struct crc32_table_t {
-            uint32_t entries[256];
-            constexpr crc32_table_t() : entries{} {
-                for (uint32_t i = 0; i < 256; ++i) {
-                    entries[i] = crc32_entry(i);
-                }
-            }
-        };
-
-        constexpr crc32_table_t crc32_table{};
     } // namespace
-
-    uint32_t crc32_compute(const std::byte* data, size_t size) {
-        uint32_t crc = 0xFFFFFFFF;
-        for (size_t i = 0; i < size; ++i) {
-            uint8_t byte = static_cast<uint8_t>(data[i]);
-            crc = crc32_table.entries[(crc ^ byte) & 0xFF] ^ (crc >> 8);
-        }
-        return crc ^ 0xFFFFFFFF;
-    }
 
     // ---- Serialize/Deserialize ----
 
@@ -103,7 +75,7 @@ namespace services::disk {
 
         // Compute CRC32 over payload (everything after magic + version, i.e. from byte 8 onward)
         auto& data = w.data();
-        uint32_t crc = crc32_compute(data.data() + 8, data.size() - 8);
+        uint32_t crc = compute_crc32(data.data() + 8, data.size() - 8);
         w.write_u32(crc);
 
         return std::move(w.data());
@@ -127,7 +99,7 @@ namespace services::disk {
         // Verify CRC32: covers bytes [8 .. size-4), CRC is at [size-4 .. size)
         uint32_t stored_crc;
         std::memcpy(&stored_crc, data + size - 4, sizeof(stored_crc));
-        uint32_t computed_crc = crc32_compute(data + 8, size - 8 - 4);
+        uint32_t computed_crc = compute_crc32(data + 8, size - 8 - 4);
         if (stored_crc != computed_crc) {
             throw std::runtime_error("catalog checksum mismatch");
         }

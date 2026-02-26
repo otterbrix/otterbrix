@@ -50,7 +50,7 @@ namespace {
             table.append_lock(state);
             table.initialize_append(state);
             table.append(chunk, state);
-            table.finalize_append(state);
+            table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
     }
@@ -75,7 +75,7 @@ namespace {
             table.append_lock(state);
             table.initialize_append(state);
             table.append(chunk, state);
-            table.finalize_append(state);
+            table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
     }
@@ -101,7 +101,7 @@ namespace {
             table.append_lock(state);
             table.initialize_append(state);
             table.append(chunk, state);
-            table.finalize_append(state);
+            table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
     }
@@ -207,7 +207,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
             table->append_lock(state);
             table->initialize_append(state);
             table->append(chunk, state);
-            table->finalize_append(state);
+            table->finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
 

@@ -35,8 +35,6 @@ namespace components::expressions {
 
         bool is_union() const;
 
-        static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         compare_type type_;
         key_t primary_key_;
@@ -47,7 +45,6 @@ namespace components::expressions {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
         bool equal_impl(const expression_i* rhs) const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,

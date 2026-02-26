@@ -33,26 +33,9 @@ namespace services::wal {
             }
             std::sort(segments.begin(), segments.end());
 
-            if (!segments.empty()) {
-                for (const auto& seg_path : segments) {
-                    trace(log_, "wal_reader_t: opening segment WAL at {}", seg_path.string());
-                    wal_files_.push_back(open_file(fs_, seg_path, file_flags::READ, file_lock_type::NO_LOCK));
-                }
-            } else {
-                // Fallback: legacy non-segmented .wal_N file
-                auto wal_file_path = config.path / (".wal_" + std::to_string(i));
-                if (std::filesystem::exists(wal_file_path)) {
-                    trace(log_, "wal_reader_t: opening legacy WAL at {}", wal_file_path.string());
-                    wal_files_.push_back(open_file(fs_, wal_file_path, file_flags::READ, file_lock_type::NO_LOCK));
-                }
-            }
-        }
-        // Legacy single .wal file for backward compatibility
-        if (wal_files_.empty()) {
-            auto legacy_wal_path = config.path / ".wal";
-            if (std::filesystem::exists(legacy_wal_path)) {
-                trace(log_, "wal_reader_t: opening legacy WAL at {}", legacy_wal_path.string());
-                wal_files_.push_back(open_file(fs_, legacy_wal_path, file_flags::READ, file_lock_type::NO_LOCK));
+            for (const auto& seg_path : segments) {
+                trace(log_, "wal_reader_t: opening segment WAL at {}", seg_path.string());
+                wal_files_.push_back(open_file(fs_, seg_path, file_flags::READ, file_lock_type::NO_LOCK));
             }
         }
     }
@@ -85,7 +68,7 @@ namespace services::wal {
                     start_index = next_wal_index(start_index, record.size);
                     continue;
                 }
-                // Skip non-physical DATA records entirely
+                // Skip non-physical records entirely
                 if (!record.is_physical()) {
                     start_index = next_wal_index(start_index, record.size);
                     continue;
@@ -163,7 +146,6 @@ namespace services::wal {
                     // COMMIT marker
                     record.transaction_id = deserializer.deserialize_uint64(2);
                     record.record_type = wal_record_type::COMMIT;
-                    record.data = nullptr;
                 } else if (arr_size >= 8) {
                     auto type_val = deserializer.deserialize_uint64(3);
                     auto phys_type = static_cast<wal_record_type>(type_val);
@@ -172,7 +154,6 @@ namespace services::wal {
                         || phys_type == wal_record_type::PHYSICAL_UPDATE) {
                         record.transaction_id = deserializer.deserialize_uint64(2);
                         record.record_type = phys_type;
-                        record.data = nullptr;
                         record.collection_name = collection_full_name_t(
                             deserializer.deserialize_string(4),
                             deserializer.deserialize_string(5));
@@ -211,26 +192,21 @@ namespace services::wal {
                             record.physical_row_count = deserializer.deserialize_uint64(8);
                         }
                     } else {
-                        // Legacy logical DATA — skip (mark as DATA so caller ignores)
-                        record.transaction_id = 0;
-                        record.record_type = wal_record_type::DATA;
-                        record.data = nullptr;
+                        error(log_, "wal_reader_t: unknown record type {} at offset {}", type_val, start_index);
+                        record.is_corrupt = true;
+                        record.size = 0;
                     }
                 } else {
-                    // Legacy logical DATA — skip
-                    record.transaction_id = 0;
-                    record.record_type = wal_record_type::DATA;
-                    record.data = nullptr;
+                    error(log_, "wal_reader_t: unexpected array size {} at offset {}", arr_size, start_index);
+                    record.is_corrupt = true;
+                    record.size = 0;
                 }
             } else {
                 error(log_, "wal_reader_t: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
                       start_index, record.crc32, computed_crc);
-                record.data = nullptr;
                 record.is_corrupt = true;
                 record.size = 0;
             }
-        } else {
-            record.data = nullptr;
         }
         return record;
     }

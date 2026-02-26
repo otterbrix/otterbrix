@@ -1,5 +1,6 @@
 #include "index_disk.hpp"
 
+#include <components/types/logical_value_msgpack.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <msgpack.hpp>
 

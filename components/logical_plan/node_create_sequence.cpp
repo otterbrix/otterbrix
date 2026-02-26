@@ -24,8 +24,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_create_sequence_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {}
-
     node_create_sequence_ptr make_node_create_sequence(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& name,
                                                        int64_t start,

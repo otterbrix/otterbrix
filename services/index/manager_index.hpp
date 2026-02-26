@@ -20,6 +20,8 @@
 
 namespace services::index {
 
+    inline constexpr auto INDEXES_METADATA_FILENAME = "indexes_METADATA";
+
     class manager_index_t final : public actor_zeta::actor::actor_mixin<manager_index_t> {
     public:
         template<typename T>

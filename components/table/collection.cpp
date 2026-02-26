@@ -246,21 +246,6 @@ namespace components::table {
         return new_row_group;
     }
 
-    void collection_t::finalize_append(table_append_state& state) {
-        auto remaining = state.total_append_count;
-        auto row_group = state.start_row_group;
-        while (remaining > 0) {
-            auto append_count = std::min<uint64_t>(remaining, row_group_size_ - row_group->count);
-            row_group->append_version_info(append_count);
-            remaining -= append_count;
-            row_group = row_groups_->next_segment(row_group);
-        }
-        total_rows_ += state.total_append_count;
-
-        state.total_append_count = 0;
-        state.start_row_group = nullptr;
-    }
-
     void collection_t::finalize_append(table_append_state& state, transaction_data txn) {
         auto remaining = state.total_append_count;
         auto row_group = state.start_row_group;
@@ -274,10 +259,6 @@ namespace components::table {
 
         state.total_append_count = 0;
         state.start_row_group = nullptr;
-    }
-
-    void collection_t::commit_append(int64_t /*row_start*/, uint64_t /*count*/) {
-        // No-op for backward compat — no version info to commit
     }
 
     void collection_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {

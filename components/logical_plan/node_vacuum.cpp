@@ -11,9 +11,6 @@ namespace components::logical_plan {
         return "$vacuum";
     }
 
-    void node_vacuum_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {
-    }
-
     node_vacuum_ptr make_node_vacuum(std::pmr::memory_resource* resource) {
         return {new node_vacuum_t{resource}};
     }

@@ -1,5 +1,7 @@
 #include "schema.hpp"
 
+#include <unordered_set>
+
 using namespace components::types;
 
 // todo: use result, monad interface of it will make this code MUCH cleaner
@@ -13,9 +15,9 @@ namespace components::catalog {
         , resource_(resource) {
         auto& detailed_struct = to_struct(schema_struct);
         {
-            std::pmr::unordered_set<std::pmr::string> names(resource);
+            std::unordered_set<std::string> names;
             for (const auto& type : detailed_struct.child_types()) {
-                if (names.find(type.alias().c_str()) != names.end()) {
+                if (names.count(type.alias())) {
                     error_ = catalog_error(catalog_mistake_t::DUPLICATE_COLUMN,
                                            "Duplicate column with name \"" + type.alias() + "\", names must be unique");
                 }

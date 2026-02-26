@@ -80,7 +80,7 @@ namespace components::operators {
                     }
                 }
                 if (!path_valid) {
-                    return nullptr;
+                    throw std::runtime_error("column path not found in schema");
                 }
                 return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
             }
@@ -111,7 +111,7 @@ namespace components::operators {
                     }
                 }
                 if (!path_valid) {
-                    return nullptr;
+                    throw std::runtime_error("column path not found in schema");
                 }
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(expression->value()),

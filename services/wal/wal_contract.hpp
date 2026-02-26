@@ -3,9 +3,6 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 
-#include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_create_index.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
 #include <components/session/session.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/wal/base.hpp>
@@ -19,11 +16,6 @@ namespace services::wal {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
         actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
-
-        actor_zeta::unique_future<id_t> create_index(session_id_t session,
-            components::logical_plan::node_create_index_ptr data);
-        actor_zeta::unique_future<id_t> drop_index(session_id_t session,
-            components::logical_plan::node_drop_index_ptr data);
 
         actor_zeta::unique_future<id_t> commit_txn(session_id_t session,
             uint64_t transaction_id);
@@ -61,8 +53,6 @@ namespace services::wal {
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_contract::load,
-            &wal_contract::create_index,
-            &wal_contract::drop_index,
             &wal_contract::commit_txn,
             &wal_contract::truncate_before,
             &wal_contract::current_wal_id,

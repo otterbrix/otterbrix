@@ -17,9 +17,6 @@
 #include "forward.hpp"
 #include "record.hpp"
 
-#include <components/logical_plan/node_create_index.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
-
 namespace services::wal {
 
     class wal_replicate_t : public actor_zeta::basic_actor<wal_replicate_t> {
@@ -35,10 +32,6 @@ namespace services::wal {
         virtual ~wal_replicate_t();
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_index(session_id_t session,
-                                         components::logical_plan::node_create_index_ptr data);
-        unique_future<services::wal::id_t> drop_index(session_id_t session,
-                                        components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session,
                                         uint64_t transaction_id);
 
@@ -73,8 +66,6 @@ namespace services::wal {
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &wal_replicate_t::load,
-            &wal_replicate_t::create_index,
-            &wal_replicate_t::drop_index,
             &wal_replicate_t::commit_txn,
             &wal_replicate_t::truncate_before,
             &wal_replicate_t::write_physical_insert,
@@ -91,9 +82,6 @@ namespace services::wal {
 
         virtual void write_buffer(buffer_t& buffer);
         virtual void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const;
-
-        template<class T>
-        void write_data_(T& data, components::logical_plan::parameter_node_ptr params, uint64_t transaction_id = 0);
 
         void init_id();
         bool find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const;

@@ -126,7 +126,7 @@ namespace components::storage {
             table_.initialize_append(append_state);
             auto start_row = static_cast<uint64_t>(append_state.current_row);
             table_.append(data, append_state);
-            table_.finalize_append(append_state);
+            table_.finalize_append(append_state, table::transaction_data{0, 0});
             return start_row;
         }
 

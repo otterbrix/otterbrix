@@ -44,7 +44,7 @@ namespace {
             table.append_lock(state);
             table.initialize_append(state);
             table.append(chunk, state);
-            table.finalize_append(state);
+            table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
     }
@@ -215,7 +215,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
             ts.table().append_lock(state);
             ts.table().initialize_append(state);
             ts.table().append(chunk, state);
-            ts.table().finalize_append(state);
+            ts.table().finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);

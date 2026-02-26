@@ -16,8 +16,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_drop_macro_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {}
-
     node_drop_macro_ptr make_node_drop_macro(std::pmr::memory_resource* resource,
                                              const collection_full_name_t& name) {
         return {new node_drop_macro_t{resource, name}};

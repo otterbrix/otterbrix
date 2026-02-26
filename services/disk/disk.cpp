@@ -23,12 +23,8 @@ namespace services::disk {
         , file_wal_id_(nullptr) {
         create_directories(storage_directory);
 
-        // Try to load catalog.otbx; if it doesn't exist, try migrating from legacy METADATA
         if (std::filesystem::exists(storage_directory / "catalog.otbx")) {
             catalog_.load();
-        } else if (std::filesystem::exists(storage_directory / "METADATA")) {
-            // Migrate from legacy text format
-            migrate_from_legacy_(storage_directory / "METADATA");
         }
 
         file_wal_id_ = open_file(fs_,
@@ -139,41 +135,5 @@ namespace services::disk {
     }
 
     wal::id_t disk_t::wal_id() const { return wal::id_from_string(file_wal_id_->read_line()); }
-
-    void disk_t::migrate_from_legacy_(const path_t& metadata_path) {
-        // Read old text format: "database:coll1;coll2;\n"
-        auto handle = open_file(fs_, metadata_path, file_flags::READ, file_lock_type::NO_LOCK);
-        auto fsize = handle->file_size();
-        if (fsize == 0) return;
-
-        std::unique_ptr<char[]> buffer(new char[fsize]);
-        handle->read(buffer.get(), fsize);
-        std::string data(buffer.get(), fsize);
-
-        std::size_t pos_new_line = 0;
-        auto pos_db = data.find(':', pos_new_line);
-        while (pos_db != std::string::npos) {
-            auto database = data.substr(pos_new_line, pos_db - pos_new_line);
-            catalog_.append_database(database);
-            auto pos = pos_db + 1;
-            auto pos_col = data.find(';', pos);
-            auto pos_end_line = data.find('\n', pos);
-            while (pos_col != std::string::npos && pos_col < pos_end_line) {
-                auto collection = data.substr(pos, pos_col - pos);
-                catalog_table_entry_t entry;
-                entry.name = collection;
-                entry.storage_mode = table_storage_mode_t::IN_MEMORY;
-                catalog_.append_table(database, entry);
-                pos = pos_col + 1;
-                pos_col = data.find(';', pos);
-            }
-            if (pos_end_line != std::string::npos) {
-                pos_new_line = pos_end_line + 1;
-                pos_db = data.find(':', pos_new_line);
-            } else {
-                break;
-            }
-        }
-    }
 
 } //namespace services::disk

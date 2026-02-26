@@ -54,8 +54,6 @@ namespace services::wal {
 
         void sync(address_pack pack);
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
-        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
         unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
         unique_future<services::wal::id_t> current_wal_id(session_id_t session);
@@ -89,8 +87,6 @@ namespace services::wal {
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_t::load,
-            &manager_wal_replicate_t::create_index,
-            &manager_wal_replicate_t::drop_index,
             &manager_wal_replicate_t::commit_txn,
             &manager_wal_replicate_t::truncate_before,
             &manager_wal_replicate_t::current_wal_id,
@@ -145,8 +141,6 @@ namespace services::wal {
         void sync(address_pack pack);
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> create_index(session_id_t session, components::logical_plan::node_create_index_ptr data);
-        unique_future<services::wal::id_t> drop_index(session_id_t session, components::logical_plan::node_drop_index_ptr data);
         unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
         unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
         unique_future<services::wal::id_t> current_wal_id(session_id_t session);
@@ -180,8 +174,6 @@ namespace services::wal {
         using dispatch_traits = actor_zeta::implements<
             wal_contract,
             &manager_wal_replicate_empty_t::load,
-            &manager_wal_replicate_empty_t::create_index,
-            &manager_wal_replicate_empty_t::drop_index,
             &manager_wal_replicate_empty_t::commit_txn,
             &manager_wal_replicate_empty_t::truncate_before,
             &manager_wal_replicate_empty_t::current_wal_id,

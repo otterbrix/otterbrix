@@ -11,9 +11,6 @@ namespace components::logical_plan {
         return "$checkpoint";
     }
 
-    void node_checkpoint_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {
-    }
-
     node_checkpoint_ptr make_node_checkpoint(std::pmr::memory_resource* resource) {
         return {new node_checkpoint_t{resource}};
     }

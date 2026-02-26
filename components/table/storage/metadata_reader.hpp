@@ -16,8 +16,8 @@ namespace components::table::storage {
         void read_data(std::byte* data, uint64_t size);
 
         template<typename T>
+        requires std::is_trivially_copyable_v<T>
         T read() {
-            static_assert(std::is_trivially_copyable_v<T>);
             T value;
             read_data(reinterpret_cast<std::byte*>(&value), sizeof(T));
             return value;

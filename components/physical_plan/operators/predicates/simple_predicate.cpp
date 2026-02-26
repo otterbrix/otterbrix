@@ -62,19 +62,20 @@ namespace components::operators::predicates {
                            const vector::data_chunk_t& chunk_right,
                            size_t index_left,
                            size_t index_right) {
-                    assert(column_path.front() < chunk_left.column_count());
                     if (side == expressions::side_t::left) {
                         assert(column_path.front() < chunk_left.column_count());
-                        if (!chunk_left.at(column_path)->validity().row_is_valid(index_left)) {
+                        auto* col = chunk_left.at(column_path);
+                        if (!col->validity().row_is_valid(index_left)) {
                             return false;
                         }
-                        return comp(chunk_left.at(column_path)->data<LeftType>()[index_left], value.value<RightType>());
+                        return comp(col->data<LeftType>()[index_left], value.value<RightType>());
                     } else {
                         assert(column_path.front() < chunk_right.column_count());
-                        if (!chunk_right.at(column_path)->validity().row_is_valid(index_right)) {
+                        auto* col = chunk_right.at(column_path);
+                        if (!col->validity().row_is_valid(index_right)) {
                             return false;
                         }
-                        return comp(chunk_right.at(column_path)->data<LeftType>()[index_right],
+                        return comp(col->data<LeftType>()[index_right],
                                     value.value<RightType>());
                     }
                 };
@@ -181,17 +182,19 @@ namespace components::operators::predicates {
                     size_t index_right) {
                     if (side == expressions::side_t::left) {
                         assert(column_path.first.front() < chunk_left.column_count());
-                        if (!chunk_left.at(column_path.first)->validity().row_is_valid(index_left)) {
+                        auto* col = chunk_left.at(column_path.first);
+                        if (!col->validity().row_is_valid(index_left)) {
                             return false;
                         }
-                        auto sv = chunk_left.at(column_path.first)->data<std::string_view>()[index_left];
+                        auto sv = col->data<std::string_view>()[index_left];
                         return std::regex_search(std::string(sv), std::regex(pattern));
                     } else {
                         assert(column_path.first.front() < chunk_right.column_count());
-                        if (!chunk_right.at(column_path.first)->validity().row_is_valid(index_right)) {
+                        auto* col = chunk_right.at(column_path.first);
+                        if (!col->validity().row_is_valid(index_right)) {
                             return false;
                         }
-                        auto sv = chunk_right.at(column_path.first)->data<std::string_view>()[index_right];
+                        auto sv = col->data<std::string_view>()[index_right];
                         return std::regex_search(std::string(sv), std::regex(pattern));
                     }
                 };
@@ -244,20 +247,24 @@ namespace components::operators::predicates {
                                                                     size_t index_left,
                                                                     size_t index_right) {
                 if (one_sided) {
-                    if (!chunk_left.at(column_path_left.first)->validity().row_is_valid(index_left) ||
-                        !chunk_left.at(column_path_right.first)->validity().row_is_valid(index_left)) {
+                    auto* vec_l = chunk_left.at(column_path_left.first);
+                    auto* vec_r = chunk_left.at(column_path_right.first);
+                    if (!vec_l->validity().row_is_valid(index_left) ||
+                        !vec_r->validity().row_is_valid(index_left)) {
                         return false;
                     }
-                    auto sv = chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left];
-                    auto pattern = chunk_left.at(column_path_right.first)->data<std::string_view>()[index_left];
+                    auto sv = vec_l->data<std::string_view>()[index_left];
+                    auto pattern = vec_r->data<std::string_view>()[index_left];
                     return std::regex_search(std::string(sv), std::regex(std::string(pattern)));
                 } else {
-                    if (!chunk_left.at(column_path_left.first)->validity().row_is_valid(index_left) ||
-                        !chunk_right.at(column_path_right.first)->validity().row_is_valid(index_right)) {
+                    auto* vec_l = chunk_left.at(column_path_left.first);
+                    auto* vec_r = chunk_right.at(column_path_right.first);
+                    if (!vec_l->validity().row_is_valid(index_left) ||
+                        !vec_r->validity().row_is_valid(index_right)) {
                         return false;
                     }
-                    auto sv = chunk_left.at(column_path_left.first)->data<std::string_view>()[index_left];
-                    auto pattern = chunk_right.at(column_path_right.first)->data<std::string_view>()[index_right];
+                    auto sv = vec_l->data<std::string_view>()[index_left];
+                    auto pattern = vec_r->data<std::string_view>()[index_right];
                     return std::regex_search(std::string(sv), std::regex(std::string(pattern)));
                 }
             };

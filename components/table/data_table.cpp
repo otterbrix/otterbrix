@@ -167,7 +167,7 @@ namespace components::table {
                 chunk.reset();
             }
 
-            new_collection->finalize_append(append_state);
+            new_collection->finalize_append(append_state, transaction_data{0, 0});
         }
         // scan state and buffer handles destroyed before swapping collection
 
@@ -219,14 +219,8 @@ namespace components::table {
         row_groups_->append(chunk, state);
     }
 
-    void data_table_t::finalize_append(table_append_state& state) { row_groups_->finalize_append(state); }
-
     void data_table_t::finalize_append(table_append_state& state, transaction_data txn) {
         row_groups_->finalize_append(state, txn);
-    }
-
-    void data_table_t::commit_append(int64_t /*row_start*/, int64_t /*count*/) {
-        // No-op for backward compat
     }
 
     void data_table_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {

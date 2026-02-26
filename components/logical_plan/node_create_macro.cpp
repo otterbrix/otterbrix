@@ -20,8 +20,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    void node_create_macro_t::serialize_impl(serializer::msgpack_serializer_t* /*serializer*/) const {}
-
     node_create_macro_ptr make_node_create_macro(std::pmr::memory_resource* resource,
                                                  const collection_full_name_t& name,
                                                  std::vector<std::string> parameters,

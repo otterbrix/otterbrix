@@ -24,7 +24,6 @@ namespace components::logical_plan {
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
 
         int64_t start_;
         int64_t increment_;

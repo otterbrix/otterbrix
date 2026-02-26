@@ -43,7 +43,7 @@ namespace {
         table.append_lock(state);
         table.initialize_append(state);
         table.append(chunk, state);
-        table.finalize_append(state);
+        table.finalize_append(state, transaction_data{0, 0});
     }
 
     void append_rows_txn(data_table_t& table, test_env& env, int64_t start, uint64_t count, transaction_data txn) {

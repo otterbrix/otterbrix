@@ -184,7 +184,7 @@ TEST_CASE("components::table::data_table") {
         data_table->append_lock(state);
         data_table->initialize_append(state);
         data_table->append(chunk, state);
-        data_table->finalize_append(state);
+        data_table->finalize_append(state, transaction_data{0, 0});
     }
     INFO("Fetch") {
         column_fetch_state state;

@@ -25,8 +25,6 @@ namespace components::expressions {
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
 
-        static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         aggregate_type type_;
         key_t key_;
@@ -36,7 +34,6 @@ namespace components::expressions {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
         bool equal_impl(const expression_i* rhs) const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     aggregate_expression_ptr

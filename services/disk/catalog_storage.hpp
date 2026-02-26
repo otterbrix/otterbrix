@@ -143,9 +143,6 @@ namespace services::disk {
         size_t pos_;
     };
 
-    // CRC32 (standard CRC-32/ISO-HDLC, same polynomial as zlib)
-    uint32_t crc32_compute(const std::byte* data, size_t size);
-
     // Serialize/deserialize catalog
     std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases);
     std::vector<catalog_database_entry_t> deserialize_catalog(const std::byte* data, size_t size);

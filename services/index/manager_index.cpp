@@ -2,7 +2,6 @@
 
 #include <components/index/single_field_index.hpp>
 #include <components/index/index_engine.hpp>
-#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/serialization/serializer.hpp>
 #include <components/serialization/deserializer.hpp>
 #include <actor-zeta/spawn.hpp>
@@ -71,7 +70,7 @@ namespace services::index {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
             metafile_indexes_ = open_file(fs_,
-                                          path_db_ / "indexes_METADATA",
+                                          path_db_ / INDEXES_METADATA_FILENAME,
                                           core::filesystem::file_flags::READ |
                                           core::filesystem::file_flags::WRITE |
                                           core::filesystem::file_flags::FILE_CREATE,
@@ -749,10 +748,9 @@ namespace services::index {
                 offset += size;
                 components::serializer::msgpack_deserializer_t deserializer(buf);
                 deserializer.advance_array(0);
-                auto index = components::logical_plan::node_t::deserialize(&deserializer);
+                auto index = components::logical_plan::node_create_index_t::deserialize(&deserializer);
                 deserializer.pop_array();
-                res.push_back(
-                    boost::polymorphic_pointer_downcast<components::logical_plan::node_create_index_t>(index));
+                res.push_back(index);
             } else {
                 break;
             }

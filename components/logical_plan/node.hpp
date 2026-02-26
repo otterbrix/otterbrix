@@ -48,8 +48,6 @@ namespace components::logical_plan {
         hash_t hash() const;
         virtual void serialize(serializer::msgpack_serializer_t*) const;
 
-        static node_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
-
         std::string to_string() const;
         std::pmr::memory_resource* resource() const noexcept;
 
@@ -65,7 +63,7 @@ namespace components::logical_plan {
     private:
         virtual hash_t hash_impl() const = 0;
         virtual std::string to_string_impl() const = 0;
-        virtual void serialize_impl(serializer::msgpack_serializer_t*) const = 0;
+        virtual void serialize_impl(serializer::msgpack_serializer_t*) const {}
     };
 
     struct node_hash final {

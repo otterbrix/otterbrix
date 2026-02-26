@@ -100,6 +100,37 @@ namespace components::types {
         }
     }
 
+    logical_value_t::logical_value_t(std::pmr::memory_resource* r, const logical_value_t& other)
+        : type_(other.type_)
+        , resource_(r) {
+        switch (type_.type()) {
+            case logical_type::HUGEINT:
+                data128_ = other.data128_;
+                break;
+            case logical_type::UHUGEINT:
+                udata128_ = other.udata128_;
+                break;
+            case logical_type::STRING_LITERAL:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
+                break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
+                break;
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                if (other.data_) {
+                    data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
+                }
+                break;
+            default:
+                data_ = other.data_;
+                break;
+        }
+    }
+
     logical_value_t::logical_value_t(const logical_value_t& other)
         : type_(other.type_)
         , resource_(other.resource_) {

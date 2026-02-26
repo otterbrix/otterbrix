@@ -16,6 +16,7 @@ namespace components::types {
 
         template<typename T>
         logical_value_t(std::pmr::memory_resource* r, T value);
+        logical_value_t(std::pmr::memory_resource* r, const logical_value_t& other);
         logical_value_t(const logical_value_t& other);
         logical_value_t(logical_value_t&& other) noexcept;
         logical_value_t& operator=(const logical_value_t& other);

@@ -45,15 +45,19 @@ namespace services::index {
         unique_future<void> insert(session_id_t session, value_t key, size_t row_id);
         unique_future<void> insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
         unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
+        unique_future<void> remove_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
         unique_future<index_disk_t::result> find(session_id_t session, value_t value, components::expressions::compare_type compare);
         unique_future<void> force_flush(session_id_t session);
 
+        // Synchronous flush — bypasses actor mailbox, safe to call from owning manager
+        void force_flush_sync();
 
         using dispatch_traits = actor_zeta::dispatch_traits<
             &index_agent_disk_t::drop,
             &index_agent_disk_t::insert,
             &index_agent_disk_t::insert_many,
             &index_agent_disk_t::remove,
+            &index_agent_disk_t::remove_many,
             &index_agent_disk_t::find,
             &index_agent_disk_t::force_flush
         >;

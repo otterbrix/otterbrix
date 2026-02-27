@@ -42,7 +42,7 @@ public:
         : memory_limit_(memory_limit) {}
 
     void* do_allocate(size_t bytes, size_t alignment) override {
-        if (bytes > memory_limit_ - memory_used_) {
+        if (memory_used_ + bytes > memory_limit_) {
             throw std::bad_alloc();
         } else {
             memory_used_ += bytes;
@@ -745,7 +745,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
     }
 
     INFO("segment_tree: memory overflow") {
-        limited_resource_t limited_resource(DEFAULT_BLOCK_SIZE * 16);
+        limited_resource_t limited_resource(DEFAULT_BLOCK_SIZE * 64);
 
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;

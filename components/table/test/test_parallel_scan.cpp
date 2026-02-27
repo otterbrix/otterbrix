@@ -1,11 +1,11 @@
 #include <catch2/catch.hpp>
-#include <set>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <set>
 
 using namespace components::types;
 using namespace components::vector;

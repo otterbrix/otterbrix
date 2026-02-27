@@ -1,9 +1,9 @@
 #include <catch2/catch.hpp>
 #include <components/table/data_table.hpp>
-#include <components/table/transaction_manager.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/table/transaction_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
 using namespace components::types;

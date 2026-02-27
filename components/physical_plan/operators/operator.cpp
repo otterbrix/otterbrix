@@ -106,9 +106,7 @@ namespace components::operators {
 
     void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
 
-    void operator_t::mark_executed() {
-        state_ = operator_state::executed;
-    }
+    void operator_t::mark_executed() { state_ = operator_state::executed; }
 
     void operator_t::clear() {
         state_ = operator_state::created;

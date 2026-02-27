@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
-#include <disk/manager_disk.hpp>
 #include <disk/disk.hpp>
+#include <disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
 #include <components/table/table_state.hpp>
@@ -261,8 +261,7 @@ TEST_CASE("services::disk::catalog_schema_update_via_disk") {
         std::vector<catalog_column_entry_t> columns;
         columns.push_back({"id", logical_type::BIGINT});
         columns.push_back({"name", logical_type::STRING_LITERAL});
-        disk.append_collection("test_db", "test_table",
-                               table_storage_mode_t::DISK, columns);
+        disk.append_collection("test_db", "test_table", table_storage_mode_t::DISK, columns);
 
         // Verify table entry
         auto entries = disk.table_entries("test_db");
@@ -315,9 +314,7 @@ TEST_CASE("services::disk::table_storage::parallel_scan_via_storage_adapter") {
     components::storage::table_storage_adapter_t adapter(ts.table(), &resource);
 
     uint64_t chunks_seen = 0;
-    uint64_t total = adapter.parallel_scan([&](data_chunk_t& /*chunk*/) {
-        chunks_seen++;
-    });
+    uint64_t total = adapter.parallel_scan([&](data_chunk_t& /*chunk*/) { chunks_seen++; });
 
     REQUIRE(total == 4 * DEFAULT_VECTOR_CAPACITY);
     REQUIRE(chunks_seen == 4);

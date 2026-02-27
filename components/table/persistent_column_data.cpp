@@ -37,9 +37,8 @@ namespace components::table {
         }
     }
 
-    persistent_column_data_t
-    persistent_column_data_t::deserialize(std::pmr::memory_resource* resource,
-                                           storage::metadata_reader_t& reader) {
+    persistent_column_data_t persistent_column_data_t::deserialize(std::pmr::memory_resource* resource,
+                                                                   storage::metadata_reader_t& reader) {
         persistent_column_data_t result(resource);
 
         auto dp_count = reader.read<uint32_t>();
@@ -51,8 +50,8 @@ namespace components::table {
         auto child_count = reader.read<uint32_t>();
         result.child_columns.resize(child_count);
         for (uint32_t i = 0; i < child_count; i++) {
-            result.child_columns[i] = std::make_unique<persistent_column_data_t>(
-                persistent_column_data_t::deserialize(resource, reader));
+            result.child_columns[i] =
+                std::make_unique<persistent_column_data_t>(persistent_column_data_t::deserialize(resource, reader));
         }
 
         // statistics (v2 field) — read if available

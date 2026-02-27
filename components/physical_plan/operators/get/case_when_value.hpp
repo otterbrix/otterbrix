@@ -18,7 +18,11 @@ namespace components::operators::get {
             expressions::compare_type condition_cmp;
             types::logical_value_t condition_value;
 
-            enum class result_kind { key, constant };
+            enum class result_kind
+            {
+                key,
+                constant
+            };
             result_kind res_type;
             size_t res_index;
         };
@@ -27,7 +31,12 @@ namespace components::operators::get {
         std::vector<types::logical_value_t> result_constants_;
         std::vector<when_clause> clauses_;
 
-        enum class else_kind { key, constant, null_value };
+        enum class else_kind
+        {
+            key,
+            constant,
+            null_value
+        };
         else_kind else_type_{else_kind::null_value};
         size_t else_index_{0};
 
@@ -43,11 +52,11 @@ namespace components::operators::get {
         types::logical_value_t lookup_column(const expressions::key_t& key,
                                              const std::pmr::vector<types::logical_value_t>& row) const;
 
-        types::logical_value_t get_result(when_clause::result_kind kind, size_t index,
+        types::logical_value_t get_result(when_clause::result_kind kind,
+                                          size_t index,
                                           const std::pmr::vector<types::logical_value_t>& row) const;
 
-        bool evaluate_condition(const when_clause& clause,
-                                const std::pmr::vector<types::logical_value_t>& row) const;
+        bool evaluate_condition(const when_clause& clause, const std::pmr::vector<types::logical_value_t>& row) const;
     };
 
 } // namespace components::operators::get

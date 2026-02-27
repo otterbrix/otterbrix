@@ -30,8 +30,8 @@ namespace components::table::storage {
         // allocate new block
         uint64_t new_block_id = block_manager_.free_block_id();
         auto resource = block_manager_.buffer_manager.resource();
-        auto block = std::make_unique<block_t>(resource, new_block_id,
-                                                static_cast<uint64_t>(block_manager_.block_size()));
+        auto block =
+            std::make_unique<block_t>(resource, new_block_id, static_cast<uint64_t>(block_manager_.block_size()));
         block->clear();
 
         metadata_block_t mb;
@@ -59,8 +59,7 @@ namespace components::table::storage {
 
         // block not loaded yet — load from disk
         auto resource = block_manager_.buffer_manager.resource();
-        auto block = std::make_unique<block_t>(resource, block_id,
-                                                static_cast<uint64_t>(block_manager_.block_size()));
+        auto block = std::make_unique<block_t>(resource, block_id, static_cast<uint64_t>(block_manager_.block_size()));
         block_manager_.read(*block);
 
         metadata_block_t mb;

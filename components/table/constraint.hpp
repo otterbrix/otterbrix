@@ -6,7 +6,8 @@
 
 namespace components::table {
 
-    enum class table_constraint_type : uint8_t {
+    enum class table_constraint_type : uint8_t
+    {
         PRIMARY_KEY,
         UNIQUE,
         CHECK

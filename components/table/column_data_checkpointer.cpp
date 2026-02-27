@@ -7,7 +7,7 @@
 namespace components::table {
 
     column_data_checkpointer_t::column_data_checkpointer_t(column_data_t& column_data,
-                                                            storage::partial_block_manager_t& partial_block_manager)
+                                                           storage::partial_block_manager_t& partial_block_manager)
         : column_data_(column_data)
         , partial_block_manager_(partial_block_manager) {}
 

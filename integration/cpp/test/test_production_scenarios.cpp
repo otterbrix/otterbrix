@@ -35,8 +35,9 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (id bigint, group_name string, value double);");
+            dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (id bigint, group_name string, value double);");
         }
     }
 
@@ -46,7 +47,8 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
             ss << "INSERT INTO TestDatabase.TestCollection (id, group_name, value) VALUES ";
             for (int i = 0; i < 1000; ++i) {
                 int id = batch * 1000 + i;
-                if (i > 0) ss << ",";
+                if (i > 0)
+                    ss << ",";
                 ss << "(" << id << ", 'group_" << (id % 50) << "', " << (id * 1.5) << ")";
             }
             ss << ";";
@@ -59,8 +61,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
 
     INFO("verify total count") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100000);
@@ -100,8 +101,9 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         // Create 3 tables
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.orders (order_id bigint, customer_id bigint, amount bigint);");
+            dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.orders (order_id bigint, customer_id bigint, amount bigint);");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -110,8 +112,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.cities (city string, country string);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.cities (city string, country string);");
         }
     }
 
@@ -130,7 +131,8 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         std::stringstream ss;
         ss << "INSERT INTO TestDatabase.customers (id, name, city) VALUES ";
         for (int i = 0; i < 20; ++i) {
-            if (i > 0) ss << ", ";
+            if (i > 0)
+                ss << ", ";
             ss << "(" << i << ", 'Customer_" << i << "', '" << cities[i % 5] << "')";
         }
         ss << ";";
@@ -144,7 +146,8 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         std::stringstream ss;
         ss << "INSERT INTO TestDatabase.orders (order_id, customer_id, amount) VALUES ";
         for (int i = 0; i < 200; ++i) {
-            if (i > 0) ss << ", ";
+            if (i > 0)
+                ss << ", ";
             ss << "(" << i << ", " << (i % 20) << ", " << ((i % 10 + 1) * 100) << ")";
         }
         ss << ";";
@@ -201,13 +204,11 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.table_a (id bigint, label string);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.table_a (id bigint, label string);");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.table_b (id bigint, tag string);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.table_b (id bigint, tag string);");
         }
     }
 
@@ -241,8 +242,7 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "INSERT INTO TestDatabase.table_b (tag) VALUES ('b_null');");
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.table_b (tag) VALUES ('b_null');");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -268,15 +268,13 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
     INFO("verify NULL rows exist in both tables") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.table_a WHERE id IS NULL;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.table_a WHERE id IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.table_b WHERE id IS NULL;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.table_b WHERE id IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -312,8 +310,7 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (id bigint, name string);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, name string);");
         }
     }
 
@@ -366,8 +363,7 @@ TEST_CASE("integration::cpp::production::unicode_strings") {
 
     INFO("select all returns correct count") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
@@ -391,8 +387,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (id bigint, thread_id bigint);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, thread_id bigint);");
         }
     }
 
@@ -403,7 +398,8 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
                 std::stringstream ss;
                 ss << "INSERT INTO TestDatabase.TestCollection (id, thread_id) VALUES ";
                 for (int i = batch_start; i < batch_end; ++i) {
-                    if (i > batch_start) ss << ", ";
+                    if (i > batch_start)
+                        ss << ", ";
                     ss << "(" << i << ", " << thread_num << ")";
                 }
                 ss << ";";
@@ -420,8 +416,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
 
     INFO("verify all rows inserted") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1000);
@@ -466,8 +461,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint);");
         }
     }
 
@@ -481,7 +475,8 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
                 std::stringstream ss;
                 ss << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
                 for (int i = batch_start; i < batch_start + 50; ++i) {
-                    if (i > batch_start) ss << ", ";
+                    if (i > batch_start)
+                        ss << ", ";
                     ss << "(" << i << ", " << (i * 10) << ")";
                 }
                 ss << ";";
@@ -494,8 +489,8 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         std::thread reader([&]() {
             while (!writer_done.load()) {
                 auto session = otterbrix::session_id_t();
-                auto cur = dispatcher->execute_sql(session,
-                                                   "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+                auto cur =
+                    dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
                 if (cur->is_success() && cur->size() == 1) {
                     auto count = cur->chunk_data().value(0, 0).value<uint64_t>();
                     auto prev_max = max_count_seen.load();
@@ -517,8 +512,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
 
     INFO("verify final count") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
@@ -556,7 +550,8 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             ss << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
             for (int i = 0; i < 1000; ++i) {
                 int id = batch * 1000 + i;
-                if (i > 0) ss << ",";
+                if (i > 0)
+                    ss << ",";
                 ss << "(" << id << ", " << (id * 2) << ")";
             }
             ss << ";";
@@ -569,8 +564,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
         // Verify before checkpoint
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(expected_count));
@@ -590,8 +584,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(expected_count));
@@ -635,9 +628,9 @@ TEST_CASE("integration::cpp::production::complex_where") {
         std::string cats[] = {"A", "B", "C"};
         std::string stats[] = {"active", "inactive"};
         for (int i = 1; i <= 100; ++i) {
-            if (i > 1) ss << ", ";
-            ss << "(" << i << ", '" << cats[(i - 1) % 3] << "', " << i << ", '"
-               << stats[(i - 1) % 2] << "')";
+            if (i > 1)
+                ss << ", ";
+            ss << "(" << i << ", '" << cats[(i - 1) % 3] << "', " << i << ", '" << stats[(i - 1) % 2] << "')";
         }
         ss << ";";
         auto session = otterbrix::session_id_t();
@@ -715,7 +708,8 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             std::stringstream ss;
             ss << "INSERT INTO TestDatabase.TestCollection (id, name) VALUES ";
             for (int i = 0; i < 50; ++i) {
-                if (i > 0) ss << ", ";
+                if (i > 0)
+                    ss << ", ";
                 ss << "(" << i << ", 'row_" << i << "')";
             }
             ss << ";";
@@ -762,8 +756,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 
             // Try to query — may return 0 rows or throw, both are acceptable
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             // If we get here, the engine handled corruption gracefully
             REQUIRE(cur != nullptr);
         } catch (const std::exception& /*e*/) {
@@ -797,8 +790,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (id bigint, data string);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, data string);");
         }
 
         // Insert in small batches to generate many WAL records
@@ -807,7 +799,8 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             ss << "INSERT INTO TestDatabase.TestCollection (id, data) VALUES ";
             for (int i = 0; i < 10; ++i) {
                 int id = batch * 10 + i;
-                if (i > 0) ss << ", ";
+                if (i > 0)
+                    ss << ", ";
                 ss << "(" << id << ", 'data_value_" << id << "_padding_for_size')";
             }
             ss << ";";
@@ -820,8 +813,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
         // Verify before restart
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
@@ -851,8 +843,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
@@ -893,7 +884,8 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             ss << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
             for (int i = 0; i < 100; ++i) {
                 int id = batch * 100 + i + 1; // id 1..1000
-                if (i > 0) ss << ", ";
+                if (i > 0)
+                    ss << ", ";
                 ss << "(" << id << ", " << (id * 10) << ")";
             }
             ss << ";";
@@ -909,8 +901,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
         // Delete rows where id > 200 (removes 800 rows)
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "DELETE FROM TestDatabase.TestCollection WHERE id > 200;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id > 200;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 800);
         }
@@ -941,8 +932,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 200);

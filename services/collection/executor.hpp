@@ -12,12 +12,14 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <services/collection/context_storage.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <core/btree/btree.hpp>
+#include <services/collection/context_storage.hpp>
 #include <stack>
 
-namespace components::table { class transaction_manager_t; }
+namespace components::table {
+    class transaction_manager_t;
+}
 
 namespace services::collection::executor {
 
@@ -38,7 +40,6 @@ namespace services::collection::executor {
                         services::context_storage_t&& context_storage);
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
-
 
     // Internal result with MVCC tracking (not exposed to dispatcher)
     struct sub_plan_result_t {
@@ -90,11 +91,11 @@ namespace services::collection::executor {
                               services::context_storage_t&& context_storage);
 
         unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,
-                                                         plan_t plan_data,
-                                                         components::table::transaction_data txn);
+                                                           plan_t plan_data,
+                                                           components::table::transaction_data txn);
 
         unique_future<sub_plan_result_t> intercept_dml_io_(components::operators::operator_t::ptr waiting_op,
-                                                          components::pipeline::context_t* ctx);
+                                                           components::pipeline::context_t* ctx);
 
     private:
         actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();

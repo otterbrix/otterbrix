@@ -24,7 +24,8 @@ namespace services::disk {
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_, components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
+              buffer_manager_,
+              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
         , table_(std::make_unique<components::table::data_table_t>(
               resource,
               *block_manager_,
@@ -36,9 +37,9 @@ namespace services::disk {
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_, components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(
-              resource, *block_manager_, std::move(columns))) {}
+              buffer_manager_,
+              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
+        , table_(std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns))) {}
 
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns,
@@ -46,21 +47,21 @@ namespace services::disk {
         : mode_(storage_mode_t::DISK)
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
-        auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(
-            buffer_manager_, fs_, otbx_path.string());
+        auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
+                                                                                            fs_,
+                                                                                            otbx_path.string());
         bm->create_new_database();
         block_manager_ = std::move(bm);
-        table_ = std::make_unique<components::table::data_table_t>(
-            resource, *block_manager_, std::move(columns));
+        table_ = std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns));
     }
 
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
-                                     const std::filesystem::path& otbx_path)
+    table_storage_t::table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
         : mode_(storage_mode_t::DISK)
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
-        auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(
-            buffer_manager_, fs_, otbx_path.string());
+        auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
+                                                                                            fs_,
+                                                                                            otbx_path.string());
         bm->load_existing_database();
         block_manager_ = std::move(bm);
 
@@ -498,7 +499,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session, wal::id_t current_wal_id) {
+    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session,
+                                                                            wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
         // Checkpoint DISK tables and collect schemas from ALL tables
@@ -520,7 +522,8 @@ namespace services::disk {
                 }
                 // Convert storage_mode_t -> table_storage_mode_t
                 auto catalog_mode = entry->table_storage.mode() == storage_mode_t::DISK
-                    ? table_storage_mode_t::DISK : table_storage_mode_t::IN_MEMORY;
+                                        ? table_storage_mode_t::DISK
+                                        : table_storage_mode_t::IN_MEMORY;
                 schemas.push_back({name, std::move(catalog_cols), catalog_mode});
             }
         }
@@ -528,8 +531,8 @@ namespace services::disk {
         if (!agents_.empty()) {
             // Update catalog schemas on disk
             if (!schemas.empty()) {
-                auto [needs_sched1, future1] = actor_zeta::otterbrix::send(
-                    agent(), &agent_disk_t::update_catalog_schemas, std::move(schemas));
+                auto [needs_sched1, future1] =
+                    actor_zeta::otterbrix::send(agent(), &agent_disk_t::update_catalog_schemas, std::move(schemas));
                 if (needs_sched1) {
                     scheduler_->enqueue(agents_[0].get());
                 }
@@ -546,8 +549,8 @@ namespace services::disk {
                 }
             }
             if (current_wal_id > 0 && !has_in_memory) {
-                auto [needs_sched2, future2] = actor_zeta::otterbrix::send(
-                    agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
+                auto [needs_sched2, future2] =
+                    actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
                 if (needs_sched2) {
                     scheduler_->enqueue(agents_[0].get());
                 }
@@ -562,8 +565,8 @@ namespace services::disk {
         co_return wal::id_t{0};
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(
-        session_id_t session, uint64_t lowest_active_start_time) {
+    manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
+                                                                   uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
         for (auto& [name, entry] : storages_) {
@@ -577,8 +580,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(
-        execution_context_t ctx, uint64_t lowest_active_start_time) {
+    manager_disk_t::unique_future<void> manager_disk_t::maybe_cleanup(execution_context_t ctx,
+                                                                      uint64_t lowest_active_start_time) {
         auto it = storages_.find(ctx.name);
         if (it == storages_.end()) {
             co_return;
@@ -597,8 +600,11 @@ namespace services::disk {
         // Cleanup if > 30% of rows are deleted
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            trace(log_, "manager_disk_t::maybe_cleanup: {}, deleted {}/{}, running cleanup",
-                  ctx.name.to_string(), deleted, total);
+            trace(log_,
+                  "manager_disk_t::maybe_cleanup: {}, deleted {}/{}, running cleanup",
+                  ctx.name.to_string(),
+                  deleted,
+                  total);
             table.cleanup_versions(lowest_active_start_time);
             table.compact();
         }
@@ -608,67 +614,88 @@ namespace services::disk {
 
     // --- Catalog DDL forwarding to agent_disk_t ---
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_sequence(
-        session_id_t /*session*/, database_name_t database, catalog_sequence_entry_t entry) {
+    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_sequence(session_id_t /*session*/,
+                                                                                database_name_t database,
+                                                                                catalog_sequence_entry_t entry) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::append_sequence, std::move(database), std::move(entry));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(),
+                                                                     &agent_disk_t::append_sequence,
+                                                                     std::move(database),
+                                                                     std::move(entry));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_remove_sequence(
-        session_id_t /*session*/, database_name_t database, std::string name) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::catalog_remove_sequence(session_id_t /*session*/, database_name_t database, std::string name) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::remove_sequence, std::move(database), std::move(name));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(),
+                                                                     &agent_disk_t::remove_sequence,
+                                                                     std::move(database),
+                                                                     std::move(name));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_view(
-        session_id_t /*session*/, database_name_t database, catalog_view_entry_t entry) {
+    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_view(session_id_t /*session*/,
+                                                                            database_name_t database,
+                                                                            catalog_view_entry_t entry) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::append_view, std::move(database), std::move(entry));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(agent(), &agent_disk_t::append_view, std::move(database), std::move(entry));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_remove_view(
-        session_id_t /*session*/, database_name_t database, std::string name) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::catalog_remove_view(session_id_t /*session*/, database_name_t database, std::string name) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::remove_view, std::move(database), std::move(name));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_view, std::move(database), std::move(name));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_macro(
-        session_id_t /*session*/, database_name_t database, catalog_macro_entry_t entry) {
+    manager_disk_t::unique_future<void> manager_disk_t::catalog_append_macro(session_id_t /*session*/,
+                                                                             database_name_t database,
+                                                                             catalog_macro_entry_t entry) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::append_macro, std::move(database), std::move(entry));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] = actor_zeta::otterbrix::send(agent(),
+                                                                     &agent_disk_t::append_macro,
+                                                                     std::move(database),
+                                                                     std::move(entry));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::catalog_remove_macro(
-        session_id_t /*session*/, database_name_t database, std::string name) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::catalog_remove_macro(session_id_t /*session*/, database_name_t database, std::string name) {
         if (!agents_.empty()) {
-            auto [needs_sched, future] = actor_zeta::otterbrix::send(
-                agent(), &agent_disk_t::remove_macro, std::move(database), std::move(name));
-            if (needs_sched) { scheduler_->enqueue(agents_[0].get()); }
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(agent(), &agent_disk_t::remove_macro, std::move(database), std::move(name));
+            if (needs_sched) {
+                scheduler_->enqueue(agents_[0].get());
+            }
             co_await std::move(future);
         }
         co_return;
@@ -687,26 +714,30 @@ namespace services::disk {
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns)));
     }
 
-    void manager_disk_t::create_storage_disk_sync(
-        const collection_full_name_t& name,
-        std::vector<components::table::column_definition_t> columns,
-        const std::filesystem::path& otbx_path) {
-        trace(log_, "manager_disk_t::create_storage_disk_sync , name : {} , path : {}", name.to_string(), otbx_path.string());
-        storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+    void manager_disk_t::create_storage_disk_sync(const collection_full_name_t& name,
+                                                  std::vector<components::table::column_definition_t> columns,
+                                                  const std::filesystem::path& otbx_path) {
+        trace(log_,
+              "manager_disk_t::create_storage_disk_sync , name : {} , path : {}",
+              name.to_string(),
+              otbx_path.string());
+        storages_.emplace(name,
+                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
     }
 
-    void manager_disk_t::load_storage_disk_sync(
-        const collection_full_name_t& name,
-        const std::filesystem::path& otbx_path) {
-        trace(log_, "manager_disk_t::load_storage_disk_sync , name : {} , path : {}", name.to_string(), otbx_path.string());
+    void manager_disk_t::load_storage_disk_sync(const collection_full_name_t& name,
+                                                const std::filesystem::path& otbx_path) {
+        trace(log_,
+              "manager_disk_t::load_storage_disk_sync , name : {} , path : {}",
+              name.to_string(),
+              otbx_path.string());
         storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), otbx_path));
     }
 
-    void manager_disk_t::overlay_column_not_null_sync(
-        const collection_full_name_t& name,
-        const std::string& col_name) {
+    void manager_disk_t::overlay_column_not_null_sync(const collection_full_name_t& name, const std::string& col_name) {
         auto* s = get_storage(name);
-        if (s) s->overlay_not_null(col_name);
+        if (s)
+            s->overlay_not_null(col_name);
     }
 
     // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
@@ -715,9 +746,8 @@ namespace services::disk {
         // Deep-copy a data_chunk into a new one using the target resource.
         // Required because deserialized chunks may use a different pmr resource
         // than the storage, and internal validity_mask_t asserts same resource on assign.
-        components::vector::data_chunk_t rebuild_chunk(
-            std::pmr::memory_resource* target_resource,
-            components::vector::data_chunk_t& src) {
+        components::vector::data_chunk_t rebuild_chunk(std::pmr::memory_resource* target_resource,
+                                                       components::vector::data_chunk_t& src) {
             auto count = src.size();
             components::vector::data_chunk_t dst(target_resource, src.types(), count);
             dst.set_cardinality(count);
@@ -730,11 +760,11 @@ namespace services::disk {
         }
     } // anonymous namespace
 
-    void manager_disk_t::direct_append_sync(
-        const collection_full_name_t& name,
-        components::vector::data_chunk_t& data) {
+    void manager_disk_t::direct_append_sync(const collection_full_name_t& name,
+                                            components::vector::data_chunk_t& data) {
         auto* s = get_storage(name);
-        if (!s || data.size() == 0) return;
+        if (!s || data.size() == 0)
+            return;
 
         // Rebuild data with storage-compatible resource
         auto local = rebuild_chunk(resource(), data);
@@ -776,14 +806,16 @@ namespace services::disk {
         s->append(local);
     }
 
-    void manager_disk_t::direct_delete_sync(
-        const collection_full_name_t& name,
-        const std::pmr::vector<int64_t>& row_ids, uint64_t count) {
+    void manager_disk_t::direct_delete_sync(const collection_full_name_t& name,
+                                            const std::pmr::vector<int64_t>& row_ids,
+                                            uint64_t count) {
         auto* s = get_storage(name);
-        if (!s || row_ids.empty()) return;
+        if (!s || row_ids.empty())
+            return;
 
         // Build a vector_t from row_ids for the storage API
-        components::vector::vector_t ids_vec(resource(),
+        components::vector::vector_t ids_vec(
+            resource(),
             components::types::complex_logical_type(components::types::logical_type::BIGINT),
             count);
         for (uint64_t i = 0; i < count && i < row_ids.size(); i++) {
@@ -792,12 +824,12 @@ namespace services::disk {
         s->delete_rows(ids_vec, count);
     }
 
-    void manager_disk_t::direct_update_sync(
-        const collection_full_name_t& name,
-        const std::pmr::vector<int64_t>& row_ids,
-        components::vector::data_chunk_t& new_data) {
+    void manager_disk_t::direct_update_sync(const collection_full_name_t& name,
+                                            const std::pmr::vector<int64_t>& row_ids,
+                                            components::vector::data_chunk_t& new_data) {
         auto* s = get_storage(name);
-        if (!s || row_ids.empty()) return;
+        if (!s || row_ids.empty())
+            return;
 
         // Build update data matching storage columns (by name).
         // The WAL update chunk may have extra columns from update expressions.
@@ -813,8 +845,7 @@ namespace services::disk {
         for (size_t t = 0; t < table_columns.size(); t++) {
             bool found = false;
             for (uint64_t c = 0; c < new_data.column_count(); c++) {
-                if (new_data.data[c].type().has_alias() &&
-                    new_data.data[c].type().alias() == table_columns[t].name()) {
+                if (new_data.data[c].type().has_alias() && new_data.data[c].type().alias() == table_columns[t].name()) {
                     // Copy values from source to local
                     for (uint64_t row = 0; row < rows; row++) {
                         local.data[t].set_value(row, new_data.data[c].value(row));
@@ -830,7 +861,8 @@ namespace services::disk {
         }
 
         auto count = static_cast<uint64_t>(row_ids.size());
-        components::vector::vector_t ids_vec(resource(),
+        components::vector::vector_t ids_vec(
+            resource(),
             components::types::complex_logical_type(components::types::logical_type::BIGINT),
             count);
         for (uint64_t i = 0; i < count; i++) {
@@ -869,13 +901,15 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::create_storage_disk(
-        session_id_t session, collection_full_name_t name,
-        std::vector<components::table::column_definition_t> columns) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::create_storage_disk(session_id_t session,
+                                        collection_full_name_t name,
+                                        std::vector<components::table::column_definition_t> columns) {
         trace(log_, "manager_disk_t::create_storage_disk , session : {} , name : {}", session.data(), name.to_string());
         auto otbx_path = config_.path / name.database / "main" / name.collection / "table.otbx";
         std::filesystem::create_directories(otbx_path.parent_path());
-        storages_.emplace(name, std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
+        storages_.emplace(name,
+                          std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path));
         co_return;
     }
 
@@ -943,19 +977,24 @@ namespace services::disk {
                                          collection_full_name_t name,
                                          std::pmr::vector<components::types::complex_logical_type> types) {
         auto* s = get_storage(name);
-        if (s) { s->adopt_schema(types); }
+        if (s) {
+            s->adopt_schema(types);
+        }
         co_return;
     }
 
     // --- Storage data operations ---
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit,
-        components::table::transaction_data txn) {
+    manager_disk_t::storage_scan(session_id_t /*session*/,
+                                 collection_full_name_t name,
+                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                 int limit,
+                                 components::table::transaction_data txn) {
         auto* s = get_storage(name);
-        if (!s) { co_return nullptr };
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit, txn);
@@ -968,7 +1007,9 @@ namespace services::disk {
                                   components::vector::vector_t row_ids,
                                   uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) {co_return nullptr;}
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
         s->fetch(*result, row_ids, count);
@@ -981,16 +1022,17 @@ namespace services::disk {
                                          int64_t start,
                                          uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) {co_return nullptr;}
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_t::storage_append(
-        execution_context_t ctx,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_t::storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data) {
         auto& name = ctx.name;
         auto& txn = ctx.txn;
         auto* s = get_storage(name);
@@ -1045,8 +1087,7 @@ namespace services::disk {
                 if (table_columns[col].is_not_null()) {
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (!data->data[col].validity().row_is_valid(row)) {
-                            trace(log_, "storage_append: NOT NULL violation on column '{}'",
-                                  table_columns[col].name());
+                            trace(log_, "storage_append: NOT NULL violation on column '{}'", table_columns[col].name());
                             co_return std::make_pair(uint64_t{0}, uint64_t{0});
                         }
                     }
@@ -1121,8 +1162,7 @@ namespace services::disk {
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
                 auto src_type = data->data[i].type().type();
                 auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type &&
-                    (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
                     (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                     auto& src_vec = data->data[i];
                     auto target_type = table_columns[i].type();
@@ -1153,57 +1193,64 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_t::unique_future<std::pair<int64_t, uint64_t>> manager_disk_t::storage_update(
-        execution_context_t ctx,
-        components::vector::vector_t row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::unique_future<std::pair<int64_t, uint64_t>>
+    manager_disk_t::storage_update(execution_context_t ctx,
+                                   components::vector::vector_t row_ids,
+                                   std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(ctx.name);
-        if (!s) {co_return std::pair<int64_t, uint64_t>{0, 0};}
+        if (!s) {
+            co_return std::pair<int64_t, uint64_t>{0, 0};
+        }
         co_return s->update(row_ids, *data, ctx.txn);
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(
-        execution_context_t ctx,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_t::unique_future<uint64_t>
+    manager_disk_t::storage_delete_rows(execution_context_t ctx, components::vector::vector_t row_ids, uint64_t count) {
         auto* s = get_storage(ctx.name);
-        if (!s) {co_return 0;}
+        if (!s) {
+            co_return 0;
+        }
         if (ctx.txn.transaction_id != 0) {
             co_return s->delete_rows(row_ids, count, ctx.txn.transaction_id);
         }
         co_return s->delete_rows(row_ids, count);
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_parallel_scan(
-        session_id_t /*session*/, collection_full_name_t name) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_parallel_scan(session_id_t /*session*/,
+                                                                                  collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return 0;}
+        if (!s) {
+            co_return 0;
+        }
         uint64_t total = s->parallel_scan([](components::vector::data_chunk_t&) {});
         co_return total;
     }
 
     // MVCC commit/revert methods
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_append(
-        execution_context_t ctx,
-        uint64_t commit_id, int64_t row_start, uint64_t count) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_append(execution_context_t ctx,
+                                                                              uint64_t commit_id,
+                                                                              int64_t row_start,
+                                                                              uint64_t count) {
         auto* s = get_storage(ctx.name);
-        if (s) s->commit_append(commit_id, row_start, count);
+        if (s)
+            s->commit_append(commit_id, row_start, count);
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_revert_append(
-        execution_context_t ctx,
-        int64_t row_start, uint64_t count) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count) {
         auto* s = get_storage(ctx.name);
-        if (s) s->revert_append(row_start, count);
+        if (s)
+            s->revert_append(row_start, count);
         co_return;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_delete(
-        execution_context_t ctx,
-        uint64_t commit_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_commit_delete(execution_context_t ctx,
+                                                                              uint64_t commit_id) {
         auto* s = get_storage(ctx.name);
-        if (s) s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
+        if (s)
+            s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
         co_return;
     }
 
@@ -1423,21 +1470,6 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_empty_t::unique_future<void>
-    manager_disk_empty_t::write_data_chunk(session_id_t /*session*/,
-                                           database_name_t /*database*/,
-                                           collection_name_t /*collection*/,
-                                           std::unique_ptr<components::vector::data_chunk_t> /*data*/) {
-        co_return;
-    }
-
-    manager_disk_empty_t::unique_future<void> manager_disk_empty_t::remove_documents(session_id_t /*session*/,
-                                                                                     database_name_t /*database*/,
-                                                                                     collection_name_t /*collection*/,
-                                                                                     document_ids_t /*documents*/) {
-        co_return;
-    }
-
     manager_disk_empty_t::unique_future<void> manager_disk_empty_t::flush(session_id_t /*session*/,
                                                                           wal::id_t /*wal_id*/) {
         co_return;
@@ -1447,7 +1479,9 @@ namespace services::disk {
 
     components::storage::storage_t* manager_disk_empty_t::get_storage(const collection_full_name_t& name) {
         auto it = storages_.find(name);
-        if (it == storages_.end()) {return nullptr;}
+        if (it == storages_.end()) {
+            return nullptr;
+        }
         return it->second->storage.get();
     }
 
@@ -1474,28 +1508,36 @@ namespace services::disk {
     manager_disk_empty_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_empty_t::storage_types(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return std::pmr::vector<components::types::complex_logical_type>(resource());}
+        if (!s) {
+            co_return std::pmr::vector<components::types::complex_logical_type>(resource());
+        }
         co_return s->types();
     }
 
     manager_disk_empty_t::unique_future<uint64_t>
     manager_disk_empty_t::storage_total_rows(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return 0;}
+        if (!s) {
+            co_return 0;
+        }
         co_return s->total_rows();
     }
 
     manager_disk_empty_t::unique_future<uint64_t>
     manager_disk_empty_t::storage_calculate_size(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return 0;}
+        if (!s) {
+            co_return 0;
+        }
         co_return s->calculate_size();
     }
 
     manager_disk_empty_t::unique_future<std::vector<components::table::column_definition_t>>
     manager_disk_empty_t::storage_columns(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return std::vector<components::table::column_definition_t>{};}
+        if (!s) {
+            co_return std::vector<components::table::column_definition_t>{};
+        }
         const auto& cols = s->columns();
         std::vector<components::table::column_definition_t> result;
         result.reserve(cols.size());
@@ -1508,7 +1550,9 @@ namespace services::disk {
     manager_disk_empty_t::unique_future<bool> manager_disk_empty_t::storage_has_schema(session_id_t /*session*/,
                                                                                        collection_full_name_t name) {
         auto* s = get_storage(name);
-        if (!s) {co_return false;}
+        if (!s) {
+            co_return false;
+        }
         co_return s->has_schema();
     }
 
@@ -1517,17 +1561,22 @@ namespace services::disk {
                                                collection_full_name_t name,
                                                std::pmr::vector<components::types::complex_logical_type> types) {
         auto* s = get_storage(name);
-        if (s) {s->adopt_schema(types);}
+        if (s) {
+            s->adopt_schema(types);
+        }
         co_return;
     }
 
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_empty_t::storage_scan(
-        session_id_t /*session*/, collection_full_name_t name,
-        std::unique_ptr<components::table::table_filter_t> filter, int limit,
-        components::table::transaction_data txn) {
+    manager_disk_empty_t::storage_scan(session_id_t /*session*/,
+                                       collection_full_name_t name,
+                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       int limit,
+                                       components::table::transaction_data txn) {
         auto* s = get_storage(name);
-        if (!s) {co_return nullptr;}
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit, txn);
@@ -1540,7 +1589,9 @@ namespace services::disk {
                                         components::vector::vector_t row_ids,
                                         uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) {co_return nullptr;}
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->fetch(*result, row_ids, count);
@@ -1553,19 +1604,23 @@ namespace services::disk {
                                                int64_t start,
                                                uint64_t count) {
         auto* s = get_storage(name);
-        if (!s) {co_return nullptr;}
+        if (!s) {
+            co_return nullptr;
+        }
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
         co_return std::move(result);
     }
 
-    manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>> manager_disk_empty_t::storage_append(
-        execution_context_t ctx,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_empty_t::storage_append(execution_context_t ctx,
+                                         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto& name = ctx.name;
         auto* s = get_storage(name);
-        if (!s || !data || data->size() == 0) {co_return std::make_pair(uint64_t{0}, uint64_t{0});}
+        if (!s || !data || data->size() == 0) {
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        }
 
         // Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
@@ -1655,7 +1710,9 @@ namespace services::disk {
                             keep_rows.push_back(i);
                         }
                     }
-                    if (keep_rows.empty()) {co_return std::make_pair(uint64_t{0}, uint64_t{0});}
+                    if (keep_rows.empty()) {
+                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                    }
                     if (keep_rows.size() < data->size()) {
                         auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
                                                                                            data->types(),
@@ -1679,8 +1736,7 @@ namespace services::disk {
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
                 auto src_type = data->data[i].type().type();
                 auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type &&
-                    (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
                     (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                     auto& src_vec = data->data[i];
                     auto target_type = table_columns[i].type();
@@ -1705,20 +1761,25 @@ namespace services::disk {
         co_return std::make_pair(start_row, actual_count);
     }
 
-    manager_disk_empty_t::unique_future<std::pair<int64_t, uint64_t>> manager_disk_empty_t::storage_update(
-        execution_context_t ctx,
-        components::vector::vector_t row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_empty_t::unique_future<std::pair<int64_t, uint64_t>>
+    manager_disk_empty_t::storage_update(execution_context_t ctx,
+                                         components::vector::vector_t row_ids,
+                                         std::unique_ptr<components::vector::data_chunk_t> data) {
         auto* s = get_storage(ctx.name);
-        if (!s) {co_return std::pair<int64_t, uint64_t>{0, 0};}
+        if (!s) {
+            co_return std::pair<int64_t, uint64_t>{0, 0};
+        }
         co_return s->update(row_ids, *data, ctx.txn);
     }
 
-    manager_disk_empty_t::unique_future<uint64_t> manager_disk_empty_t::storage_delete_rows(
-        execution_context_t ctx,
-        components::vector::vector_t row_ids, uint64_t count) {
+    manager_disk_empty_t::unique_future<uint64_t>
+    manager_disk_empty_t::storage_delete_rows(execution_context_t ctx,
+                                              components::vector::vector_t row_ids,
+                                              uint64_t count) {
         auto* s = get_storage(ctx.name);
-        if (!s) {co_return 0; }
+        if (!s) {
+            co_return 0;
+        }
         co_return s->delete_rows(row_ids, count);
     }
 

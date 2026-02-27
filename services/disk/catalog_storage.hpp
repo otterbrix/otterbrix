@@ -13,7 +13,11 @@
 
 namespace services::disk {
 
-    enum class table_storage_mode_t : uint8_t { IN_MEMORY = 0, DISK = 1 };
+    enum class table_storage_mode_t : uint8_t
+    {
+        IN_MEMORY = 0,
+        DISK = 1
+    };
 
     struct catalog_column_entry_t {
         std::string name;
@@ -150,8 +154,7 @@ namespace services::disk {
     // Catalog storage manager — replaces metadata_t for disk persistence
     class catalog_storage_t {
     public:
-        catalog_storage_t(core::filesystem::local_file_system_t& fs,
-                          const std::filesystem::path& catalog_path);
+        catalog_storage_t(core::filesystem::local_file_system_t& fs, const std::filesystem::path& catalog_path);
 
         void load();
 
@@ -169,9 +172,11 @@ namespace services::disk {
         void remove_table(const std::string& db, const std::string& table);
 
         // Schema update (for adopt_schema on computing tables)
-        void update_table_columns(const std::string& db, const std::string& table,
+        void update_table_columns(const std::string& db,
+                                  const std::string& table,
                                   const std::vector<catalog_column_entry_t>& columns);
-        void update_table_columns_and_mode(const std::string& db, const std::string& table,
+        void update_table_columns_and_mode(const std::string& db,
+                                           const std::string& table,
                                            const std::vector<catalog_column_entry_t>& columns,
                                            table_storage_mode_t mode);
 

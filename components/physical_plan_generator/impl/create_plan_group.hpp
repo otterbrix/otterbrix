@@ -12,6 +12,6 @@ namespace services::planner::impl {
     create_plan_group(const context_storage_t& context,
                       const components::compute::function_registry_t& function_registry,
                       const components::logical_plan::node_ptr& node,
-                                                                const components::logical_plan::storage_parameters* params = nullptr);
+                      const components::logical_plan::storage_parameters* params = nullptr);
 
 }

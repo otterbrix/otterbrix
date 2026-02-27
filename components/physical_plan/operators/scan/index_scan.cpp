@@ -49,20 +49,23 @@ namespace components::operators {
         std::pmr::vector<int64_t> row_ids_vec(resource_);
         if (ctx->txn.transaction_id != 0) {
             auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                &services::index::manager_index_t::search_txn,
-                ctx->session, name_,
-                index::keys_base_storage_t{{key_}},
-                types::logical_value_t{resource_, value_},
-                compare_type_,
-                ctx->txn.start_time, ctx->txn.transaction_id);
+                                             &services::index::manager_index_t::search_txn,
+                                             ctx->session,
+                                             name_,
+                                             index::keys_base_storage_t{{key_}},
+                                             types::logical_value_t{resource_, value_},
+                                             compare_type_,
+                                             ctx->txn.start_time,
+                                             ctx->txn.transaction_id);
             row_ids_vec = co_await std::move(sf);
         } else {
             auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                &services::index::manager_index_t::search,
-                ctx->session, name_,
-                index::keys_base_storage_t{{key_}},
-                types::logical_value_t{resource_, value_},
-                compare_type_);
+                                             &services::index::manager_index_t::search,
+                                             ctx->session,
+                                             name_,
+                                             index::keys_base_storage_t{{key_}},
+                                             types::logical_value_t{resource_, value_},
+                                             compare_type_);
             row_ids_vec = co_await std::move(sf);
         }
 

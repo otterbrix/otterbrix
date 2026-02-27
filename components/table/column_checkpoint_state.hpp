@@ -16,8 +16,7 @@ namespace components::table {
 
     class column_checkpoint_state_t {
     public:
-        column_checkpoint_state_t(column_data_t& column_data,
-                                   storage::partial_block_manager_t& partial_block_manager);
+        column_checkpoint_state_t(column_data_t& column_data, storage::partial_block_manager_t& partial_block_manager);
 
         void flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count);
 

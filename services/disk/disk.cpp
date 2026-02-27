@@ -66,8 +66,10 @@ namespace services::disk {
         return true;
     }
 
-    bool disk_t::append_collection(const database_name_t& database, const collection_name_t& collection,
-                                   table_storage_mode_t mode, const std::vector<catalog_column_entry_t>& columns) {
+    bool disk_t::append_collection(const database_name_t& database,
+                                   const collection_name_t& collection,
+                                   table_storage_mode_t mode,
+                                   const std::vector<catalog_column_entry_t>& columns) {
         if (catalog_.find_table(database, collection) != nullptr) {
             return false;
         }

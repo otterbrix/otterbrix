@@ -13,7 +13,7 @@ namespace components::table {
     namespace storage {
         class block_manager_t;
         class partial_block_manager_t;
-    }
+    } // namespace storage
 
     enum class filter_propagate_result_t : uint8_t
     {

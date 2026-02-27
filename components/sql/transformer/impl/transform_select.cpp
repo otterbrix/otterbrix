@@ -4,9 +4,9 @@
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
-#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/sql/parser/pg_functions.h>
@@ -248,10 +248,9 @@ namespace components::sql::transform {
                         } else {
                             expr_name = "case";
                         }
-                        auto expr = make_scalar_expression(
-                            resource_,
-                            scalar_type::case_when,
-                            expressions::key_t{resource_, std::move(expr_name)});
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::case_when,
+                                                           expressions::key_t{resource_, std::move(expr_name)});
 
                         for (auto& when_item : case_expr->args->lst) {
                             auto* case_when = pg_ptr_cast<CaseWhen>(when_item.data);
@@ -259,33 +258,31 @@ namespace components::sql::transform {
                             if (case_expr->arg) {
                                 // Simple CASE: CASE col WHEN val THEN ...
                                 // Generate equality: col = val
-                                auto col_key = columnref_to_field(resource_,
-                                    pg_ptr_cast<ColumnRef>(case_expr->arg), names);
+                                auto col_key =
+                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(case_expr->arg), names);
                                 col_key.deduce_side(names);
                                 auto param_id = add_param_value(pg_ptr_cast<Node>(case_when->expr), params);
                                 auto cond = make_compare_expression(params->parameters().resource(),
-                                    compare_type::eq, col_key.field, param_id);
+                                                                    compare_type::eq,
+                                                                    col_key.field,
+                                                                    param_id);
                                 expr->append_param(expression_ptr(cond));
                             } else {
                                 // Searched CASE: CASE WHEN condition THEN ...
                                 expression_ptr cond;
                                 if (nodeTag(case_when->expr) == T_A_Expr) {
-                                    cond = transform_a_expr(
-                                        pg_ptr_cast<A_Expr>(case_when->expr), names, params);
+                                    cond = transform_a_expr(pg_ptr_cast<A_Expr>(case_when->expr), names, params);
                                 } else if (nodeTag(case_when->expr) == T_NullTest) {
-                                    cond = transform_null_test(
-                                        pg_ptr_cast<NullTest>(case_when->expr), names, params);
+                                    cond = transform_null_test(pg_ptr_cast<NullTest>(case_when->expr), names, params);
                                 } else {
-                                    cond = transform_a_expr(
-                                        pg_ptr_cast<A_Expr>(case_when->expr), names, params);
+                                    cond = transform_a_expr(pg_ptr_cast<A_Expr>(case_when->expr), names, params);
                                 }
                                 expr->append_param(cond);
                             }
                             // result
                             auto* result_node = pg_ptr_cast<Node>(case_when->result);
                             if (nodeTag(result_node) == T_ColumnRef) {
-                                auto key = columnref_to_field(resource_,
-                                    pg_ptr_cast<ColumnRef>(result_node), names);
+                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(result_node), names);
                                 key.deduce_side(names);
                                 expr->append_param(std::move(key.field));
                             } else {
@@ -296,8 +293,7 @@ namespace components::sql::transform {
                         if (case_expr->defresult) {
                             auto* def_node = pg_ptr_cast<Node>(case_expr->defresult);
                             if (nodeTag(def_node) == T_ColumnRef) {
-                                auto key = columnref_to_field(resource_,
-                                    pg_ptr_cast<ColumnRef>(def_node), names);
+                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(def_node), names);
                                 key.deduce_side(names);
                                 expr->append_param(std::move(key.field));
                             } else {
@@ -307,7 +303,7 @@ namespace components::sql::transform {
                             // No ELSE → NULL
                             expr->append_param(params->add_parameter(
                                 types::logical_value_t(resource_,
-                                    types::complex_logical_type{types::logical_type::NA})));
+                                                       types::complex_logical_type{types::logical_type::NA})));
                         }
                         group->append_expression(expr);
                         break;
@@ -320,10 +316,9 @@ namespace components::sql::transform {
                         } else {
                             expr_name = "coalesce";
                         }
-                        auto expr = make_scalar_expression(
-                            resource_,
-                            scalar_type::coalesce,
-                            expressions::key_t{resource_, std::move(expr_name)});
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::coalesce,
+                                                           expressions::key_t{resource_, std::move(expr_name)});
                         for (auto& arg_item : coalesce->args->lst) {
                             auto arg_node = pg_ptr_cast<Node>(arg_item.data);
                             if (nodeTag(arg_node) == T_ColumnRef) {
@@ -419,10 +414,14 @@ namespace components::sql::transform {
                     auto key = expressions::key_t{resource_, std::move(alias)};
                     auto param_id = add_param_value(expr->lexpr, params);
                     // Flip comparison direction for value op aggregate
-                    if (cmp == compare_type::gt) cmp = compare_type::lt;
-                    else if (cmp == compare_type::lt) cmp = compare_type::gt;
-                    else if (cmp == compare_type::gte) cmp = compare_type::lte;
-                    else if (cmp == compare_type::lte) cmp = compare_type::gte;
+                    if (cmp == compare_type::gt)
+                        cmp = compare_type::lt;
+                    else if (cmp == compare_type::lt)
+                        cmp = compare_type::gt;
+                    else if (cmp == compare_type::gte)
+                        cmp = compare_type::lte;
+                    else if (cmp == compare_type::lte)
+                        cmp = compare_type::gte;
                     return make_compare_expression(params->parameters().resource(), cmp, key, param_id);
                 }
             };
@@ -441,15 +440,15 @@ namespace components::sql::transform {
                     } else if (nodeTag(item.data) == T_NullTest) {
                         child = transform_null_test(pg_ptr_cast<NullTest>(item.data), names, params);
                     }
-                    if (child) union_expr->append_child(child);
+                    if (child)
+                        union_expr->append_child(child);
                 }
                 having_expr = union_expr;
             } else if (nodeTag(node.havingClause) == T_NullTest) {
                 having_expr = transform_null_test(pg_ptr_cast<NullTest>(node.havingClause), names, params);
             }
             if (having_expr) {
-                agg->append_child(
-                    logical_plan::make_node_having(resource_, agg->collection_full_name(), having_expr));
+                agg->append_child(logical_plan::make_node_having(resource_, agg->collection_full_name(), having_expr));
             }
         }
 

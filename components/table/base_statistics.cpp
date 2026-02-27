@@ -43,8 +43,10 @@ namespace components::table {
                         local_max = val;
                         found_valid = true;
                     } else {
-                        if (val < local_min) local_min = val;
-                        if (val > local_max) local_max = val;
+                        if (val < local_min)
+                            local_min = val;
+                        if (val > local_max)
+                            local_max = val;
                     }
                 }
             }
@@ -100,8 +102,10 @@ namespace components::table {
                         local_max = val;
                         found_valid = true;
                     } else {
-                        if (val < local_min) local_min = val;
-                        if (val > local_max) local_max = val;
+                        if (val < local_min)
+                            local_min = val;
+                        if (val > local_max)
+                            local_max = val;
                     }
                 }
             }
@@ -168,10 +172,9 @@ namespace components::table {
             }
         }
 
-        types::logical_value_t
-        deserialize_logical_value(types::logical_type type,
-                                  std::pmr::memory_resource* resource,
-                                  storage::metadata_reader_t& reader) {
+        types::logical_value_t deserialize_logical_value(types::logical_type type,
+                                                         std::pmr::memory_resource* resource,
+                                                         storage::metadata_reader_t& reader) {
             switch (type) {
                 case types::logical_type::BOOLEAN:
                     return types::logical_value_t(resource, reader.read<uint8_t>() != 0);
@@ -372,8 +375,8 @@ namespace components::table {
         }
     }
 
-    base_statistics_t
-    base_statistics_t::deserialize(std::pmr::memory_resource* resource, storage::metadata_reader_t& reader) {
+    base_statistics_t base_statistics_t::deserialize(std::pmr::memory_resource* resource,
+                                                     storage::metadata_reader_t& reader) {
         auto type = static_cast<types::logical_type>(reader.read<uint8_t>());
         auto has_stats = reader.read<uint8_t>() != 0;
         auto null_count = reader.read<uint64_t>();

@@ -26,8 +26,10 @@ namespace services::disk {
         bool remove_collection(const database_name_t& database, const collection_name_t& collection);
 
         // Enriched collection operations (with storage mode + columns)
-        bool append_collection(const database_name_t& database, const collection_name_t& collection,
-                               table_storage_mode_t mode, const std::vector<catalog_column_entry_t>& columns);
+        bool append_collection(const database_name_t& database,
+                               const collection_name_t& collection,
+                               table_storage_mode_t mode,
+                               const std::vector<catalog_column_entry_t>& columns);
         [[nodiscard]] std::vector<catalog_table_entry_t> table_entries(const database_name_t& database) const;
 
         void fix_wal_id(wal::id_t wal_id);

@@ -14,9 +14,7 @@ namespace components::table {
         , type_(std::move(type))
         , default_value_(std::move(default_value)) {}
 
-    column_definition_t::column_definition_t(std::string name,
-                                             types::complex_logical_type type,
-                                             bool not_null)
+    column_definition_t::column_definition_t(std::string name, types::complex_logical_type type, bool not_null)
         : name_(std::move(name))
         , type_(std::move(type))
         , not_null_(not_null) {}

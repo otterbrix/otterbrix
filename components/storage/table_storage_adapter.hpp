@@ -22,13 +22,9 @@ namespace components::storage {
 
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& t) override { table_.adopt_schema(t); }
 
-        void overlay_not_null(const std::string& col_name) override {
-            table_.overlay_not_null(col_name);
-        }
+        void overlay_not_null(const std::string& col_name) override { table_.overlay_not_null(col_name); }
 
-        uint64_t total_rows() const override {
-            return table_.row_group()->total_rows();
-        }
+        uint64_t total_rows() const override { return table_.row_group()->total_rows(); }
 
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
@@ -61,14 +57,11 @@ namespace components::storage {
             state.local_state.txn = txn;
             table_.scan(output, state);
             if (limit >= 0) {
-                output.set_cardinality(
-                    std::min(output.size(), static_cast<uint64_t>(limit)));
+                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
         }
 
-        void fetch(vector::data_chunk_t& output,
-                   const vector::vector_t& row_ids,
-                   uint64_t count) override {
+        void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
             table::column_fetch_state state;
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());
@@ -130,11 +123,11 @@ namespace components::storage {
             table_.update(*update_state, row_ids, data);
         }
 
-        std::pair<int64_t, uint64_t> update(vector::vector_t& row_ids,
-                    vector::data_chunk_t& data,
-                    table::transaction_data txn) override {
+        std::pair<int64_t, uint64_t>
+        update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) override {
             auto count = static_cast<uint64_t>(data.size());
-            if (count == 0) return {0, 0};
+            if (count == 0)
+                return {0, 0};
 
             // Step 1: Mark old rows as deleted with txn_id
             auto delete_state = table_.initialize_delete({});
@@ -165,9 +158,7 @@ namespace components::storage {
             table_.commit_append(commit_id, row_start, count);
         }
 
-        void revert_append(int64_t row_start, uint64_t count) override {
-            table_.revert_append(row_start, count);
-        }
+        void revert_append(int64_t row_start, uint64_t count) override { table_.revert_append(row_start, count); }
 
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {
             table_.commit_all_deletes(txn_id, commit_id);

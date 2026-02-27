@@ -670,8 +670,7 @@ namespace components::table {
                                   static_cast<uint64_t>(start_) + count_ - current_row);
     }
 
-    persistent_column_data_t
-    column_data_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
+    persistent_column_data_t column_data_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
         column_data_checkpointer_t checkpointer(*this, partial_block_manager);
         return checkpointer.checkpoint();
     }
@@ -682,17 +681,15 @@ namespace components::table {
             const auto& dp = persistent_data.data_pointers[i];
             auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
 
-            auto segment = std::make_unique<column_segment_t>(
-                block_handle,
-                type_,
-                static_cast<int64_t>(dp.row_start),
-                dp.tuple_count,
-                static_cast<uint32_t>(dp.block_pointer.block_id),
-                dp.block_pointer.offset,
-                dp.segment_size);
+            auto segment = std::make_unique<column_segment_t>(block_handle,
+                                                              type_,
+                                                              static_cast<int64_t>(dp.row_start),
+                                                              dp.tuple_count,
+                                                              static_cast<uint32_t>(dp.block_pointer.block_id),
+                                                              dp.block_pointer.offset,
+                                                              dp.segment_size);
             segment->set_compression(dp.compression);
-            if (i < persistent_data.segment_statistics.size() &&
-                persistent_data.segment_statistics[i].has_stats()) {
+            if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
             data_.append_segment(l, std::move(segment));

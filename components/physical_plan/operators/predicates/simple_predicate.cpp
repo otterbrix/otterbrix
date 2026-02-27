@@ -36,11 +36,10 @@ namespace components::operators::predicates {
         }
 
         template<typename COMP>
-        simple_predicate::check_function_t
-        make_comparator(std::pmr::memory_resource* resource,
-                        const compute::function_registry_t* function_registry,
-                        const expressions::compare_expression_ptr& expr,
-                        const logical_plan::storage_parameters* parameters) {
+        simple_predicate::check_function_t make_comparator(std::pmr::memory_resource* resource,
+                                                           const compute::function_registry_t* function_registry,
+                                                           const expressions::compare_expression_ptr& expr,
+                                                           const logical_plan::storage_parameters* parameters) {
             auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
             auto right_getter = impl::create_value_getter(resource, function_registry, expr->right(), parameters);
             return [left_getter = std::move(left_getter),
@@ -126,36 +125,31 @@ namespace components::operators::predicates {
                 return {new simple_predicate(
                     make_comparator<std::greater_equal<>>(resource, function_registry, expr, parameters))};
             case compare_type::lt:
-                return {new simple_predicate(
-                    make_comparator<std::less<>>(resource, function_registry, expr, parameters))};
+                return {
+                    new simple_predicate(make_comparator<std::less<>>(resource, function_registry, expr, parameters))};
             case compare_type::lte:
                 return {new simple_predicate(
                     make_comparator<std::less_equal<>>(resource, function_registry, expr, parameters))};
             case compare_type::regex:
-                return {new simple_predicate(
-                    make_comparator<regex<>>(resource, function_registry, expr, parameters))};
+                return {new simple_predicate(make_comparator<regex<>>(resource, function_registry, expr, parameters))};
             case compare_type::all_false:
                 return {new simple_predicate(
                     [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return false; })};
             case compare_type::is_null: {
-                auto column_path = impl::get_column_path(resource, expr->primary_key(), types_left);
                 return {new simple_predicate(
-                    [column_path](const vector::data_chunk_t& chunk_left,
-                                  const vector::data_chunk_t&,
-                                  size_t index_left,
-                                  size_t) {
-                        return !chunk_left.at(column_path.first)->validity().row_is_valid(index_left);
-                    })};
+                    [column_path = std::get<expressions::key_t>(expr->left()).path()](
+                        const vector::data_chunk_t& chunk_left,
+                        const vector::data_chunk_t&,
+                        size_t index_left,
+                        size_t) { return !chunk_left.at(column_path)->validity().row_is_valid(index_left); })};
             }
             case compare_type::is_not_null: {
-                auto column_path = impl::get_column_path(resource, expr->primary_key(), types_left);
                 return {new simple_predicate(
-                    [column_path](const vector::data_chunk_t& chunk_left,
-                                  const vector::data_chunk_t&,
-                                  size_t index_left,
-                                  size_t) {
-                        return chunk_left.at(column_path.first)->validity().row_is_valid(index_left);
-                    })};
+                    [column_path = std::get<expressions::key_t>(expr->left()).path()](
+                        const vector::data_chunk_t& chunk_left,
+                        const vector::data_chunk_t&,
+                        size_t index_left,
+                        size_t) { return chunk_left.at(column_path)->validity().row_is_valid(index_left); })};
             }
             case compare_type::all_true:
             default:

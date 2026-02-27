@@ -25,7 +25,7 @@ namespace components::table {
 
         void serialize(storage::metadata_writer_t& writer) const;
         static persistent_column_data_t deserialize(std::pmr::memory_resource* resource,
-                                                     storage::metadata_reader_t& reader);
+                                                    storage::metadata_reader_t& reader);
     };
 
 } // namespace components::table

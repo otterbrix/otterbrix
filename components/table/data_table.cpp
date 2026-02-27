@@ -158,8 +158,7 @@ namespace components::table {
             auto scan_types = copy_types();
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
-                state.table_state.scan_committed(chunk,
-                                                  table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
+                state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
                 if (chunk.size() == 0) {
                     break;
                 }
@@ -288,14 +287,14 @@ namespace components::table {
 
     std::shared_ptr<parallel_table_scan_state_t>
     data_table_t::create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                              const table_filter_t* filter) {
+                                             const table_filter_t* filter) {
         auto total_rg = row_groups_->row_group_tree()->segment_count();
         return std::make_shared<parallel_table_scan_state_t>(column_ids, filter, total_rg);
     }
 
     bool data_table_t::next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                            table_scan_state& local_state,
-                                            vector::data_chunk_t& result) {
+                                           table_scan_state& local_state,
+                                           vector::data_chunk_t& result) {
         while (true) {
             auto rg_idx = parallel_state.next_row_group_idx.fetch_add(1);
             if (rg_idx >= parallel_state.total_row_groups) {
@@ -309,8 +308,7 @@ namespace components::table {
 
             local_state.initialize(parallel_state.column_ids, parallel_state.filter);
             int64_t max_row = rg->start + static_cast<int64_t>(rg->count);
-            collection_t::initialize_scan_in_row_group(
-                local_state.local_state, *row_groups_, *rg, 0, max_row);
+            collection_t::initialize_scan_in_row_group(local_state.local_state, *row_groups_, *rg, 0, max_row);
 
             result.reset();
             local_state.local_state.scan_committed(result, table_scan_type::COMMITTED_ROWS);
@@ -337,8 +335,10 @@ namespace components::table {
         return result;
     }
 
-    uint64_t data_table_t::delete_rows(table_delete_state&, vector::vector_t& row_identifiers,
-                                       uint64_t count, uint64_t transaction_id) {
+    uint64_t data_table_t::delete_rows(table_delete_state&,
+                                       vector::vector_t& row_identifiers,
+                                       uint64_t count,
+                                       uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return 0;
@@ -462,10 +462,9 @@ namespace components::table {
         writer.flush();
     }
 
-    std::unique_ptr<data_table_t>
-    data_table_t::load_from_disk(std::pmr::memory_resource* resource,
-                                  storage::block_manager_t& block_manager,
-                                  storage::metadata_reader_t& reader) {
+    std::unique_ptr<data_table_t> data_table_t::load_from_disk(std::pmr::memory_resource* resource,
+                                                               storage::block_manager_t& block_manager,
+                                                               storage::metadata_reader_t& reader) {
         auto name = reader.read_string();
 
         auto col_count = reader.read<uint32_t>();

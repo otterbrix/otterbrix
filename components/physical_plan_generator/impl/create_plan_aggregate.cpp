@@ -10,25 +10,27 @@ namespace services::planner::impl {
 
     using components::logical_plan::node_type;
 
-    components::operators::operator_ptr create_plan_aggregate(const context_storage_t& context,
-                                                                const components::compute::function_registry_t& function_registry,
-                                                                    const components::logical_plan::node_ptr& node,
-                                                                    components::logical_plan::limit_t limit,
-                                                                    const components::logical_plan::storage_parameters* params) {
+    components::operators::operator_ptr
+    create_plan_aggregate(const context_storage_t& context,
+                          const components::compute::function_registry_t& function_registry,
+                          const components::logical_plan::node_ptr& node,
+                          components::logical_plan::limit_t limit,
+                          const components::logical_plan::storage_parameters* params) {
         // First pass: extract limit from limit child (if any)
         for (const components::logical_plan::node_ptr& child : node->children()) {
             if (child->type() == node_type::limit_t) {
-                const auto* limit_node =
-                    static_cast<const components::logical_plan::node_limit_t*>(child.get());
+                const auto* limit_node = static_cast<const components::logical_plan::node_limit_t*>(child.get());
                 limit = limit_node->limit();
                 break;
             }
         }
 
         auto coll_name = node->collection_full_name();
-        auto op = context.has_collection(coll_name)
-            ? boost::intrusive_ptr(new components::operators::aggregation(context.resource, context.log.clone(), coll_name))
-            : boost::intrusive_ptr(new components::operators::aggregation(node->resource(), log_t{}, coll_name));
+        auto op =
+            context.has_collection(coll_name)
+                ? boost::intrusive_ptr(
+                      new components::operators::aggregation(context.resource, context.log.clone(), coll_name))
+                : boost::intrusive_ptr(new components::operators::aggregation(node->resource(), log_t{}, coll_name));
         op->set_limit(limit);
         for (const components::logical_plan::node_ptr& child : node->children()) {
             switch (child->type()) {
@@ -54,9 +56,11 @@ namespace services::planner::impl {
         // Check if DISTINCT flag is set on the aggregate node
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         if (agg_node->is_distinct()) {
-            auto distinct_op = context.has_collection(coll_name)
-                ? boost::intrusive_ptr(new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            auto distinct_op =
+                context.has_collection(coll_name)
+                    ? boost::intrusive_ptr(
+                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
+                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
             op->set_distinct(std::move(distinct_op));
         }
         return op;

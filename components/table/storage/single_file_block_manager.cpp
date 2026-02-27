@@ -5,11 +5,11 @@
 #include <stdexcept>
 
 #include <absl/crc/crc32c.h>
+#include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/metadata_reader.hpp>
+#include <components/table/storage/metadata_writer.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
-#include <components/table/storage/metadata_manager.hpp>
-#include <components/table/storage/metadata_writer.hpp>
-#include <components/table/storage/metadata_reader.hpp>
 
 namespace components::table::storage {
 
@@ -110,9 +110,7 @@ namespace components::table::storage {
         }
     }
 
-    void single_file_block_manager_t::read_blocks(file_buffer_t& buffer,
-                                                   uint64_t start_block,
-                                                   uint64_t /*count*/) {
+    void single_file_block_manager_t::read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t /*count*/) {
         auto location = block_location(start_block);
         buffer.read(*handle_, location);
     }
@@ -173,8 +171,8 @@ namespace components::table::storage {
 
     uint64_t single_file_block_manager_t::meta_block() { return meta_block_; }
 
-    std::unique_ptr<block_t>
-    single_file_block_manager_t::create_block(uint64_t block_id, file_buffer_t* source_buffer) {
+    std::unique_ptr<block_t> single_file_block_manager_t::create_block(uint64_t block_id,
+                                                                       file_buffer_t* source_buffer) {
         auto& bm = buffer_manager;
         auto resource = bm.resource();
 
@@ -185,8 +183,8 @@ namespace components::table::storage {
         return std::make_unique<block_t>(resource, block_id, static_cast<uint64_t>(block_size()));
     }
 
-    std::unique_ptr<block_t>
-    single_file_block_manager_t::convert_block(uint64_t block_id, file_buffer_t& source_buffer) {
+    std::unique_ptr<block_t> single_file_block_manager_t::convert_block(uint64_t block_id,
+                                                                        file_buffer_t& source_buffer) {
         return std::make_unique<block_t>(source_buffer, block_id);
     }
 
@@ -208,8 +206,8 @@ namespace components::table::storage {
         auto* payload = data + sizeof(uint64_t);
         auto payload_size = alloc_size - sizeof(uint64_t);
 
-        auto crc = static_cast<uint64_t>(static_cast<uint32_t>(
-            absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
+        auto crc = static_cast<uint64_t>(
+            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
         *checksum_slot = crc;
 
         auto location = block_location(block_id);
@@ -224,8 +222,8 @@ namespace components::table::storage {
         auto* payload = data + sizeof(uint64_t);
         auto payload_size = alloc_size - sizeof(uint64_t);
 
-        auto computed = static_cast<uint64_t>(static_cast<uint32_t>(
-            absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
+        auto computed = static_cast<uint64_t>(
+            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
         return stored_checksum == computed;
     }
 

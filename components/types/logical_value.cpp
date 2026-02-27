@@ -318,8 +318,7 @@ namespace components::types {
         if (type_ == type) {
             return logical_value_t(*this);
         }
-        if (is_numeric(type.type()) ||
-            (type.type() == logical_type::STRING_LITERAL && is_numeric(type_.type()))) {
+        if (is_numeric(type.type()) || (type.type() == logical_type::STRING_LITERAL && is_numeric(type_.type()))) {
             // same problem as in physical_value
             // ideally use something like this
             // return logicaL_value<type.type()>{value<type_.type()>()};

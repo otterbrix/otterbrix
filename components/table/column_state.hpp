@@ -90,7 +90,7 @@ namespace components::table {
     public:
         constant_filter_t(expressions::compare_type comparison_type,
                           types::logical_value_t constant,
-                          std::vector<uint64_t> table_indices)
+                          std::pmr::vector<uint64_t> table_indices)
             : table_filter_t(comparison_type)
             , constant(std::move(constant))
             , table_indices(std::move(table_indices)) {}
@@ -102,7 +102,7 @@ namespace components::table {
         std::unique_ptr<table_filter_t> copy() const override;
 
         types::logical_value_t constant;
-        std::vector<uint64_t> table_indices;
+        std::pmr::vector<uint64_t> table_indices;
     };
 
     template<typename T>
@@ -113,18 +113,16 @@ namespace components::table {
 
     class is_null_filter_t : public table_filter_t {
     public:
-        is_null_filter_t(expressions::compare_type type, std::vector<uint64_t> table_indices)
+        is_null_filter_t(expressions::compare_type type, std::pmr::vector<uint64_t> table_indices)
             : table_filter_t(type)
             , table_indices(std::move(table_indices)) {}
 
         std::unique_ptr<table_filter_t> copy() const override {
             return std::make_unique<is_null_filter_t>(filter_type, table_indices);
         }
-        bool equals(const table_filter_t& other) const override {
-            return table_filter_t::equals(other);
-        }
+        bool equals(const table_filter_t& other) const override { return table_filter_t::equals(other); }
 
-        std::vector<uint64_t> table_indices;
+        std::pmr::vector<uint64_t> table_indices;
     };
 
     class conjunction_filter_t : public table_filter_t {

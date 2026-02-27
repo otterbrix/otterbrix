@@ -16,6 +16,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <list>
 #include <queue>
 
 namespace services::dispatcher {

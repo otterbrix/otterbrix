@@ -110,8 +110,11 @@ namespace services::disk {
 
     agent_disk_t::unique_future<void> agent_disk_t::append_collection(command_t command) {
         auto& cmd = command.get<command_append_collection_t>();
-        trace(log_, "agent_disk::append_collection , database : {} , collection : {} , mode : {}",
-              cmd.database, cmd.collection, static_cast<int>(cmd.mode));
+        trace(log_,
+              "agent_disk::append_collection , database : {} , collection : {} , mode : {}",
+              cmd.database,
+              cmd.collection,
+              static_cast<int>(cmd.mode));
         disk_.append_collection(cmd.database, cmd.collection, cmd.mode, {});
         co_return;
     }
@@ -129,8 +132,8 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::update_catalog_schemas(
-        std::vector<catalog_schema_update_t> schemas) {
+    agent_disk_t::unique_future<void>
+    agent_disk_t::update_catalog_schemas(std::vector<catalog_schema_update_t> schemas) {
         trace(log_, "agent_disk::update_catalog_schemas : {} entries", schemas.size());
         for (auto& s : schemas) {
             disk_.catalog().update_table_columns_and_mode(s.name.database, s.name.collection, s.columns, s.mode);
@@ -139,7 +142,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::append_sequence(database_name_t database,
-                                                                      catalog_sequence_entry_t entry) {
+                                                                    catalog_sequence_entry_t entry) {
         trace(log_, "agent_disk::append_sequence , database : {} , sequence : {}", database, entry.name);
         disk_.catalog().append_sequence(database, entry);
         co_return;
@@ -151,8 +154,7 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::append_view(database_name_t database,
-                                                                 catalog_view_entry_t entry) {
+    agent_disk_t::unique_future<void> agent_disk_t::append_view(database_name_t database, catalog_view_entry_t entry) {
         trace(log_, "agent_disk::append_view , database : {} , view : {}", database, entry.name);
         disk_.catalog().append_view(database, entry);
         co_return;
@@ -165,7 +167,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::append_macro(database_name_t database,
-                                                                  catalog_macro_entry_t entry) {
+                                                                 catalog_macro_entry_t entry) {
         trace(log_, "agent_disk::append_macro , database : {} , macro : {}", database, entry.name);
         disk_.catalog().append_macro(database, entry);
         co_return;

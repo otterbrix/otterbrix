@@ -16,7 +16,8 @@ namespace components::sql::transform {
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
-                if (!def->defname) continue;
+                if (!def->defname)
+                    continue;
                 std::string opt_name(def->defname);
                 if (opt_name == "start" && def->arg) {
                     start = intVal(def->arg);

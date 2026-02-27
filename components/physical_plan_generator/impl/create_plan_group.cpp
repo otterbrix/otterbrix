@@ -6,9 +6,9 @@
 #include <components/physical_plan/operators/operator_group.hpp>
 
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
-#include <components/physical_plan/operators/get/simple_value.hpp>
-#include <components/physical_plan/operators/get/coalesce_value.hpp>
 #include <components/physical_plan/operators/get/case_when_value.hpp>
+#include <components/physical_plan/operators/get/coalesce_value.hpp>
+#include <components/physical_plan/operators/get/simple_value.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
 namespace services::planner::impl {
@@ -32,17 +32,17 @@ namespace services::planner::impl {
                     break;
                 }
                 case scalar_type::coalesce: {
-                    std::vector<components::expressions::param_storage> params(
-                        expr->params().begin(), expr->params().end());
-                    group->add_key(expr->key().storage().back(),
-                                   components::operators::get::coalesce_value_t::create(
-                                       std::move(params), storage_params));
+                    std::vector<components::expressions::param_storage> params(expr->params().begin(),
+                                                                               expr->params().end());
+                    group->add_key(
+                        expr->key().storage().back(),
+                        components::operators::get::coalesce_value_t::create(std::move(params), storage_params));
                     break;
                 }
                 case scalar_type::case_when: {
-                    group->add_key(expr->key().storage().back(),
-                                   components::operators::get::case_when_value_t::create(
-                                       expr->params(), storage_params));
+                    group->add_key(
+                        expr->key().storage().back(),
+                        components::operators::get::case_when_value_t::create(expr->params(), storage_params));
                     break;
                 }
                 default:
@@ -56,7 +56,7 @@ namespace services::planner::impl {
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             // TODO: handle expr->is_distinct()
-            assert(false);
+            assert(!expr->is_distinct());
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
                                  resource,
@@ -71,7 +71,7 @@ namespace services::planner::impl {
     create_plan_group(const context_storage_t& context,
                       const components::compute::function_registry_t& function_registry,
                       const components::logical_plan::node_ptr& node,
-                                                                const components::logical_plan::storage_parameters* params) {
+                      const components::logical_plan::storage_parameters* params) {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);

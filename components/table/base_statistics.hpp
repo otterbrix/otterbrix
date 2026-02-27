@@ -47,8 +47,7 @@ namespace components::table {
         void update(const vector::vector_t& vec, uint64_t count);
 
         void serialize(storage::metadata_writer_t& writer) const;
-        static base_statistics_t deserialize(std::pmr::memory_resource* resource,
-                                             storage::metadata_reader_t& reader);
+        static base_statistics_t deserialize(std::pmr::memory_resource* resource, storage::metadata_reader_t& reader);
 
     private:
         std::pmr::memory_resource* resource_;

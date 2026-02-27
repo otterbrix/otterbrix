@@ -88,9 +88,7 @@ namespace components::index {
 
     auto index_t::insert(value_t key, index_value_t value) -> void { return insert_impl(key, std::move(value)); }
 
-    auto index_t::insert(value_t key, int64_t row_index) -> void {
-        return insert_impl(key, index_value_t(row_index));
-    }
+    auto index_t::insert(value_t key, int64_t row_index) -> void { return insert_impl(key, index_value_t(row_index)); }
 
     auto index_t::remove(value_t key) -> void { remove_impl(key); }
 
@@ -115,9 +113,10 @@ namespace components::index {
         disk_manager_ = std::move(manager);
     }
 
-    std::pmr::vector<int64_t>
-    index_t::search(expressions::compare_type compare, const value_t& value,
-                    uint64_t start_time, uint64_t txn_id) const {
+    std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare,
+                                              const value_t& value,
+                                              uint64_t start_time,
+                                              uint64_t txn_id) const {
         std::pmr::vector<int64_t> result(resource_);
 
         auto filter = [&](auto begin, auto end) {
@@ -188,13 +187,9 @@ namespace components::index {
         mark_delete_impl(std::move(key), row_index, txn_id);
     }
 
-    void index_t::commit_insert(uint64_t txn_id, uint64_t commit_id) {
-        commit_insert_impl(txn_id, commit_id);
-    }
+    void index_t::commit_insert(uint64_t txn_id, uint64_t commit_id) { commit_insert_impl(txn_id, commit_id); }
 
-    void index_t::commit_delete(uint64_t txn_id, uint64_t commit_id) {
-        commit_delete_impl(txn_id, commit_id);
-    }
+    void index_t::commit_delete(uint64_t txn_id, uint64_t commit_id) { commit_delete_impl(txn_id, commit_id); }
 
     void index_t::revert_insert(uint64_t txn_id) { revert_insert_impl(txn_id); }
 

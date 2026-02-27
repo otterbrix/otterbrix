@@ -474,8 +474,10 @@ namespace components::table {
 
         // --- CONSTANT compression scan helpers (generic, size-based) ---
 
-        void constant_scan_entire(column_segment_t& segment, column_scan_state& state,
-                                  uint64_t scan_count, vector::vector_t& result) {
+        void constant_scan_entire(column_segment_t& segment,
+                                  column_scan_state& state,
+                                  uint64_t scan_count,
+                                  vector::vector_t& result) {
             auto* src = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             result.set_vector_type(vector::vector_type::FLAT);
@@ -485,8 +487,11 @@ namespace components::table {
             }
         }
 
-        void constant_scan_partial(column_segment_t& segment, column_scan_state& state,
-                                   uint64_t scan_count, vector::vector_t& result, uint64_t result_offset) {
+        void constant_scan_partial(column_segment_t& segment,
+                                   column_scan_state& state,
+                                   uint64_t scan_count,
+                                   vector::vector_t& result,
+                                   uint64_t result_offset) {
             auto* src = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             result.set_vector_type(vector::vector_type::FLAT);
@@ -510,8 +515,10 @@ namespace components::table {
         // --- RLE compression scan helpers ---
         // RLE format: [uint32_t num_runs][value(ts) + run_length(4)]...
 
-        void rle_scan_entire(column_segment_t& segment, column_scan_state& state,
-                             uint64_t scan_count, vector::vector_t& result) {
+        void rle_scan_entire(column_segment_t& segment,
+                             column_scan_state& state,
+                             uint64_t scan_count,
+                             vector::vector_t& result) {
             auto* base = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
@@ -555,8 +562,11 @@ namespace components::table {
             }
         }
 
-        void rle_scan_partial(column_segment_t& segment, column_scan_state& state,
-                              uint64_t scan_count, vector::vector_t& result, uint64_t result_offset) {
+        void rle_scan_partial(column_segment_t& segment,
+                              column_scan_state& state,
+                              uint64_t scan_count,
+                              vector::vector_t& result,
+                              uint64_t result_offset) {
             auto* base = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
@@ -629,8 +639,10 @@ namespace components::table {
         // Format: [uint16_t num_unique][values(num_unique * ts)][indices(count * idx_size)]
         // idx_size = 1 if num_unique <= 256, else 2
 
-        void dict_scan_entire(column_segment_t& segment, column_scan_state& state,
-                              uint64_t scan_count, vector::vector_t& result) {
+        void dict_scan_entire(column_segment_t& segment,
+                              column_scan_state& state,
+                              uint64_t scan_count,
+                              vector::vector_t& result) {
             auto* base = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
@@ -658,8 +670,11 @@ namespace components::table {
             }
         }
 
-        void dict_scan_partial(column_segment_t& segment, column_scan_state& state,
-                               uint64_t scan_count, vector::vector_t& result, uint64_t result_offset) {
+        void dict_scan_partial(column_segment_t& segment,
+                               column_scan_state& state,
+                               uint64_t scan_count,
+                               vector::vector_t& result,
+                               uint64_t result_offset) {
             auto* base = state.scan_state->ptr() + segment.block_offset();
             auto ts = segment.type_size;
             auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));

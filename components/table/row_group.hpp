@@ -105,7 +105,10 @@ namespace components::table {
 
     private:
         uint64_t indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
-        uint64_t indexing_vector(transaction_data txn, uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
+        uint64_t indexing_vector(transaction_data txn,
+                                 uint64_t vector_idx,
+                                 vector::indexing_vector_t& indexing_vector,
+                                 uint64_t max_count);
         uint64_t
         commited_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();

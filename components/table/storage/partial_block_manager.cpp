@@ -52,10 +52,9 @@ namespace components::table::storage {
     void partial_block_manager_t::write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size) {
         auto it = block_buffers_.find(block_id);
         if (it == block_buffers_.end()) {
-            auto block = std::make_unique<block_t>(
-                block_manager_.buffer_manager.resource(),
-                block_id,
-                static_cast<uint64_t>(block_manager_.block_size()));
+            auto block = std::make_unique<block_t>(block_manager_.buffer_manager.resource(),
+                                                   block_id,
+                                                   static_cast<uint64_t>(block_manager_.block_size()));
             std::memset(block->buffer(), 0, static_cast<size_t>(block_manager_.block_size()));
             it = block_buffers_.emplace(block_id, std::move(block)).first;
         }

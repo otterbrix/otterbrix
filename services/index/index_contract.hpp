@@ -26,79 +26,92 @@ namespace services::index {
         using unique_future = actor_zeta::unique_future<T>;
 
         // Collection lifecycle
-        unique_future<void> register_collection(session_id_t session,
-                                                 collection_full_name_t name);
-        unique_future<void> unregister_collection(session_id_t session,
-                                                   collection_full_name_t name);
+        unique_future<void> register_collection(session_id_t session, collection_full_name_t name);
+        unique_future<void> unregister_collection(session_id_t session, collection_full_name_t name);
 
+        // DML: bulk index operations (non-txn, backward compat)
         unique_future<void> insert_rows(session_id_t session,
-                                         collection_full_name_t name,
-                                         std::unique_ptr<components::vector::data_chunk_t> data,
-                                         uint64_t start_row_id,
-                                         uint64_t count);
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        uint64_t start_row_id,
+                                        uint64_t count);
         unique_future<void> delete_rows(session_id_t session,
-                                         collection_full_name_t name,
-                                         std::unique_ptr<components::vector::data_chunk_t> data,
-                                         std::pmr::vector<size_t> row_ids);
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::pmr::vector<size_t> row_ids);
         unique_future<void> update_rows(session_id_t session,
-                                         collection_full_name_t name,
-                                         std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                         std::unique_ptr<components::vector::data_chunk_t> new_data,
-                                         std::pmr::vector<size_t> row_ids);
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                        std::pmr::vector<size_t> row_ids);
+
+        // DML: txn-aware bulk index operations
+        unique_future<void> insert_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> data,
+                                            uint64_t start_row_id,
+                                            uint64_t count);
+        unique_future<void> delete_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> data,
+                                            std::pmr::vector<size_t> row_ids);
+        unique_future<void> update_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                            std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                            std::pmr::vector<size_t> row_ids);
 
         // MVCC commit/revert/cleanup
-        unique_future<void> commit_insert(execution_context_t ctx,
-                                           uint64_t commit_id);
-        unique_future<void> commit_delete(execution_context_t ctx,
-                                           uint64_t commit_id);
+        unique_future<void> commit_insert(execution_context_t ctx, uint64_t commit_id);
+        unique_future<void> commit_delete(execution_context_t ctx, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx);
-        unique_future<void> cleanup_all_versions(session_id_t session,
-                                                  uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session,
-                                             collection_full_name_t name);
+        unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
+        unique_future<void> rebuild_indexes(session_id_t session, collection_full_name_t name);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
-                                              collection_full_name_t name,
-                                              index_name_t index_name,
-                                              components::index::keys_base_storage_t keys,
-                                              components::logical_plan::index_type type);
-        unique_future<void> drop_index(session_id_t session,
-                                        collection_full_name_t name,
-                                        index_name_t index_name);
+                                             collection_full_name_t name,
+                                             index_name_t index_name,
+                                             components::index::keys_base_storage_t keys,
+                                             components::logical_plan::index_type type);
+        unique_future<void> drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 
-        unique_future<std::pmr::vector<int64_t>> search(
-            session_id_t session,
-            collection_full_name_t name,
-            components::index::keys_base_storage_t keys,
-            components::types::logical_value_t value,
-            components::expressions::compare_type compare,
-            uint64_t start_time,
-            uint64_t txn_id);
+        // Query (non-txn, backward compat)
+        unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
+                                                        collection_full_name_t name,
+                                                        components::index::keys_base_storage_t keys,
+                                                        components::types::logical_value_t value,
+                                                        components::expressions::compare_type compare);
 
-        unique_future<bool> has_index(session_id_t session,
-                                       collection_full_name_t name,
-                                       index_name_t index_name);
+        // Query (txn-aware)
+        unique_future<std::pmr::vector<int64_t>> search_txn(session_id_t session,
+                                                            collection_full_name_t name,
+                                                            components::index::keys_base_storage_t keys,
+                                                            components::types::logical_value_t value,
+                                                            components::expressions::compare_type compare,
+                                                            uint64_t start_time,
+                                                            uint64_t txn_id);
+
+        unique_future<bool> has_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<
-            &index_contract::register_collection,
-            &index_contract::unregister_collection,
-            &index_contract::insert_rows,
-            &index_contract::delete_rows,
-            &index_contract::update_rows,
-            &index_contract::commit_insert,
-            &index_contract::commit_delete,
-            &index_contract::revert_insert,
-            &index_contract::cleanup_all_versions,
-            &index_contract::rebuild_indexes,
-            &index_contract::create_index,
-            &index_contract::drop_index,
-            &index_contract::search,
-            &index_contract::has_index,
-            &index_contract::flush_all_indexes
-        >;
+        using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
+                                                            &index_contract::unregister_collection,
+                                                            &index_contract::insert_rows,
+                                                            &index_contract::delete_rows,
+                                                            &index_contract::update_rows,
+                                                            &index_contract::insert_rows_txn,
+                                                            &index_contract::delete_rows_txn,
+                                                            &index_contract::update_rows_txn,
+                                                            &index_contract::commit_insert,
+                                                            &index_contract::commit_delete,
+                                                            &index_contract::revert_insert,
+                                                            &index_contract::cleanup_all_versions,
+                                                            &index_contract::rebuild_indexes,
+                                                            &index_contract::create_index,
+                                                            &index_contract::drop_index,
+                                                            &index_contract::search,
+                                                            &index_contract::search_txn,
+                                                            &index_contract::has_index,
+                                                            &index_contract::flush_all_indexes>;
 
         index_contract() = delete;
     };

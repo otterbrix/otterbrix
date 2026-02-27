@@ -15,8 +15,7 @@ namespace components::table {
 
     class column_data_checkpointer_t {
     public:
-        column_data_checkpointer_t(column_data_t& column_data,
-                                    storage::partial_block_manager_t& partial_block_manager);
+        column_data_checkpointer_t(column_data_t& column_data, storage::partial_block_manager_t& partial_block_manager);
 
         persistent_column_data_t checkpoint();
 

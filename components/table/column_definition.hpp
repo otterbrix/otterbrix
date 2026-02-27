@@ -12,9 +12,7 @@ namespace components::table {
         column_definition_t(std::string name,
                             types::complex_logical_type type,
                             std::unique_ptr<types::logical_value_t> default_value);
-        column_definition_t(std::string name,
-                            types::complex_logical_type type,
-                            bool not_null);
+        column_definition_t(std::string name, types::complex_logical_type type, bool not_null);
         column_definition_t(std::string name,
                             types::complex_logical_type type,
                             bool not_null,

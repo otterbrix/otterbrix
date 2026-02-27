@@ -17,7 +17,11 @@ namespace components::operators::get {
         std::vector<types::logical_value_t> constants_;
 
         struct coalesce_entry {
-            enum class kind { key, constant };
+            enum class kind
+            {
+                key,
+                constant
+            };
             kind type;
             size_t index;
         };

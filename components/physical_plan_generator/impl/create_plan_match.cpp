@@ -84,19 +84,17 @@ namespace services::planner::impl {
     }
 
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
-                                                                  const components::logical_plan::node_ptr& node,
-                                                                  components::logical_plan::limit_t limit) {
+                                                           const components::logical_plan::node_ptr& node,
+                                                           components::logical_plan::limit_t limit) {
         if (node->expressions().empty()) {
             return nullptr;
         }
-        auto expr =
-            reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
+        auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
         if (context.has_collection(node->collection_full_name())) {
-            return boost::intrusive_ptr(new components::operators::operator_match_t(
-                context.resource, context.log.clone(), *expr, limit));
+            return boost::intrusive_ptr(
+                new components::operators::operator_match_t(context.resource, context.log.clone(), *expr, limit));
         } else {
-            return boost::intrusive_ptr(new components::operators::operator_match_t(
-                nullptr, log_t{}, *expr, limit));
+            return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, *expr, limit));
         }
     }
 

@@ -154,13 +154,15 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$match: {"array_field/1": {$eq: #0}}})_",
                        vec({v(&resource, 10l)}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NULL;)_",
-                       R"_($aggregate: {$match: {"name": {$is_null: #0}}})_",
-                       vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NULL;)_",
+        R"_($aggregate: {$match: {"name": {$is_null: #0}}})_",
+        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL;)_",
-                       R"_($aggregate: {$match: {"name": {$is_not_null: #0}}})_",
-                       vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL;)_",
+        R"_($aggregate: {$match: {"name": {$is_not_null: #0}}})_",
+        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE count IN (1, 2, 3);)_",
                        R"_($aggregate: {$match: {$or: ["count": {$eq: #0}, "count": {$eq: #1}, "count": {$eq: #2}]}})_",
@@ -185,7 +187,9 @@ TEST_CASE("components::sql::select_from_where") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",
         R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #0}, $or: ["count": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA}), v(&resource, 1l), v(&resource, 2l)}));
+        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA}),
+             v(&resource, 1l),
+             v(&resource, 2l)}));
 }
 
 TEST_CASE("components::sql::select_from_order_by") {

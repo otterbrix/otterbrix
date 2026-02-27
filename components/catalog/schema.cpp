@@ -1,7 +1,7 @@
 #include "schema.hpp"
 
-#include <unordered_set>
 #include <memory_resource>
+#include <unordered_set>
 
 using namespace components::types;
 

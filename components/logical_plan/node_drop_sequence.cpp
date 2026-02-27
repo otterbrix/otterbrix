@@ -4,8 +4,7 @@
 
 namespace components::logical_plan {
 
-    node_drop_sequence_t::node_drop_sequence_t(std::pmr::memory_resource* resource,
-                                               const collection_full_name_t& name)
+    node_drop_sequence_t::node_drop_sequence_t(std::pmr::memory_resource* resource, const collection_full_name_t& name)
         : node_t(resource, node_type::drop_sequence_t, name) {}
 
     hash_t node_drop_sequence_t::hash_impl() const { return 0; }

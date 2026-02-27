@@ -120,7 +120,6 @@ namespace services::wal {
 
     auto wal_replicate_t::make_type() const noexcept -> const char* { return "wal"; }
 
-
     void wal_replicate_t::write_buffer(buffer_t& buffer) {
         if (file_->file_size() + buffer.size() > config_.max_segment_size) {
             rotate_segment_();
@@ -166,10 +165,8 @@ namespace services::wal {
         co_return records;
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::commit_txn(
-        session_id_t session,
-        uint64_t transaction_id
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::commit_txn(session_id_t session,
+                                                                                    uint64_t transaction_id) {
         trace(log_, "wal_replicate_t::commit_txn txn_id={}, session: {}", transaction_id, session.data());
         next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
@@ -192,7 +189,8 @@ namespace services::wal {
                     break;
                 }
                 auto size = read_size_raw(size_buf.data(), 0);
-                if (size == 0) break;
+                if (size == 0)
+                    break;
 
                 auto start = start_index + sizeof(size_tt);
                 auto finish = start + size;
@@ -213,7 +211,9 @@ namespace services::wal {
     }
 
     bool wal_replicate_t::find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const {
-        if (wal_id == 0) {return false;}
+        if (wal_id == 0) {
+            return false;
+        }
         start_index = 0;
         auto id = read_id(start_index);
         while (id > 0 && id < wal_id) {
@@ -261,14 +261,13 @@ namespace services::wal {
                     // Check if element[3] is a physical record type
                     auto type_val = deserializer.deserialize_uint64(3);
                     auto phys_type = static_cast<wal_record_type>(type_val);
-                    if (phys_type == wal_record_type::PHYSICAL_INSERT
-                        || phys_type == wal_record_type::PHYSICAL_DELETE
-                        || phys_type == wal_record_type::PHYSICAL_UPDATE) {
+                    if (phys_type == wal_record_type::PHYSICAL_INSERT ||
+                        phys_type == wal_record_type::PHYSICAL_DELETE ||
+                        phys_type == wal_record_type::PHYSICAL_UPDATE) {
                         record.transaction_id = deserializer.deserialize_uint64(2);
                         record.record_type = phys_type;
-                        record.collection_name = collection_full_name_t(
-                            deserializer.deserialize_string(4),
-                            deserializer.deserialize_string(5));
+                        record.collection_name = collection_full_name_t(deserializer.deserialize_string(4),
+                                                                        deserializer.deserialize_string(5));
 
                         if (phys_type == wal_record_type::PHYSICAL_INSERT) {
                             // array(9): [..., data_chunk, row_start, row_count]
@@ -317,8 +316,11 @@ namespace services::wal {
                 }
             } else {
                 auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
-                error(log_, "wal: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
-                      start_index, record.crc32, computed_crc);
+                error(log_,
+                      "wal: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
+                      start_index,
+                      record.crc32,
+                      computed_crc);
                 record.is_corrupt = true;
                 record.size = 0;
             }
@@ -326,10 +328,8 @@ namespace services::wal {
         return record;
     }
 
-    wal_replicate_t::unique_future<void> wal_replicate_t::truncate_before(
-        session_id_t session,
-        services::wal::id_t checkpoint_wal_id
-    ) {
+    wal_replicate_t::unique_future<void> wal_replicate_t::truncate_before(session_id_t session,
+                                                                          services::wal::id_t checkpoint_wal_id) {
         trace(log_, "wal_replicate_t::truncate_before session: {}, wal_id: {}", session.data(), checkpoint_wal_id);
         if (!file_ || checkpoint_wal_id == 0) {
             co_return;
@@ -351,31 +351,38 @@ namespace services::wal {
         co_return;
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_insert(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-        uint64_t row_start,
-        uint64_t row_count,
-        uint64_t txn_id
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::write_physical_insert(session_id_t session,
+                                           std::string database,
+                                           std::string collection,
+                                           std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                           uint64_t row_start,
+                                           uint64_t row_count,
+                                           uint64_t txn_id) {
         trace(log_, "wal_replicate_t::write_physical_insert {}::{}, session: {}", database, collection, session.data());
         next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
-        last_crc32_ = pack_physical_insert(buffer, resource(), last_crc32_, id_, txn_id, database, collection, *data_chunk, row_start, row_count);
+        last_crc32_ = pack_physical_insert(buffer,
+                                           resource(),
+                                           last_crc32_,
+                                           id_,
+                                           txn_id,
+                                           database,
+                                           collection,
+                                           *data_chunk,
+                                           row_start,
+                                           row_count);
         write_buffer(buffer);
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_delete(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::pmr::vector<int64_t> row_ids,
-        uint64_t count,
-        uint64_t txn_id
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::write_physical_delete(session_id_t session,
+                                           std::string database,
+                                           std::string collection,
+                                           std::pmr::vector<int64_t> row_ids,
+                                           uint64_t count,
+                                           uint64_t txn_id) {
         trace(log_, "wal_replicate_t::write_physical_delete {}::{}, session: {}", database, collection, session.data());
         next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
@@ -384,19 +391,27 @@ namespace services::wal {
         co_return services::wal::id_t(id_);
     }
 
-    wal_replicate_t::unique_future<services::wal::id_t> wal_replicate_t::write_physical_update(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::pmr::vector<int64_t> row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> new_data,
-        uint64_t count,
-        uint64_t txn_id
-    ) {
+    wal_replicate_t::unique_future<services::wal::id_t>
+    wal_replicate_t::write_physical_update(session_id_t session,
+                                           std::string database,
+                                           std::string collection,
+                                           std::pmr::vector<int64_t> row_ids,
+                                           std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                           uint64_t count,
+                                           uint64_t txn_id) {
         trace(log_, "wal_replicate_t::write_physical_update {}::{}, session: {}", database, collection, session.data());
         next_id(id_, static_cast<services::wal::id_t>(worker_count_));
         buffer_t buffer;
-        last_crc32_ = pack_physical_update(buffer, resource(), last_crc32_, id_, txn_id, database, collection, row_ids, *new_data, count);
+        last_crc32_ = pack_physical_update(buffer,
+                                           resource(),
+                                           last_crc32_,
+                                           id_,
+                                           txn_id,
+                                           database,
+                                           collection,
+                                           row_ids,
+                                           *new_data,
+                                           count);
         write_buffer(buffer);
         co_return services::wal::id_t(id_);
     }
@@ -423,7 +438,8 @@ namespace services::wal {
         }
         std::string prefix = ".wal_" + std::to_string(worker_index_) + "_";
         for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
-            if (!entry.is_regular_file()) continue;
+            if (!entry.is_regular_file())
+                continue;
             auto name = entry.path().filename().string();
             if (name.size() > prefix.size() && name.substr(0, prefix.size()) == prefix) {
                 result.push_back(entry.path());
@@ -444,7 +460,8 @@ namespace services::wal {
                 break;
             }
             auto size = read_size_raw(size_buf.data(), 0);
-            if (size == 0) break;
+            if (size == 0)
+                break;
 
             auto start = start_index + sizeof(size_tt);
             auto finish = start + size;

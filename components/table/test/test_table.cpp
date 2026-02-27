@@ -444,11 +444,11 @@ TEST_CASE("components::table::data_table") {
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::gte,
                                                 logical_value_t{&resource, row_range.first},
-                                                std::vector<uint64_t>{0}));
+                                                std::pmr::vector<uint64_t>{{uint64_t{0}}, &resource}));
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
                                                 logical_value_t{&resource, generate_string(row_range.second)},
-                                                std::vector<uint64_t>{1}));
+                                                std::pmr::vector<uint64_t>{{uint64_t{1}}, &resource}));
         data_chunk_t result(&resource, data_table->copy_types(), row_range.second - row_range.first);
         data_table->initialize_scan(state, column_indices, conj_and.get());
         data_table->scan(result, state);

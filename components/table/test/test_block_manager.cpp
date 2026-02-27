@@ -49,8 +49,8 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
         uint64_t id = bm.free_block_id();
         block_ids.push_back(id);
 
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
-                                              static_cast<uint64_t>(bm.block_size()));
+        auto blk =
+            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         auto sz = blk->size();
 
@@ -69,8 +69,9 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
 
     // read blocks and compare
     for (size_t i = 0; i < NUM_BLOCKS; i++) {
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), block_ids[i],
-                                              static_cast<uint64_t>(bm.block_size()));
+        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+                                             block_ids[i],
+                                             static_cast<uint64_t>(bm.block_size()));
         bm.read(*blk);
 
         auto* data = blk->buffer();
@@ -92,8 +93,8 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
         bm.create_new_database();
 
         uint64_t id = bm.free_block_id();
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
-                                              static_cast<uint64_t>(bm.block_size()));
+        auto blk =
+            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         for (size_t j = 0; j < blk->size(); j++) {
             data[j] = static_cast<std::byte>(42);
@@ -112,8 +113,8 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
 
         REQUIRE(bm.total_blocks() == 1);
 
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), 0,
-                                              static_cast<uint64_t>(bm.block_size()));
+        auto blk =
+            std::make_unique<block_t>(env.resource.upstream_resource(), 0, static_cast<uint64_t>(bm.block_size()));
         bm.read(*blk);
 
         auto* data = blk->buffer();
@@ -186,8 +187,8 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
         // Allocate 5 blocks (ids 0..4), write dummy data to each
         for (int i = 0; i < 5; i++) {
             uint64_t id = bm.free_block_id();
-            auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
-                                                  static_cast<uint64_t>(bm.block_size()));
+            auto blk =
+                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), static_cast<int>(i), blk->size());
             bm.write(*blk, id);
         }
@@ -240,8 +241,8 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
         for (int i = 0; i < 3; i++) {
             uint64_t id = bm.free_block_id();
-            auto blk = std::make_unique<block_t>(env.resource.upstream_resource(), id,
-                                                  static_cast<uint64_t>(bm.block_size()));
+            auto blk =
+                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), 0, blk->size());
             bm.write(*blk, id);
         }

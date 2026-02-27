@@ -35,7 +35,6 @@ namespace components::expressions {
         virtual std::string to_string_impl() const = 0;
 
         virtual bool equal_impl(const expression_i* rhs) const = 0;
-
     };
 
     using expression_ptr = boost::intrusive_ptr<expression_i>;

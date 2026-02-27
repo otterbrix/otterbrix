@@ -2,11 +2,11 @@
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
+#include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/implements.hpp>
-#include <actor-zeta/actor/dispatch.hpp>
-#include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/behavior_t.hpp>
+#include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 #include <actor-zeta/scheduler/sharing_scheduler.hpp>
 
@@ -58,42 +58,39 @@ namespace services::wal {
         unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
         unique_future<services::wal::id_t> current_wal_id(session_id_t session);
 
-        unique_future<services::wal::id_t> write_physical_insert(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-            uint64_t row_start,
-            uint64_t row_count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t>
+        write_physical_insert(session_id_t session,
+                              std::string database,
+                              std::string collection,
+                              std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                              uint64_t row_start,
+                              uint64_t row_count,
+                              uint64_t txn_id);
 
-        unique_future<services::wal::id_t> write_physical_delete(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::pmr::vector<int64_t> row_ids,
-            uint64_t count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t> write_physical_delete(session_id_t session,
+                                                                 std::string database,
+                                                                 std::string collection,
+                                                                 std::pmr::vector<int64_t> row_ids,
+                                                                 uint64_t count,
+                                                                 uint64_t txn_id);
 
-        unique_future<services::wal::id_t> write_physical_update(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::pmr::vector<int64_t> row_ids,
-            std::unique_ptr<components::vector::data_chunk_t> new_data,
-            uint64_t count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t>
+        write_physical_update(session_id_t session,
+                              std::string database,
+                              std::string collection,
+                              std::pmr::vector<int64_t> row_ids,
+                              std::unique_ptr<components::vector::data_chunk_t> new_data,
+                              uint64_t count,
+                              uint64_t txn_id);
 
-        using dispatch_traits = actor_zeta::implements<
-            wal_contract,
-            &manager_wal_replicate_t::load,
-            &manager_wal_replicate_t::commit_txn,
-            &manager_wal_replicate_t::truncate_before,
-            &manager_wal_replicate_t::current_wal_id,
-            &manager_wal_replicate_t::write_physical_insert,
-            &manager_wal_replicate_t::write_physical_delete,
-            &manager_wal_replicate_t::write_physical_update
-        >;
+        using dispatch_traits = actor_zeta::implements<wal_contract,
+                                                       &manager_wal_replicate_t::load,
+                                                       &manager_wal_replicate_t::commit_txn,
+                                                       &manager_wal_replicate_t::truncate_before,
+                                                       &manager_wal_replicate_t::current_wal_id,
+                                                       &manager_wal_replicate_t::write_physical_insert,
+                                                       &manager_wal_replicate_t::write_physical_delete,
+                                                       &manager_wal_replicate_t::write_physical_update>;
 
     private:
         void create_wal_worker(int count_worker);
@@ -144,42 +141,39 @@ namespace services::wal {
         unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
         unique_future<services::wal::id_t> current_wal_id(session_id_t session);
 
-        unique_future<services::wal::id_t> write_physical_insert(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-            uint64_t row_start,
-            uint64_t row_count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t>
+        write_physical_insert(session_id_t session,
+                              std::string database,
+                              std::string collection,
+                              std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                              uint64_t row_start,
+                              uint64_t row_count,
+                              uint64_t txn_id);
 
-        unique_future<services::wal::id_t> write_physical_delete(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::pmr::vector<int64_t> row_ids,
-            uint64_t count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t> write_physical_delete(session_id_t session,
+                                                                 std::string database,
+                                                                 std::string collection,
+                                                                 std::pmr::vector<int64_t> row_ids,
+                                                                 uint64_t count,
+                                                                 uint64_t txn_id);
 
-        unique_future<services::wal::id_t> write_physical_update(
-            session_id_t session,
-            std::string database,
-            std::string collection,
-            std::pmr::vector<int64_t> row_ids,
-            std::unique_ptr<components::vector::data_chunk_t> new_data,
-            uint64_t count,
-            uint64_t txn_id);
+        unique_future<services::wal::id_t>
+        write_physical_update(session_id_t session,
+                              std::string database,
+                              std::string collection,
+                              std::pmr::vector<int64_t> row_ids,
+                              std::unique_ptr<components::vector::data_chunk_t> new_data,
+                              uint64_t count,
+                              uint64_t txn_id);
 
-        using dispatch_traits = actor_zeta::implements<
-            wal_contract,
-            &manager_wal_replicate_empty_t::load,
-            &manager_wal_replicate_empty_t::commit_txn,
-            &manager_wal_replicate_empty_t::truncate_before,
-            &manager_wal_replicate_empty_t::current_wal_id,
-            &manager_wal_replicate_empty_t::write_physical_insert,
-            &manager_wal_replicate_empty_t::write_physical_delete,
-            &manager_wal_replicate_empty_t::write_physical_update
-        >;
+        using dispatch_traits = actor_zeta::implements<wal_contract,
+                                                       &manager_wal_replicate_empty_t::load,
+                                                       &manager_wal_replicate_empty_t::commit_txn,
+                                                       &manager_wal_replicate_empty_t::truncate_before,
+                                                       &manager_wal_replicate_empty_t::current_wal_id,
+                                                       &manager_wal_replicate_empty_t::write_physical_insert,
+                                                       &manager_wal_replicate_empty_t::write_physical_delete,
+                                                       &manager_wal_replicate_empty_t::write_physical_update>;
 
     private:
         void create_wal_worker(int count_worker);

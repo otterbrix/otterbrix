@@ -129,7 +129,9 @@ namespace services::wal {
                 scheduler_->enqueue(dispatchers_[i].get());
             }
             auto records = co_await std::move(future);
-            all_records.insert(all_records.end(), std::make_move_iterator(records.begin()), std::make_move_iterator(records.end()));
+            all_records.insert(all_records.end(),
+                               std::make_move_iterator(records.begin()),
+                               std::make_move_iterator(records.end()));
         }
         std::sort(all_records.begin(), all_records.end(), [](const record_t& a, const record_t& b) {
             return a.id < b.id;
@@ -137,14 +139,14 @@ namespace services::wal {
         co_return all_records;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::commit_txn(
-        session_id_t session,
-        uint64_t transaction_id) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_t::commit_txn(session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_wal_replicate_t::commit_txn txn_id={}", transaction_id);
         // Write commit marker to all workers (any worker might have the DML records)
         services::wal::id_t last_id{0};
         for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] = actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::commit_txn, session, transaction_id);
+            auto [needs_sched, future] =
+                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::commit_txn, session, transaction_id);
             if (needs_sched) {
                 scheduler_->enqueue(dispatchers_[i].get());
             }
@@ -153,12 +155,12 @@ namespace services::wal {
         co_return last_id;
     }
 
-    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::truncate_before(
-        session_id_t session,
-        services::wal::id_t checkpoint_wal_id) {
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id) {
         trace(log_, "manager_wal_replicate_t::truncate_before checkpoint_wal_id={}", checkpoint_wal_id);
         for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] = actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::truncate_before, session, checkpoint_wal_id);
+            auto [needs_sched, future] =
+                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::truncate_before, session, checkpoint_wal_id);
             if (needs_sched) {
                 scheduler_->enqueue(dispatchers_[i].get());
             }
@@ -167,8 +169,8 @@ namespace services::wal {
         co_return;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::current_wal_id(
-        session_id_t /*session*/) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_t::current_wal_id(session_id_t /*session*/) {
         services::wal::id_t max_id{0};
         for (const auto& w : dispatchers_) {
             max_id = std::max(max_id, w->current_id());
@@ -176,56 +178,76 @@ namespace services::wal {
         co_return max_id;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::write_physical_insert(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-        uint64_t row_start,
-        uint64_t row_count,
-        uint64_t txn_id) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_t::write_physical_insert(session_id_t session,
+                                                   std::string database,
+                                                   std::string collection,
+                                                   std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                                   uint64_t row_start,
+                                                   uint64_t row_count,
+                                                   uint64_t txn_id) {
         trace(log_, "manager_wal_replicate_t::write_physical_insert {}::{}", database, collection);
         auto coll_name = collection_full_name_t(database, collection);
         auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::write_physical_insert,
-            session, std::move(database), std::move(collection), std::move(data_chunk), row_start, row_count, txn_id);
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
+                                                      &wal_replicate_t::write_physical_insert,
+                                                      session,
+                                                      std::move(database),
+                                                      std::move(collection),
+                                                      std::move(data_chunk),
+                                                      row_start,
+                                                      row_count,
+                                                      txn_id);
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::write_physical_delete(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::pmr::vector<int64_t> row_ids,
-        uint64_t count,
-        uint64_t txn_id) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_t::write_physical_delete(session_id_t session,
+                                                   std::string database,
+                                                   std::string collection,
+                                                   std::pmr::vector<int64_t> row_ids,
+                                                   uint64_t count,
+                                                   uint64_t txn_id) {
         trace(log_, "manager_wal_replicate_t::write_physical_delete {}::{}", database, collection);
         auto coll_name = collection_full_name_t(database, collection);
         auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::write_physical_delete,
-            session, std::move(database), std::move(collection), std::move(row_ids), count, txn_id);
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
+                                                      &wal_replicate_t::write_physical_delete,
+                                                      session,
+                                                      std::move(database),
+                                                      std::move(collection),
+                                                      std::move(row_ids),
+                                                      count,
+                                                      txn_id);
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[idx].get());
         }
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t> manager_wal_replicate_t::write_physical_update(
-        session_id_t session,
-        std::string database,
-        std::string collection,
-        std::pmr::vector<int64_t> row_ids,
-        std::unique_ptr<components::vector::data_chunk_t> new_data,
-        uint64_t count,
-        uint64_t txn_id) {
+    manager_wal_replicate_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_t::write_physical_update(session_id_t session,
+                                                   std::string database,
+                                                   std::string collection,
+                                                   std::pmr::vector<int64_t> row_ids,
+                                                   std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                                   uint64_t count,
+                                                   uint64_t txn_id) {
         trace(log_, "manager_wal_replicate_t::write_physical_update {}::{}", database, collection);
         auto coll_name = collection_full_name_t(database, collection);
         auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(), &wal_replicate_t::write_physical_update,
-            session, std::move(database), std::move(collection), std::move(row_ids), std::move(new_data), count, txn_id);
+        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
+                                                      &wal_replicate_t::write_physical_update,
+                                                      session,
+                                                      std::move(database),
+                                                      std::move(collection),
+                                                      std::move(row_ids),
+                                                      std::move(new_data),
+                                                      count,
+                                                      txn_id);
         if (needs_sched) {
             scheduler_->enqueue(dispatchers_[idx].get());
         }
@@ -266,15 +288,18 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::current_wal_id, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::write_physical_insert>: {
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
+                                    &manager_wal_replicate_empty_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_insert, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::write_physical_delete>: {
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
+                                    &manager_wal_replicate_empty_t::write_physical_delete>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_delete, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::write_physical_update>: {
+            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
+                                    &manager_wal_replicate_empty_t::write_physical_update>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_update, msg);
                 break;
             }
@@ -297,40 +322,54 @@ namespace services::wal {
         co_return std::vector<record_t>{};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::commit_txn(
-        session_id_t /*session*/, uint64_t /*transaction_id*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_empty_t::commit_txn(session_id_t /*session*/, uint64_t /*transaction_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::commit_txn - return success");
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<void> manager_wal_replicate_empty_t::truncate_before(
-        session_id_t /*session*/, services::wal::id_t /*checkpoint_wal_id*/) {
+    manager_wal_replicate_empty_t::unique_future<void>
+    manager_wal_replicate_empty_t::truncate_before(session_id_t /*session*/,
+                                                   services::wal::id_t /*checkpoint_wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::truncate_before - no-op");
         co_return;
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::current_wal_id(
-        session_id_t /*session*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_empty_t::current_wal_id(session_id_t /*session*/) {
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::write_physical_insert(
-        session_id_t /*session*/, std::string /*database*/, std::string /*collection*/,
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_empty_t::write_physical_insert(
+        session_id_t /*session*/,
+        std::string /*database*/,
+        std::string /*collection*/,
         std::unique_ptr<components::vector::data_chunk_t> /*data_chunk*/,
-        uint64_t /*row_start*/, uint64_t /*row_count*/, uint64_t /*txn_id*/) {
+        uint64_t /*row_start*/,
+        uint64_t /*row_count*/,
+        uint64_t /*txn_id*/) {
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::write_physical_delete(
-        session_id_t /*session*/, std::string /*database*/, std::string /*collection*/,
-        std::pmr::vector<int64_t> /*row_ids*/, uint64_t /*count*/, uint64_t /*txn_id*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_empty_t::write_physical_delete(session_id_t /*session*/,
+                                                         std::string /*database*/,
+                                                         std::string /*collection*/,
+                                                         std::pmr::vector<int64_t> /*row_ids*/,
+                                                         uint64_t /*count*/,
+                                                         uint64_t /*txn_id*/) {
         co_return services::wal::id_t{0};
     }
 
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t> manager_wal_replicate_empty_t::write_physical_update(
-        session_id_t /*session*/, std::string /*database*/, std::string /*collection*/,
-        std::pmr::vector<int64_t> /*row_ids*/, std::unique_ptr<components::vector::data_chunk_t> /*new_data*/,
-        uint64_t /*count*/, uint64_t /*txn_id*/) {
+    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
+    manager_wal_replicate_empty_t::write_physical_update(session_id_t /*session*/,
+                                                         std::string /*database*/,
+                                                         std::string /*collection*/,
+                                                         std::pmr::vector<int64_t> /*row_ids*/,
+                                                         std::unique_ptr<components::vector::data_chunk_t> /*new_data*/,
+                                                         uint64_t /*count*/,
+                                                         uint64_t /*txn_id*/) {
         co_return services::wal::id_t{0};
     }
 

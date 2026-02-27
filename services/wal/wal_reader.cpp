@@ -1,19 +1,17 @@
 #include "wal_reader.hpp"
 
-#include <algorithm>
-#include <unordered_set>
 #include <absl/crc/crc32c.h>
+#include <algorithm>
 #include <components/serialization/deserializer.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/wal/dto.hpp>
+#include <unordered_set>
 
 namespace services::wal {
 
     using namespace core::filesystem;
 
-    wal_reader_t::wal_reader_t(const configuration::config_wal& config,
-                               std::pmr::memory_resource* resource,
-                               log_t& log)
+    wal_reader_t::wal_reader_t(const configuration::config_wal& config, std::pmr::memory_resource* resource, log_t& log)
         : resource_(resource)
         , log_(log.clone())
         , fs_(local_file_system_t()) {
@@ -25,7 +23,8 @@ namespace services::wal {
             std::string prefix = ".wal_" + std::to_string(i) + "_";
             std::vector<std::filesystem::path> segments;
             for (const auto& entry : std::filesystem::directory_iterator(config.path)) {
-                if (!entry.is_regular_file()) continue;
+                if (!entry.is_regular_file())
+                    continue;
                 auto name = entry.path().filename().string();
                 if (name.size() > prefix.size() && name.substr(0, prefix.size()) == prefix) {
                     segments.push_back(entry.path());
@@ -89,14 +88,12 @@ namespace services::wal {
         }
 
         // Sort by WAL ID for correct replay order
-        std::sort(committed.begin(), committed.end(),
-            [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        std::sort(committed.begin(), committed.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
         if (corrupt_count > 0) {
             error(log_, "wal_reader_t: encountered {} corrupt WAL record(s) with CRC32 mismatch", corrupt_count);
         }
-        debug(log_, "wal_reader_t: read {} committed physical WAL records (after id {})",
-              committed.size(), after_id);
+        debug(log_, "wal_reader_t: read {} committed physical WAL records (after id {})", committed.size(), after_id);
         return committed;
     }
 
@@ -106,14 +103,13 @@ namespace services::wal {
             return 0;
         }
         size_tt size = 0;
-        size = (size_tt(uint8_t(buf[0])) << 24) |
-               (size_tt(uint8_t(buf[1])) << 16) |
-               (size_tt(uint8_t(buf[2])) << 8) |
+        size = (size_tt(uint8_t(buf[0])) << 24) | (size_tt(uint8_t(buf[1])) << 16) | (size_tt(uint8_t(buf[2])) << 8) |
                (size_tt(uint8_t(buf[3])));
         return size;
     }
 
-    std::pmr::string wal_reader_t::read_wal_data(core::filesystem::file_handle_t* file, std::size_t start, std::size_t finish) const {
+    std::pmr::string
+    wal_reader_t::read_wal_data(core::filesystem::file_handle_t* file, std::size_t start, std::size_t finish) const {
         auto size = finish - start;
         std::pmr::string output(resource_);
         output.resize(size);
@@ -130,10 +126,8 @@ namespace services::wal {
             auto output = read_wal_data(file, start, finish);
 
             const char* crc_ptr = output.data() + record.size;
-            record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) |
-                           (crc32_t(uint8_t(crc_ptr[1])) << 16) |
-                           (crc32_t(uint8_t(crc_ptr[2])) << 8) |
-                           (crc32_t(uint8_t(crc_ptr[3])));
+            record.crc32 = (crc32_t(uint8_t(crc_ptr[0])) << 24) | (crc32_t(uint8_t(crc_ptr[1])) << 16) |
+                           (crc32_t(uint8_t(crc_ptr[2])) << 8) | (crc32_t(uint8_t(crc_ptr[3])));
 
             auto computed_crc = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), record.size}));
             if (record.crc32 == computed_crc) {
@@ -149,14 +143,13 @@ namespace services::wal {
                 } else if (arr_size >= 8) {
                     auto type_val = deserializer.deserialize_uint64(3);
                     auto phys_type = static_cast<wal_record_type>(type_val);
-                    if (phys_type == wal_record_type::PHYSICAL_INSERT
-                        || phys_type == wal_record_type::PHYSICAL_DELETE
-                        || phys_type == wal_record_type::PHYSICAL_UPDATE) {
+                    if (phys_type == wal_record_type::PHYSICAL_INSERT ||
+                        phys_type == wal_record_type::PHYSICAL_DELETE ||
+                        phys_type == wal_record_type::PHYSICAL_UPDATE) {
                         record.transaction_id = deserializer.deserialize_uint64(2);
                         record.record_type = phys_type;
-                        record.collection_name = collection_full_name_t(
-                            deserializer.deserialize_string(4),
-                            deserializer.deserialize_string(5));
+                        record.collection_name = collection_full_name_t(deserializer.deserialize_string(4),
+                                                                        deserializer.deserialize_string(5));
 
                         if (phys_type == wal_record_type::PHYSICAL_INSERT) {
                             deserializer.advance_array(6);
@@ -202,8 +195,11 @@ namespace services::wal {
                     record.size = 0;
                 }
             } else {
-                error(log_, "wal_reader_t: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
-                      start_index, record.crc32, computed_crc);
+                error(log_,
+                      "wal_reader_t: CRC32 mismatch at offset {}, expected={:#x}, computed={:#x}",
+                      start_index,
+                      record.crc32,
+                      computed_crc);
                 record.is_corrupt = true;
                 record.size = 0;
             }

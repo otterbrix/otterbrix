@@ -54,29 +54,41 @@ namespace services::index {
         unique_future<void> register_collection(session_id_t session, collection_full_name_t name);
         unique_future<void> unregister_collection(session_id_t session, collection_full_name_t name);
 
+        // DML: bulk index operations (non-txn, backward compat)
+        unique_future<void> insert_rows(session_id_t session,
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        uint64_t start_row_id,
+                                        uint64_t count);
+        unique_future<void> delete_rows(session_id_t session,
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::pmr::vector<size_t> row_ids);
+        unique_future<void> update_rows(session_id_t session,
+                                        collection_full_name_t name,
+                                        std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                        std::pmr::vector<size_t> row_ids);
+
         // DML: txn-aware bulk index operations
-        unique_future<void> insert_rows(execution_context_t ctx,
-                                             std::unique_ptr<components::vector::data_chunk_t> data,
-                                             uint64_t start_row_id,
-                                             uint64_t count);
-        unique_future<void> delete_rows(execution_context_t ctx,
-                                             std::unique_ptr<components::vector::data_chunk_t> data,
-                                             std::pmr::vector<size_t> row_ids);
-        unique_future<void> update_rows(execution_context_t ctx,
-                                             std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                             std::unique_ptr<components::vector::data_chunk_t> new_data,
-                                             std::pmr::vector<size_t> row_ids);
+        unique_future<void> insert_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> data,
+                                            uint64_t start_row_id,
+                                            uint64_t count);
+        unique_future<void> delete_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> data,
+                                            std::pmr::vector<size_t> row_ids);
+        unique_future<void> update_rows_txn(execution_context_t ctx,
+                                            std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                            std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                            std::pmr::vector<size_t> row_ids);
 
         // MVCC commit/revert/cleanup
-        unique_future<void> commit_insert(execution_context_t ctx,
-                                           uint64_t commit_id);
-        unique_future<void> commit_delete(execution_context_t ctx,
-                                           uint64_t commit_id);
+        unique_future<void> commit_insert(execution_context_t ctx, uint64_t commit_id);
+        unique_future<void> commit_delete(execution_context_t ctx, uint64_t commit_id);
         unique_future<void> revert_insert(execution_context_t ctx);
-        unique_future<void> cleanup_all_versions(session_id_t session,
-                                                  uint64_t lowest_active);
-        unique_future<void> rebuild_indexes(session_id_t session,
-                                             collection_full_name_t name);
+        unique_future<void> cleanup_all_versions(session_id_t session, uint64_t lowest_active);
+        unique_future<void> rebuild_indexes(session_id_t session, collection_full_name_t name);
 
         // DDL: index management
         unique_future<uint32_t> create_index(session_id_t session,
@@ -86,40 +98,46 @@ namespace services::index {
                                              components::logical_plan::index_type type);
         unique_future<void> drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 
-        // Query (txn-aware)
-        unique_future<std::pmr::vector<int64_t>> search(
-            session_id_t session,
-            collection_full_name_t name,
-            components::index::keys_base_storage_t keys,
-            components::types::logical_value_t value,
-            components::expressions::compare_type compare,
-            uint64_t start_time,
-            uint64_t txn_id);
+        // Query (non-txn, backward compat)
+        unique_future<std::pmr::vector<int64_t>> search(session_id_t session,
+                                                        collection_full_name_t name,
+                                                        components::index::keys_base_storage_t keys,
+                                                        components::types::logical_value_t value,
+                                                        components::expressions::compare_type compare);
 
-        unique_future<bool> has_index(session_id_t session,
-                                       collection_full_name_t name,
-                                       index_name_t index_name);
+        // Query (txn-aware)
+        unique_future<std::pmr::vector<int64_t>> search_txn(session_id_t session,
+                                                            collection_full_name_t name,
+                                                            components::index::keys_base_storage_t keys,
+                                                            components::types::logical_value_t value,
+                                                            components::expressions::compare_type compare,
+                                                            uint64_t start_time,
+                                                            uint64_t txn_id);
+
+        unique_future<bool> has_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
-        using dispatch_traits = actor_zeta::implements<
-            index_contract,
-            &manager_index_t::register_collection,
-            &manager_index_t::unregister_collection,
-            &manager_index_t::insert_rows,
-            &manager_index_t::delete_rows,
-            &manager_index_t::update_rows,
-            &manager_index_t::commit_insert,
-            &manager_index_t::commit_delete,
-            &manager_index_t::revert_insert,
-            &manager_index_t::cleanup_all_versions,
-            &manager_index_t::rebuild_indexes,
-            &manager_index_t::create_index,
-            &manager_index_t::drop_index,
-            &manager_index_t::search,
-            &manager_index_t::has_index,
-            &manager_index_t::flush_all_indexes
-        >;
+        using dispatch_traits = actor_zeta::implements<index_contract,
+                                                       &manager_index_t::register_collection,
+                                                       &manager_index_t::unregister_collection,
+                                                       &manager_index_t::insert_rows,
+                                                       &manager_index_t::delete_rows,
+                                                       &manager_index_t::update_rows,
+                                                       &manager_index_t::insert_rows_txn,
+                                                       &manager_index_t::delete_rows_txn,
+                                                       &manager_index_t::update_rows_txn,
+                                                       &manager_index_t::commit_insert,
+                                                       &manager_index_t::commit_delete,
+                                                       &manager_index_t::revert_insert,
+                                                       &manager_index_t::cleanup_all_versions,
+                                                       &manager_index_t::rebuild_indexes,
+                                                       &manager_index_t::create_index,
+                                                       &manager_index_t::drop_index,
+                                                       &manager_index_t::search,
+                                                       &manager_index_t::search_txn,
+                                                       &manager_index_t::has_index,
+                                                       &manager_index_t::flush_all_indexes>;
 
     private:
         std::pmr::memory_resource* resource_;

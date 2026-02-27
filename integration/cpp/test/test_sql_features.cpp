@@ -20,8 +20,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
         }
     }
 
@@ -47,16 +46,15 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
 
     INFO("IS NULL") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
 
     INFO("IS NOT NULL") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE value IS NOT NULL;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NOT NULL;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
@@ -92,8 +90,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
     INFO("DELETE with IS NULL") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "DELETE FROM TestDatabase.TestCollection WHERE value IS NULL;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE value IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
@@ -299,16 +296,14 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
 
     INFO("SELECT DISTINCT single column") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT DISTINCT name FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT DISTINCT name FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
     }
 
     INFO("SELECT DISTINCT two columns") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT DISTINCT name, category FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT DISTINCT name, category FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
     }
@@ -324,8 +319,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
 
     INFO("SELECT DISTINCT category") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT DISTINCT category FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT DISTINCT category FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
@@ -353,8 +347,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
             std::stringstream query;
             query << "INSERT INTO TestDatabase.TestCollection (name, category) VALUES ";
             for (int num = 0; num < 100; ++num) {
-                query << "('Name " << (num % 10) << "', 'Cat " << (num % 5) << "')"
-                      << (num == 99 ? ";" : ", ");
+                query << "('Name " << (num % 10) << "', 'Cat " << (num % 5) << "')" << (num == 99 ? ";" : ", ");
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
@@ -364,8 +357,8 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
 
     INFO("COUNT(DISTINCT col)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT COUNT(DISTINCT name) AS cnt FROM TestDatabase.TestCollection;");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT COUNT(DISTINCT name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 10);
@@ -383,8 +376,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
     INFO("COUNT(DISTINCT) vs COUNT") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
@@ -494,8 +486,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
 
     INFO("empty table COUNT") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         // COUNT on empty table returns 0 rows (no groups to aggregate)
         REQUIRE(cur->size() == 0);
@@ -526,15 +517,14 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.TestCollection WHERE count = 100;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 100;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "DELETE FROM TestDatabase.TestCollection WHERE name = 'OnlyRow';");
+            auto cur =
+                dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE name = 'OnlyRow';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -573,8 +563,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     INFO("large batch insert") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "DELETE FROM TestDatabase.TestCollection WHERE count >= 0;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count >= 0;");
             REQUIRE(cur->is_success());
         }
         {
@@ -596,8 +585,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+            auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5000);
@@ -620,8 +608,9 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (name string, nickname string, value bigint);");
+            dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, nickname string, value bigint);");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -746,8 +735,7 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, value bigint);");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -776,15 +764,14 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM TestDatabase.TestCollection WHERE value = 0;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value = 0;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }

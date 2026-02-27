@@ -32,8 +32,8 @@ namespace components::index {
                    (e.delete_id == table::NOT_DELETED_ID || e.delete_id >= table::TRANSACTION_ID_START);
         }
         bool inserted = (e.insert_id < start_time) || (e.insert_id == txn_id);
-        bool deleted = (e.delete_id < start_time && e.delete_id < table::TRANSACTION_ID_START) ||
-                       (e.delete_id == txn_id);
+        bool deleted =
+            (e.delete_id < start_time && e.delete_id < table::TRANSACTION_ID_START) || (e.delete_id == txn_id);
         return inserted && !deleted;
     }
 
@@ -104,8 +104,8 @@ namespace components::index {
         void set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept;
 
         std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value) const;
-        std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value,
-                                          uint64_t start_time, uint64_t txn_id) const;
+        std::pmr::vector<int64_t>
+        search(expressions::compare_type compare, const value_t& value, uint64_t start_time, uint64_t txn_id) const;
 
         void insert(value_t key, int64_t row_index, uint64_t txn_id);
         void mark_delete(value_t key, int64_t row_index, uint64_t txn_id);
@@ -115,10 +115,8 @@ namespace components::index {
         void cleanup_versions(uint64_t lowest_active);
 
         // Iterate pending entries for disk mirroring (must be called before commit clears them)
-        void for_each_pending_insert(uint64_t txn_id,
-                                     const std::function<void(const value_t&, int64_t)>& fn) const;
-        void for_each_pending_delete(uint64_t txn_id,
-                                     const std::function<void(const value_t&, int64_t)>& fn) const;
+        void for_each_pending_insert(uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const;
+        void for_each_pending_delete(uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const;
 
         void clean_memory_to_new_elements(std::size_t count) noexcept;
 

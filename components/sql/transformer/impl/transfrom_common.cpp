@@ -116,11 +116,11 @@ namespace components::sql::transform {
                         auto param_id = params->add_parameter(types::logical_value_t(resource_, pattern));
                         if (op_name == "!~~") {
                             auto inner = make_compare_expression(params->parameters().resource(),
-                                                                  compare_type::regex,
-                                                                  key_left.field,
-                                                                  param_id);
-                            auto not_expr = make_compare_union_expression(params->parameters().resource(),
-                                                                          compare_type::union_not);
+                                                                 compare_type::regex,
+                                                                 key_left.field,
+                                                                 param_id);
+                            auto not_expr =
+                                make_compare_union_expression(params->parameters().resource(), compare_type::union_not);
                             not_expr->append_child(inner);
                             return not_expr;
                         }
@@ -165,7 +165,6 @@ namespace components::sql::transform {
                     param_storage left = get_arg(node->lexpr);
                     param_storage right = get_arg(node->rexpr);
                     return make_compare_expression(params->parameters().resource(), comp_type, left, right);
-
                 }
             }
             case AEXPR_NOT: {
@@ -288,8 +287,8 @@ namespace components::sql::transform {
     }
 
     expression_ptr transformer::transform_null_test(NullTest* node,
-                                                     const name_collection_t& names,
-                                                     logical_plan::parameter_node_t* params) {
+                                                    const name_collection_t& names,
+                                                    logical_plan::parameter_node_t* params) {
         if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
             throw parser_exception_t({"IS NULL: argument must be a column reference"}, {});
         }
@@ -300,7 +299,8 @@ namespace components::sql::transform {
 
         auto cmp = node->nulltesttype == IS_NULL ? compare_type::is_null : compare_type::is_not_null;
         // is_null/is_not_null don't need a value, use a dummy parameter
-        auto param_id = params->add_parameter(types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+        auto param_id = params->add_parameter(
+            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
         return make_compare_expression(params->parameters().resource(), cmp, key.field, param_id);
     }
 

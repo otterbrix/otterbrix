@@ -70,8 +70,7 @@ TEST_CASE("services::wal::physical_insert_write_and_read") {
     auto chunk = gen_data_chunk(5, 0, &resource);
     auto session = components::session::session_id_t();
     auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
-    test_wal.wal->write_physical_insert(session, database_name, collection_name,
-                                         std::move(data_chunk_ptr), 0, 5, 0);
+    test_wal.wal->write_physical_insert(session, database_name, collection_name, std::move(data_chunk_ptr), 0, 5, 0);
 
     auto record = test_wal.wal->test_read_record(0);
     REQUIRE(record.is_physical());
@@ -94,8 +93,7 @@ TEST_CASE("services::wal::physical_delete_write_and_read") {
     row_ids.push_back(4);
 
     auto session = components::session::session_id_t();
-    test_wal.wal->write_physical_delete(session, database_name, collection_name,
-                                         std::move(row_ids), 3, 0);
+    test_wal.wal->write_physical_delete(session, database_name, collection_name, std::move(row_ids), 3, 0);
 
     auto record = test_wal.wal->test_read_record(0);
     REQUIRE(record.is_physical());
@@ -121,8 +119,13 @@ TEST_CASE("services::wal::physical_update_write_and_read") {
     auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
 
     auto session = components::session::session_id_t();
-    test_wal.wal->write_physical_update(session, database_name, collection_name,
-                                         std::move(row_ids), std::move(data_chunk_ptr), 2, 0);
+    test_wal.wal->write_physical_update(session,
+                                        database_name,
+                                        collection_name,
+                                        std::move(row_ids),
+                                        std::move(data_chunk_ptr),
+                                        2,
+                                        0);
 
     auto record = test_wal.wal->test_read_record(0);
     REQUIRE(record.is_physical());
@@ -170,8 +173,7 @@ TEST_CASE("services::wal::corrupted_record_detected") {
         auto chunk = gen_data_chunk(5, 0, &resource);
         auto session = components::session::session_id_t();
         auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
-        wal->write_physical_insert(session, database_name, collection_name,
-                                    std::move(data_chunk_ptr), 0, 5, 0);
+        wal->write_physical_insert(session, database_name, collection_name, std::move(data_chunk_ptr), 0, 5, 0);
 
         // wal/manager destroyed here, file handle closed, data flushed to disk
         delete scheduler;
@@ -231,8 +233,13 @@ TEST_CASE("services::wal::mixed_valid_corrupt_records") {
         for (int i = 0; i < 3; ++i) {
             auto chunk = gen_data_chunk(5, 0, &resource);
             auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
-            wal->write_physical_insert(session, database_name, collection_name,
-                                        std::move(data_chunk_ptr), uint64_t(i * 5), 5, txn_id);
+            wal->write_physical_insert(session,
+                                       database_name,
+                                       collection_name,
+                                       std::move(data_chunk_ptr),
+                                       uint64_t(i * 5),
+                                       5,
+                                       txn_id);
         }
         wal->commit_txn(session, txn_id);
 
@@ -250,10 +257,8 @@ TEST_CASE("services::wal::mixed_valid_corrupt_records") {
         // Read size_tt (4 bytes big-endian)
         uint8_t size_buf[4];
         ifs.read(reinterpret_cast<char*>(size_buf), 4);
-        uint32_t first_size = (uint32_t(size_buf[0]) << 24) |
-                              (uint32_t(size_buf[1]) << 16) |
-                              (uint32_t(size_buf[2]) << 8)  |
-                              uint32_t(size_buf[3]);
+        uint32_t first_size = (uint32_t(size_buf[0]) << 24) | (uint32_t(size_buf[1]) << 16) |
+                              (uint32_t(size_buf[2]) << 8) | uint32_t(size_buf[3]);
         ifs.close();
 
         // Second record starts at: sizeof(size_tt) + first_size + sizeof(crc32_t)

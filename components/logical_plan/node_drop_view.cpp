@@ -4,8 +4,7 @@
 
 namespace components::logical_plan {
 
-    node_drop_view_t::node_drop_view_t(std::pmr::memory_resource* resource,
-                                       const collection_full_name_t& name)
+    node_drop_view_t::node_drop_view_t(std::pmr::memory_resource* resource, const collection_full_name_t& name)
         : node_t(resource, node_type::drop_view_t, name) {}
 
     hash_t node_drop_view_t::hash_impl() const { return 0; }
@@ -16,8 +15,7 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_drop_view_ptr make_node_drop_view(std::pmr::memory_resource* resource,
-                                           const collection_full_name_t& name) {
+    node_drop_view_ptr make_node_drop_view(std::pmr::memory_resource* resource, const collection_full_name_t& name) {
         return {new node_drop_view_t{resource, name}};
     }
 

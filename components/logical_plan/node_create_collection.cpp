@@ -58,9 +58,7 @@ namespace components::logical_plan {
         return column_definitions_;
     }
 
-    const std::vector<table::table_constraint_t>& node_create_collection_t::constraints() const {
-        return constraints_;
-    }
+    const std::vector<table::table_constraint_t>& node_create_collection_t::constraints() const { return constraints_; }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
                                                            const collection_full_name_t& collection) {
@@ -78,8 +76,10 @@ namespace components::logical_plan {
                                                            std::vector<table::column_definition_t> column_definitions,
                                                            std::vector<table::table_constraint_t> constraints,
                                                            bool disk_storage) {
-        return {new node_create_collection_t{resource, collection,
-                                             std::move(column_definitions), std::move(constraints),
+        return {new node_create_collection_t{resource,
+                                             collection,
+                                             std::move(column_definitions),
+                                             std::move(constraints),
                                              disk_storage}};
     }
 

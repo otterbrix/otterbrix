@@ -20,8 +20,12 @@ namespace components::operators {
     actor_zeta::unique_future<void> transfer_scan::await_async_and_resume(pipeline::context_t* ctx) {
         int limit_val = limit_.limit();
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_scan, ctx->session, name_,
-            std::unique_ptr<table::table_filter_t>(nullptr), limit_val, ctx->txn);
+                                         &services::disk::manager_disk_t::storage_scan,
+                                         ctx->session,
+                                         name_,
+                                         std::unique_ptr<table::table_filter_t>(nullptr),
+                                         limit_val,
+                                         ctx->txn);
         auto data = co_await std::move(sf);
 
         if (data) {

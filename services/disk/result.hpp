@@ -1,9 +1,9 @@
 #pragma once
 
-#include <components/base/collection_full_name.hpp>
-#include <services/wal/base.hpp>
 #include "catalog_storage.hpp"
+#include <components/base/collection_full_name.hpp>
 #include <memory_resource>
+#include <services/wal/base.hpp>
 #include <vector>
 
 namespace services::disk {
@@ -24,18 +24,12 @@ namespace services::disk {
         void set_collection(const std::vector<collection_name_t>& names) {
             collections.assign(names.begin(), names.end());
         }
-        void set_table_entries(std::vector<catalog_table_entry_t> entries) {
-            table_entries_ = std::move(entries);
-        }
+        void set_table_entries(std::vector<catalog_table_entry_t> entries) { table_entries_ = std::move(entries); }
         void set_sequence_entries(std::vector<catalog_sequence_entry_t> entries) {
             sequence_entries_ = std::move(entries);
         }
-        void set_view_entries(std::vector<catalog_view_entry_t> entries) {
-            view_entries_ = std::move(entries);
-        }
-        void set_macro_entries(std::vector<catalog_macro_entry_t> entries) {
-            macro_entries_ = std::move(entries);
-        }
+        void set_view_entries(std::vector<catalog_view_entry_t> entries) { view_entries_ = std::move(entries); }
+        void set_macro_entries(std::vector<catalog_macro_entry_t> entries) { macro_entries_ = std::move(entries); }
     };
 
     class result_load_t {

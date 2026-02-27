@@ -234,10 +234,8 @@ namespace components::table {
             return true;
         }
         // For constant comparison filters, check if any column's zonemap prunes this segment
-        if (f->filter_type == expressions::compare_type::eq ||
-            f->filter_type == expressions::compare_type::gt ||
-            f->filter_type == expressions::compare_type::gte ||
-            f->filter_type == expressions::compare_type::lt ||
+        if (f->filter_type == expressions::compare_type::eq || f->filter_type == expressions::compare_type::gt ||
+            f->filter_type == expressions::compare_type::gte || f->filter_type == expressions::compare_type::lt ||
             f->filter_type == expressions::compare_type::lte) {
             auto& cf = f->cast<constant_filter_t>();
             if (!cf.table_indices.empty()) {
@@ -298,8 +296,11 @@ namespace components::table {
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
                 count = (state.txn.transaction_id != 0 || state.txn.start_time != 0)
-                    ? state.row_group->indexing_vector(state.txn, state.vector_index, state.valid_indexing, max_count)
-                    : state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                            ? state.row_group->indexing_vector(state.txn,
+                                                               state.vector_index,
+                                                               state.valid_indexing,
+                                                               max_count)
+                            : state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -571,7 +572,10 @@ namespace components::table {
 
     class version_delete_state {
     public:
-        version_delete_state(row_group_t& info, uint64_t current_version, data_table_t& table, int64_t base_row,
+        version_delete_state(row_group_t& info,
+                             uint64_t current_version,
+                             data_table_t& table,
+                             int64_t base_row,
                              bool is_txn = false)
             : info(info)
             , table(table)
@@ -662,8 +666,10 @@ namespace components::table {
         return vinfo->indexing_vector({current_version_, current_version_}, vector_idx, indexing_vector, max_count);
     }
 
-    uint64_t
-    row_group_t::indexing_vector(transaction_data txn, uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count) {
+    uint64_t row_group_t::indexing_vector(transaction_data txn,
+                                          uint64_t vector_idx,
+                                          vector::indexing_vector_t& indexing_vector,
+                                          uint64_t max_count) {
         auto vinfo = version_info();
         if (!vinfo) {
             return max_count;
@@ -739,8 +745,7 @@ namespace components::table {
         delete_count += actual_delete_count;
         count = 0;
     }
-    storage::row_group_pointer_t
-    row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
+    storage::row_group_pointer_t row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
         storage::row_group_pointer_t pointer;
         pointer.row_start = static_cast<uint64_t>(start);
         pointer.tuple_count = count;

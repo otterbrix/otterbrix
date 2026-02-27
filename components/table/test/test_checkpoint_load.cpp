@@ -30,9 +30,8 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    void append_int64_data(components::table::data_table_t& table,
-                           std::pmr::memory_resource* resource,
-                           uint64_t count) {
+    void
+    append_int64_data(components::table::data_table_t& table, std::pmr::memory_resource* resource, uint64_t count) {
         using namespace components::types;
         using namespace components::vector;
         using namespace components::table;
@@ -446,8 +445,9 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "rle_table");
 
         // 100x1, 100x2, 100x3, 100x4, 100x5
-        append_int64_data_with_fn(*table, &env.resource, NUM_ROWS,
-                                  [](uint64_t idx) { return static_cast<int64_t>(idx / 100 + 1); });
+        append_int64_data_with_fn(*table, &env.resource, NUM_ROWS, [](uint64_t idx) {
+            return static_cast<int64_t>(idx / 100 + 1);
+        });
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
         metadata_manager_t meta_mgr(bm);
@@ -504,8 +504,9 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "dict_table");
 
         // cycle through 5 values: 1,2,3,4,5,1,2,3,...
-        append_int64_data_with_fn(*table, &env.resource, NUM_ROWS,
-                                  [](uint64_t idx) { return static_cast<int64_t>(idx % 5 + 1); });
+        append_int64_data_with_fn(*table, &env.resource, NUM_ROWS, [](uint64_t idx) {
+            return static_cast<int64_t>(idx % 5 + 1);
+        });
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
         metadata_manager_t meta_mgr(bm);
@@ -620,7 +621,8 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "mixed_table");
 
         append_int64_data_with_fn(*table, &env.resource, TOTAL_ROWS, [](uint64_t idx) -> int64_t {
-            if (idx < CONST_ROWS) return CONSTANT_VALUE;
+            if (idx < CONST_ROWS)
+                return CONSTANT_VALUE;
             return static_cast<int64_t>(idx - CONST_ROWS);
         });
         REQUIRE(table->calculate_size() == TOTAL_ROWS);

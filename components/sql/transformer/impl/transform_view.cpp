@@ -14,8 +14,7 @@ namespace components::sql::transform {
             std::string s(sql);
             // Convert to uppercase for searching
             std::string upper(s);
-            std::transform(upper.begin(), upper.end(), upper.begin(),
-                           [](unsigned char c) { return std::toupper(c); });
+            std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
 
             // Find " AS " keyword — marks start of the query
             auto pos = upper.find(" AS ");
@@ -28,9 +27,8 @@ namespace components::sql::transform {
             auto query = s.substr(query_start);
 
             // Trim trailing semicolons and whitespace
-            while (!query.empty() && (query.back() == ';' || query.back() == ' '
-                                      || query.back() == '\n' || query.back() == '\r'
-                                      || query.back() == '\t')) {
+            while (!query.empty() && (query.back() == ';' || query.back() == ' ' || query.back() == '\n' ||
+                                      query.back() == '\r' || query.back() == '\t')) {
                 query.pop_back();
             }
 

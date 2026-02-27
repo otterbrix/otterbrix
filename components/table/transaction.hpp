@@ -9,8 +9,7 @@ namespace components::table {
 
     class transaction_t {
     public:
-        transaction_t(uint64_t transaction_id, uint64_t start_time,
-                      session::session_id_t session);
+        transaction_t(uint64_t transaction_id, uint64_t start_time, session::session_id_t session);
 
         transaction_data data() const { return {transaction_id_, start_time_}; }
         uint64_t transaction_id() const { return transaction_id_; }

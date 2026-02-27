@@ -39,10 +39,10 @@ namespace components::operators {
                 auto filter = std::make_unique<table::conjunction_not_filter_t>();
                 filter->child_filters.reserve(expression->children().size());
                 for (const auto& child : expression->children()) {
-                    auto child_filter = transform_predicate(
-                        reinterpret_cast<const expressions::compare_expression_ptr&>(child),
-                        types,
-                        parameters);
+                    auto child_filter =
+                        transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                                            types,
+                                            parameters);
                     if (child_filter) {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
@@ -56,14 +56,15 @@ namespace components::operators {
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
-                auto indices = resolve_column_path(expression, types);
-                return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
+                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                return std::make_unique<table::is_null_filter_t>(expression->type(), path);
             }
             default: {
-                auto indices = resolve_column_path(expression, types);
+                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                auto id = std::get<core::parameter_id_t>(expression->right());
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(id),
-                                                                  std::move(indices));
+                                                                  path);
             }
         }
     }
@@ -100,8 +101,12 @@ namespace components::operators {
         // Scan from storage
         int limit_val = limit_.limit();
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_scan, ctx->session, name_,
-            std::move(filter), limit_val, ctx->txn);
+                                         &services::disk::manager_disk_t::storage_scan,
+                                         ctx->session,
+                                         name_,
+                                         std::move(filter),
+                                         limit_val,
+                                         ctx->txn);
         auto data = co_await std::move(sf);
 
         if (data) {

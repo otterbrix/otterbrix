@@ -136,8 +136,7 @@ TEST_CASE("zonemap: check_zonemap filters") {
     storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
 
     // Create a column with data [1..100] and populate stats
-    auto col = column_data_t::create_column(
-        &resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
+    auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
     // Manually set statistics as if [1..100] was appended
     col->statistics().set_min(logical_value_t{&resource, int64_t(1)});
@@ -146,49 +145,37 @@ TEST_CASE("zonemap: check_zonemap filters") {
     column_scan_state scan_state;
 
     SECTION("gt filter: value > 200 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::gt,
-                           logical_value_t{&resource, int64_t(200)},
-                           {0});
+        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(200)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("gt filter: value > 50 => NO_PRUNING") {
-        constant_filter_t f(compare_type::gt,
-                           logical_value_t{&resource, int64_t(50)},
-                           {0});
+        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(50)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
 
     SECTION("lt filter: value < 0 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::lt,
-                           logical_value_t{&resource, int64_t(0)},
-                           {0});
+        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(0)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("eq filter: value == 150 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::eq,
-                           logical_value_t{&resource, int64_t(150)},
-                           {0});
+        constant_filter_t f(compare_type::eq, logical_value_t{&resource, int64_t(150)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("eq filter: value == 50 => NO_PRUNING") {
-        constant_filter_t f(compare_type::eq,
-                           logical_value_t{&resource, int64_t(50)},
-                           {0});
+        constant_filter_t f(compare_type::eq, logical_value_t{&resource, int64_t(50)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
 
     SECTION("gte filter: value >= 0 => ALWAYS_TRUE") {
-        constant_filter_t f(compare_type::gte,
-                           logical_value_t{&resource, int64_t(0)},
-                           {0});
+        constant_filter_t f(compare_type::gte, logical_value_t{&resource, int64_t(0)}, {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_TRUE);
     }
@@ -206,12 +193,12 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
     storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
 
-    auto col = column_data_t::create_column(
-        &resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
+    auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
     // Simulate two segments with non-overlapping ranges
     // Segment 1: [1..50], Segment 2: [51..100]
-    auto seg1 = column_segment_t::create_segment(buffer_manager, complex_logical_type{logical_type::BIGINT}, 0, 262144, 262144);
+    auto seg1 =
+        column_segment_t::create_segment(buffer_manager, complex_logical_type{logical_type::BIGINT}, 0, 262144, 262144);
     {
         base_statistics_t s1(&resource, logical_type::BIGINT);
         s1.set_min(logical_value_t{&resource, int64_t(1)});
@@ -219,7 +206,11 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
         seg1->set_segment_statistics(std::move(s1));
     }
 
-    auto seg2 = column_segment_t::create_segment(buffer_manager, complex_logical_type{logical_type::BIGINT}, 50, 262144, 262144);
+    auto seg2 = column_segment_t::create_segment(buffer_manager,
+                                                 complex_logical_type{logical_type::BIGINT},
+                                                 50,
+                                                 262144,
+                                                 262144);
     {
         base_statistics_t s2(&resource, logical_type::BIGINT);
         s2.set_min(logical_value_t{&resource, int64_t(51)});
@@ -230,9 +221,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 1: value > 75 => ALWAYS_FALSE (max=50 <= 75)") {
         column_scan_state state;
         state.current = seg1.get();
-        constant_filter_t f(compare_type::gt,
-                           logical_value_t{&resource, int64_t(75)},
-                           {0});
+        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
@@ -240,9 +229,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 2: value > 75 => NO_PRUNING (max=100 > 75)") {
         column_scan_state state;
         state.current = seg2.get();
-        constant_filter_t f(compare_type::gt,
-                           logical_value_t{&resource, int64_t(75)},
-                           {0});
+        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -250,9 +237,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 1: value < 25 => NO_PRUNING (min=1 < 25)") {
         column_scan_state state;
         state.current = seg1.get();
-        constant_filter_t f(compare_type::lt,
-                           logical_value_t{&resource, int64_t(25)},
-                           {0});
+        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(25)}, {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -260,9 +245,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 2: value < 25 => ALWAYS_FALSE (min=51 >= 25)") {
         column_scan_state state;
         state.current = seg2.get();
-        constant_filter_t f(compare_type::lt,
-                           logical_value_t{&resource, int64_t(25)},
-                           {0});
+        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(25)}, {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
@@ -270,9 +253,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("no segment => NO_PRUNING") {
         column_scan_state state;
         state.current = nullptr;
-        constant_filter_t f(compare_type::gt,
-                           logical_value_t{&resource, int64_t(75)},
-                           {0});
+        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -289,8 +270,7 @@ TEST_CASE("per-segment statistics: populated during append") {
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
     storage::in_memory_block_manager_t block_manager(buffer_manager, 262144);
 
-    auto col = column_data_t::create_column(
-        &resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
+    auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
     // Append data through column_data_t
     column_append_state append_state;

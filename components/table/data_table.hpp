@@ -40,7 +40,8 @@ namespace components::table {
 
         std::unique_ptr<table_delete_state>
         initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
-        uint64_t delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
+        uint64_t
+        delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
 
         std::unique_ptr<table_update_state>
         initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
@@ -89,15 +90,15 @@ namespace components::table {
 
         std::shared_ptr<parallel_table_scan_state_t>
         create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                    const table_filter_t* filter = nullptr);
+                                   const table_filter_t* filter = nullptr);
         bool next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                  table_scan_state& local_state,
-                                  vector::data_chunk_t& result);
+                                 table_scan_state& local_state,
+                                 vector::data_chunk_t& result);
 
         void checkpoint(storage::metadata_writer_t& writer);
         static std::unique_ptr<data_table_t> load_from_disk(std::pmr::memory_resource* resource,
-                                                             storage::block_manager_t& block_manager,
-                                                             storage::metadata_reader_t& reader);
+                                                            storage::block_manager_t& block_manager,
+                                                            storage::metadata_reader_t& reader);
 
     private:
         void initialize_scan_with_offset(table_scan_state& state,

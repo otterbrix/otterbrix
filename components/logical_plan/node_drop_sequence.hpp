@@ -6,8 +6,7 @@ namespace components::logical_plan {
 
     class node_drop_sequence_t final : public node_t {
     public:
-        explicit node_drop_sequence_t(std::pmr::memory_resource* resource,
-                                      const collection_full_name_t& name);
+        explicit node_drop_sequence_t(std::pmr::memory_resource* resource, const collection_full_name_t& name);
 
     private:
         hash_t hash_impl() const override;

@@ -43,9 +43,7 @@ TEST_CASE("index_entry_visible:committed_entries") {
         REQUIRE_FALSE(index_entry_visible(committed, 3, TRANSACTION_ID_START + 1));
     }
 
-    SECTION("visible to own transaction") {
-        REQUIRE(index_entry_visible(committed, 3, 5));
-    }
+    SECTION("visible to own transaction") { REQUIRE(index_entry_visible(committed, 3, 5)); }
 }
 
 TEST_CASE("index_entry_visible:uncommitted_entries") {
@@ -53,9 +51,7 @@ TEST_CASE("index_entry_visible:uncommitted_entries") {
     uint64_t txn_id = TRANSACTION_ID_START + 100;
     index_value_t uncommitted(1, txn_id, NOT_DELETED_ID);
 
-    SECTION("visible to own transaction") {
-        REQUIRE(index_entry_visible(uncommitted, txn_id - 1, txn_id));
-    }
+    SECTION("visible to own transaction") { REQUIRE(index_entry_visible(uncommitted, txn_id - 1, txn_id)); }
 
     SECTION("not visible to other transactions") {
         uint64_t other_txn = TRANSACTION_ID_START + 200;
@@ -75,9 +71,7 @@ TEST_CASE("index_entry_visible:deleted_entries") {
         REQUIRE_FALSE(index_entry_visible(deleted_entry, 15, TRANSACTION_ID_START + 1));
     }
 
-    SECTION("not visible to deleting transaction") {
-        REQUIRE_FALSE(index_entry_visible(deleted_entry, 8, 10));
-    }
+    SECTION("not visible to deleting transaction") { REQUIRE_FALSE(index_entry_visible(deleted_entry, 8, 10)); }
 }
 
 TEST_CASE("index_entry_visible:see_all_committed") {

@@ -7,7 +7,8 @@
 
 namespace services::wal {
 
-    enum class wal_record_type : uint8_t {
+    enum class wal_record_type : uint8_t
+    {
         COMMIT = 1,
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
@@ -35,9 +36,8 @@ namespace services::wal {
         bool is_valid() const { return size > 0 && !is_corrupt; }
         bool is_commit_marker() const { return record_type == wal_record_type::COMMIT; }
         bool is_physical() const {
-            return record_type == wal_record_type::PHYSICAL_INSERT
-                || record_type == wal_record_type::PHYSICAL_DELETE
-                || record_type == wal_record_type::PHYSICAL_UPDATE;
+            return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
+                   record_type == wal_record_type::PHYSICAL_UPDATE;
         }
     };
 

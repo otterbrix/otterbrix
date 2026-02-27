@@ -51,9 +51,11 @@ namespace components::index {
                               const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const;
 
         // Mirror pending txn entries to disk agents (call BEFORE commit clears pending maps)
-        void for_each_pending_disk_insert(uint64_t txn_id,
+        void for_each_pending_disk_insert(
+            uint64_t txn_id,
             const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const;
-        void for_each_pending_disk_delete(uint64_t txn_id,
+        void for_each_pending_disk_delete(
+            uint64_t txn_id,
             const std::function<void(const actor_zeta::address_t&, const value_t&, int64_t)>& fn) const;
 
     private:

@@ -39,11 +39,9 @@ namespace components::operators::get {
                 size_t size = row.size();
                 bool found = false;
                 for (size_t i = 0; i < key.storage().size(); i++) {
-                    auto it = std::find_if(local_values, local_values + size,
-                                           [&](const types::logical_value_t& value) {
-                                               return core::pmr::operator==(value.type().alias(),
-                                                                            key.storage()[i]);
-                                           });
+                    auto it = std::find_if(local_values, local_values + size, [&](const types::logical_value_t& value) {
+                        return core::pmr::operator==(value.type().alias(), key.storage()[i]);
+                    });
                     if (it == local_values + size) {
                         break;
                     }

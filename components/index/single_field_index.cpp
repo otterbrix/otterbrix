@@ -80,7 +80,8 @@ namespace components::index {
 
     void single_field_index_t::commit_insert_impl(uint64_t txn_id, uint64_t commit_id) {
         auto it = pending_inserts_.find(txn_id);
-        if (it == pending_inserts_.end()) return;
+        if (it == pending_inserts_.end())
+            return;
         for (const auto& [key, row_index] : it->second) {
             auto range = storage_.equal_range(key);
             for (auto sit = range.first; sit != range.second; ++sit) {
@@ -95,7 +96,8 @@ namespace components::index {
 
     void single_field_index_t::commit_delete_impl(uint64_t txn_id, uint64_t commit_id) {
         auto it = pending_deletes_.find(txn_id);
-        if (it == pending_deletes_.end()) return;
+        if (it == pending_deletes_.end())
+            return;
         for (const auto& [key, row_index] : it->second) {
             auto range = storage_.equal_range(key);
             for (auto sit = range.first; sit != range.second; ++sit) {
@@ -110,7 +112,8 @@ namespace components::index {
 
     void single_field_index_t::revert_insert_impl(uint64_t txn_id) {
         auto it = pending_inserts_.find(txn_id);
-        if (it == pending_inserts_.end()) return;
+        if (it == pending_inserts_.end())
+            return;
         for (const auto& [key, row_index] : it->second) {
             auto range = storage_.equal_range(key);
             for (auto sit = range.first; sit != range.second; ++sit) {
@@ -141,19 +144,23 @@ namespace components::index {
         }
     }
 
-    void single_field_index_t::for_each_pending_insert_impl(
-        uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const {
+    void
+    single_field_index_t::for_each_pending_insert_impl(uint64_t txn_id,
+                                                       const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_inserts_.find(txn_id);
-        if (it == pending_inserts_.end()) return;
+        if (it == pending_inserts_.end())
+            return;
         for (const auto& [key, row_index] : it->second) {
             fn(key, row_index);
         }
     }
 
-    void single_field_index_t::for_each_pending_delete_impl(
-        uint64_t txn_id, const std::function<void(const value_t&, int64_t)>& fn) const {
+    void
+    single_field_index_t::for_each_pending_delete_impl(uint64_t txn_id,
+                                                       const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_deletes_.find(txn_id);
-        if (it == pending_deletes_.end()) return;
+        if (it == pending_deletes_.end())
+            return;
         for (const auto& [key, row_index] : it->second) {
             fn(key, row_index);
         }

@@ -38,7 +38,8 @@ namespace components::sql::transform {
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
-                if (!def->defname) continue;
+                if (!def->defname)
+                    continue;
                 std::string opt_name(def->defname);
                 if (opt_name == "storage" && def->arg) {
                     std::string val(strVal(def->arg));
@@ -160,9 +161,8 @@ namespace components::sql::transform {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
-                        return logical_plan::make_node_drop_view(
-                            resource_,
-                            {database_name_t(), strVal(drop_name.front().data)});
+                        return logical_plan::make_node_drop_view(resource_,
+                                                                 {database_name_t(), strVal(drop_name.front().data)});
                     }
                     case database_table: {
                         auto it = drop_name.begin();
@@ -178,9 +178,8 @@ namespace components::sql::transform {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
-                        return logical_plan::make_node_drop_macro(
-                            resource_,
-                            {database_name_t(), strVal(drop_name.front().data)});
+                        return logical_plan::make_node_drop_macro(resource_,
+                                                                  {database_name_t(), strVal(drop_name.front().data)});
                     }
                     case database_table: {
                         auto it = drop_name.begin();

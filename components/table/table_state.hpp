@@ -210,9 +210,7 @@ namespace components::table {
     };
 
     struct parallel_table_scan_state_t {
-        parallel_table_scan_state_t(std::vector<storage_index_t> col_ids,
-                                     const table_filter_t* flt,
-                                     uint64_t total_rg)
+        parallel_table_scan_state_t(std::vector<storage_index_t> col_ids, const table_filter_t* flt, uint64_t total_rg)
             : column_ids(std::move(col_ids))
             , filter(flt)
             , total_row_groups(total_rg) {}

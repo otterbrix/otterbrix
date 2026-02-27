@@ -948,15 +948,12 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->size() == kNumInserts);
     }
 
-    INFO("M1. division by zero") {
+    INFO("M1. division by zero returns error (PostgreSQL behavior)") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count / 0 AS bad )_"
+                                           R"_(SELECT count, count / 0 AS bad )_"
                                            R"_(FROM TestDatabase.TestCollection LIMIT 1;)_");
-        // Division by zero returns 0
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 0);
+        REQUIRE(cur->is_error());
     }
 
     INFO("M2. very large multiplication") {

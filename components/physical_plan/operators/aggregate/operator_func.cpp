@@ -31,12 +31,18 @@ namespace components::operators::aggregate {
                     if (expr->group() == expressions::expression_group::scalar) {
                         auto* scalar_expr =
                             static_cast<const expressions::scalar_expression_t*>(expr.get());
+                        std::string arith_error;
                         auto computed = operators::evaluate_arithmetic(
                             left_->output()->resource(),
                             scalar_expr->type(),
                             scalar_expr->params(),
                             chunk,
-                            pipeline_context->parameters);
+                            pipeline_context->parameters,
+                            &arith_error);
+                        if (!arith_error.empty()) {
+                            set_error(arith_error);
+                            return result;
+                        }
                         computed_vecs.emplace_back(std::move(computed));
                     }
                 }

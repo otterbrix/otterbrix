@@ -55,32 +55,28 @@ namespace components::vector {
         }
     } // namespace detail
 
-    // Safe divides that returns 0 on division by zero
+    // Division: caller must check for zero and set validity invalid.
+    // This functor performs the operation without zero-checking.
     template<typename T = void>
-    struct safe_divides;
+    struct checked_divides;
     template<>
-    struct safe_divides<void> {
+    struct checked_divides<void> {
         template<typename L, typename R>
         constexpr auto operator()(L a, R b) const {
             using result_t = detail::safe_result_t<L, R>;
-            if (detail::is_zero(b)) {
-                return detail::to_result<result_t>(0);
-            }
             return static_cast<result_t>(detail::to_result<result_t>(a) / detail::to_result<result_t>(b));
         }
     };
 
-    // Safe modulus that handles floating-point via fmod and int128
+    // Modulus: caller must check for zero and set validity invalid.
+    // Handles floating-point via fmod and int128.
     template<typename T = void>
-    struct safe_modulus;
+    struct checked_modulus;
     template<>
-    struct safe_modulus<void> {
+    struct checked_modulus<void> {
         template<typename L, typename R>
         constexpr auto operator()(L a, R b) const {
             using result_t = detail::safe_result_t<L, R>;
-            if (detail::is_zero(b)) {
-                return detail::to_result<result_t>(0);
-            }
             if constexpr (std::is_floating_point_v<result_t>) {
                 return static_cast<result_t>(
                     std::fmod(detail::to_result<result_t>(a), detail::to_result<result_t>(b)));

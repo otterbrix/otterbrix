@@ -324,6 +324,11 @@ namespace services::collection::executor {
             // Execute the plan tree (scan operators send I/O requests and enter waiting state)
             plan->on_execute(&pipeline_context);
 
+            if (plan->has_error()) {
+                cursor = make_cursor(resource(), error_code_t::other_error, plan->error_message());
+                break;
+            }
+
             // Await all waiting operators (multiple scans in a join, etc.)
             while (!plan->is_executed()) {
                 auto waiting_op = plan->find_waiting_operator();

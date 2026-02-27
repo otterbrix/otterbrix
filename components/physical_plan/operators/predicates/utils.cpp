@@ -11,42 +11,39 @@ namespace components::operators::predicates::impl {
                                                 const logical_plan::storage_parameters* parameters);
 
     value_getter create_value_getter(const expressions::key_t& key) {
-        // When path is empty, look up column by alias name
-        if (key.path().empty()) {
-            auto name = key.as_string();
+        if (!key.path().empty()) {
             if (key.side() == expressions::side_t::right) {
-                return [name](const vector::data_chunk_t&,
-                              const vector::data_chunk_t& chunk_right,
-                              size_t,
-                              size_t index_right) -> types::logical_value_t {
-                    auto col_idx = chunk_right.column_index(name);
-                    return chunk_right.data[col_idx].value(index_right);
+                return [path = key.path()](const vector::data_chunk_t&,
+                                           const vector::data_chunk_t& chunk_right,
+                                           size_t,
+                                           size_t index_right) -> types::logical_value_t {
+                    return chunk_right.at(path)->value(index_right);
                 };
             } else {
-                // left or undefined — default to left chunk
-                return [name](const vector::data_chunk_t& chunk_left,
-                              const vector::data_chunk_t&,
-                              size_t index_left,
-                              size_t) -> types::logical_value_t {
-                    auto col_idx = chunk_left.column_index(name);
-                    return chunk_left.data[col_idx].value(index_left);
+                return [path = key.path()](const vector::data_chunk_t& chunk_left,
+                                           const vector::data_chunk_t&,
+                                           size_t index_left,
+                                           size_t) -> types::logical_value_t {
+                    return chunk_left.at(path)->value(index_left);
                 };
             }
         }
-        // Path-based lookup (original behavior)
+        auto name = key.as_string();
         if (key.side() == expressions::side_t::right) {
-            return [path = key.path()](const vector::data_chunk_t&,
-                                       const vector::data_chunk_t& chunk_right,
-                                       size_t,
-                                       size_t index_right) -> types::logical_value_t {
-                return chunk_right.at(path)->value(index_right);
+            return [name](const vector::data_chunk_t&,
+                          const vector::data_chunk_t& chunk_right,
+                          size_t,
+                          size_t index_right) -> types::logical_value_t {
+                auto col_idx = chunk_right.column_index(name);
+                return chunk_right.data[col_idx].value(index_right);
             };
         } else {
-            return [path = key.path()](const vector::data_chunk_t& chunk_left,
-                                       const vector::data_chunk_t&,
-                                       size_t index_left,
-                                       size_t) -> types::logical_value_t {
-                return chunk_left.at(path)->value(index_left);
+            return [name](const vector::data_chunk_t& chunk_left,
+                          const vector::data_chunk_t&,
+                          size_t index_left,
+                          size_t) -> types::logical_value_t {
+                auto col_idx = chunk_left.column_index(name);
+                return chunk_left.data[col_idx].value(index_left);
             };
         }
     }

@@ -66,10 +66,6 @@ namespace components::vector {
         data[col_idx].set_value(index, val);
     }
 
-    void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, types::logical_value_t&& val) {
-        data[col_idx].set_value(index, std::move(val));
-    }
-
     void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_indices,
                                  uint64_t index,
                                  const types::logical_value_t& val) {

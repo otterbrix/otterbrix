@@ -31,12 +31,23 @@ namespace components::operators {
             state_ = operator_state::running;
             if (left_) {
                 left_->on_execute(pipeline_context);
+                if (left_->has_error()) {
+                    error_message_ = left_->error_message();
+                    return;
+                }
             }
             if (right_ && is_success(left_)) {
                 right_->on_execute(pipeline_context);
+                if (right_->has_error()) {
+                    error_message_ = right_->error_message();
+                    return;
+                }
             }
             if (is_success(left_) && is_success(right_)) {
                 on_execute_impl(pipeline_context);
+                if (has_error()) {
+                    return;
+                }
                 if (!is_wait_sync_disk()) {
                     state_ = operator_state::executed;
                 }
@@ -103,6 +114,12 @@ namespace components::operators {
     }
 
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
+
+    void operator_t::set_error(const std::string& msg) { error_message_ = msg; }
+
+    bool operator_t::has_error() const noexcept { return !error_message_.empty(); }
+
+    const std::string& operator_t::error_message() const noexcept { return error_message_; }
 
     void operator_t::mark_executed() { state_ = operator_state::executed; }
 

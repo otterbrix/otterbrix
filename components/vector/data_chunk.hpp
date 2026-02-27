@@ -30,7 +30,6 @@ namespace components::vector {
         types::logical_value_t value(uint64_t col_idx, uint64_t index) const;
         types::logical_value_t value(const std::pmr::vector<size_t>& col_indices, uint64_t index) const;
         void set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val);
-        void set_value(uint64_t col_idx, uint64_t index, types::logical_value_t&& val);
         void set_value(const std::pmr::vector<size_t>& col_indices, uint64_t index, const types::logical_value_t& val);
 
         vector_t* at(const std::pmr::vector<size_t>& col_indices);

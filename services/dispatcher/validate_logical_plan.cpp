@@ -381,8 +381,34 @@ namespace services::dispatcher {
             return schema_result<named_schema>{named_schema(resource)};
         }
 
-        // Since we use some casts in physical plan, we can validate only expr key and side
-        // TODO: validate parameters
+        // Recursively validate keys inside scalar expression params
+        schema_result<named_schema> validate_scalar_params(
+            std::pmr::memory_resource* resource,
+            std::pmr::vector<param_storage>& params,
+            const named_schema& schema_left,
+            const named_schema& schema_right,
+            bool same_schema) {
+            for (auto& param : params) {
+                if (std::holds_alternative<components::expressions::key_t>(param)) {
+                    auto key_res = validate_key(resource,std::get<components::expressions::key_t>(param),schema_left, schema_right, same_schema);
+                    if (key_res.is_error()) {
+                        return schema_result<named_schema>(resource, key_res.error());
+                    }
+                } else if (std::holds_alternative<expression_ptr>(param)) {
+                    auto& sub = std::get<expression_ptr>(param);
+                    if (sub->group() == expression_group::scalar) {
+                        auto* scalar = static_cast<scalar_expression_t*>(sub.get());
+                        auto sub_res = validate_scalar_params(resource, scalar->params(),
+                                                              schema_left, schema_right, same_schema);
+                        if (sub_res.is_error()) {
+                            return sub_res;
+                        }
+                    }
+                }
+            }
+            return schema_result<named_schema>{named_schema(resource)};
+        }
+
         schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                     const catalog& catalog,
                                                     compare_expression_t* expr,
@@ -445,8 +471,14 @@ namespace services::dispatcher {
                             if (expr_res.is_error()) {
                                 return schema_result<named_schema>(resource, expr_res.error());
                             }
+                        } else if (sub_expr->group() == expression_group::scalar) {
+                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
+                            auto val_res = validate_scalar_params(resource, scalar->params(),
+                                                                  schema_left, schema_right, same_schema);
+                            if (val_res.is_error()) {
+                                return schema_result<named_schema>(resource, val_res.error());
+                            }
                         }
-                        // scalar expressions (arithmetic) — operands are params/keys, validated implicitly
                     }
                     // Validate right operand
                     if (std::holds_alternative<components::expressions::key_t>(expr->right())) {
@@ -473,8 +505,14 @@ namespace services::dispatcher {
                             if (expr_res.is_error()) {
                                 return schema_result<named_schema>(resource, expr_res.error());
                             }
+                        } else if (sub_expr->group() == expression_group::scalar) {
+                            auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
+                            auto val_res = validate_scalar_params(resource, scalar->params(),
+                                                                  schema_left, schema_right, same_schema);
+                            if (val_res.is_error()) {
+                                return schema_result<named_schema>(resource, val_res.error());
+                            }
                         }
-                        // scalar expressions (arithmetic) — operands are params/keys, validated implicitly
                     }
                     break;
                 }
@@ -1024,26 +1062,20 @@ namespace services::dispatcher {
                     }
                 }
                 if (node_sort) {
-                    // Try validating sort against output schema first,
-                    // then fall back to incoming schema (supports ORDER BY
-                    // on columns not in SELECT when there's no GROUP BY)
-                    auto res = impl::validate_schema(resource, node_sort, result);
-                    if (res.is_error() && !incoming_schema.empty()) {
-                        auto merged = result;
-                        for (const auto& s : incoming_schema) {
-                            bool found = false;
-                            for (const auto& r : merged) {
-                                if (r.type.alias() == s.type.alias()) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) {
-                                merged.emplace_back(s);
+                    auto merged = result;
+                    for (const auto& s : incoming_schema) {
+                        bool found = false;
+                        for (const auto& r : merged) {
+                            if (r.type.alias() == s.type.alias()) {
+                                found = true;
+                                break;
                             }
                         }
-                        res = impl::validate_schema(resource, node_sort, merged);
+                        if (!found) {
+                            merged.emplace_back(s);
+                        }
                     }
+                    auto res = impl::validate_schema(resource, node_sort, merged);
                     if (res.is_error()) {
                         return res;
                     }
@@ -1152,23 +1184,23 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
                     }
-                    // Allow partial inserts (fewer columns than table schema)
-                    if (table_schema.empty() || table_schema.size() == incoming_schema.value().size()) {
-                        for (size_t i = 0; i < table_schema.size(); i++) {
-                            // TODO: key translation and type compare, instead of names:
+                    if (!table_schema.empty()) {
+                        auto check_count = std::min(table_schema.size(), incoming_schema.value().size());
+                        for (size_t i = 0; i < check_count; i++) {
                             if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
                                 return schema_result<named_schema>{
                                     resource,
                                     components::cursor::error_t{error_code_t::schema_error,
-                                                                "insert_node: field name missmatch"}};
+                                                                "insert_node: field name mismatch"}};
                             }
                         }
-                    } else if (incoming_schema.value().size() > table_schema.size()) {
-                        return schema_result<named_schema>{
-                            resource,
-                            components::cursor::error_t{
-                                error_code_t::schema_error,
-                                "insert_node: number of data columns does not match the table one"}};
+                        if (incoming_schema.value().size() > table_schema.size()) {
+                            return schema_result<named_schema>{
+                                resource,
+                                components::cursor::error_t{
+                                    error_code_t::schema_error,
+                                    "insert_node: number of data columns exceeds the table schema"}};
+                        }
                     }
                 }
                 return schema_result{std::move(result)};

@@ -55,11 +55,10 @@ namespace components::operators {
 
             // Phase 1: Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
-                std::string arith_error;
-                auto result_vec = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters, &arith_error);
+                auto [result_vec, arith_error] = evaluate_arithmetic(
+                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
-                    set_error(arith_error);
+                    set_error(std::move(arith_error));
                     return;
                 }
                 result_vec.type().set_alias(std::string(comp.alias));
@@ -109,11 +108,10 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                std::string arith_error;
-                auto result_vec = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters, &arith_error);
+                auto [result_vec, arith_error] = evaluate_arithmetic(
+                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
-                    set_error(arith_error);
+                    set_error(std::move(arith_error));
                     return;
                 }
                 result_vec.type().set_alias(std::string(comp.alias));

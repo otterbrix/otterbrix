@@ -90,7 +90,7 @@ namespace components::operators {
         void take_output(ptr& src);
         void clear(); //todo: replace by copy
 
-        void set_error(const std::string& msg);
+        void set_error(std::string msg);
         bool has_error() const noexcept;
         const std::string& error_message() const noexcept;
 

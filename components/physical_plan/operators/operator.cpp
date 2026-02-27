@@ -115,7 +115,7 @@ namespace components::operators {
 
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
 
-    void operator_t::set_error(const std::string& msg) { error_message_ = msg; }
+    void operator_t::set_error(std::string msg) { error_message_ = std::move(msg); }
 
     bool operator_t::has_error() const noexcept { return !error_message_.empty(); }
 

@@ -50,24 +50,17 @@ namespace components::operators {
             return op == vector::arithmetic_op::divide || op == vector::arithmetic_op::mod;
         }
 
-        bool check_division_by_zero(vector::arithmetic_op op,
-                                     const detail::resolved_operand& /*left_op*/,
-                                     const detail::resolved_operand& right_op,
-                                     uint64_t count,
-                                     std::string* error) {
-            if (!is_div_or_mod(op) || !error) return false;
-            if (right_op.vec) {
-                if (vector_has_zero(*right_op.vec, count)) {
-                    *error = "division by zero";
-                    return true;
-                }
-            } else if (right_op.scalar) {
-                if (scalar_is_zero(*right_op.scalar)) {
-                    *error = "division by zero";
-                    return true;
-                }
+        std::string check_division_by_zero(vector::arithmetic_op op,
+                                           const detail::resolved_operand& right_op,
+                                           uint64_t count) {
+            if (!is_div_or_mod(op)) return {};
+            if (right_op.vec && vector_has_zero(*right_op.vec, count)) {
+                return "division by zero";
             }
-            return false;
+            if (right_op.scalar && scalar_is_zero(*right_op.scalar)) {
+                return "division by zero";
+            }
+            return {};
         }
 
     } // anonymous namespace
@@ -91,62 +84,55 @@ namespace components::operators {
             }
         }
 
-        resolved_operand resolve_operand(
+        std::pair<resolved_operand, std::string> resolve_operand(
             const expressions::param_storage& param,
             vector::data_chunk_t& chunk,
             const logical_plan::storage_parameters& params,
             std::pmr::memory_resource* resource,
-            std::deque<vector::vector_t>& temp_vecs,
-            std::string* error) {
+            std::deque<vector::vector_t>& temp_vecs) {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
-                // Try path-based lookup first (set during plan validation)
                 if (!key.path().empty()) {
                     result.vec = chunk.at(key.path());
-                    if (result.vec) return result;
+                    if (result.vec) return {result, {}};
                 }
-                // Fallback: search by alias (for computed columns added at runtime)
                 for (auto& vec : chunk.data) {
                     if (vec.type().alias() == key.as_string()) {
                         result.vec = &vec;
-                        return result;
+                        return {result, {}};
                     }
                 }
                 throw std::logic_error("Column not found in chunk: " + key.as_string());
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 result.scalar = params.parameters.at(id);
-                return result;
+                return {result, {}};
             } else {
-                // expression_ptr → recursive evaluation
                 const auto& expr_ptr = std::get<expressions::expression_ptr>(param);
                 if (expr_ptr->group() == expressions::expression_group::scalar) {
                     auto* scalar_expr =
                         static_cast<const expressions::scalar_expression_t*>(expr_ptr.get());
 
                     if (scalar_expr->type() == expressions::scalar_type::case_expr) {
-                        // CASE sub-expression: evaluate per-row
                         auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params);
                         temp_vecs.emplace_back(std::move(computed));
                         result.vec = &temp_vecs.back();
-                        return result;
+                        return {result, {}};
                     }
 
-                    // Arithmetic sub-expression
                     auto op = scalar_to_arithmetic_op(scalar_expr->type());
                     auto& operands = scalar_expr->params();
 
                     std::deque<vector::vector_t> sub_temps;
-                    auto left_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, error);
-                    if (error && !error->empty()) return result;
-                    auto right_op = resolve_operand(operands[1], chunk, params, resource, sub_temps, error);
-                    if (error && !error->empty()) return result;
+                    auto [left_op, left_err] = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                    if (!left_err.empty()) return {result, std::move(left_err)};
+                    auto [right_op, right_err] = resolve_operand(operands[1], chunk, params, resource, sub_temps);
+                    if (!right_err.empty()) return {result, std::move(right_err)};
                     uint64_t count = chunk.size();
 
-                    if (check_division_by_zero(op, left_op, right_op, count, error)) {
-                        return result;
-                    }
+                    auto div_err = check_division_by_zero(op, right_op, count);
+                    if (!div_err.empty()) return {result, std::move(div_err)};
 
                     vector::vector_t computed(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
                     if (left_op.vec && right_op.vec) {
@@ -158,7 +144,6 @@ namespace components::operators {
                         computed =
                             vector::compute_scalar_vector_arithmetic(resource, op, *left_op.scalar, *right_op.vec, count);
                     } else {
-                        // scalar-scalar
                         auto lval = *left_op.scalar;
                         auto rval = *right_op.scalar;
                         types::logical_value_t result_val(resource, types::logical_type::NA);
@@ -187,13 +172,12 @@ namespace components::operators {
                             computed.set_value(i, result_val);
                         }
                     }
-                    // Move sub_temps into parent temp_vecs to keep them alive
                     for (auto& t : sub_temps) {
                         temp_vecs.emplace_back(std::move(t));
                     }
                     temp_vecs.emplace_back(std::move(computed));
                     result.vec = &temp_vecs.back();
-                    return result;
+                    return {result, {}};
                 }
                 throw std::logic_error("Unsupported expression type in arithmetic operand");
             }
@@ -351,43 +335,38 @@ namespace components::operators {
 
     } // namespace detail
 
-    vector::vector_t evaluate_arithmetic(std::pmr::memory_resource* resource,
-                                         expressions::scalar_type op,
-                                         const std::pmr::vector<expressions::param_storage>& operands,
-                                         vector::data_chunk_t& chunk,
-                                         const logical_plan::storage_parameters& params,
-                                         std::string* error) {
-        // CASE expression: per-row evaluation
+    std::pair<vector::vector_t, std::string> evaluate_arithmetic(
+        std::pmr::memory_resource* resource,
+        expressions::scalar_type op,
+        const std::pmr::vector<expressions::param_storage>& operands,
+        vector::data_chunk_t& chunk,
+        const logical_plan::storage_parameters& params) {
+        vector::vector_t dummy(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
+
         if (op == expressions::scalar_type::case_expr) {
-            return detail::evaluate_case_expr(resource, operands, chunk, params);
+            return {detail::evaluate_case_expr(resource, operands, chunk, params), {}};
         }
 
         std::deque<vector::vector_t> temp_vecs;
 
-        auto left_op = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs, error);
-        if (error && !error->empty()) {
-            return vector::vector_t(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
-        }
-        auto right_op = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs, error);
-        if (error && !error->empty()) {
-            return vector::vector_t(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
-        }
+        auto [left_op, left_err] = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+        if (!left_err.empty()) return {std::move(dummy), std::move(left_err)};
+        auto [right_op, right_err] = detail::resolve_operand(operands[1], chunk, params, resource, temp_vecs);
+        if (!right_err.empty()) return {std::move(dummy), std::move(right_err)};
 
         uint64_t count = chunk.size();
         auto arith_op = detail::scalar_to_arithmetic_op(op);
 
-        if (check_division_by_zero(arith_op, left_op, right_op, count, error)) {
-            return vector::vector_t(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
-        }
+        auto div_err = check_division_by_zero(arith_op, right_op, count);
+        if (!div_err.empty()) return {std::move(dummy), std::move(div_err)};
 
         if (left_op.vec && right_op.vec) {
-            return vector::compute_binary_arithmetic(resource, arith_op, *left_op.vec, *right_op.vec, count);
+            return {vector::compute_binary_arithmetic(resource, arith_op, *left_op.vec, *right_op.vec, count), {}};
         } else if (left_op.vec && right_op.scalar) {
-            return vector::compute_vector_scalar_arithmetic(resource, arith_op, *left_op.vec, *right_op.scalar, count);
+            return {vector::compute_vector_scalar_arithmetic(resource, arith_op, *left_op.vec, *right_op.scalar, count), {}};
         } else if (left_op.scalar && right_op.vec) {
-            return vector::compute_scalar_vector_arithmetic(resource, arith_op, *left_op.scalar, *right_op.vec, count);
+            return {vector::compute_scalar_vector_arithmetic(resource, arith_op, *left_op.scalar, *right_op.vec, count), {}};
         } else {
-            // scalar-scalar
             auto lval = *left_op.scalar;
             auto rval = *right_op.scalar;
             types::logical_value_t result_val(resource, types::logical_type::NA);
@@ -415,7 +394,7 @@ namespace components::operators {
             for (uint64_t i = 0; i < out_count; i++) {
                 output.set_value(i, result_val);
             }
-            return output;
+            return {std::move(output), {}};
         }
     }
 

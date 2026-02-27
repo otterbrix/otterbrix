@@ -17,13 +17,12 @@ namespace components::operators {
             std::optional<types::logical_value_t> scalar;
         };
 
-        resolved_operand resolve_operand(
+        std::pair<resolved_operand, std::string> resolve_operand(
             const expressions::param_storage& param,
             vector::data_chunk_t& chunk,
             const logical_plan::storage_parameters& params,
             std::pmr::memory_resource* resource,
-            std::deque<vector::vector_t>& temp_vecs,
-            std::string* error = nullptr);
+            std::deque<vector::vector_t>& temp_vecs);
 
         // Resolve a param_storage to logical_value_t for a specific row
         types::logical_value_t resolve_row_value(
@@ -51,12 +50,12 @@ namespace components::operators {
     } // namespace detail
 
     // Evaluate an arithmetic expression (or CASE) on a data chunk.
-    // Returns the result vector. On division by zero, sets *error (if non-null) and returns dummy vector.
-    vector::vector_t evaluate_arithmetic(std::pmr::memory_resource* resource,
-                                         expressions::scalar_type op,
-                                         const std::pmr::vector<expressions::param_storage>& operands,
-                                         vector::data_chunk_t& chunk,
-                                         const logical_plan::storage_parameters& params,
-                                         std::string* error = nullptr);
+    // Returns {result_vector, error_message}. Empty error = success.
+    std::pair<vector::vector_t, std::string> evaluate_arithmetic(
+        std::pmr::memory_resource* resource,
+        expressions::scalar_type op,
+        const std::pmr::vector<expressions::param_storage>& operands,
+        vector::data_chunk_t& chunk,
+        const logical_plan::storage_parameters& params);
 
 } // namespace components::operators

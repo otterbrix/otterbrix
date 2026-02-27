@@ -16,9 +16,22 @@ namespace components::vector {
             }
         }
 
-        // Common result type that avoids sign-promotion issues with int128
+        // Widen small integer types to avoid sign-promotion warnings with int128
+        template<typename T>
+        constexpr auto widen(T val) {
+            if constexpr (std::is_same_v<T, bool> ||
+                          (std::is_integral_v<T> && sizeof(T) < sizeof(int))) {
+                if constexpr (std::is_unsigned_v<T>)
+                    return static_cast<uint64_t>(val);
+                else
+                    return static_cast<int64_t>(val);
+            } else {
+                return val;
+            }
+        }
+
         template<typename L, typename R>
-        using safe_result_t = decltype(static_cast<L>(0) + static_cast<R>(0));
+        using safe_result_t = decltype(widen(std::declval<L>()) + widen(std::declval<R>()));
     } // namespace detail
 
     // Safe divides that returns 0 on division by zero
@@ -32,7 +45,7 @@ namespace components::vector {
             if (detail::is_zero(b)) {
                 return static_cast<result_t>(0);
             }
-            return static_cast<result_t>(static_cast<result_t>(a) / static_cast<result_t>(b));
+            return static_cast<result_t>(detail::widen(a) / detail::widen(b));
         }
     };
 
@@ -48,9 +61,9 @@ namespace components::vector {
                 return static_cast<result_t>(0);
             }
             if constexpr (std::is_floating_point_v<result_t>) {
-                return static_cast<result_t>(std::fmod(static_cast<result_t>(a), static_cast<result_t>(b)));
+                return static_cast<result_t>(std::fmod(detail::widen(a), detail::widen(b)));
             } else {
-                return static_cast<result_t>(static_cast<result_t>(a) % static_cast<result_t>(b));
+                return static_cast<result_t>(detail::widen(a) % detail::widen(b));
             }
         }
     };

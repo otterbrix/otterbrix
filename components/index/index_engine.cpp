@@ -157,6 +157,14 @@ namespace components::index {
         }
     }
 
+    auto index_engine_t::all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t> {
+        std::pmr::vector<keys_base_storage_t> result(resource_);
+        for (const auto& [keys, _] : mapper_) {
+            result.push_back(keys);
+        }
+        return result;
+    }
+
     auto index_engine_t::indexes() -> std::vector<std::string> {
         std::vector<std::string> res;
         res.reserve(storage_.size());

@@ -3,6 +3,7 @@
 #include <components/catalog/table_metadata.hpp>
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -27,10 +28,12 @@ namespace services::collection::executor {
         std::stack<components::operators::operator_ptr> sub_plans;
         components::logical_plan::storage_parameters parameters;
         services::context_storage_t context_storage_;
+        components::logical_plan::limit_t limit;
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                         components::logical_plan::storage_parameters parameters,
-                        services::context_storage_t&& context_storage);
+                        services::context_storage_t&& context_storage,
+                        components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
     };
     using plan_storage_t = core::pmr::btree::btree_t<components::session::session_id_t, plan_t>;
 

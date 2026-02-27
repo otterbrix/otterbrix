@@ -104,6 +104,7 @@ namespace components::vector {
 
         vector_type get_vector_type() const noexcept { return vector_type_; }
         const types::complex_logical_type& type() const noexcept { return type_; }
+        types::complex_logical_type& type() noexcept { return type_; }
         std::byte* data() noexcept { return data_; }
         const std::byte* data() const noexcept { return data_; }
         void set_data(std::byte* data) noexcept { data_ = data; }
@@ -138,6 +139,7 @@ namespace components::vector {
 
         void push_back(types::logical_value_t logical_value);
         void set_value(uint64_t index, const types::logical_value_t& val);
+        void set_value(uint64_t index, types::logical_value_t&& val);
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }
 

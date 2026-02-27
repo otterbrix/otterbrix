@@ -17,7 +17,7 @@ namespace components::operators {
         void add(const std::vector<size_t>& indices, order order_ = order::ascending);
 
     private:
-        sort::sorter_t sorter_;
+        sort::columnar_sorter_t sorter_;
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };

@@ -16,7 +16,7 @@ components::types::logical_value_t to_value(std::pmr::memory_resource* resource,
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list;
 
-auto to_sorter(const py::handle& sort_dict) -> components::sort::sorter_t;
+auto to_sorter(const py::handle& sort_dict) -> components::sort::columnar_sorter_t;
 auto to_order(const py::object& order) -> components::sort::order;
 
 auto to_statement(std::pmr::memory_resource* resource,

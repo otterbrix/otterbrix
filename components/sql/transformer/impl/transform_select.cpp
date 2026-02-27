@@ -122,7 +122,7 @@ namespace components::sql::transform {
         }
 
         auto group = logical_plan::make_node_group(resource_, agg->collection_full_name());
-        // fields
+        // fields — collect expressions into group
         {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
@@ -141,6 +141,15 @@ namespace components::sql::transform {
                                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_value), names);
                                 key.deduce_side(names);
                                 args.emplace_back(std::move(key.field));
+                            } else if (nodeTag(arg_value) == T_A_Expr) {
+                                auto sub = pg_ptr_cast<A_Expr>(arg_value);
+                                if (sub->kind == AEXPR_OP &&
+                                    is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
+                                    args.emplace_back(
+                                        transform_a_expr_arithmetic(sub, names, params));
+                                } else {
+                                    args.emplace_back(add_param_value(arg_value, params));
+                                }
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }
@@ -197,6 +206,18 @@ namespace components::sql::transform {
                         group->append_expression(expr);
                         break;
                     }
+                    case T_A_Expr: {
+                        auto a_expr = pg_ptr_cast<A_Expr>(res->val);
+                        if (a_expr->kind == AEXPR_OP) {
+                            auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
+                            if (is_arithmetic_operator(op_str)) {
+                                logical_plan::node_ptr group_node = group;
+                                transform_select_a_expr(a_expr, res->name, names, params, group_node);
+                                break;
+                            }
+                        }
+                        throw std::runtime_error("Unknown A_Expr kind in field clause");
+                    }
                     case T_A_Indirection: {
                         std::pmr::vector<std::pmr::string> path;
                         A_Indirection* indirection = pg_ptr_cast<A_Indirection>(res->val);
@@ -236,6 +257,12 @@ namespace components::sql::transform {
                                                                         expressions::key_t{std::move(path)}));
                         break;
                     }
+                    case T_CaseExpr: {
+                        auto case_node = pg_ptr_cast<CaseExpr>(res->val);
+                        logical_plan::node_ptr group_node = group;
+                        transform_select_case_expr(case_node, res->name, names, params, group_node);
+                        break;
+                    }
                     default:
                         throw std::runtime_error("Unknown node type in field clause: " +
                                                  node_tag_to_string(nodeTag(res->val)));
@@ -272,8 +299,21 @@ namespace components::sql::transform {
             }
         }
 
+        // having
+        expression_ptr having_expr;
+        if (node.havingClause) {
+            having_expr = transform_having_expr(node.havingClause, names, params, group);
+        }
+
         if (!group->expressions().empty()) {
-            agg->append_child(group);
+            if (having_expr) {
+                // Recreate group with HAVING through constructor
+                auto final_group = logical_plan::make_node_group(
+                    resource_, agg->collection_full_name(), group->expressions(), std::move(having_expr));
+                agg->append_child(final_group);
+            } else {
+                agg->append_child(group);
+            }
         }
 
         // order by
@@ -285,9 +325,18 @@ namespace components::sql::transform {
                 column_ref_t field(resource_);
                 if (nodeTag(sortby->node) == T_ColumnRef) {
                     field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
-                } else {
-                    assert(nodeTag(sortby->node) == T_A_Indirection);
+                } else if (nodeTag(sortby->node) == T_A_Indirection) {
                     field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                } else if (nodeTag(sortby->node) == T_A_Expr) {
+                    // Arithmetic in ORDER BY: create computed alias, add to group, sort by alias
+                    auto a_expr = pg_ptr_cast<A_Expr>(sortby->node);
+                    std::string sort_alias = "__sort_expr_" + std::to_string(aggregate_counter_++);
+                    logical_plan::node_ptr group_node = group;
+                    transform_select_a_expr(a_expr, sort_alias.c_str(), names, params, group_node);
+                    field.field = expressions::key_t{resource_, sort_alias};
+                } else {
+                    throw std::runtime_error("Unknown node type in ORDER BY: " +
+                                             node_tag_to_string(nodeTag(sortby->node)));
                 }
                 expressions.emplace_back(
                     make_sort_expression(field.field,

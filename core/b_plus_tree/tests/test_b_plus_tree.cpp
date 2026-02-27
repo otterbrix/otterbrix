@@ -4,11 +4,25 @@
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/file/file_system.hpp>
 #include <cstdint>
+#include <cstring>
 #include <thread>
 
 #if defined(__linux__)
 #include <unistd.h>
 #endif
+
+namespace {
+    template<typename T>
+    T read_unaligned(const void* ptr) {
+        T val;
+        std::memcpy(&val, ptr, sizeof(val));
+        return val;
+    }
+    template<typename T>
+    void write_unaligned(void* ptr, T val) {
+        std::memcpy(ptr, &val, sizeof(val));
+    }
+} // namespace
 
 // TODO: separate functional tests and high load ones.
 // Stress tests in main test in main procedure are not stressing enough or slow down everything else way to much
@@ -73,7 +87,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
     }
 
     auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-        return block_t::index_t(*reinterpret_cast<uint32_t*>(data.data));
+        return block_t::index_t(read_unaligned<uint32_t>(data.data));
     };
 
     INFO("test unique ids") {
@@ -234,7 +248,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
         size_t duplicate_count = 4;
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint32_t*>(data.data));
+            return block_t::index_t(read_unaligned<uint32_t>(data.data));
         };
 
         std::vector<std::string> test_data;
@@ -273,7 +287,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
                                std::memcmp(it->item.data, item.data(), it->item.size) == 0;
                     });
                     REQUIRE(test_item != test_data.end());
-                    REQUIRE(block_t::index_t(*reinterpret_cast<uint32_t*>(test_item->data())) == it->index);
+                    REQUIRE(block_t::index_t(read_unaligned<uint32_t>(test_item->data())) == it->index);
                     REQUIRE(std::memcmp(it->item.data, (*test_item).data(), it->item.size) == 0);
                 }
                 for (auto it = test_block->rbegin(); it != test_block->rend(); ++it) {
@@ -282,7 +296,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
                                std::memcmp(it->item.data, item.data(), it->item.size) == 0;
                     });
                     REQUIRE(test_item != test_data.end());
-                    REQUIRE(block_t::index_t(*reinterpret_cast<uint32_t*>(test_item->data())) == it->index);
+                    REQUIRE(block_t::index_t(read_unaligned<uint32_t>(test_item->data())) == it->index);
                     REQUIRE(std::memcmp(it->item.data, (*test_item).data(), it->item.size) == 0);
                 }
             }
@@ -395,19 +409,21 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
         for (uint64_t i = 0; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32;
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         segment_tree_t tree(&resource, key_getter, std::move(handle));
@@ -416,7 +432,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 0);
 
         for (uint64_t i = 0; i < 500; i++) {
-            tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)));
+            tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)));
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
             REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
@@ -428,11 +444,11 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             for (auto block = tree.begin(); block != tree.end(); block++) {
                 for (auto it = block->begin(); it != block->end(); it++) {
                     auto test_item = std::find_if(test_data.begin(), test_data.end(), [it](const auto& item) {
-                        return *reinterpret_cast<uint64_t*>(item.buffer) ==
+                        return read_unaligned<uint64_t>(item.buffer) ==
                                (*it).index.value<components::types::physical_type::UINT64>();
                     });
                     REQUIRE((*it).index.value<components::types::physical_type::UINT64>() ==
-                            *reinterpret_cast<uint64_t*>(test_item->buffer));
+                            read_unaligned<uint64_t>(test_item->buffer));
                     REQUIRE(test_item->size == (*it).item.size);
                     REQUIRE(memcmp(test_item->buffer, (*it).item.data, (*it).item.size) == 0);
                     j++;
@@ -442,21 +458,21 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             for (auto block = tree.rbegin(); block != tree.rend(); block++) {
                 for (auto it = block->rbegin(); it != block->rend(); it++) {
                     auto test_item = std::find_if(test_data.begin(), test_data.end(), [it](const auto& item) {
-                        return *reinterpret_cast<uint64_t*>(item.buffer) ==
+                        return read_unaligned<uint64_t>(item.buffer) ==
                                (*it).index.value<components::types::physical_type::UINT64>();
                     });
                     REQUIRE((*it).index.value<components::types::physical_type::UINT64>() ==
-                            *reinterpret_cast<uint64_t*>(test_item->buffer));
+                            read_unaligned<uint64_t>(test_item->buffer));
                     REQUIRE(test_item->size == (*it).item.size);
                     REQUIRE(memcmp(test_item->buffer, (*it).item.data, (*it).item.size) == 0);
                     j++;
                 }
             }
-            REQUIRE(tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
         }
 
         for (uint64_t i = 0; i < 500; i++) {
-            auto item = tree.get_item(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)), 0);
+            auto item = tree.get_item(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)), 0);
             REQUIRE(test_data[i].size == item.size);
             REQUIRE(memcmp(test_data[i].buffer, item.data, item.size) == 0);
         }
@@ -471,10 +487,10 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         for (uint64_t i = 0; i < 500; i++) {
             REQUIRE(tree.count() == 500 - i);
             REQUIRE(tree.unique_indices_count() == 500 - i);
-            REQUIRE(tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE(tree.remove_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE(tree.remove_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == 500 - i - 1);
             REQUIRE(tree.unique_indices_count() == 500 - i - 1);
         }
@@ -486,7 +502,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.unique_indices_count() == 500);
 
         for (uint64_t i = 0; i < 500; i++) {
-            auto item = tree.get_item(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)), 0);
+            auto item = tree.get_item(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)), 0);
             REQUIRE(test_data[i].size == item.size);
             REQUIRE(memcmp(test_data[i].buffer, item.data, item.size) == 0);
         }
@@ -545,7 +561,9 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         std::vector<dummy_alloc> test_data;
@@ -553,14 +571,14 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
         for (uint64_t i = 1; i < 500; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
 
@@ -571,17 +589,17 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 
         for (uint64_t i = 0; i < 500; i++) {
             REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
             REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
             REQUIRE(tree.count() == i + 1);
             REQUIRE(tree.unique_indices_count() == i + 1);
-            REQUIRE(tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
         }
 
         for (uint64_t i = 0; i < 500; i++) {
-            auto item = tree.get_item(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)), 0);
+            auto item = tree.get_item(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)), 0);
             REQUIRE(test_data[i].size == item.size);
             REQUIRE(memcmp(test_data[i].buffer, item.data, item.size) == 0);
         }
@@ -598,10 +616,10 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         for (uint64_t i = 0; i < 500; i++) {
             REQUIRE(tree.count() == 500 - i);
             REQUIRE(tree.unique_indices_count() == 500 - i);
-            REQUIRE(tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE(tree.remove_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE(tree.remove_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == 500 - i - 1);
             REQUIRE(tree.unique_indices_count() == 500 - i - 1);
         }
@@ -613,7 +631,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.unique_indices_count() == 500);
 
         for (uint64_t i = 0; i < 500; i++) {
-            auto item = tree.get_item(segment_tree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)), 0);
+            auto item = tree.get_item(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)), 0);
             REQUIRE(test_data[i].size == item.size);
             REQUIRE(memcmp(test_data[i].buffer, item.data, item.size) == 0);
         }
@@ -675,7 +693,9 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         segment_tree_t tree(&resource, key_getter, std::move(handle));
@@ -734,7 +754,9 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         segment_tree_t tree(&limited_resource, key_getter, std::move(handle));
@@ -861,7 +883,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         constexpr size_t test_size = 500;
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         std::vector<dummy_alloc> test_data;
@@ -870,25 +894,25 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
         for (uint64_t i = 1; i < test_size; i += 2) {
             dummy_alloc dummy;
             dummy.size = DEFAULT_BLOCK_SIZE / 32 * ((i % 50) + 1);
             dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
-            *reinterpret_cast<uint64_t*>(dummy.buffer) = i;
+            write_unaligned<uint64_t>(dummy.buffer, i);
             test_data.push_back(dummy);
         }
 
         btree_t tree(&resource, fs, dname, key_getter, 12);
 
         for (uint64_t i = 0; i < test_size; i++) {
-            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.append({test_data[i].buffer, test_data[i].size}));
             REQUIRE(tree.unique_indices_count() == i + 1);
-            REQUIRE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            auto item = tree.get_item(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer)), 0);
+            REQUIRE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            auto item = tree.get_item(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer)), 0);
             REQUIRE(test_data[i].size == item.size);
             REQUIRE(memcmp(test_data[i].buffer, item.data, item.size) == 0);
         }
@@ -907,7 +931,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             auto index = key_getter(
                 {static_cast<data_ptr_t>(scan_result[j].data()), static_cast<uint32_t>(scan_result[j].size())});
             auto dummy = std::find_if(test_data.begin(), test_data.end(), [&index](const dummy_alloc& dummy) {
-                return *reinterpret_cast<uint64_t*>(dummy.buffer) ==
+                return read_unaligned<uint64_t>(dummy.buffer) ==
                        index.value<components::types::physical_type::UINT64>();
             });
             REQUIRE(dummy != test_data.end());
@@ -926,7 +950,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             auto index = key_getter(
                 {static_cast<data_ptr_t>(scan_result[j].data()), static_cast<uint32_t>(scan_result[j].size())});
             auto dummy = std::find_if(test_data.begin(), test_data.end(), [&index](const dummy_alloc& dummy) {
-                return *reinterpret_cast<uint64_t*>(dummy.buffer) ==
+                return read_unaligned<uint64_t>(dummy.buffer) ==
                        index.value<components::types::physical_type::UINT64>();
             });
             REQUIRE(dummy != test_data.end());
@@ -941,9 +965,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         for (uint64_t i = 0; i < test_size; i++) {
             REQUIRE(tree.size() == test_size - i);
             REQUIRE(tree.unique_indices_count() == test_size - i);
-            REQUIRE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE(tree.remove_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE(tree.remove_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.size() == test_size - i - 1);
             REQUIRE(tree.unique_indices_count() == test_size - i - 1);
         }
@@ -955,9 +979,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         for (uint64_t i = 0; i < test_size; i++) {
             REQUIRE(tree.size() == test_size - i);
             REQUIRE(tree.unique_indices_count() == test_size - i);
-            REQUIRE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE(tree.remove_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
-            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(*reinterpret_cast<uint64_t*>(test_data[i].buffer))));
+            REQUIRE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE(tree.remove_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(btree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.size() == test_size - i - 1);
             REQUIRE(tree.unique_indices_count() == test_size - i - 1);
         }
@@ -973,7 +997,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         dname /= "btree_test1";
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         btree_t tree(&resource, fs, dname, key_getter, 2048);
@@ -992,7 +1018,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         REQUIRE(tree.size() == key_num);
         for (uint64_t i = 0; i < key_num; i++) {
             REQUIRE(tree.contains_index(btree_t::index_t(i)));
-            REQUIRE(*reinterpret_cast<uint64_t*>(tree.get_item(btree_t::index_t(i), 0).data) == i);
+            REQUIRE(read_unaligned<uint64_t>(tree.get_item(btree_t::index_t(i), 0).data) == i);
         }
         REQUIRE(tree.size() == key_num);
         for (uint64_t i = 0; i < key_num; i++) {
@@ -1009,7 +1035,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         dname /= "btree_test2";
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
         btree_t tree(&resource, fs, dname, key_getter, 2048);
 
@@ -1044,7 +1072,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
 
                 results[i] = item.data != nullptr;
                 results[i] &= item.size == sizeof(uint64_t);
-                results[i] &= *reinterpret_cast<uint64_t*>(item.data) == keys.at(i);
+                results[i] &= read_unaligned<uint64_t>(item.data) == keys.at(i);
             }
         };
 
@@ -1084,7 +1112,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
                                           std::numeric_limits<btree_t::index_t>::max(),
                                           key_num * 2,
                                           &scan_result,
-                                          [](void* buffer, size_t) { return *reinterpret_cast<uint64_t*>(buffer); });
+                                          [](void* buffer, size_t) { return read_unaligned<uint64_t>(buffer); });
             REQUIRE(scan_result.size() == key_num);
             for (uint64_t i = 0; i < key_num; i++) {
                 REQUIRE(i == scan_result[i]);
@@ -1127,7 +1155,9 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         dname /= "btree_test3";
 
         auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
-            return block_t::index_t(*reinterpret_cast<uint64_t*>(data.data));
+            uint64_t val;
+            std::memcpy(&val, data.data, sizeof(val));
+            return block_t::index_t(val);
         };
 
         btree_t tree(&resource, fs, dname, key_getter, 128);

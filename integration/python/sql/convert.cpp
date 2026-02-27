@@ -49,8 +49,8 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
     return res;
 }
 
-auto to_sorter(const py::handle& sort_dict) -> components::sort::sorter_t {
-    components::sort::sorter_t sorter;
+auto to_sorter(const py::handle& sort_dict) -> components::sort::columnar_sorter_t {
+    components::sort::columnar_sorter_t sorter;
     for (const py::handle key : sort_dict) {
         sorter.add(py::str(key).cast<std::string>(), to_order(sort_dict[key]));
     }

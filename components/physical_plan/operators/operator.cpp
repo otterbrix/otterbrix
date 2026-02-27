@@ -102,6 +102,8 @@ namespace components::operators {
         right_ = std::move(right);
     }
 
+    void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
+
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
 
     void operator_t::mark_executed() { state_ = operator_state::executed; }

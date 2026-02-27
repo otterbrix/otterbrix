@@ -6,11 +6,11 @@ namespace components::sort {
     columnar_sorter_t::columnar_sorter_t(const std::string& key, order order_) { add(key, order_); }
 
     void columnar_sorter_t::add(size_t index, order order_) {
-        keys_.push_back({{index}, {}, order_, false, true});
+        keys_.push_back({{index}, {}, order_, false});
     }
 
     void columnar_sorter_t::add(const std::string& key, order order_) {
-        keys_.push_back({{}, key, order_, true, false});
+        keys_.push_back({{0}, key, order_, true});
     }
 
     void columnar_sorter_t::set_chunk(const vector::data_chunk_t& chunk) {
@@ -35,15 +35,16 @@ namespace components::sort {
                 }
             }
             // Try top-level alias match first (works for both simple and flattened columns)
+            bool found = false;
             for (size_t c = 0; c < chunk.column_count(); c++) {
                 if (chunk.data[c].type().has_alias() && chunk.data[c].type().alias() == k.col_name) {
                     k.col_path = {c};
-                    k.resolved = true;
+                    found = true;
                     break;
                 }
             }
             // For multi-part paths, try nested resolution if top-level didn't match
-            if (!k.resolved && parts.size() > 1) {
+            if (!found && parts.size() > 1) {
                 // Check that the root column exists before calling sub_column_indices
                 bool root_exists = false;
                 for (size_t c = 0; c < chunk.column_count(); c++) {
@@ -62,10 +63,10 @@ namespace components::sort {
                     auto indices = chunk.sub_column_indices(pmr_parts);
                     if (!indices.empty() && indices.front() != std::numeric_limits<size_t>::max()) {
                         k.col_path.assign(indices.begin(), indices.end());
-                        k.resolved = true;
                     }
                 }
             }
+            // If not found, col_path stays at default {0} — sort by first column
         }
     }
 

@@ -15,11 +15,10 @@ namespace components::sort {
 
     class columnar_sorter_t {
         struct sort_key {
-            std::vector<size_t> col_path;
+            std::vector<size_t> col_path{0};
             std::string col_name;
             order order_ = order::ascending;
             bool by_name = false;
-            bool resolved = false;
         };
 
     public:
@@ -34,9 +33,6 @@ namespace components::sort {
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                if (!k.resolved) {
-                    continue;
-                }
                 types::logical_value_t va(nullptr, types::complex_logical_type{types::logical_type::NA});
                 types::logical_value_t vb(nullptr, types::complex_logical_type{types::logical_type::NA});
                 if (k.col_path.size() == 1) {

@@ -514,7 +514,42 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("F2. ORDER BY arithmetic expression DESC") {
+    INFO("F2. ORDER BY column not in SELECT (ASC)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count_double, count_double * 0.13 AS tax )_"
+                                           R"_(FROM TestDatabase.TestCollection )_"
+                                           R"_(ORDER BY count ASC;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kNumInserts);
+        for (size_t i = 0; i < cur->size(); i++) {
+            double expected_double = static_cast<double>(i + 1) + 0.1;
+            double tax = expected_double * 0.13;
+            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], expected_double));
+            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
+        }
+    }
+
+    INFO("F3. ORDER BY column not in SELECT (DESC) — regression") {
+        // Regression: if sort key is unresolved (column dropped by GROUP),
+        // rows stay in insertion order instead of DESC. Detects the bug
+        // on any platform because DESC differs from insertion order.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count_double, count_double * 0.13 AS tax )_"
+                                           R"_(FROM TestDatabase.TestCollection )_"
+                                           R"_(ORDER BY count DESC;)_");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kNumInserts);
+        for (size_t i = 0; i < cur->size(); i++) {
+            double expected_double = static_cast<double>(kNumInserts - i) + 0.1;
+            double tax = expected_double * 0.13;
+            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], expected_double));
+            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
+        }
+    }
+
+    INFO("F4. ORDER BY arithmetic expression DESC") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count_double )_"

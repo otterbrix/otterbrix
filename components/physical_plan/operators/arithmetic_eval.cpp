@@ -51,7 +51,7 @@ namespace components::operators {
         }
 
         bool check_division_by_zero(vector::arithmetic_op op,
-                                     const detail::resolved_operand& left_op,
+                                     const detail::resolved_operand& /*left_op*/,
                                      const detail::resolved_operand& right_op,
                                      uint64_t count,
                                      std::string* error) {

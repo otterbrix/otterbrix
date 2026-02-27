@@ -16,9 +16,10 @@ namespace components::vector {
             }
         }
 
-        // Widen small integer types to avoid sign-promotion warnings with int128
+        // Widen small integer types to avoid sign-promotion warnings with int128.
+        // Used only in unevaluated context for type deduction (safe_result_t).
         template<typename T>
-        constexpr auto widen(T val) {
+        constexpr auto widen_type(T val) {
             if constexpr (std::is_same_v<T, bool> ||
                           (std::is_integral_v<T> && sizeof(T) < sizeof(int))) {
                 if constexpr (std::is_unsigned_v<T>)
@@ -31,7 +32,27 @@ namespace components::vector {
         }
 
         template<typename L, typename R>
-        using safe_result_t = decltype(widen(std::declval<L>()) + widen(std::declval<R>()));
+        using safe_result_t = decltype(widen_type(std::declval<L>()) + widen_type(std::declval<R>()));
+
+        // Cast value to Result without triggering sign-promo or sign-conversion.
+        // Small types widen to int64/uint64 first (avoids sign-promo with int128 ctors),
+        // then static_cast to Result (explicit cast silences sign-conversion).
+        template<typename Result, typename From>
+        constexpr Result to_result(From val) {
+            if constexpr (std::is_same_v<std::decay_t<From>, std::decay_t<Result>>) {
+                return val;
+            } else if constexpr (std::is_floating_point_v<From> || std::is_floating_point_v<Result>) {
+                return static_cast<Result>(val);
+            } else if constexpr (std::is_same_v<From, bool> ||
+                                 (std::is_integral_v<From> && sizeof(From) < sizeof(int))) {
+                if constexpr (std::is_unsigned_v<From>)
+                    return static_cast<Result>(static_cast<uint64_t>(val));
+                else
+                    return static_cast<Result>(static_cast<int64_t>(val));
+            } else {
+                return static_cast<Result>(val);
+            }
+        }
     } // namespace detail
 
     // Safe divides that returns 0 on division by zero
@@ -43,9 +64,9 @@ namespace components::vector {
         constexpr auto operator()(L a, R b) const {
             using result_t = detail::safe_result_t<L, R>;
             if (detail::is_zero(b)) {
-                return static_cast<result_t>(0);
+                return detail::to_result<result_t>(0);
             }
-            return static_cast<result_t>(detail::widen(a) / detail::widen(b));
+            return static_cast<result_t>(detail::to_result<result_t>(a) / detail::to_result<result_t>(b));
         }
     };
 
@@ -58,12 +79,13 @@ namespace components::vector {
         constexpr auto operator()(L a, R b) const {
             using result_t = detail::safe_result_t<L, R>;
             if (detail::is_zero(b)) {
-                return static_cast<result_t>(0);
+                return detail::to_result<result_t>(0);
             }
             if constexpr (std::is_floating_point_v<result_t>) {
-                return static_cast<result_t>(std::fmod(detail::widen(a), detail::widen(b)));
+                return static_cast<result_t>(
+                    std::fmod(detail::to_result<result_t>(a), detail::to_result<result_t>(b)));
             } else {
-                return static_cast<result_t>(detail::widen(a) % detail::widen(b));
+                return static_cast<result_t>(detail::to_result<result_t>(a) % detail::to_result<result_t>(b));
             }
         }
     };

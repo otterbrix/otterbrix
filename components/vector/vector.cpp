@@ -550,6 +550,7 @@ namespace components::vector {
         }
     }
 
+
     bool try_get_union_tag(const vector_t& vector, uint64_t index, uint8_t& result) {
         // tag is always the first struct child.
         auto& tag_vector = vector.entries()[0];

@@ -6,6 +6,48 @@
 
 namespace components::types {
 
+    namespace {
+        std::array<physical_type, 256> make_physical_type_table() {
+            std::array<physical_type, 256> t{};
+            for (auto& v : t) v = physical_type::INVALID;
+            t[uint8_t(logical_type::NA)]            = physical_type::BOOL;
+            t[uint8_t(logical_type::BOOLEAN)]       = physical_type::BOOL;
+            t[uint8_t(logical_type::TINYINT)]       = physical_type::INT8;
+            t[uint8_t(logical_type::UTINYINT)]      = physical_type::UINT8;
+            t[uint8_t(logical_type::SMALLINT)]      = physical_type::INT16;
+            t[uint8_t(logical_type::USMALLINT)]     = physical_type::UINT16;
+            t[uint8_t(logical_type::ENUM)]          = physical_type::INT32;
+            t[uint8_t(logical_type::INTEGER)]       = physical_type::INT32;
+            t[uint8_t(logical_type::UINTEGER)]      = physical_type::UINT32;
+            t[uint8_t(logical_type::BIGINT)]        = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_SEC)] = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_MS)]  = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_US)]  = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_NS)]  = physical_type::INT64;
+            t[uint8_t(logical_type::DECIMAL)]       = physical_type::INT64;
+            t[uint8_t(logical_type::UBIGINT)]       = physical_type::UINT64;
+            t[uint8_t(logical_type::UHUGEINT)]      = physical_type::UINT128;
+            t[uint8_t(logical_type::HUGEINT)]       = physical_type::INT128;
+            t[uint8_t(logical_type::UUID)]          = physical_type::INT128;
+            t[uint8_t(logical_type::FLOAT)]         = physical_type::FLOAT;
+            t[uint8_t(logical_type::DOUBLE)]        = physical_type::DOUBLE;
+            t[uint8_t(logical_type::STRING_LITERAL)]= physical_type::STRING;
+            t[uint8_t(logical_type::VALIDITY)]      = physical_type::BIT;
+            t[uint8_t(logical_type::ARRAY)]         = physical_type::ARRAY;
+            t[uint8_t(logical_type::STRUCT)]        = physical_type::STRUCT;
+            t[uint8_t(logical_type::UNION)]         = physical_type::STRUCT;
+            t[uint8_t(logical_type::VARIANT)]       = physical_type::STRUCT;
+            t[uint8_t(logical_type::LIST)]          = physical_type::LIST;
+            return t;
+        }
+
+        const auto physical_type_table = make_physical_type_table();
+    } // anonymous namespace
+
+    physical_type to_physical_type(logical_type type) {
+        return physical_type_table[static_cast<uint8_t>(type)];
+    }
+
     static const complex_logical_type INVALID_TYPE = complex_logical_type{logical_type::INVALID};
 
     complex_logical_type::complex_logical_type(logical_type type, std::string alias)
@@ -130,7 +172,7 @@ namespace components::types {
         //return type_ == rhs.type_ && *extension_.get() == *rhs.extension_.get();
     }
 
-    bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return !(*this == rhs); }
+    bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return type_ != rhs.type_; }
 
     size_t complex_logical_type::size() const noexcept {
         switch (type_) {

@@ -307,7 +307,7 @@ namespace components::sql::transform {
                     case T_Integer:
                         return types::logical_value_t(resource, intVal(value));
                     case T_Float:
-                        return types::logical_value_t(resource, static_cast<float>(floatVal(value)));
+                        return types::logical_value_t(resource, floatVal(value));
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:
@@ -349,6 +349,30 @@ namespace components::sql::transform {
             }
         }
         return types::logical_value_t::create_array(resource, fist_type, std::move(values));
+    }
+
+    types::logical_value_t evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node) {
+        if (node->kind != AEXPR_OP) {
+            throw parser_exception_t{"Only AEXPR_OP supported in constant arithmetic", ""};
+        }
+        auto op_str = std::string_view(strVal(node->name->lst.front().data));
+
+        auto resolve = [resource](Node* n) -> types::logical_value_t {
+            if (nodeTag(n) == T_A_Expr) {
+                return evaluate_const_a_expr(resource, pg_ptr_cast<A_Expr>(n));
+            }
+            return get_value(resource, n);
+        };
+
+        auto left = node->lexpr ? resolve(node->lexpr) : types::logical_value_t(resource, int64_t(0));
+        auto right = resolve(node->rexpr);
+
+        if (op_str == "+") return types::logical_value_t::sum(left, right);
+        if (op_str == "-") return types::logical_value_t::subtract(left, right);
+        if (op_str == "*") return types::logical_value_t::mult(left, right);
+        if (op_str == "/") return types::logical_value_t::divide(left, right);
+        if (op_str == "%") return types::logical_value_t::modulus(left, right);
+        throw parser_exception_t{"Unknown arithmetic operator in constant expression: " + std::string(op_str), ""};
     }
 
 } // namespace components::sql::transform

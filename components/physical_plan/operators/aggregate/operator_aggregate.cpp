@@ -15,8 +15,10 @@ namespace components::operators::aggregate {
         });
         if (res_it == row.end()) {
             row.emplace_back(aggregate_result_);
+            row.back().set_alias(std::string(alias));
         } else {
             *res_it = aggregate_result_;
+            res_it->set_alias(std::string(alias));
         }
     }
 

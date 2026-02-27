@@ -38,8 +38,51 @@ namespace components::sql::transform {
         expressions::expression_ptr
         transform_a_expr(A_Expr* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
+        // Arithmetic expression: returns scalar_expression_t
+        expressions::expression_ptr
+        transform_a_expr_arithmetic(A_Expr* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+
+        // Resolve any node to param_storage for arithmetic operand
+        expressions::param_storage
+        transform_a_expr_operand(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+
+        // Handle T_A_Expr in SELECT target list (may contain aggregates)
+        void transform_select_a_expr(A_Expr* node,
+                                     const char* alias,
+                                     const name_collection_t& names,
+                                     logical_plan::parameter_node_t* params,
+                                     logical_plan::node_ptr& group);
+
+        // Resolve SELECT operand — aggregates become separate group expressions
+        expressions::param_storage
+        resolve_select_operand(Node* node,
+                               const name_collection_t& names,
+                               logical_plan::parameter_node_t* params,
+                               logical_plan::node_ptr& group);
+
         expressions::expression_ptr
         transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+
+        // HAVING clause: resolve aggregate references to aliases from group node
+        expressions::expression_ptr
+        transform_having_expr(Node* node,
+                              const name_collection_t& names,
+                              logical_plan::parameter_node_t* params,
+                              const logical_plan::node_ptr& group);
+
+        // Handle T_CaseExpr in SELECT target list
+        void transform_select_case_expr(CaseExpr* node,
+                                        const char* alias,
+                                        const name_collection_t& names,
+                                        logical_plan::parameter_node_t* params,
+                                        logical_plan::node_ptr& group);
+
+        // Resolve a HAVING operand: FuncCall → aggregate alias key
+        expressions::param_storage
+        resolve_having_operand(Node* node,
+                               const name_collection_t& names,
+                               logical_plan::parameter_node_t* params,
+                               const logical_plan::node_ptr& group);
 
         expressions::expression_ptr transform_a_indirection(A_Indirection* node,
                                                             const name_collection_t& names,
@@ -67,5 +110,6 @@ namespace components::sql::transform {
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;
+        size_t aggregate_counter_{0};
     };
 } // namespace components::sql::transform

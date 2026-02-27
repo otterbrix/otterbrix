@@ -1,0 +1,118 @@
+#pragma once
+
+#include "data_chunk.hpp"
+#include <components/types/operations_helper.hpp>
+#include <cmath>
+
+namespace components::vector {
+
+    namespace detail {
+        template<typename R>
+        constexpr bool is_zero(R b) {
+            if constexpr (std::is_floating_point_v<R>) {
+                return !(b > R{0} || b < R{0});
+            } else {
+                return b == R{0};
+            }
+        }
+
+        // Widen small integer types to avoid sign-promotion warnings with int128.
+        // Used only in unevaluated context for type deduction (safe_result_t).
+        template<typename T>
+        constexpr auto widen_type(T val) {
+            if constexpr (std::is_same_v<T, bool> ||
+                          (std::is_integral_v<T> && sizeof(T) < sizeof(int))) {
+                if constexpr (std::is_unsigned_v<T>)
+                    return static_cast<uint64_t>(val);
+                else
+                    return static_cast<int64_t>(val);
+            } else {
+                return val;
+            }
+        }
+
+        template<typename L, typename R>
+        using safe_result_t = decltype(widen_type(std::declval<L>()) + widen_type(std::declval<R>()));
+
+        // Cast value to Result without triggering sign-promo or sign-conversion.
+        // Small types widen to int64/uint64 first (avoids sign-promo with int128 ctors),
+        // then static_cast to Result (explicit cast silences sign-conversion).
+        template<typename Result, typename From>
+        constexpr Result to_result(From val) {
+            if constexpr (std::is_same_v<std::decay_t<From>, std::decay_t<Result>>) {
+                return val;
+            } else if constexpr (std::is_floating_point_v<From> || std::is_floating_point_v<Result>) {
+                return static_cast<Result>(val);
+            } else if constexpr (std::is_same_v<From, bool> ||
+                                 (std::is_integral_v<From> && sizeof(From) < sizeof(int))) {
+                if constexpr (std::is_unsigned_v<From>)
+                    return static_cast<Result>(static_cast<uint64_t>(val));
+                else
+                    return static_cast<Result>(static_cast<int64_t>(val));
+            } else {
+                return static_cast<Result>(val);
+            }
+        }
+    } // namespace detail
+
+    // Division: caller must check for zero and set validity invalid.
+    // This functor performs the operation without zero-checking.
+    template<typename T = void>
+    struct checked_divides;
+    template<>
+    struct checked_divides<void> {
+        template<typename L, typename R>
+        constexpr auto operator()(L a, R b) const {
+            using result_t = detail::safe_result_t<L, R>;
+            return static_cast<result_t>(detail::to_result<result_t>(a) / detail::to_result<result_t>(b));
+        }
+    };
+
+    // Modulus: caller must check for zero and set validity invalid.
+    // Handles floating-point via fmod and int128.
+    template<typename T = void>
+    struct checked_modulus;
+    template<>
+    struct checked_modulus<void> {
+        template<typename L, typename R>
+        constexpr auto operator()(L a, R b) const {
+            using result_t = detail::safe_result_t<L, R>;
+            if constexpr (std::is_floating_point_v<result_t>) {
+                return static_cast<result_t>(
+                    std::fmod(detail::to_result<result_t>(a), detail::to_result<result_t>(b)));
+            } else {
+                return static_cast<result_t>(detail::to_result<result_t>(a) % detail::to_result<result_t>(b));
+            }
+        }
+    };
+
+    // op_kind: 0=add, 1=sub, 2=mul, 3=div, 4=mod
+    enum class arithmetic_op : uint8_t { add = 0, subtract, multiply, divide, mod };
+
+    // Compute binary arithmetic on two vectors (element-wise)
+    vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
+                                       arithmetic_op op,
+                                       const vector_t& left,
+                                       const vector_t& right,
+                                       uint64_t count);
+
+    // Compute arithmetic: vector op scalar
+    vector_t compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
+                                              arithmetic_op op,
+                                              const vector_t& vec,
+                                              const types::logical_value_t& scalar,
+                                              uint64_t count);
+
+    // Compute arithmetic: scalar op vector
+    vector_t compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
+                                              arithmetic_op op,
+                                              const types::logical_value_t& scalar,
+                                              const vector_t& vec,
+                                              uint64_t count);
+
+    // Compute unary negation
+    vector_t compute_unary_neg(std::pmr::memory_resource* resource,
+                               const vector_t& vec,
+                               uint64_t count);
+
+} // namespace components::vector

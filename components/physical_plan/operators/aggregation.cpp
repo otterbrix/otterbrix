@@ -16,10 +16,21 @@ namespace components::operators {
 
     void aggregation::set_limit(logical_plan::limit_t limit) { limit_ = limit; }
 
-    void aggregation::on_execute_impl(pipeline::context_t*) { take_output(left_); }
+    void aggregation::on_execute_impl(pipeline::context_t*) {
+        take_output(left_);
+        // Apply limit after sort (not at scan level)
+        if (output_ && limit_.limit() > 0) {
+            auto& chunk = output_->data_chunk();
+            if (static_cast<int>(chunk.size()) > limit_.limit()) {
+                chunk.set_cardinality(static_cast<uint64_t>(limit_.limit()));
+            }
+        }
+    }
 
     void aggregation::on_prepare_impl() {
         operator_ptr executor = nullptr;
+        // When sort is present, scan all rows — limit is applied after sort in on_execute_impl
+        auto scan_limit = sort_ ? logical_plan::limit_t::unlimit() : limit_;
         if (left_) {
             executor = std::move(left_);
             if (match_) {
@@ -29,7 +40,7 @@ namespace components::operators {
         } else {
             executor =
                 match_ ? std::move(match_)
-                       : static_cast<operator_ptr>(boost::intrusive_ptr(new transfer_scan(resource_, name_, limit_)));
+                       : static_cast<operator_ptr>(boost::intrusive_ptr(new transfer_scan(resource_, name_, scan_limit)));
         }
         if (group_) {
             group_->set_children(std::move(executor));

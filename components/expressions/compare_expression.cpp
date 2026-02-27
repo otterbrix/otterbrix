@@ -1,6 +1,22 @@
 #include "compare_expression.hpp"
 #include <sstream>
 
+namespace std {
+    template<>
+    struct hash<components::expressions::param_storage> {
+        std::size_t operator()(const components::expressions::param_storage& arg) const noexcept {
+            if (std::holds_alternative<components::expressions::key_t>(arg)) {
+                return std::get<components::expressions::key_t>(arg).hash();
+            } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
+                return std::hash<uint64_t>()(std::get<core::parameter_id_t>(arg));
+            } else {
+                assert(std::holds_alternative<components::expressions::expression_ptr>(arg));
+                return std::get<components::expressions::expression_ptr>(arg)->hash();
+            }
+        }
+    };
+} // namespace std
+
 namespace components::expressions {
 
     bool is_union_compare_condition(compare_type type) {
@@ -9,32 +25,23 @@ namespace components::expressions {
 
     compare_expression_t::compare_expression_t(std::pmr::memory_resource* resource,
                                                compare_type type,
-                                               const key_t& key,
-                                               core::parameter_id_t value)
+                                               const param_storage& left,
+                                               const param_storage& right)
         : expression_i(expression_group::compare)
         , type_(type)
-        , primary_key_(key)
-        , secondary_key_(resource)
-        , value_(value)
-        , children_(resource) {}
-
-    compare_expression_t::compare_expression_t(std::pmr::memory_resource* resource,
-                                               compare_type type,
-                                               const key_t& primary_key,
-                                               const key_t& secondary_key)
-        : expression_i(expression_group::compare)
-        , type_(type)
-        , primary_key_(primary_key)
-        , secondary_key_(secondary_key)
+        , left_(left)
+        , right_(right)
         , children_(resource) {}
 
     compare_type compare_expression_t::type() const { return type_; }
 
-    const key_t& compare_expression_t::primary_key() const { return primary_key_; }
+    param_storage& compare_expression_t::left() { return left_; }
 
-    const key_t& compare_expression_t::secondary_key() const { return secondary_key_; }
+    const param_storage& compare_expression_t::left() const { return left_; }
 
-    core::parameter_id_t compare_expression_t::value() const { return value_; }
+    param_storage& compare_expression_t::right() { return right_; }
+
+    const param_storage& compare_expression_t::right() const { return right_; }
 
     const std::pmr::vector<expression_ptr>& compare_expression_t::children() const { return children_; }
 
@@ -47,9 +54,8 @@ namespace components::expressions {
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
-        boost::hash_combine(hash_, primary_key_.hash());
-        boost::hash_combine(hash_, secondary_key_.hash());
-        boost::hash_combine(hash_, std::hash<uint64_t>()(value_));
+        boost::hash_combine(hash_, std::hash<param_storage>()(left_));
+        boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
             boost::hash_combine(hash_, reinterpret_cast<const compare_expression_ptr&>(child)->hash_impl());
         }
@@ -70,49 +76,33 @@ namespace components::expressions {
             }
             stream << "]";
         } else {
-            if (!primary_key().is_null() && !secondary_key().is_null()) {
-                stream << "\"" << primary_key() << "\": {" << type() << ": \"" << secondary_key() << "\"}";
-            } else {
-                if (secondary_key().is_null()) {
-                    stream << "\"" << primary_key() << "\": {" << type() << ": #" << value().t << "}";
-                } else {
-                    stream << "\"" << secondary_key() << "\": {" << type() << ": #" << value().t << "}";
-                }
-            }
+            stream << left_ << ": {" << type() << ": " << right_ << "}";
         }
         return stream.str();
     }
 
     bool compare_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const compare_expression_t*>(rhs);
-        return type_ == other->type_ && primary_key_ == other->primary_key_ &&
-               secondary_key_ == other->secondary_key_ && value_ == other->value_ &&
+        return type_ == other->type_ && left_ == other->left_ && right_ == other->right_ &&
                children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
     }
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,
                                                    compare_type type,
-                                                   const key_t& key,
-                                                   core::parameter_id_t id) {
-        return new compare_expression_t(resource, type, key, id);
-    }
-
-    compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,
-                                                   compare_type type,
-                                                   const key_t& primary_key,
-                                                   const key_t& secondary_key) {
-        return new compare_expression_t(resource, type, primary_key, secondary_key);
+                                                   const param_storage& left,
+                                                   const param_storage& right) {
+        return new compare_expression_t(resource, type, left, right);
     }
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(!is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{resource}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, nullptr, nullptr);
     }
 
     compare_expression_ptr make_compare_union_expression(std::pmr::memory_resource* resource, compare_type type) {
         assert(is_union_compare_condition(type));
-        return new compare_expression_t(resource, type, key_t{resource}, core::parameter_id_t{0});
+        return new compare_expression_t(resource, type, nullptr, nullptr);
     }
 
     compare_type get_compare_type(const std::string& key) {

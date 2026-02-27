@@ -4,15 +4,16 @@
 
 namespace components::operators {
 
-    operator_update::operator_update(std::pmr::memory_resource* resource, log_t log,
+    operator_update::operator_update(std::pmr::memory_resource* resource,
+                                     log_t log,
                                      collection_full_name_t name,
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
-                                     expressions::compare_expression_ptr comp_expr)
+                                     expressions::expression_ptr expr)
         : read_write_operator_t(resource, log, operator_type::update)
         , name_(std::move(name))
         , updates_(std::move(updates))
-        , comp_expr_(std::move(comp_expr))
+        , expr_(std::move(expr))
         , upsert_(upsert) {}
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
@@ -35,12 +36,13 @@ namespace components::operators {
                 no_modified_ = operators::make_operator_write_data(resource());
                 output_ = operators::make_operator_data(left_->output()->resource(), types_left);
                 auto& out_chunk = output_->data_chunk();
-                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                           comp_expr_,
-                                                                           types_left,
-                                                                           types_right,
-                                                                           &pipeline_context->parameters)
-                                            : predicates::create_all_true_predicate(left_->output()->resource());
+                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                      pipeline_context->function_registry,
+                                                                      expr_,
+                                                                      types_left,
+                                                                      types_right,
+                                                                      &pipeline_context->parameters)
+                                       : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
                     for (size_t j = 0; j < chunk_right.size(); j++) {
@@ -52,7 +54,8 @@ namespace components::operators {
                             }
                             bool modified = false;
                             for (const auto& expr : updates_) {
-                                modified |= expr->execute(out_chunk, chunk_right, index, j, &pipeline_context->parameters);
+                                modified |=
+                                    expr->execute(out_chunk, chunk_right, index, j, &pipeline_context->parameters);
                             }
                             if (modified) {
                                 modified_->append(index);
@@ -68,8 +71,7 @@ namespace components::operators {
         } else if (left_ && left_->output()) {
             if (left_->output()->size() == 0) {
                 if (upsert_) {
-                    output_ = operators::make_operator_data(resource(),
-                                                                  left_->output()->data_chunk().types());
+                    output_ = operators::make_operator_data(resource(), left_->output()->data_chunk().types());
                 }
             } else {
                 auto& chunk = left_->output()->data_chunk();
@@ -78,12 +80,13 @@ namespace components::operators {
                 auto& out_chunk = output_->data_chunk();
                 modified_ = operators::make_operator_write_data(resource());
                 no_modified_ = operators::make_operator_write_data(resource());
-                auto predicate = comp_expr_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                           comp_expr_,
-                                                                           types,
-                                                                           types,
-                                                                           &pipeline_context->parameters)
-                                            : predicates::create_all_true_predicate(left_->output()->resource());
+                auto predicate = expr_ ? predicates::create_predicate(left_->output()->resource(),
+                                                                      pipeline_context->function_registry,
+                                                                      expr_,
+                                                                      types,
+                                                                      types,
+                                                                      &pipeline_context->parameters)
+                                       : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
                     if (predicate->check(chunk, i)) {
@@ -100,7 +103,8 @@ namespace components::operators {
                         }
                         bool modified = false;
                         for (const auto& expr : updates_) {
-                            modified |= expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters);
+                            modified |=
+                                expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters);
                         }
                         if (modified) {
                             modified_->append(index);

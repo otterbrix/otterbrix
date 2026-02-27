@@ -72,6 +72,9 @@ namespace components::types {
         data_ = 0;
     }
 
+    logical_value_t::logical_value_t(std::pmr::memory_resource* r, logical_type type)
+        : logical_value_t(r, complex_logical_type{type}) {}
+
     logical_value_t::logical_value_t(std::pmr::memory_resource* r, complex_logical_type type)
         : type_(std::move(type))
         , resource_(r) {
@@ -189,7 +192,8 @@ namespace components::types {
     }
 
     logical_value_t& logical_value_t::operator=(const logical_value_t& other) {
-        if (this == &other) return *this;
+        if (this == &other)
+            return *this;
         destroy_heap();
         type_ = other.type_;
         resource_ = other.resource_;
@@ -223,7 +227,8 @@ namespace components::types {
     }
 
     logical_value_t& logical_value_t::operator=(logical_value_t&& other) noexcept {
-        if (this == &other) return *this;
+        if (this == &other)
+            return *this;
         destroy_heap();
         type_ = std::move(other.type_);
         resource_ = other.resource_;
@@ -273,27 +278,33 @@ namespace components::types {
                 }
             } else if constexpr (std::is_same_v<LeftValueType, std::string_view>) {
                 if constexpr (std::is_signed_v<RightValueType>) {
-                    return logical_value_t{r,
+                    return logical_value_t{
+                        r,
                         std::to_string(static_cast<int64_t>(value.template value<RightValueType>()))};
                 } else {
-                    return logical_value_t{r,
+                    return logical_value_t{
+                        r,
                         std::to_string(static_cast<uint64_t>(value.template value<RightValueType>()))};
                 }
             } else if constexpr (std::is_same_v<LeftValueType, bool>) {
                 return logical_value_t{r, core::is_equals(RightValueType{}, value.template value<RightValueType>())};
             } else if constexpr (std::is_same_v<RightValueType, std::string_view>) {
                 if constexpr (std::is_floating_point_v<LeftValueType>) {
-                    return logical_value_t{r,
+                    return logical_value_t{
+                        r,
                         static_cast<LeftValueType>(std::atof(value.template value<RightValueType>().data()))};
                 } else {
-                    return logical_value_t{r,
+                    return logical_value_t{
+                        r,
                         static_cast<LeftValueType>(std::atoll(value.template value<RightValueType>().data()))};
                 }
             } else if constexpr (std::is_same_v<LeftValueType, int128_t>) {
-                return logical_value_t{r,
+                return logical_value_t{
+                    r,
                     static_cast<LeftValueType>(static_cast<int64_t>(value.template value<RightValueType>()))};
             } else if constexpr (std::is_same_v<LeftValueType, uint128_t>) {
-                return logical_value_t{r,
+                return logical_value_t{
+                    r,
                     static_cast<LeftValueType>(static_cast<uint64_t>(value.template value<RightValueType>()))};
             } else {
                 return logical_value_t{r, static_cast<LeftValueType>(value.template value<RightValueType>())};
@@ -395,8 +406,10 @@ namespace components::types {
                     return *vec_ptr() == *rhs.vec_ptr();
                 case logical_type::UNION:
                 case logical_type::VARIANT:
-                    if (!data_ && !rhs.data_) return true;
-                    if (!data_ || !rhs.data_) return false;
+                    if (!data_ && !rhs.data_)
+                        return true;
+                    if (!data_ || !rhs.data_)
+                        return false;
                     return *vec_ptr() == *rhs.vec_ptr();
                 default:
                     return false;
@@ -408,8 +421,10 @@ namespace components::types {
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
         if (type_ != rhs.type_) {
-            if (type_.type() == logical_type::NA) return false;
-            if (rhs.type_.type() == logical_type::NA) return true;
+            if (type_.type() == logical_type::NA)
+                return false;
+            if (rhs.type_.type() == logical_type::NA)
+                return true;
             if ((is_numeric(type_.type()) && is_numeric(rhs.type_.type())) ||
                 (is_duration(type_.type()) && is_duration(rhs.type_.type()))) {
                 auto promoted_type = promote_type(type_.type(), rhs.type_.type());
@@ -464,11 +479,10 @@ namespace components::types {
         }
     }
 
-    const std::vector<logical_value_t>& logical_value_t::children() const {
-        return *vec_ptr();
-    }
+    const std::vector<logical_value_t>& logical_value_t::children() const { return *vec_ptr(); }
 
-    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r, const complex_logical_type& type,
+    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r,
+                                                   const complex_logical_type& type,
                                                    const std::vector<logical_value_t>& struct_values) {
         logical_value_t result(r, complex_logical_type{logical_type::NA});
         result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(struct_values));
@@ -476,7 +490,9 @@ namespace components::types {
         return result;
     }
 
-    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r, std::string name, const std::vector<logical_value_t>& fields) {
+    logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r,
+                                                   std::string name,
+                                                   const std::vector<logical_value_t>& fields) {
         std::vector<complex_logical_type> child_types;
         for (auto& child : fields) {
             child_types.push_back(child.type());
@@ -484,7 +500,8 @@ namespace components::types {
         return create_struct(r, complex_logical_type::create_struct(std::move(name), child_types), fields);
     }
 
-    logical_value_t logical_value_t::create_array(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
+    logical_value_t logical_value_t::create_array(std::pmr::memory_resource* r,
+                                                  const complex_logical_type& internal_type,
                                                   const std::vector<logical_value_t>& values) {
         logical_value_t result(r, complex_logical_type{logical_type::NA});
         result.type_ = complex_logical_type::create_array(internal_type, values.size());
@@ -492,7 +509,8 @@ namespace components::types {
         return result;
     }
 
-    logical_value_t logical_value_t::create_numeric(std::pmr::memory_resource* r, const complex_logical_type& type, int64_t value) {
+    logical_value_t
+    logical_value_t::create_numeric(std::pmr::memory_resource* r, const complex_logical_type& type, int64_t value) {
         switch (type.type()) {
             case logical_type::BOOLEAN:
                 assert(value == 0 || value == 1);
@@ -525,7 +543,8 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return logical_value_t(r, static_cast<uint128_t>(value));
             case logical_type::DECIMAL:
-                return create_decimal(r, value,
+                return create_decimal(r,
+                                      value,
                                       static_cast<decimal_logical_type_extension*>(type.extension())->width(),
                                       static_cast<decimal_logical_type_extension*>(type.extension())->scale());
             case logical_type::FLOAT:
@@ -539,7 +558,9 @@ namespace components::types {
         }
     }
 
-    logical_value_t logical_value_t::create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, std::string_view key) {
+    logical_value_t logical_value_t::create_enum(std::pmr::memory_resource* r,
+                                                 const complex_logical_type& enum_type,
+                                                 std::string_view key) {
         const auto& enum_values =
             reinterpret_cast<const enum_logical_type_extension*>(enum_type.extension())->entries();
         auto it = std::find_if(enum_values.begin(), enum_values.end(), [key](const logical_value_t& v) {
@@ -554,20 +575,23 @@ namespace components::types {
         }
     }
 
-    logical_value_t logical_value_t::create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, int32_t value) {
+    logical_value_t
+    logical_value_t::create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, int32_t value) {
         logical_value_t result(r, enum_type);
         result.data_ = static_cast<uint64_t>(value);
         return result;
     }
 
-    logical_value_t logical_value_t::create_decimal(std::pmr::memory_resource* r, int64_t value, uint8_t width, uint8_t scale) {
+    logical_value_t
+    logical_value_t::create_decimal(std::pmr::memory_resource* r, int64_t value, uint8_t width, uint8_t scale) {
         auto decimal_type = complex_logical_type::create_decimal(width, scale);
         logical_value_t result(r, decimal_type);
         result.data_ = static_cast<uint64_t>(value);
         return result;
     }
 
-    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r, const complex_logical_type& key_type,
+    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r,
+                                                const complex_logical_type& key_type,
                                                 const complex_logical_type& value_type,
                                                 const std::vector<logical_value_t>& keys,
                                                 const std::vector<logical_value_t>& values) {
@@ -576,11 +600,13 @@ namespace components::types {
         result.type_ = complex_logical_type::create_map(key_type, value_type);
         auto keys_value = create_array(r, key_type, keys);
         auto values_value = create_array(r, value_type, values);
-        result.data_ = reinterpret_cast<uint64_t>(result.heap_new<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)}));
+        result.data_ = reinterpret_cast<uint64_t>(
+            result.heap_new<std::vector<logical_value_t>>(std::vector{std::move(keys_value), std::move(values_value)}));
         return result;
     }
 
-    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r, const complex_logical_type& type,
+    logical_value_t logical_value_t::create_map(std::pmr::memory_resource* r,
+                                                const complex_logical_type& type,
                                                 const std::vector<logical_value_t>& values) {
         std::vector<logical_value_t> map_keys;
         std::vector<logical_value_t> map_values;
@@ -596,7 +622,8 @@ namespace components::types {
         return create_map(r, key_type, value_type, std::move(map_keys), std::move(map_values));
     }
 
-    logical_value_t logical_value_t::create_list(std::pmr::memory_resource* r, const complex_logical_type& internal_type,
+    logical_value_t logical_value_t::create_list(std::pmr::memory_resource* r,
+                                                 const complex_logical_type& internal_type,
                                                  const std::vector<logical_value_t>& values) {
         logical_value_t result(r, complex_logical_type{logical_type::NA});
         result.type_ = complex_logical_type::create_list(internal_type);
@@ -604,8 +631,10 @@ namespace components::types {
         return result;
     }
 
-    logical_value_t
-    logical_value_t::create_union(std::pmr::memory_resource* r, std::vector<complex_logical_type> types, uint8_t tag, logical_value_t value) {
+    logical_value_t logical_value_t::create_union(std::pmr::memory_resource* r,
+                                                  std::vector<complex_logical_type> types,
+                                                  uint8_t tag,
+                                                  logical_value_t value) {
         assert(!types.empty());
         assert(types.size() > tag);
 
@@ -1313,7 +1342,8 @@ namespace components::types {
         }
     }
 
-    logical_value_t logical_value_t::deserialize(std::pmr::memory_resource* r, serializer::msgpack_deserializer_t* deserializer) {
+    logical_value_t logical_value_t::deserialize(std::pmr::memory_resource* r,
+                                                 serializer::msgpack_deserializer_t* deserializer) {
         logical_value_t result(r, complex_logical_type{logical_type::NA});
         deserializer->advance_array(0);
         auto type = complex_logical_type::deserialize(r, deserializer);

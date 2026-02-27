@@ -28,7 +28,8 @@ namespace components::index {
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
         auto matching(const std::string& name) -> index_t::pointer;
-        auto has_index(const std::string& name) -> bool; // TODO figure out how to make it faster (not using matching inside)
+        auto has_index(const std::string& name)
+            -> bool; // TODO figure out how to make it faster (not using matching inside)
         auto add_index(const keys_base_storage_t&, index_ptr) -> uint32_t;
         auto add_disk_agent(id_index id, actor_zeta::address_t address) -> void;
         auto drop_index(index_t::pointer index) -> void;
@@ -45,7 +46,8 @@ namespace components::index {
         auto indexes() -> std::vector<std::string>;
 
         // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
-        void for_each_disk_op(const vector::data_chunk_t& chunk, size_t row,
+        void for_each_disk_op(const vector::data_chunk_t& chunk,
+                              size_t row,
                               const std::function<void(const actor_zeta::address_t&, const value_t&)>& fn) const;
 
         // Mirror pending txn entries to disk agents (call BEFORE commit clears pending maps)
@@ -97,7 +99,9 @@ namespace components::index {
     void find(const index_engine_ptr& index, id_index id, result_set_t*);
     void find(const index_engine_ptr& index, query_t query, result_set_t*);
 
-    void set_disk_agent(const index_engine_ptr& ptr, id_index id,
-                        actor_zeta::address_t agent, actor_zeta::address_t manager);
+    void set_disk_agent(const index_engine_ptr& ptr,
+                        id_index id,
+                        actor_zeta::address_t agent,
+                        actor_zeta::address_t manager);
 
 } // namespace components::index

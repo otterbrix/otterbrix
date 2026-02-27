@@ -16,6 +16,7 @@ namespace components::expressions {
         sort_expression_t(const key_t& key, sort_order order);
 
         sort_order order() const;
+        key_t& key();
         const key_t& key() const;
 
     private:

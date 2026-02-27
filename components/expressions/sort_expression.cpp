@@ -16,6 +16,8 @@ namespace components::expressions {
 
     sort_order sort_expression_t::order() const { return order_; }
 
+    key_t& sort_expression_t::key() { return key_; }
+
     const key_t& sort_expression_t::key() const { return key_; }
 
     hash_t sort_expression_t::hash_impl() const {

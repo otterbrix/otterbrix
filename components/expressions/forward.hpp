@@ -40,17 +40,6 @@ namespace components::expressions {
         is_not_null
     };
 
-    enum class aggregate_type : uint8_t
-    {
-        invalid,
-        count,
-        sum,
-        min,
-        max,
-        avg,
-        udf
-    };
-
     enum class scalar_type : uint8_t
     {
         invalid,

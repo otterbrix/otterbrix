@@ -5,8 +5,8 @@
 #include "result.hpp"
 
 #include <actor-zeta/actor/basic_actor.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/log/log.hpp>

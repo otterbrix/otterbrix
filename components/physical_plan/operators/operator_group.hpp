@@ -2,9 +2,9 @@
 
 #include "transformation.hpp"
 
-#include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
 #include <components/physical_plan/operators/get/operator_get.hpp>
+#include <components/physical_plan/operators/operator.hpp>
 
 namespace components::operators {
 

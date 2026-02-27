@@ -2,9 +2,9 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <memory_resource>
-#include <cstring>
 
 #include "types.hpp"
 
@@ -12,6 +12,7 @@ namespace components::types {
 
     class logical_value_t {
     public:
+        logical_value_t(std::pmr::memory_resource* r, logical_type type);
         logical_value_t(std::pmr::memory_resource* r, complex_logical_type type);
 
         template<typename T>
@@ -116,7 +117,8 @@ namespace components::types {
         }
     };
 
-    static const logical_value_t NULL_LOGICAL_VALUE = logical_value_t{std::pmr::null_memory_resource(), complex_logical_type{logical_type::NA}};
+    static const logical_value_t NULL_LOGICAL_VALUE =
+        logical_value_t{std::pmr::null_memory_resource(), complex_logical_type{logical_type::NA}};
 
     template<typename T>
     logical_value_t::logical_value_t(std::pmr::memory_resource* r, T value)

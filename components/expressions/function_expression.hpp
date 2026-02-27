@@ -1,6 +1,8 @@
 #pragma once
 
 #include "expression.hpp"
+#include <components/compute/function.hpp>
+
 #include <memory_resource>
 
 namespace components::expressions {
@@ -20,11 +22,15 @@ namespace components::expressions {
                               std::pmr::vector<param_storage>&& args);
 
         const std::string& name() const noexcept;
+        std::pmr::vector<param_storage>& args() noexcept;
         const std::pmr::vector<param_storage>& args() const noexcept;
+        void add_function_uid(compute::function_uid uid);
+        compute::function_uid function_uid() const;
 
     private:
         std::string name_;
         std::pmr::vector<param_storage> args_;
+        compute::function_uid function_uid_{compute::invalid_function_uid};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

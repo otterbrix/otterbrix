@@ -30,10 +30,13 @@ namespace components::logical_plan {
         const collection_full_name_t& collection_full_name() const;
         const database_name_t& database_name() const;
         const collection_name_t& collection_name() const;
+        const std::string& result_alias() const;
         const std::pmr::vector<node_ptr>& children() const;
         std::pmr::vector<node_ptr>& children();
         const std::pmr::vector<expression_ptr>& expressions() const;
+        std::pmr::vector<expression_ptr>& expressions();
 
+        void set_result_alias(const std::string& alias);
         void reserve_child(std::size_t count);
         void append_child(const node_ptr& child);
         void append_expression(const expression_ptr& expression);
@@ -54,6 +57,7 @@ namespace components::logical_plan {
     protected:
         const node_type type_;
         const collection_full_name_t collection_;
+        std::string result_alias_;
         std::pmr::vector<node_ptr> children_;
         std::pmr::vector<expression_ptr> expressions_;
 

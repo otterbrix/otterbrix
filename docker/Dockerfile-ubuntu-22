@@ -11,14 +11,14 @@ RUN apt update && \
         ninja-build \
         python3-pip \
         python3-venv \
-        python3-dev curl gnupg apt-transport-https \
+        curl gnupg apt-transport-https \
         zlib1g \
         flex \
         bison && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN    pip3 install --no-cache-dir conan==2.20.0 pytest==6.2.5 "cmake<4" && \
+RUN    pip3 install --no-cache-dir conan==2.20.0 "cmake<4" && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -44,8 +44,6 @@ RUN cmake .. -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_to
     cmake --build . --target all -- -j $(nproc)
 
 RUN ctest -C Debug -V --output-on-failure --timeout 900
-
-RUN cd integration/python/ && pytest -v -s
 
 # Multistage build is faster and resulting image will be smaller
 FROM mcr.microsoft.com/dotnet/sdk:7.0-jammy

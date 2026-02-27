@@ -11,6 +11,7 @@ namespace services::planner::impl {
     using components::logical_plan::node_type;
 
     components::operators::operator_ptr create_plan_aggregate(const context_storage_t& context,
+                                                                const components::compute::function_registry_t& function_registry,
                                                                     const components::logical_plan::node_ptr& node,
                                                                     components::logical_plan::limit_t limit,
                                                                     const components::logical_plan::storage_parameters* params) {
@@ -34,19 +35,19 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    op->set_match(create_plan(context, child, limit, params));
+                    op->set_match(create_plan(context, function_registry, child, limit, params));
                     break;
                 case node_type::group_t:
-                    op->set_group(create_plan(context, child, limit, params));
+                    op->set_group(create_plan(context, function_registry, child, limit, params));
                     break;
                 case node_type::sort_t:
-                    op->set_sort(create_plan(context, child, limit, params));
+                    op->set_sort(create_plan(context, function_registry, child, limit, params));
                     break;
                 case node_type::having_t:
-                    op->set_having(create_plan(context, child, limit, params));
+                    op->set_having(create_plan(context, function_registry, child, limit, params));
                     break;
                 default:
-                    op->set_children(create_plan(context, child, limit, params));
+                    op->set_children(create_plan(context, function_registry, child, limit, params));
                     break;
             }
         }

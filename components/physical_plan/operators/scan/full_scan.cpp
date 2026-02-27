@@ -5,34 +5,6 @@
 
 namespace components::operators {
 
-    namespace {
-        std::vector<uint64_t>
-        resolve_column_path(const expressions::compare_expression_ptr& expression,
-                            const std::pmr::vector<types::complex_logical_type>& types) {
-            std::vector<uint64_t> indices;
-            auto* local_types = types.data();
-            size_t size = types.size();
-            for (size_t i = 0; i < expression->primary_key().storage().size(); i++) {
-                auto it =
-                    std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                        return core::pmr::operator==(type.alias(), expression->primary_key().storage()[i]);
-                    });
-                if (it == local_types + size) {
-                    throw std::runtime_error("column path not found in schema");
-                }
-                indices.emplace_back(it - local_types);
-                if (i + 1 != expression->primary_key().storage().size()) {
-                    if (it->child_types().empty()) {
-                        throw std::runtime_error("column path not found in schema");
-                    }
-                    local_types = it->child_types().data();
-                    size = it->child_types().size();
-                }
-            }
-            return indices;
-        }
-    } // namespace
-
     std::unique_ptr<table::table_filter_t>
     transform_predicate(const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
@@ -90,13 +62,15 @@ namespace components::operators {
             default: {
                 auto indices = resolve_column_path(expression, types);
                 return std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                  parameters->parameters.at(expression->value()),
+                                                                  parameters->parameters.at(id),
                                                                   std::move(indices));
             }
         }
     }
 
-    full_scan::full_scan(std::pmr::memory_resource* resource, log_t log, collection_full_name_t name,
+    full_scan::full_scan(std::pmr::memory_resource* resource,
+                         log_t log,
+                         collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::full_scan)
@@ -105,7 +79,8 @@ namespace components::operators {
         , limit_(limit) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (name_.empty()) return;
+        if (name_.empty())
+            return;
         async_wait();
     }
 
@@ -115,8 +90,8 @@ namespace components::operators {
         }
 
         // Get types to build filter
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-            &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+        auto [_t, tf] =
+            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::storage_types, ctx->session, name_);
         auto types = co_await std::move(tf);
 
         // Build filter from expression
@@ -132,8 +107,7 @@ namespace components::operators {
         if (data) {
             output_ = make_operator_data(resource_, std::move(*data));
         } else {
-            output_ = make_operator_data(resource_,
-                std::pmr::vector<types::complex_logical_type>{resource_});
+            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
         }
         mark_executed();
         co_return;

@@ -5,20 +5,26 @@
 
 namespace components::operators {
 
-    index_scan::index_scan(std::pmr::memory_resource* resource, log_t log,
+    index_scan::index_scan(std::pmr::memory_resource* resource,
+                           log_t log,
                            collection_full_name_t name,
-                           const expressions::compare_expression_ptr& expr,
+                           const expressions::key_t& key,
+                           const types::logical_value_t& value,
+                           expressions::compare_type compare_type,
                            logical_plan::limit_t limit)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , name_(std::move(name))
-        , expr_(expr)
+        , key_(key)
+        , value_(value)
+        , compare_type_(compare_type)
         , limit_(limit) {}
 
     void index_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (log_.is_valid()) {
-            trace(log(), "index_scan by field \"{}\"", expr_->primary_key().as_string());
+            trace(log(), "index_scan by field \"{}\"", key_.as_string());
         }
-        if (name_.empty()) return;
+        if (name_.empty())
+            return;
         async_wait();
     }
 
@@ -30,7 +36,9 @@ namespace components::operators {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             // No index service — return empty result
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+                                             &services::disk::manager_disk_t::storage_types,
+                                             ctx->session,
+                                             name_);
             auto types = co_await std::move(tf);
             output_ = make_operator_data(resource_, types);
             mark_executed();
@@ -43,18 +51,18 @@ namespace components::operators {
             auto [_s, sf] = actor_zeta::send(ctx->index_address,
                 &services::index::manager_index_t::search_txn,
                 ctx->session, name_,
-                index::keys_base_storage_t{{expr_->primary_key()}},
-                types::logical_value_t{resource_, expr_->value()},
-                expr_->type(),
+                index::keys_base_storage_t{{key_}},
+                types::logical_value_t{resource_, value_},
+                compare_type_,
                 ctx->txn.start_time, ctx->txn.transaction_id);
             row_ids_vec = co_await std::move(sf);
         } else {
             auto [_s, sf] = actor_zeta::send(ctx->index_address,
                 &services::index::manager_index_t::search,
                 ctx->session, name_,
-                index::keys_base_storage_t{{expr_->primary_key()}},
-                types::logical_value_t{resource_, expr_->value()},
-                expr_->type());
+                index::keys_base_storage_t{{key_}},
+                types::logical_value_t{resource_, value_},
+                compare_type_);
             row_ids_vec = co_await std::move(sf);
         }
 
@@ -74,21 +82,28 @@ namespace components::operators {
 
             // Fetch from storage
             auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                &services::disk::manager_disk_t::storage_fetch, ctx->session, name_,
-                std::move(row_ids), count);
+                                             &services::disk::manager_disk_t::storage_fetch,
+                                             ctx->session,
+                                             name_,
+                                             std::move(row_ids),
+                                             count);
             auto data = co_await std::move(ff);
 
             if (data) {
                 output_ = make_operator_data(resource_, std::move(*data));
             } else {
                 auto [_t2, tf2] = actor_zeta::send(ctx->disk_address,
-                    &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+                                                   &services::disk::manager_disk_t::storage_types,
+                                                   ctx->session,
+                                                   name_);
                 auto types = co_await std::move(tf2);
                 output_ = make_operator_data(resource_, types);
             }
         } else {
             auto [_t3, tf3] = actor_zeta::send(ctx->disk_address,
-                &services::disk::manager_disk_t::storage_types, ctx->session, name_);
+                                               &services::disk::manager_disk_t::storage_types,
+                                               ctx->session,
+                                               name_);
             auto types = co_await std::move(tf3);
             output_ = make_operator_data(resource_, types);
         }

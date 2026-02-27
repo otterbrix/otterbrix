@@ -405,7 +405,8 @@ namespace components::table {
                 state.valid_indexing = indexing;
             }
             for (uint64_t i = 0; i < count; i++) {
-                types::logical_value_t index{result.row_ids.resource(), static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY +
+                types::logical_value_t index{result.row_ids.resource(),
+                                             static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY +
                                                                   state.valid_indexing.get_index(i))};
                 result.row_ids.set_value(result.size() + i, std::move(index));
             }

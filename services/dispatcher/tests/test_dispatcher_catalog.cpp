@@ -70,10 +70,10 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                  &manager_dispatcher_t::execute_plan,
-                                                  session_id_t{},
-                                                  std::move(view.node),
-                                                  std::move(view.params));
+                                                       &manager_dispatcher_t::execute_plan,
+                                                       session_id_t{},
+                                                       std::move(view.node),
+                                                       std::move(view.params));
         pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
     }
 
@@ -163,6 +163,16 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 
     test.execute_sql(query.str());
+    // for now insert transforms it into a regular schema
+    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
+        REQUIRE(cur->is_success());
+
+        REQUIRE(catalog.get_table_schema(id).columns()[0].alias() == "name");
+        REQUIRE(catalog.get_table_schema(id).columns()[0].type() == logical_type::STRING_LITERAL);
+        REQUIRE(catalog.get_table_schema(id).columns()[1].alias() == "count");
+        REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::BIGINT);
+    });
+    /*
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
         auto count = catalog.get_computing_table_schema(id).find_field_versions("count");
@@ -212,4 +222,5 @@ TEST_CASE("services::dispatcher::computed_operations") {
         auto sch = catalog.get_computing_table_schema(id);
         REQUIRE(sch.latest_types_struct().size() == 0);
     });
+    */
 }

@@ -2,8 +2,8 @@
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <boost/filesystem.hpp>
@@ -28,7 +28,12 @@ namespace services::wal {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config, int worker_index = 0, int worker_count = 1);
+        wal_replicate_t(std::pmr::memory_resource* resource,
+                        manager_wal_replicate_t* manager,
+                        log_t& log,
+                        configuration::config_wal config,
+                        int worker_index = 0,
+                        int worker_count = 1);
         virtual ~wal_replicate_t();
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
@@ -79,7 +84,6 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-
         virtual void write_buffer(buffer_t& buffer);
         virtual void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const;
 
@@ -126,7 +130,12 @@ namespace services::wal {
         using address_t = actor_zeta::address_t;
 
     public:
-        wal_replicate_without_disk_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* manager, log_t& log, configuration::config_wal config, int worker_index = 0, int worker_count = 1);
+        wal_replicate_without_disk_t(std::pmr::memory_resource* resource,
+                                     manager_wal_replicate_t* manager,
+                                     log_t& log,
+                                     configuration::config_wal config,
+                                     int worker_index = 0,
+                                     int worker_count = 1);
 
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
 

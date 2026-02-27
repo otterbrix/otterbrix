@@ -48,7 +48,11 @@ namespace components::expressions {
 
     scalar_type scalar_expression_t::type() const { return type_; }
 
+    key_t& scalar_expression_t::key() { return key_; }
+
     const key_t& scalar_expression_t::key() const { return key_; }
+
+    std::pmr::vector<param_storage>& scalar_expression_t::params() { return params_; }
 
     const std::pmr::vector<param_storage>& scalar_expression_t::params() const { return params_; }
 

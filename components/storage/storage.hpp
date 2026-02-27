@@ -31,17 +31,10 @@ namespace components::storage {
 
         virtual void scan(vector::data_chunk_t& output,
                           const table::table_filter_t* filter,
-                          int limit) = 0;
-        virtual void scan(vector::data_chunk_t& output,
-                          const table::table_filter_t* filter,
                           int limit,
-                          table::transaction_data /*txn*/) {
-            scan(output, filter, limit);
-        }
+                          table::transaction_data /*txn*/) = 0;
 
-        virtual void fetch(vector::data_chunk_t& output,
-                           const vector::vector_t& row_ids,
-                           uint64_t count) = 0;
+        virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
 
         virtual void scan_segment(int64_t start,
                                   uint64_t count,

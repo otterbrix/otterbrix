@@ -11,11 +11,11 @@
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 #include <memory>
-#include <thread>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <thread>
 #include <services/wal/wal_reader.hpp>
 
 namespace otterbrix {

@@ -110,22 +110,6 @@ namespace components::sql::transform {
         throw parser_exception_t{"Unknown comparison operator: " + std::string(str), ""};
     }
 
-    inline expressions::aggregate_type get_aggregate_type(std::string_view str) {
-        static const std::unordered_map<std::string_view, expressions::aggregate_type> lookup = {
-            {"count", expressions::aggregate_type::count},
-            {"sum", expressions::aggregate_type::sum},
-            {"min", expressions::aggregate_type::min},
-            {"max", expressions::aggregate_type::max},
-            {"avg", expressions::aggregate_type::avg},
-        };
-
-        if (auto it = lookup.find(str); it != lookup.end()) {
-            return it->second;
-        }
-
-        return expressions::aggregate_type::udf;
-    }
-
     inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
             // postgres built-ins

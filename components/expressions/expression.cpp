@@ -19,6 +19,10 @@ namespace components::expressions {
 
     bool expression_i::operator!=(const expression_i& rhs) const { return !operator==(rhs); }
 
+    const std::string& expression_i::result_alias() const { return result_alias_; }
+
+    void expression_i::set_result_alias(const std::string& alias) { result_alias_ = alias; }
+
     expression_i::expression_i(expression_group group)
         : group_(group) {}
 

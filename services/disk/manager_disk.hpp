@@ -347,13 +347,12 @@ namespace services::disk {
     };
 
     template<typename ReturnType, typename... Args>
+    requires actor_zeta::type_traits::is_unique_future_v<ReturnType>
     ReturnType manager_disk_t::enqueue_impl(
         actor_zeta::actor::address_t sender,
         actor_zeta::mailbox::message_id cmd,
         Args&&... args) {
 
-        static_assert(actor_zeta::type_traits::is_unique_future_v<ReturnType>,
-                      "ReturnType must be unique_future<T>");
         using R = typename actor_zeta::type_traits::is_unique_future<ReturnType>::value_type;
 
         auto [msg, future] = actor_zeta::detail::make_message<R>(
@@ -402,12 +401,10 @@ namespace services::disk {
         unique_future<void> append_database(session_id_t session, database_name_t database);
         unique_future<void> remove_database(session_id_t session, database_name_t database);
 
-        unique_future<void> append_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
-        unique_future<void> remove_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
+        unique_future<void>
+        append_collection(session_id_t session, database_name_t database, collection_name_t collection);
+        unique_future<void>
+        remove_collection(session_id_t session, database_name_t database, collection_name_t collection);
 
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
@@ -451,12 +448,12 @@ namespace services::disk {
         storage_types(session_id_t session, collection_full_name_t name);
         unique_future<uint64_t> storage_total_rows(session_id_t session, collection_full_name_t name);
         unique_future<uint64_t> storage_calculate_size(session_id_t session, collection_full_name_t name);
-        unique_future<std::vector<components::table::column_definition_t>>
-        storage_columns(session_id_t session, collection_full_name_t name);
+        unique_future<std::vector<components::table::column_definition_t>> storage_columns(session_id_t session,
+                                                                                           collection_full_name_t name);
         unique_future<bool> storage_has_schema(session_id_t session, collection_full_name_t name);
         unique_future<void> storage_adopt_schema(session_id_t session,
-                                                  collection_full_name_t name,
-                                                  std::pmr::vector<components::types::complex_logical_type> types);
+                                                 collection_full_name_t name,
+                                                 std::pmr::vector<components::types::complex_logical_type> types);
 
         // Storage data operations
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
@@ -566,8 +563,8 @@ namespace services::disk {
             /// In-memory: schema-less
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
                 : table_storage(resource)
-                , storage(std::make_unique<components::storage::table_storage_adapter_t>(
-                      table_storage.table(), resource)) {}
+                , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                         resource)) {}
 
             /// In-memory: with columns
             explicit collection_storage_entry_t(std::pmr::memory_resource* resource,
@@ -591,8 +588,8 @@ namespace services::disk {
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(
                       table_storage.table(), resource)) {}
         };
-        std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>,
-                           collection_name_hash> storages_;
+        std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
+            storages_;
 
         std::pmr::memory_resource* resource_;
         std::pmr::vector<unique_future<void>> pending_void_;

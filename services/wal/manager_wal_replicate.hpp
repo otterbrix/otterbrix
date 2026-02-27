@@ -49,8 +49,8 @@ namespace services::wal {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        [[nodiscard]]
-        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+        [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(address_pack pack);
         unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
@@ -122,8 +122,7 @@ namespace services::wal {
         actor_zeta::behavior_t current_behavior_;
     };
 
-    class manager_wal_replicate_empty_t final
-        : public actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t> {
+    class manager_wal_replicate_empty_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t> {
         using session_id_t = components::session::session_id_t;
 
     public:

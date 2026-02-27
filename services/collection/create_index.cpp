@@ -15,5 +15,4 @@ namespace services::collection::executor {
         return result;
     }
 
-
 } // namespace services::collection::executor

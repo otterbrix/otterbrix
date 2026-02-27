@@ -62,7 +62,6 @@ namespace services::wal {
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
-
         poll_pending();
 
         switch (msg->command()) {
@@ -112,27 +111,29 @@ namespace services::wal {
                 dispatchers_.emplace_back(std::move(worker));
             } else {
                 trace(log_, "manager_wal_replicate_t::create_wal_worker without disk index={}", i);
-                auto worker = actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_, i, count_worker);
+                auto worker =
+                    actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_, i, count_worker);
                 dispatchers_.emplace_back(std::move(worker));
             }
         }
     }
 
-    manager_wal_replicate_t::unique_future<std::vector<record_t>> manager_wal_replicate_t::load(
-        session_id_t session,
-        services::wal::id_t wal_id) {
+    manager_wal_replicate_t::unique_future<std::vector<record_t>>
+    manager_wal_replicate_t::load(session_id_t session, services::wal::id_t wal_id) {
         trace(log_, "manager_wal_replicate_t::load, id: {}, workers: {}", wal_id, dispatchers_.size());
         std::vector<record_t> all_records;
         for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] = actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::load, session, wal_id);
+            auto [needs_sched, future] =
+                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::load, session, wal_id);
             if (needs_sched) {
                 scheduler_->enqueue(dispatchers_[i].get());
             }
             auto records = co_await std::move(future);
             all_records.insert(all_records.end(), std::make_move_iterator(records.begin()), std::make_move_iterator(records.end()));
         }
-        std::sort(all_records.begin(), all_records.end(),
-            [](const record_t& a, const record_t& b) { return a.id < b.id; });
+        std::sort(all_records.begin(), all_records.end(), [](const record_t& a, const record_t& b) {
+            return a.id < b.id;
+        });
         co_return all_records;
     }
 
@@ -231,9 +232,10 @@ namespace services::wal {
         co_return co_await std::move(future);
     }
 
-    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(std::pmr::memory_resource* resource,
-                                                                 actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
-                                                                 log_t& log)
+    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(
+        std::pmr::memory_resource* resource,
+        actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
+        log_t& log)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
         , resource_(resource)
         , log_(log)
@@ -245,8 +247,7 @@ namespace services::wal {
 
     actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
         pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(),
-                           [](const auto& f) { return f.available(); }),
+            std::remove_if(pending_void_.begin(), pending_void_.end(), [](const auto& f) { return f.available(); }),
             pending_void_.end());
 
         switch (msg->command()) {
@@ -290,8 +291,8 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
     }
 
-    manager_wal_replicate_empty_t::unique_future<std::vector<record_t>> manager_wal_replicate_empty_t::load(
-        session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
+    manager_wal_replicate_empty_t::unique_future<std::vector<record_t>>
+    manager_wal_replicate_empty_t::load(session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
         trace(log_, "manager_wal_replicate_empty_t::load - return empty records");
         co_return std::vector<record_t>{};
     }

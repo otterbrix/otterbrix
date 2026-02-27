@@ -79,13 +79,9 @@ namespace components::operators {
         return nullptr;
     }
 
-    std::pmr::memory_resource* operator_t::resource() const noexcept {
-        return resource_;
-    }
+    std::pmr::memory_resource* operator_t::resource() const noexcept { return resource_; }
 
-    log_t& operator_t::log() noexcept {
-        return log_;
-    }
+    log_t& operator_t::log() noexcept { return log_; }
 
     operator_ptr operator_t::left() const noexcept { return left_; }
 
@@ -125,16 +121,12 @@ namespace components::operators {
 
     void operator_t::on_prepare_impl() {}
 
-    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
-        co_return;
-    }
+    actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
-    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log,
-                                               operator_type type)
+    read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type) {}
 
-    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log,
-                                                 operator_type type)
+    read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type)
         , state_(read_write_operator_state::pending) {}
 

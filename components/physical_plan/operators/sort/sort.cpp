@@ -19,10 +19,14 @@ namespace components::sort {
         functions_.emplace_back([key, order_](const std::pmr::vector<types::logical_value_t>& vec1,
                                               const std::pmr::vector<types::logical_value_t>& vec2) {
             auto pos_1 = static_cast<size_t>(
-                std::find_if(vec1.begin(), vec1.end(), [&key](const auto& val) { return val.type().has_alias() && val.type().alias() == key; }) -
+                std::find_if(vec1.begin(),
+                             vec1.end(),
+                             [&key](const auto& val) { return val.type().has_alias() && val.type().alias() == key; }) -
                 vec1.begin());
             auto pos_2 = static_cast<size_t>(
-                std::find_if(vec2.begin(), vec2.end(), [&key](const auto& val) { return val.type().has_alias() && val.type().alias() == key; }) -
+                std::find_if(vec2.begin(),
+                             vec2.end(),
+                             [&key](const auto& val) { return val.type().has_alias() && val.type().alias() == key; }) -
                 vec2.begin());
             auto k_order = static_cast<int>(order_ == order::ascending ? compare_t::more : compare_t::less);
             if (pos_1 >= vec1.size() && pos_2 >= vec2.size()) {

@@ -1,27 +1,30 @@
 #pragma once
 
+#include <functional>
 #include <unordered_map>
 #include <variant>
-#include <functional>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
-#include <actor-zeta/detail/future.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/behavior_t.hpp>
+#include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
 #include <core/executor.hpp>
 #include <mutex>
 
 #include <components/catalog/catalog.hpp>
+#include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
-#include <services/disk/result.hpp>
+#include <services/collection/context_storage.hpp>
+#include <services/collection/executor.hpp>
 #include <services/disk/disk_contract.hpp>
+#include <services/disk/result.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
@@ -45,7 +48,11 @@ namespace services::dispatcher {
 
         using run_fn_t = std::function<void()>;
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log, run_fn_t run_fn = []{ std::this_thread::yield(); });
+        manager_dispatcher_t(
+            std::pmr::memory_resource*,
+            actor_zeta::scheduler_raw,
+            log_t& log,
+            run_fn_t run_fn = [] { std::this_thread::yield(); });
         ~manager_dispatcher_t();
 
         void set_run_fn(run_fn_t fn) { run_fn_ = std::move(fn); }
@@ -54,8 +61,8 @@ namespace services::dispatcher {
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
-        [[nodiscard]]
-        std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
+        [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
+        enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
         void sync(sync_pack pack);
 
@@ -65,16 +72,20 @@ namespace services::dispatcher {
 
         components::catalog::catalog& mutable_catalog() { return catalog_; }
 
-        unique_future<components::cursor::cursor_t_ptr> execute_plan(
-            components::session::session_id_t session,
-            components::logical_plan::node_ptr plan,
-            components::logical_plan::parameter_node_ptr params);
-        unique_future<size_t> size(components::session::session_id_t session,
-                                   std::string database_name,
-                                   std::string collection);
-        unique_future<components::cursor::cursor_t_ptr> get_schema(
-            components::session::session_id_t session,
-            std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
+        unique_future<components::cursor::cursor_t_ptr>
+        execute_plan(components::session::session_id_t session,
+                     components::logical_plan::node_ptr plan,
+                     components::logical_plan::parameter_node_ptr params);
+        unique_future<size_t>
+        size(components::session::session_id_t session, std::string database_name, std::string collection);
+        unique_future<components::cursor::cursor_t_ptr>
+        get_schema(components::session::session_id_t session,
+                   std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
+        unique_future<bool> register_udf(components::session::session_id_t session,
+                                         components::compute::function_ptr function);
+        unique_future<bool> unregister_udf(components::session::session_id_t session,
+                                           std::string function_name,
+                                           std::pmr::vector<components::types::complex_logical_type> inputs);
         unique_future<void> close_cursor(components::session::session_id_t session);
 
         // Transaction lifecycle (actor-callable by executor)
@@ -87,6 +98,8 @@ namespace services::dispatcher {
             &manager_dispatcher_t::execute_plan,
             &manager_dispatcher_t::size,
             &manager_dispatcher_t::get_schema,
+            &manager_dispatcher_t::register_udf,
+            &manager_dispatcher_t::unregister_udf,
             &manager_dispatcher_t::close_cursor,
             &manager_dispatcher_t::begin_transaction,
             &manager_dispatcher_t::commit_transaction,
@@ -100,7 +113,7 @@ namespace services::dispatcher {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
-        run_fn_t run_fn_;  // Yield function for cooperative scheduling
+        run_fn_t run_fn_; // Yield function for cooperative scheduling
         components::catalog::catalog catalog_;
 
         static constexpr std::size_t executor_pool_size_ = 4;
@@ -121,19 +134,17 @@ namespace services::dispatcher {
         components::table::transaction_manager_t txn_manager_;
         recomputed_types update_result_;
 
-        components::cursor::cursor_t_ptr check_namespace_exists(const components::catalog::table_id id) const;
-        components::cursor::cursor_t_ptr check_collection_exists(const components::catalog::table_id id) const;
-        components::cursor::cursor_t_ptr check_type_exists(const std::string& alias) const;
-        components::cursor::cursor_t_ptr
-        check_collections_format_(components::logical_plan::node_ptr& logical_plan) const;
-
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
         void update_catalog(components::logical_plan::node_ptr node);
 
-        services::collection::executor::execute_result_t create_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t drop_database_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t create_collection_(components::logical_plan::node_ptr logical_plan);
-        services::collection::executor::execute_result_t drop_collection_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        create_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        drop_database_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        create_collection_(components::logical_plan::node_ptr logical_plan);
+        services::collection::executor::execute_result_t
+        drop_collection_(components::logical_plan::node_ptr logical_plan);
 
         unique_future<services::collection::executor::execute_result_t> execute_plan_impl(
             components::session::session_id_t session,
@@ -145,6 +156,7 @@ namespace services::dispatcher {
         std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
         std::pmr::vector<unique_future<size_t>> pending_size_;
         std::pmr::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
+        std::pmr::vector<unique_future<services::collection::executor::function_result_t>> pending_signatures_;
 
         void poll_pending();
 

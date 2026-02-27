@@ -8,13 +8,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
 
-        operators/aggregate/aggregate_helpers.cpp
         operators/aggregate/operator_aggregate.cpp
-        operators/aggregate/operator_count.cpp
-        operators/aggregate/operator_min.cpp
-        operators/aggregate/operator_max.cpp
-        operators/aggregate/operator_sum.cpp
-        operators/aggregate/operator_avg.cpp
+        operators/aggregate/operator_func.cpp
 
         operators/get/operator_get.cpp
         operators/get/simple_value.cpp
@@ -23,6 +18,8 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
+        operators/predicates/function_predicate.cpp
+        operators/predicates/utils.cpp
 
         operators/scan/full_scan.cpp
         operators/scan/index_scan.cpp

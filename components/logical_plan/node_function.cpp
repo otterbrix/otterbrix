@@ -19,6 +19,10 @@ namespace components::logical_plan {
 
     const std::pmr::vector<expressions::param_storage>& node_function_t::args() const noexcept { return args_; }
 
+    void node_function_t::add_function_uid(compute::function_uid uid) { function_uid_ = uid; }
+
+    compute::function_uid node_function_t::function_uid() const { return function_uid_; }
+
     hash_t node_function_t::hash_impl() const { return 0; }
 
     std::string node_function_t::to_string_impl() const {

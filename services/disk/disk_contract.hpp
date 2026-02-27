@@ -1,8 +1,8 @@
 #pragma once
 
-#include <actor-zeta/detail/future.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/address.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
+#include <actor-zeta/detail/future.hpp>
 
 #include <components/base/collection_full_name.hpp>
 #include <components/context/execution_context.hpp>
@@ -35,12 +35,10 @@ namespace services::disk {
         actor_zeta::unique_future<void> append_database(session_id_t session, database_name_t database);
         actor_zeta::unique_future<void> remove_database(session_id_t session, database_name_t database);
 
-        actor_zeta::unique_future<void> append_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
-        actor_zeta::unique_future<void> remove_collection(session_id_t session,
-                                              database_name_t database,
-                                              collection_name_t collection);
+        actor_zeta::unique_future<void>
+        append_collection(session_id_t session, database_name_t database, collection_name_t collection);
+        actor_zeta::unique_future<void>
+        remove_collection(session_id_t session, database_name_t database, collection_name_t collection);
 
         actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
 

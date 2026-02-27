@@ -15,6 +15,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_production_scenarios.cpp
         test_join.cpp
         test_connections.cpp
+        test_udfs.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

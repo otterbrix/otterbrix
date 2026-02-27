@@ -4,8 +4,8 @@
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
-#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
+#include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
 #include <core/executor.hpp>
@@ -25,7 +25,6 @@ namespace services::index {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;
         using value_t = components::types::logical_value_t;
-
 
     public:
         template<typename T>

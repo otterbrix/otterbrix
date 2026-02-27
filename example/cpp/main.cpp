@@ -155,13 +155,19 @@ TEST_CASE("example::sql::group_by") {
                              R"_(GROUP BY name;)_");
         REQUIRE(c->size() == 10);
         for (size_t number = 0; number < c->size(); ++number) {
-            auto name = std::string(c->chunk_data().value(c->chunk_data().column_index("name"), number).value<std::string_view>());
+            auto name = std::string(
+                c->chunk_data().value(c->chunk_data().column_index("name"), number).value<std::string_view>());
             REQUIRE(name == "Name " + std::to_string(number));
             REQUIRE(c->chunk_data().value(c->chunk_data().column_index("count_"), number).value<uint64_t>() == 10);
-            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), number).value<int64_t>() == 5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->chunk_data().value(c->chunk_data().column_index("avg_"), number).value<double>()) == (static_cast<int64_t>(number) % 20 + (static_cast<int64_t>(number) + 10) % 20) / 2);
-            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("min_"), number).value<int64_t>() == static_cast<int64_t>(number) % 20);
-            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), number).value<int64_t>() ==
+                    5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
+            REQUIRE(static_cast<int64_t>(
+                        c->chunk_data().value(c->chunk_data().column_index("avg_"), number).value<double>()) ==
+                    (static_cast<int64_t>(number) % 20 + (static_cast<int64_t>(number) + 10) % 20) / 2);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("min_"), number).value<int64_t>() ==
+                    static_cast<int64_t>(number) % 20);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), number).value<int64_t>() ==
+                    (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -176,13 +182,18 @@ TEST_CASE("example::sql::group_by") {
         REQUIRE(c->size() == 10);
         for (size_t i = 0; i < c->size(); ++i) {
             int number = 9 - static_cast<int>(i);
-            auto name = std::string(c->chunk_data().value(c->chunk_data().column_index("name"), i).value<std::string_view>());
+            auto name =
+                std::string(c->chunk_data().value(c->chunk_data().column_index("name"), i).value<std::string_view>());
             REQUIRE(name == "Name " + std::to_string(number));
             REQUIRE(c->chunk_data().value(c->chunk_data().column_index("count_"), i).value<uint64_t>() == 10);
-            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), i).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->chunk_data().value(c->chunk_data().column_index("avg_"), i).value<double>()) == (number % 20 + (number + 10) % 20) / 2);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("sum_"), i).value<int64_t>() ==
+                    5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(
+                static_cast<int64_t>(c->chunk_data().value(c->chunk_data().column_index("avg_"), i).value<double>()) ==
+                (number % 20 + (number + 10) % 20) / 2);
             REQUIRE(c->chunk_data().value(c->chunk_data().column_index("min_"), i).value<int64_t>() == number % 20);
-            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), i).value<int64_t>() == (number + 10) % 20);
+            REQUIRE(c->chunk_data().value(c->chunk_data().column_index("max_"), i).value<int64_t>() ==
+                    (number + 10) % 20);
         }
     }
 }

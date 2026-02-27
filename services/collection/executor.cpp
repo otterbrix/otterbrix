@@ -41,7 +41,9 @@ namespace services::collection::executor {
         , txn_manager_(txn_manager)
         , log_(log)
         , pending_void_(resource)
-        , pending_execute_(resource) {}
+        , pending_execute_(resource) {
+        register_default_functions(function_registry_);
+    }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
         poll_pending();
@@ -49,6 +51,10 @@ namespace services::collection::executor {
         switch (msg->command()) {
             case actor_zeta::msg_id<executor_t, &executor_t::execute_plan>: {
                 co_await actor_zeta::dispatch(this, &executor_t::execute_plan, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
+                co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
                 break;
             }
             default:
@@ -128,10 +134,7 @@ namespace services::collection::executor {
                     }
                 }
             }
-            co_return execute_result_t{
-                make_cursor(resource(), operation_status_t::success),
-                {}
-            };
+            co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
         }
 
         if (logical_plan->type() == node_type::drop_index_t) {
@@ -172,7 +175,7 @@ namespace services::collection::executor {
             }
         }
 
-        components::operators::operator_ptr plan = planner::create_plan(context_storage, logical_plan, limit, &parameters);
+        components::operators::operator_ptr plan = planner::create_plan(context_storage, function_registry_, logical_plan, limit, &parameters);
 
         if (!plan) {
             if (is_dml) {
@@ -330,6 +333,17 @@ namespace services::collection::executor {
         co_return execute_result_t{std::move(result.cursor), std::move(result.updates)};
     }
 
+    executor_t::unique_future<function_result_t> executor_t::register_udf(components::session::session_id_t session,
+                                                                          components::compute::function_ptr function) {
+        trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
+        std::string name = function->name();
+        auto signatures = function->get_signatures();
+        auto res = function_registry_.add_function(std::move(function));
+        if (res.status() == components::compute::compute_status::ok()) {
+            co_return res.value();
+        }
+        co_return components::compute::invalid_function_uid;
+    }
 
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
                                       components::logical_plan::storage_parameters&& parameters,
@@ -478,7 +492,9 @@ namespace services::collection::executor {
                     break;
             }
 
-            if (cursor->is_error()) break;
+            if (cursor->is_error()) {
+                break;
+            }
 
             if (pipeline_context.has_pending_disk_futures()) {
                 auto disk_futures = pipeline_context.take_pending_disk_futures();

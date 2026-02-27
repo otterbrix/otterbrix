@@ -29,7 +29,12 @@ namespace services::wal {
 
     std::size_t next_index(std::size_t index, size_tt size) { return index + size + sizeof(size_tt) + sizeof(crc32_t); }
 
-    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource, manager_wal_replicate_t* /*manager*/, log_t& log, configuration::config_wal config, int worker_index, int worker_count)
+    wal_replicate_t::wal_replicate_t(std::pmr::memory_resource* resource,
+                                     manager_wal_replicate_t* /*manager*/,
+                                     log_t& log,
+                                     configuration::config_wal config,
+                                     int worker_index,
+                                     int worker_count)
         : actor_zeta::basic_actor<wal_replicate_t>(resource)
         , log_(log.clone())
         , config_(std::move(config))
@@ -144,10 +149,8 @@ namespace services::wal {
         return buffer;
     }
 
-    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_t::load(
-        session_id_t session,
-        services::wal::id_t wal_id
-    ) {
+    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_t::load(session_id_t session,
+                                                                                services::wal::id_t wal_id) {
         trace(log_, "wal_replicate_t::load, session: {}, id: {}", session.data(), wal_id);
         std::size_t start_index = 0;
         next_id(wal_id, 1);
@@ -210,7 +213,7 @@ namespace services::wal {
     }
 
     bool wal_replicate_t::find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const {
-        if (wal_id == 0) return false;
+        if (wal_id == 0) {return false;}
         start_index = 0;
         auto id = read_id(start_index);
         while (id > 0 && id < wal_id) {
@@ -485,10 +488,8 @@ namespace services::wal {
                                                                int worker_count)
         : wal_replicate_t(resource, manager, log, std::move(config), worker_index, worker_count) {}
 
-    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(
-        session_id_t /*session*/,
-        services::wal::id_t
-    ) {
+    wal_replicate_t::unique_future<std::vector<record_t>> wal_replicate_without_disk_t::load(session_id_t /*session*/,
+                                                                                             services::wal::id_t) {
         co_return std::vector<record_t>{};
     }
 

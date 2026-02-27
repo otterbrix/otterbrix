@@ -4,7 +4,11 @@ namespace components::catalog {
     catalog::catalog(std::pmr::memory_resource* resource)
         : namespaces_(resource)
         , transactions_(std::make_shared<transaction_list>(resource))
-        , resource_(resource) {}
+        , resource_(resource) {
+        for (const auto& [func_name, uid] : compute::DEFAULT_FUNCTIONS) {
+            create_function(func_name, uid);
+        }
+    }
 
     std::pmr::vector<table_namespace_t> catalog::list_namespaces() const { return namespaces_.list_root_namespaces(); }
 
@@ -48,6 +52,13 @@ namespace components::catalog {
     }
 
     computed_schema& catalog::get_computing_table_schema(const table_id& id) {
+        auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
+        auto it = info.find(id.table_name());
+        assert(it != info.end());
+        return it->second;
+    }
+
+    const computed_schema& catalog::get_computing_table_schema(const table_id& id) const {
         auto& info = namespaces_.get_namespace_info(id.get_namespace()).computing;
         auto it = info.find(id.table_name());
         assert(it != info.end());
@@ -107,6 +118,33 @@ namespace components::catalog {
 
     const types::complex_logical_type& catalog::get_type(const std::string& alias) const {
         return namespaces_.get_type(alias);
+    }
+
+    void catalog::create_function(const std::string& alias, compute::registered_func_id uid) {
+        namespaces_.create_function(alias, std::move(uid));
+    }
+
+    void catalog::drop_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) {
+        namespaces_.drop_function(alias, inputs);
+    }
+
+    bool catalog::check_function_conflicts(const std::string& alias,
+                                           const std::vector<compute::kernel_signature_t>& signatures) const {
+        return namespaces_.check_function_conflicts(alias, signatures);
+    }
+
+    bool catalog::function_name_exists(const std::string& alias) const {
+        return namespaces_.function_name_exists(alias);
+    }
+
+    bool catalog::function_exists(const std::string& alias,
+                                  const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        return namespaces_.function_exists(alias, inputs);
+    }
+
+    std::pair<compute::function_uid, compute::kernel_signature_t>
+    catalog::get_function(const std::string& alias, const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        return namespaces_.get_function(alias, inputs);
     }
 
     template<catalog::schema_type type>

@@ -15,10 +15,11 @@ namespace components::sort {
 
     class columnar_sorter_t {
         struct sort_key {
-            size_t col_idx = 0;
+            std::vector<size_t> col_path;
             std::string col_name;
             order order_ = order::ascending;
             bool by_name = false;
+            bool resolved = false;
         };
 
     public:
@@ -33,8 +34,20 @@ namespace components::sort {
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                auto va = chunk_->value(k.col_idx, row_a);
-                auto vb = chunk_->value(k.col_idx, row_b);
+                if (!k.resolved) {
+                    continue;
+                }
+                types::logical_value_t va(nullptr, types::complex_logical_type{types::logical_type::NA});
+                types::logical_value_t vb(nullptr, types::complex_logical_type{types::logical_type::NA});
+                if (k.col_path.size() == 1) {
+                    va = chunk_->value(k.col_path[0], row_a);
+                    vb = chunk_->value(k.col_path[0], row_b);
+                } else {
+                    std::pmr::vector<size_t> pmr_path(k.col_path.begin(), k.col_path.end(),
+                                                      chunk_->resource());
+                    va = chunk_->value(pmr_path, row_a);
+                    vb = chunk_->value(pmr_path, row_b);
+                }
                 auto cmp = va.compare(vb);
                 auto k_order =
                     static_cast<int>(k.order_ == order::ascending ? compare_t::more : compare_t::less);

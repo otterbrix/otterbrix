@@ -473,6 +473,14 @@ namespace components::types {
                     return data_ < rhs.data_;
                 case logical_type::STRING_LITERAL:
                     return *str_ptr() < *rhs.str_ptr();
+                case logical_type::STRUCT:
+                case logical_type::LIST:
+                case logical_type::ARRAY:
+                case logical_type::MAP: {
+                    auto& lv = *vec_ptr();
+                    auto& rv = *rhs.vec_ptr();
+                    return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
+                }
                 default:
                     return false;
             }

@@ -10,6 +10,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_index.cpp
         test_disk_index.cpp
         test_wal_pool.cpp
+        test_persistence.cpp
+        test_sql_features.cpp
+        test_production_scenarios.cpp
         test_join.cpp
         test_connections.cpp
         test_udfs.cpp

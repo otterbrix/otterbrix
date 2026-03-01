@@ -1,5 +1,7 @@
 #include "column_segment.hpp"
 
+#include <cstring>
+
 #include "column_state.hpp"
 #include "storage/block_manager.hpp"
 #include "storage/buffer_handle.hpp"
@@ -470,6 +472,264 @@ namespace components::table {
             result.set_data(source_data);
         }
 
+        // --- CONSTANT compression scan helpers (generic, size-based) ---
+
+        void constant_scan_entire(column_segment_t& segment,
+                                  column_scan_state& state,
+                                  uint64_t scan_count,
+                                  vector::vector_t& result) {
+            auto* src = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data();
+            for (uint64_t i = 0; i < scan_count; i++) {
+                std::memcpy(dest + i * ts, src, ts);
+            }
+        }
+
+        void constant_scan_partial(column_segment_t& segment,
+                                   column_scan_state& state,
+                                   uint64_t scan_count,
+                                   vector::vector_t& result,
+                                   uint64_t result_offset) {
+            auto* src = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data() + result_offset * ts;
+            for (uint64_t i = 0; i < scan_count; i++) {
+                std::memcpy(dest + i * ts, src, ts);
+            }
+        }
+
+        void constant_fetch_row(column_segment_t& segment,
+                                column_fetch_state&,
+                                vector::vector_t& result,
+                                uint64_t result_idx) {
+            auto& buffer_manager = segment.block->block_manager.buffer_manager;
+            auto handle = buffer_manager.pin(segment.block);
+            auto* src = handle.ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            std::memcpy(result.data() + result_idx * ts, src, ts);
+        }
+
+        // --- RLE compression scan helpers ---
+        // RLE format: [uint32_t num_runs][value(ts) + run_length(4)]...
+
+        void rle_scan_entire(column_segment_t& segment,
+                             column_scan_state& state,
+                             uint64_t scan_count,
+                             vector::vector_t& result) {
+            auto* base = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
+
+            uint32_t num_runs;
+            std::memcpy(&num_runs, base, sizeof(uint32_t));
+            auto* ptr = base + sizeof(uint32_t);
+            auto entry_size = ts + sizeof(uint32_t);
+
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data();
+
+            // Skip to the run containing row_offset
+            uint64_t rows_skipped = 0;
+            uint32_t run_idx = 0;
+            while (run_idx < num_runs) {
+                uint32_t run_len;
+                std::memcpy(&run_len, ptr + run_idx * entry_size + ts, sizeof(uint32_t));
+                if (rows_skipped + run_len > row_offset) {
+                    break;
+                }
+                rows_skipped += run_len;
+                run_idx++;
+            }
+
+            // Emit scan_count values
+            uint64_t emitted = 0;
+            uint64_t pos_in_run = row_offset - rows_skipped;
+            while (emitted < scan_count && run_idx < num_runs) {
+                auto* value_ptr = ptr + run_idx * entry_size;
+                uint32_t run_len;
+                std::memcpy(&run_len, value_ptr + ts, sizeof(uint32_t));
+                uint64_t remaining_in_run = run_len - pos_in_run;
+                uint64_t to_emit = std::min(remaining_in_run, scan_count - emitted);
+                for (uint64_t i = 0; i < to_emit; i++) {
+                    std::memcpy(dest + (emitted + i) * ts, value_ptr, ts);
+                }
+                emitted += to_emit;
+                pos_in_run = 0;
+                run_idx++;
+            }
+        }
+
+        void rle_scan_partial(column_segment_t& segment,
+                              column_scan_state& state,
+                              uint64_t scan_count,
+                              vector::vector_t& result,
+                              uint64_t result_offset) {
+            auto* base = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
+
+            uint32_t num_runs;
+            std::memcpy(&num_runs, base, sizeof(uint32_t));
+            auto* ptr = base + sizeof(uint32_t);
+            auto entry_size = ts + sizeof(uint32_t);
+
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data() + result_offset * ts;
+
+            uint64_t rows_skipped = 0;
+            uint32_t run_idx = 0;
+            while (run_idx < num_runs) {
+                uint32_t run_len;
+                std::memcpy(&run_len, ptr + run_idx * entry_size + ts, sizeof(uint32_t));
+                if (rows_skipped + run_len > row_offset) {
+                    break;
+                }
+                rows_skipped += run_len;
+                run_idx++;
+            }
+
+            uint64_t emitted = 0;
+            uint64_t pos_in_run = row_offset - rows_skipped;
+            while (emitted < scan_count && run_idx < num_runs) {
+                auto* value_ptr = ptr + run_idx * entry_size;
+                uint32_t run_len;
+                std::memcpy(&run_len, value_ptr + ts, sizeof(uint32_t));
+                uint64_t remaining_in_run = run_len - pos_in_run;
+                uint64_t to_emit = std::min(remaining_in_run, scan_count - emitted);
+                for (uint64_t i = 0; i < to_emit; i++) {
+                    std::memcpy(dest + (emitted + i) * ts, value_ptr, ts);
+                }
+                emitted += to_emit;
+                pos_in_run = 0;
+                run_idx++;
+            }
+        }
+
+        void rle_fetch_row(column_segment_t& segment,
+                           column_fetch_state&,
+                           int64_t row_id,
+                           vector::vector_t& result,
+                           uint64_t result_idx) {
+            auto& buffer_manager = segment.block->block_manager.buffer_manager;
+            auto handle = buffer_manager.pin(segment.block);
+            auto* base = handle.ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+
+            uint32_t num_runs;
+            std::memcpy(&num_runs, base, sizeof(uint32_t));
+            auto* ptr = base + sizeof(uint32_t);
+            auto entry_size = ts + sizeof(uint32_t);
+
+            uint64_t rows_skipped = 0;
+            for (uint32_t i = 0; i < num_runs; i++) {
+                uint32_t run_len;
+                std::memcpy(&run_len, ptr + i * entry_size + ts, sizeof(uint32_t));
+                if (rows_skipped + run_len > static_cast<uint64_t>(row_id)) {
+                    std::memcpy(result.data() + result_idx * ts, ptr + i * entry_size, ts);
+                    return;
+                }
+                rows_skipped += run_len;
+            }
+        }
+
+        // --- DICTIONARY compression scan helpers ---
+        // Format: [uint16_t num_unique][values(num_unique * ts)][indices(count * idx_size)]
+        // idx_size = 1 if num_unique <= 256, else 2
+
+        void dict_scan_entire(column_segment_t& segment,
+                              column_scan_state& state,
+                              uint64_t scan_count,
+                              vector::vector_t& result) {
+            auto* base = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
+
+            uint16_t num_unique;
+            std::memcpy(&num_unique, base, sizeof(uint16_t));
+            auto* dict_values = base + sizeof(uint16_t);
+            auto* indices = dict_values + num_unique * ts;
+            bool use_uint8 = (num_unique <= 256);
+            uint64_t idx_size = use_uint8 ? 1 : 2;
+
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data();
+
+            for (uint64_t i = 0; i < scan_count; i++) {
+                uint16_t dict_idx;
+                if (use_uint8) {
+                    uint8_t u8;
+                    std::memcpy(&u8, indices + (row_offset + i) * idx_size, 1);
+                    dict_idx = u8;
+                } else {
+                    std::memcpy(&dict_idx, indices + (row_offset + i) * idx_size, 2);
+                }
+                std::memcpy(dest + i * ts, dict_values + dict_idx * ts, ts);
+            }
+        }
+
+        void dict_scan_partial(column_segment_t& segment,
+                               column_scan_state& state,
+                               uint64_t scan_count,
+                               vector::vector_t& result,
+                               uint64_t result_offset) {
+            auto* base = state.scan_state->ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+            auto row_offset = static_cast<uint64_t>(segment.relative_index(state.row_index));
+
+            uint16_t num_unique;
+            std::memcpy(&num_unique, base, sizeof(uint16_t));
+            auto* dict_values = base + sizeof(uint16_t);
+            auto* indices = dict_values + num_unique * ts;
+            bool use_uint8 = (num_unique <= 256);
+            uint64_t idx_size = use_uint8 ? 1 : 2;
+
+            result.set_vector_type(vector::vector_type::FLAT);
+            auto* dest = result.data() + result_offset * ts;
+
+            for (uint64_t i = 0; i < scan_count; i++) {
+                uint16_t dict_idx;
+                if (use_uint8) {
+                    uint8_t u8;
+                    std::memcpy(&u8, indices + (row_offset + i) * idx_size, 1);
+                    dict_idx = u8;
+                } else {
+                    std::memcpy(&dict_idx, indices + (row_offset + i) * idx_size, 2);
+                }
+                std::memcpy(dest + i * ts, dict_values + dict_idx * ts, ts);
+            }
+        }
+
+        void dict_fetch_row(column_segment_t& segment,
+                            column_fetch_state&,
+                            int64_t row_id,
+                            vector::vector_t& result,
+                            uint64_t result_idx) {
+            auto& buffer_manager = segment.block->block_manager.buffer_manager;
+            auto handle = buffer_manager.pin(segment.block);
+            auto* base = handle.ptr() + segment.block_offset();
+            auto ts = segment.type_size;
+
+            uint16_t num_unique;
+            std::memcpy(&num_unique, base, sizeof(uint16_t));
+            auto* dict_values = base + sizeof(uint16_t);
+            auto* indices = dict_values + num_unique * ts;
+            bool use_uint8 = (num_unique <= 256);
+            uint64_t idx_size = use_uint8 ? 1 : 2;
+
+            uint16_t dict_idx;
+            if (use_uint8) {
+                uint8_t u8;
+                std::memcpy(&u8, indices + static_cast<uint64_t>(row_id) * idx_size, 1);
+                dict_idx = u8;
+            } else {
+                std::memcpy(&dict_idx, indices + static_cast<uint64_t>(row_id) * idx_size, 2);
+            }
+            std::memcpy(result.data() + result_idx * ts, dict_values + dict_idx * ts, ts);
+        }
+
         void validity_scan_partial(column_segment_t& segment,
                                    column_scan_state& state,
                                    uint64_t scan_count,
@@ -611,7 +871,8 @@ namespace components::table {
         , block(std::move(block))
         , block_id_(block_id)
         , offset_(offset)
-        , segment_size_(segment_size) {
+        , segment_size_(segment_size)
+        , segment_statistics_(std::pmr::get_default_resource()) {
         assert(!block || segment_size_ <= block_manager().block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
@@ -645,7 +906,8 @@ namespace components::table {
         , block_id_(other.block_id_)
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
-        , segment_state_(std::move(other.segment_state_)) {
+        , segment_state_(std::move(other.segment_state_))
+        , segment_statistics_(std::move(other.segment_statistics_)) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -657,7 +919,8 @@ namespace components::table {
         , block_id_(other.block_id_)
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
-        , segment_state_(std::move(other.segment_state_)) {
+        , segment_state_(std::move(other.segment_state_))
+        , segment_statistics_(std::move(other.segment_statistics_)) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -712,6 +975,18 @@ namespace components::table {
         }
     }
     bool column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
+        if (compression_ == compression::compression_type::CONSTANT) {
+            // For CONSTANT segments, all rows have the same value at offset 0.
+            // Rewrite row_id to 0 so the check reads from the single stored value.
+            row_id = start;
+        }
+        if (compression_ == compression::compression_type::RLE ||
+            compression_ == compression::compression_type::DICTIONARY) {
+            // For compressed segments, per-row predicate check on raw block data doesn't work.
+            // Return true (accept the row) — correctness is maintained by the filter
+            // evaluating on the fully scanned/decompressed data.
+            return true;
+        }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
                 return impl::fixed_size_check_row<bool>(*this, static_cast<int64_t>(row_id - start), filter);
@@ -760,6 +1035,18 @@ namespace components::table {
                                      int64_t row_id,
                                      vector::vector_t& result,
                                      uint64_t result_idx) {
+        if (compression_ == compression::compression_type::CONSTANT) {
+            impl::constant_fetch_row(*this, state, result, result_idx);
+            return;
+        }
+        if (compression_ == compression::compression_type::RLE) {
+            impl::rle_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
+            return;
+        }
+        if (compression_ == compression::compression_type::DICTIONARY) {
+            impl::dict_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
+            return;
+        }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -1232,6 +1519,18 @@ namespace components::table {
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
+        if (compression_ == compression::compression_type::CONSTANT) {
+            impl::constant_scan_entire(*this, state, scan_count, result);
+            return;
+        }
+        if (compression_ == compression::compression_type::RLE) {
+            impl::rle_scan_entire(*this, state, scan_count, result);
+            return;
+        }
+        if (compression_ == compression::compression_type::DICTIONARY) {
+            impl::dict_scan_entire(*this, state, scan_count, result);
+            return;
+        }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -1291,6 +1590,18 @@ namespace components::table {
                                         uint64_t scan_count,
                                         vector::vector_t& result,
                                         uint64_t result_offset) {
+        if (compression_ == compression::compression_type::CONSTANT) {
+            impl::constant_scan_partial(*this, state, scan_count, result, result_offset);
+            return;
+        }
+        if (compression_ == compression::compression_type::RLE) {
+            impl::rle_scan_partial(*this, state, scan_count, result, result_offset);
+            return;
+        }
+        if (compression_ == compression::compression_type::DICTIONARY) {
+            impl::dict_scan_partial(*this, state, scan_count, result, result_offset);
+            return;
+        }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:

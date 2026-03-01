@@ -7,12 +7,12 @@ namespace components::operators {
         , name_(std::move(name)) {}
 
     void operator_insert::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        // Insert logic (schema adoption, column expansion, dedup, append) is now handled
-        // by executor via send(disk_address_, &manager_disk_t::storage_append).
-        // This operator just passes data from the left child (raw_data).
         if (left_ && left_->output()) {
             output_ = left_->output();
             modified_ = operators::make_operator_write_data(resource());
+        }
+        if (output_ && output_->size() > 0 && !name_.empty()) {
+            async_wait();
         }
     }
 

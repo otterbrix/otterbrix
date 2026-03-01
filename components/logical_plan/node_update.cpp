@@ -1,9 +1,6 @@
 #include "node_update.hpp"
 #include "node_limit.hpp"
 #include "node_match.hpp"
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
-
 #include <sstream>
 
 namespace components::logical_plan {
@@ -29,38 +26,6 @@ namespace components::logical_plan {
 
     const collection_full_name_t& node_update_t::collection_from() const { return collection_from_; }
 
-    node_update_ptr node_update_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto collection_to = deserializer->deserialize_collection(1);
-        auto collection_from = deserializer->deserialize_collection(2);
-
-        deserializer->advance_array(3);
-        deserializer->advance_array(0);
-        auto match = node_match_t::deserialize(deserializer);
-        deserializer->pop_array();
-        deserializer->advance_array(1);
-        auto limit = node_limit_t::deserialize(deserializer);
-        deserializer->pop_array();
-        deserializer->pop_array();
-
-        deserializer->advance_array(4);
-        std::pmr::vector<expressions::update_expr_ptr> updates(deserializer->resource());
-        updates.reserve(deserializer->current_array_size());
-        for (size_t i = 0; i < deserializer->current_array_size(); i++) {
-            deserializer->advance_array(i);
-            updates.emplace_back(expressions::update_expr_t::deserialize(deserializer));
-            deserializer->pop_array();
-        }
-        deserializer->pop_array();
-        auto upsert = deserializer->deserialize_bool(5);
-        return make_node_update(deserializer->resource(),
-                                collection_to,
-                                collection_from,
-                                match,
-                                limit,
-                                updates,
-                                upsert);
-    }
-
     hash_t node_update_t::hash_impl() const { return 0; }
 
     std::string node_update_t::to_string_impl() const {
@@ -81,25 +46,6 @@ namespace components::logical_plan {
         }
         stream << "}";
         return stream.str();
-    }
-
-    void node_update_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(6);
-        serializer->append_enum(serializer::serialization_type::logical_node_update);
-        serializer->append(collection_);
-        serializer->append(collection_from_);
-        serializer->start_array(children_.size());
-        for (const auto& n : children_) {
-            n->serialize(serializer);
-        }
-        serializer->end_array();
-        serializer->start_array(update_expressions_.size());
-        for (const auto& expr : update_expressions_) {
-            expr->serialize(serializer);
-        }
-        serializer->end_array();
-        serializer->append(upsert_);
-        serializer->end_array();
     }
 
     node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,

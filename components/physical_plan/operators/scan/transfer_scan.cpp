@@ -24,7 +24,8 @@ namespace components::operators {
                                          ctx->session,
                                          name_,
                                          std::unique_ptr<table::table_filter_t>(nullptr),
-                                         limit_val);
+                                         limit_val,
+                                         ctx->txn);
         auto data = co_await std::move(sf);
 
         if (data) {

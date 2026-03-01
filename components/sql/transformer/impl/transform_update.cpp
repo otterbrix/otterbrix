@@ -186,10 +186,13 @@ namespace components::sql::transform {
 
         // where
         if (node.whereClause) {
-            match =
-                logical_plan::make_node_match(resource_,
-                                              names.left_name,
-                                              transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params));
+            expressions::expression_ptr where_expr;
+            if (nodeTag(node.whereClause) == T_NullTest) {
+                where_expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, params);
+            } else {
+                where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
+            }
+            match = logical_plan::make_node_match(resource_, names.left_name, where_expr);
         } else {
             match = logical_plan::make_node_match(resource_,
                                                   names.left_name,

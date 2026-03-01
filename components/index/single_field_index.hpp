@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 
 #include <core/btree/btree.hpp>
 
@@ -40,10 +41,26 @@ namespace components::index {
         iterator cbegin_impl() const final;
         iterator cend_impl() const final;
 
+        void insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) final;
+        void mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) final;
+        void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) final;
+        void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) final;
+        void revert_insert_impl(uint64_t txn_id) final;
+        void cleanup_versions_impl(uint64_t lowest_active) final;
+        void for_each_pending_insert_impl(uint64_t txn_id,
+                                          const std::function<void(const value_t&, int64_t)>& fn) const final;
+        void for_each_pending_delete_impl(uint64_t txn_id,
+                                          const std::function<void(const value_t&, int64_t)>& fn) const final;
+
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 
     private:
         storage_t storage_;
+
+        // Pending txn tracking for O(k) commit/revert
+        using pending_entry = std::pair<value_t, int64_t>; // key, row_index
+        std::unordered_map<uint64_t, std::vector<pending_entry>> pending_inserts_;
+        std::unordered_map<uint64_t, std::vector<pending_entry>> pending_deletes_;
     };
 
 } // namespace components::index

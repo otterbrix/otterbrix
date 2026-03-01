@@ -16,38 +16,9 @@ namespace components::serializer {
 
     enum class serialization_type : uint8_t
     {
-        logical_node_aggregate,
-        logical_node_create_collection,
-        logical_node_create_database,
-        logical_node_create_index,
-        logical_node_create_type,
-        logical_node_data,
-        logical_node_delete,
-        logical_node_drop_collection,
-        logical_node_drop_database,
-        logical_node_drop_index,
-        logical_node_drop_type,
-        logical_node_insert,
-        logical_node_join,
-        logical_node_limit,
-        logical_node_match,
-        logical_node_group,
-        logical_node_sort,
-        logical_node_function,
-        logical_node_update,
+        logical_node_create_index = 3,
 
-        expression_compare,
-        expression_aggregate,
-        expression_scalar,
-        expression_sort,
-        expression_update,
-        expression_function,
-
-        parameters,
-
-        complex_logical_type,
-
-        invalid = 255
+        complex_logical_type = 27
     };
 
     class msgpack_serializer_t {

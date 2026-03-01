@@ -3,11 +3,15 @@
 #include <components/types/types.hpp>
 
 #include "array_column_data.hpp"
+#include "column_checkpoint_state.hpp"
+#include "column_data_checkpointer.hpp"
 #include "column_state.hpp"
 #include "list_column_data.hpp"
+#include "persistent_column_data.hpp"
 #include "row_group.hpp"
 #include "standard_column_data.hpp"
 #include "storage/block_manager.hpp"
+#include "storage/partial_block_manager.hpp"
 #include "struct_column_data.hpp"
 #include "validity_column_data.hpp"
 
@@ -25,9 +29,143 @@ namespace components::table {
         , type_(std::move(type))
         , parent_(std::move(parent))
         , allocation_size_(0)
+        , statistics_(resource, type_.type())
         , resource_(resource) {}
 
-    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state&, table_filter_t&) {
+    filter_propagate_result_t column_data_t::check_zonemap(column_scan_state&, table_filter_t& filter) {
+        if (!statistics_.has_stats()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        if (statistics_.min_value().is_null() || statistics_.max_value().is_null()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // Stats may be stale after updates — skip pruning if column has updates
+        if (has_updates()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+
+        if (filter.filter_type == expressions::compare_type::eq ||
+            filter.filter_type == expressions::compare_type::gt ||
+            filter.filter_type == expressions::compare_type::gte ||
+            filter.filter_type == expressions::compare_type::lt ||
+            filter.filter_type == expressions::compare_type::lte) {
+            auto& constant_filter = filter.cast<constant_filter_t>();
+            const auto& constant = constant_filter.constant;
+            const auto& min = statistics_.min_value();
+            const auto& max = statistics_.max_value();
+
+            switch (filter.filter_type) {
+                case expressions::compare_type::eq:
+                    // eq is impossible if constant < min or constant > max
+                    if (constant < min || constant > max) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    break;
+                case expressions::compare_type::gt:
+                    // value > constant: impossible if max <= constant
+                    if (max <= constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    // always true if min > constant
+                    if (min > constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::gte:
+                    // value >= constant: impossible if max < constant
+                    if (max < constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (min >= constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::lt:
+                    // value < constant: impossible if min >= constant
+                    if (min >= constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (max < constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::lte:
+                    // value <= constant: impossible if min > constant
+                    if (min > constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (max <= constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+    }
+
+    filter_propagate_result_t column_data_t::check_segment_zonemap(column_scan_state& state, table_filter_t& filter) {
+        if (!state.current || !state.current->segment_statistics().has_stats()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        auto& seg_stats = state.current->segment_statistics();
+        if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+
+        if (filter.filter_type == expressions::compare_type::eq ||
+            filter.filter_type == expressions::compare_type::gt ||
+            filter.filter_type == expressions::compare_type::gte ||
+            filter.filter_type == expressions::compare_type::lt ||
+            filter.filter_type == expressions::compare_type::lte) {
+            auto& constant_filter = filter.cast<constant_filter_t>();
+            const auto& constant = constant_filter.constant;
+            const auto& min = seg_stats.min_value();
+            const auto& max = seg_stats.max_value();
+
+            switch (filter.filter_type) {
+                case expressions::compare_type::eq:
+                    if (constant < min || constant > max) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    break;
+                case expressions::compare_type::gt:
+                    if (max <= constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (min > constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::gte:
+                    if (max < constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (min >= constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::lt:
+                    if (min >= constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (max < constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                case expressions::compare_type::lte:
+                    if (min > constant) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                    if (max <= constant) {
+                        return filter_propagate_result_t::ALWAYS_TRUE;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
     }
 
@@ -206,6 +344,19 @@ namespace components::table {
     }
 
     void column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+        statistics_.update(vector, count);
+        // Update per-segment statistics (conservative: full vector stats go to current segment)
+        if (state.current) {
+            base_statistics_t batch_stats(resource_, type_.type());
+            batch_stats.update(vector, count);
+            if (state.current->segment_statistics().has_stats()) {
+                auto merged = state.current->segment_statistics();
+                merged.merge(batch_stats);
+                state.current->set_segment_statistics(std::move(merged));
+            } else {
+                state.current->set_segment_statistics(std::move(batch_stats));
+            }
+        }
         vector::unified_vector_format uvf(vector.resource(), count);
         vector.to_unified_format(count, uvf);
         append_data(state, uvf, count);
@@ -254,10 +405,34 @@ namespace components::table {
         auto segment = data_.get_segment(row_id);
         if (updates_ &&
             updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
-            return updates_->check_row(row_id, filter);
-        } else {
-            return segment->check_predicate(row_id, filter);
+            // The vector has some updated rows. Check if THIS specific row is updated.
+            if (updates_->row_is_updated(row_id)) {
+                // Row is in the update overlay — check against the updated value only
+                return updates_->check_row(row_id, filter);
+            }
         }
+        // For compressed segments, fetch the actual decompressed value
+        auto comp = segment->compression();
+        if (comp == compression::compression_type::RLE ||
+            comp == compression::compression_type::DICTIONARY) {
+            column_fetch_state fetch_state;
+            vector::vector_t result(resource_, type_, 1);
+            fetch_row(fetch_state, row_id, result, 0);
+            if (!result.validity().row_is_valid(0)) {
+                return false;
+            }
+            const auto& const_filter = filter->cast<constant_filter_t>();
+            return const_filter.compare(result.value(0));
+        }
+        return segment->check_predicate(row_id, filter);
+    }
+
+    bool column_data_t::check_validity(int64_t row_id) {
+        // Fetch a single row to check validity
+        column_fetch_state fetch_state;
+        vector::vector_t result(resource_, type_, 1);
+        fetch_row(fetch_state, row_id, result, 0);
+        return result.validity().row_is_valid(0);
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
@@ -503,6 +678,62 @@ namespace components::table {
         uint64_t current_row = vector_index * vector::DEFAULT_VECTOR_CAPACITY;
         return std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY,
                                   static_cast<uint64_t>(start_) + count_ - current_row);
+    }
+
+    persistent_column_data_t column_data_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
+        column_data_checkpointer_t checkpointer(*this, partial_block_manager);
+        return checkpointer.checkpoint();
+    }
+
+    void column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+        auto l = data_.lock();
+        for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
+            const auto& dp = persistent_data.data_pointers[i];
+            auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
+
+            auto segment = std::make_unique<column_segment_t>(block_handle,
+                                                              type_,
+                                                              static_cast<int64_t>(dp.row_start),
+                                                              dp.tuple_count,
+                                                              static_cast<uint32_t>(dp.block_pointer.block_id),
+                                                              dp.block_pointer.offset,
+                                                              dp.segment_size);
+            segment->set_compression(dp.compression);
+            if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
+                segment->set_segment_statistics(persistent_data.segment_statistics[i]);
+            }
+            data_.append_segment(l, std::move(segment));
+        }
+        if (!persistent_data.data_pointers.empty()) {
+            uint64_t total = 0;
+            for (const auto& dp : persistent_data.data_pointers) {
+                total += dp.tuple_count;
+            }
+            count_ = total;
+        }
+        if (persistent_data.statistics.has_stats()) {
+            statistics_ = persistent_data.statistics;
+        }
+    }
+
+    void column_data_t::initialize_column_validity(const persistent_column_data_t& persistent_data) {
+        // create transient in-memory segments matching the data pointers
+        // used for validity columns that don't have their own persistent data yet
+        auto l = data_.lock();
+        for (const auto& dp : persistent_data.data_pointers) {
+            apend_transient_segment(l, static_cast<int64_t>(dp.row_start));
+            auto* seg = data_.last_segment(l);
+            if (seg) {
+                seg->count = dp.tuple_count;
+            }
+        }
+        if (!persistent_data.data_pointers.empty()) {
+            uint64_t total = 0;
+            for (const auto& dp : persistent_data.data_pointers) {
+                total += dp.tuple_count;
+            }
+            count_ = total;
+        }
     }
 
 } // namespace components::table

@@ -22,29 +22,29 @@ using namespace components::cursor;
 using namespace components::types;
 
 struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
-    test_dispatcher(std::pmr::memory_resource* resource)
+    test_dispatcher(std::pmr::memory_resource* resource, const std::string& disk_path)
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
         , resource_(resource)
+        , disk_path_(disk_path)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
-        , disk_config_("/tmp/test_dispatcher_disk")
+        , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_))
-        , transformer_(resource) {
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_)) {
         manager_dispatcher_->sync(
             std::make_tuple(manager_wal_->address(), manager_disk_->address(), actor_zeta::address_t::empty_address()));
         manager_wal_->sync(
             std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
         manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
 
-        manager_dispatcher_->set_run_fn([this] { scheduler_->run(100); });
-        manager_disk_->set_run_fn([this] { scheduler_->run(100); });
+        manager_dispatcher_->set_run_fn([this] { scheduler_->run(10000); });
+        manager_disk_->set_run_fn([this] { scheduler_->run(10000); });
     }
 
     ~test_dispatcher() {
         scheduler_->stop();
-        std::filesystem::remove_all("/tmp/test_dispatcher_disk");
+        std::filesystem::remove_all(disk_path_);
         delete scheduler_;
     }
 
@@ -62,10 +62,11 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     }
 
     void execute_sql(const std::string& query) {
-        std::pmr::monotonic_buffer_resource parser_arena(resource_);
-        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
+        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        components::sql::transform::transformer local_transformer(resource_);
         auto view = std::get<components::sql::transform::result_view>(
-            transformer_.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
+            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
 
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &manager_dispatcher_t::execute_plan,
@@ -77,24 +78,25 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
 private:
     std::pmr::memory_resource* resource_;
+    std::string disk_path_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    components::sql::transform::transformer transformer_;
+    std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };
 
 TEST_CASE("services::dispatcher::schemeful_operations") {
-    auto mr = std::pmr::synchronized_pool_resource();
-    test_dispatcher test(&mr);
+    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
 
     test.execute_sql("CREATE DATABASE test;");
     test.step();
 
-    table_id id(&mr, {"test"}, "test");
+    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
     test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
         REQUIRE(catalog.table_exists(id));
@@ -137,13 +139,13 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
 }
 
 TEST_CASE("services::dispatcher::computed_operations") {
-    auto mr = std::pmr::synchronized_pool_resource();
-    test_dispatcher test(&mr);
+    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
 
     test.execute_sql("CREATE DATABASE test;");
     test.step();
 
-    table_id id(&mr, {"test"}, "test");
+    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test();");
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         REQUIRE(cur->is_success());

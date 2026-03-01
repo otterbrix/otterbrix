@@ -29,6 +29,15 @@ namespace components::logical_plan {
         sort_t,
         update_t,
         union_t,
+        create_sequence_t,
+        drop_sequence_t,
+        create_view_t,
+        drop_view_t,
+        create_macro_t,
+        drop_macro_t,
+        checkpoint_t,
+        vacuum_t,
+        having_t,
         unused
     };
 
@@ -78,6 +87,24 @@ namespace components::logical_plan {
                 return "update_t";
             case node_type::union_t:
                 return "union_t";
+            case node_type::create_sequence_t:
+                return "create_sequence_t";
+            case node_type::drop_sequence_t:
+                return "drop_sequence_t";
+            case node_type::create_view_t:
+                return "create_view_t";
+            case node_type::drop_view_t:
+                return "drop_view_t";
+            case node_type::create_macro_t:
+                return "create_macro_t";
+            case node_type::drop_macro_t:
+                return "drop_macro_t";
+            case node_type::checkpoint_t:
+                return "checkpoint_t";
+            case node_type::vacuum_t:
+                return "vacuum_t";
+            case node_type::having_t:
+                return "having_t";
             default:
                 return "unused";
         }

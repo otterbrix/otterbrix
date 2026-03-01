@@ -1,14 +1,19 @@
 #pragma once
 
+#include "base_statistics.hpp"
 #include "column_segment.hpp"
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
 
 namespace components::table {
+
+    struct persistent_column_data_t;
+
     namespace storage {
         class block_manager_t;
-    }
+        class partial_block_manager_t;
+    } // namespace storage
 
     enum class filter_propagate_result_t : uint8_t
     {
@@ -22,6 +27,8 @@ namespace components::table {
 
     class column_data_t {
         friend class column_segment_t;
+        friend class column_data_checkpointer_t;
+        friend class column_checkpoint_state_t;
 
     public:
         column_data_t(std::pmr::memory_resource* resource,
@@ -33,6 +40,7 @@ namespace components::table {
         virtual ~column_data_t() = default;
 
         virtual filter_propagate_result_t check_zonemap(column_scan_state& state, table_filter_t& filter);
+        filter_propagate_result_t check_segment_zonemap(column_scan_state& state, table_filter_t& filter);
 
         storage::block_manager_t& block_manager() { return block_manager_; }
         virtual uint64_t max_entry();
@@ -101,6 +109,7 @@ namespace components::table {
         virtual void revert_append(int64_t start_row);
 
         virtual bool check_predicate(int64_t row_id, const table_filter_t* filter);
+        virtual bool check_validity(int64_t row_id);
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
@@ -127,6 +136,12 @@ namespace components::table {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         uint64_t count() const noexcept { return count_; }
         int64_t start() const noexcept { return start_; }
+        const base_statistics_t& statistics() const noexcept { return statistics_; }
+        base_statistics_t& statistics() noexcept { return statistics_; }
+
+        persistent_column_data_t checkpoint(storage::partial_block_manager_t& partial_block_manager);
+        virtual void initialize_column(const persistent_column_data_t& persistent_data);
+        void initialize_column_validity(const persistent_column_data_t& persistent_data);
 
     protected:
         void apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row);
@@ -163,6 +178,7 @@ namespace components::table {
         mutable std::mutex update_lock_;
         std::unique_ptr<update_segment_t> updates_;
         uint64_t allocation_size_;
+        base_statistics_t statistics_;
 
         std::pmr::memory_resource* resource_;
     };

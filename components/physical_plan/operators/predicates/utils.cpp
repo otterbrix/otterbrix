@@ -10,14 +10,22 @@ namespace components::operators::predicates::impl {
                                        const vector::data_chunk_t&,
                                        size_t index_left,
                                        size_t) -> types::logical_value_t {
-                return chunk_left.at(path)->value(index_left);
+                auto* vec = chunk_left.at(path);
+                if (!vec->validity().row_is_valid(index_left)) {
+                    return types::logical_value_t(chunk_left.resource(), nullptr);
+                }
+                return vec->value(index_left);
             };
         } else {
             return [path = key.path()](const vector::data_chunk_t&,
                                        const vector::data_chunk_t& chunk_right,
                                        size_t,
                                        size_t index_right) -> types::logical_value_t {
-                return chunk_right.at(path)->value(index_right);
+                auto* vec = chunk_right.at(path);
+                if (!vec->validity().row_is_valid(index_right)) {
+                    return types::logical_value_t(chunk_right.resource(), nullptr);
+                }
+                return vec->value(index_right);
             };
         }
     }

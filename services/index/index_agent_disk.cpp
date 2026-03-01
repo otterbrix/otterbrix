@@ -32,8 +32,14 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove, msg);
                 break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
+                break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::find, msg);
+                break;
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
                 break;
             default:
                 break;
@@ -74,6 +80,15 @@ namespace services::index {
         co_return;
     }
 
+    index_agent_disk_t::unique_future<void>
+    index_agent_disk_t::remove_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values) {
+        trace(log_, "index_agent_disk_t::remove_many: {}, session: {}", values.size(), session.data());
+        for (const auto& [key, row_id] : values) {
+            index_disk_->remove(key, row_id);
+        }
+        co_return;
+    }
+
     index_agent_disk_t::unique_future<index_disk_t::result>
     index_agent_disk_t::find(session_id_t session, value_t value, components::expressions::compare_type compare) {
         using components::expressions::compare_type;
@@ -106,6 +121,18 @@ namespace services::index {
                 break;
         }
         co_return res;
+    }
+
+    index_agent_disk_t::unique_future<void> index_agent_disk_t::force_flush(session_id_t session) {
+        trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
+        force_flush_sync();
+        co_return;
+    }
+
+    void index_agent_disk_t::force_flush_sync() {
+        if (index_disk_ && !is_dropped_) {
+            index_disk_->force_flush();
+        }
     }
 
 } //namespace services::index

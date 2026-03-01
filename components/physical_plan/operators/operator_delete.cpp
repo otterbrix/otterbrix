@@ -12,8 +12,8 @@ namespace components::operators {
         , expression_(std::move(expr)) {}
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // Predicate matching only — table.delete_rows() is now handled by executor via
-        // send(disk_address_, &manager_disk_t::storage_delete_rows).
+        // Predicate matching only — table.delete_rows() is now handled by
+        // await_async_and_resume via send(disk_address_, &manager_disk_t::storage_delete_rows).
         if (left_ && left_->output() && right_ && right_->output()) {
             modified_ = operators::make_operator_write_data(left_->output()->resource());
             auto& chunk_left = left_->output()->data_chunk();
@@ -83,6 +83,10 @@ namespace components::operators {
                 modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
                     index;
             }
+        }
+
+        if (modified_ && modified_->size() > 0 && !name_.empty()) {
+            async_wait();
         }
     }
 

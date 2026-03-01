@@ -812,3 +812,359 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
     }
 }
+
+// ---- DISK partial insert, constraints, WAL-only recovery, double restart, DML cycle ----
+
+TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_partial_insert");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table with 3 cols, partial INSERT, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection "
+                "(name string, score bigint, tag string DEFAULT 'untagged') WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        // Partial INSERT: only (name, score) — tag uses default
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
+                "('alice', 100), ('bob', 200), ('charlie', 300);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
+
+        // Partial INSERT: only (name) — score NULL, tag default
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave'), ('eve');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
+
+        // CHECKPOINT
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify partial inserts survived") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_not_null_default");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table with NOT NULL + DEFAULT, test enforcement") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection "
+                "(name string NOT NULL, status string NOT NULL DEFAULT 'pending') WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT with all columns
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name, status) VALUES "
+                "('alice', 'active'), ('bob', 'pending');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        // NOT NULL violation — rejected
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name, status) VALUES (NULL, 'test');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+
+        // Partial INSERT: only (name) — status gets DEFAULT 'pending'
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('charlie');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 2);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
+
+        // CHECKPOINT
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify constraints + defaults persisted") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 2);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_wal_only");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table, insert 50 rows, NO checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 50; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 49 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 50);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
+        // No CHECKPOINT — all data in WAL only
+    }
+
+    INFO("phase 2: restart — verify WAL recovery for DISK table") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 25;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_double_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table, insert 50 rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 50; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 49 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 50);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: first restart, verify, insert 50 more, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 50; i < 100; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 50);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 3: second restart, verify all 100 rows") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_dml_cycle");
+    test_clear_directory(config);
+
+    INFO("phase 1: create DISK table, INSERT 100, DELETE 10, UPDATE 1, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        // INSERT 100 rows
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        // DELETE WHERE count > 90 (removes 9 rows: 91..99)
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 9);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
+
+        // UPDATE SET count=999 WHERE count=50
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session, "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
+
+        // CHECKPOINT
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify final state") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
+    }
+}

@@ -410,11 +410,21 @@ namespace components::table {
                 // Row is in the update overlay — check against the updated value only
                 return updates_->check_row(row_id, filter);
             }
-            // Row is NOT updated — fall back to base segment data
-            return segment->check_predicate(row_id, filter);
-        } else {
-            return segment->check_predicate(row_id, filter);
         }
+        // For compressed segments, fetch the actual decompressed value
+        auto comp = segment->compression();
+        if (comp == compression::compression_type::RLE ||
+            comp == compression::compression_type::DICTIONARY) {
+            column_fetch_state fetch_state;
+            vector::vector_t result(resource_, type_, 1);
+            fetch_row(fetch_state, row_id, result, 0);
+            if (!result.validity().row_is_valid(0)) {
+                return false;
+            }
+            const auto& const_filter = filter->cast<constant_filter_t>();
+            return const_filter.compare(result.value(0));
+        }
+        return segment->check_predicate(row_id, filter);
     }
 
     bool column_data_t::check_validity(int64_t row_id) {

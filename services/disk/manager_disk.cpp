@@ -518,7 +518,7 @@ namespace services::disk {
                 std::vector<catalog_column_entry_t> catalog_cols;
                 catalog_cols.reserve(cols.size());
                 for (const auto& col : cols) {
-                    catalog_cols.push_back({col.name(), col.type().type(), col.is_not_null(), col.has_default_value()});
+                    catalog_cols.push_back({col.name(), col.type(), col.is_not_null(), col.has_default_value()});
                 }
                 // Convert storage_mode_t -> table_storage_mode_t
                 auto catalog_mode = entry->table_storage.mode() == storage_mode_t::DISK
@@ -800,6 +800,33 @@ namespace services::disk {
                 }
             }
             local.data = std::move(expanded_data);
+        }
+
+        // Type promotion (mirrors storage_append step 4)
+        if (s->has_schema() && !table_columns.empty()) {
+            using components::types::is_numeric;
+            using components::types::logical_type;
+            for (size_t i = 0; i < table_columns.size() && i < local.column_count(); i++) {
+                auto src_type = local.data[i].type().type();
+                auto tgt_type = table_columns[i].type().type();
+                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                    auto& src_vec = local.data[i];
+                    auto target_type = table_columns[i].type();
+                    if (src_vec.type().has_alias()) {
+                        target_type.set_alias(src_vec.type().alias());
+                    }
+                    components::vector::vector_t casted(resource(), target_type, local.size());
+                    for (uint64_t row = 0; row < local.size(); row++) {
+                        if (src_vec.validity().row_is_valid(row)) {
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                        } else {
+                            casted.validity().set_invalid(row);
+                        }
+                    }
+                    local.data[i] = std::move(casted);
+                }
+            }
         }
 
         // Direct append — no dedup, no NOT NULL enforcement, no MVCC

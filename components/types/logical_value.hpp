@@ -382,7 +382,7 @@ namespace components::types {
     public:
         explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
 
-        const std::string& type_name() { return type_name_; }
+        const std::string& type_name() const { return type_name_; }
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
@@ -397,6 +397,9 @@ namespace components::types {
     class user_logical_type_extension : public logical_type_extension {
     public:
         explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
+
+        const std::string& catalog() const noexcept { return catalog_; }
+        const std::vector<logical_value_t>& user_type_modifiers() const noexcept { return user_type_modifiers_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,

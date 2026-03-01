@@ -63,9 +63,9 @@ TEST_CASE("services::disk::catalog_storage::create_and_drop_table") {
     disk_table.name = "disk_coll";
     disk_table.storage_mode = table_storage_mode_t::DISK;
     disk_table.columns = {
-        {"id", components::types::logical_type::BIGINT},
-        {"name", components::types::logical_type::STRING_LITERAL},
-        {"value", components::types::logical_type::DOUBLE},
+        {"id", components::types::complex_logical_type(components::types::logical_type::BIGINT)},
+        {"name", components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL)},
+        {"value", components::types::complex_logical_type(components::types::logical_type::DOUBLE)},
     };
     cs.append_table("testdb", disk_table);
 
@@ -82,7 +82,7 @@ TEST_CASE("services::disk::catalog_storage::create_and_drop_table") {
     REQUIRE(found_disk->storage_mode == table_storage_mode_t::DISK);
     REQUIRE(found_disk->columns.size() == 3);
     REQUIRE(found_disk->columns[0].name == "id");
-    REQUIRE(found_disk->columns[0].type == components::types::logical_type::BIGINT);
+    REQUIRE(found_disk->columns[0].full_type.type() == components::types::logical_type::BIGINT);
 
     cs.remove_table("testdb", "im_coll");
     REQUIRE(cs.tables("testdb").size() == 1);
@@ -107,7 +107,7 @@ TEST_CASE("services::disk::catalog_storage::storage_mode_distinction") {
         catalog_table_entry_t disk_entry;
         disk_entry.name = "disk_table";
         disk_entry.storage_mode = table_storage_mode_t::DISK;
-        disk_entry.columns = {{"col1", components::types::logical_type::INTEGER}};
+        disk_entry.columns = {{"col1", components::types::complex_logical_type(components::types::logical_type::INTEGER)}};
         cs.append_table("db", disk_entry);
     }
 
@@ -123,7 +123,7 @@ TEST_CASE("services::disk::catalog_storage::storage_mode_distinction") {
         REQUIRE(dk->storage_mode == table_storage_mode_t::DISK);
         REQUIRE(dk->columns.size() == 1);
         REQUIRE(dk->columns[0].name == "col1");
-        REQUIRE(dk->columns[0].type == components::types::logical_type::INTEGER);
+        REQUIRE(dk->columns[0].full_type.type() == components::types::logical_type::INTEGER);
     }
 
     cleanup_test_dir();
@@ -144,8 +144,8 @@ TEST_CASE("services::disk::catalog_storage::save_and_load_round_trip") {
         t1.name = "users";
         t1.storage_mode = table_storage_mode_t::DISK;
         t1.columns = {
-            {"id", components::types::logical_type::BIGINT},
-            {"name", components::types::logical_type::STRING_LITERAL},
+            {"id", components::types::complex_logical_type(components::types::logical_type::BIGINT)},
+            {"name", components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL)},
         };
         cs.append_table("db1", t1);
 
@@ -159,9 +159,9 @@ TEST_CASE("services::disk::catalog_storage::save_and_load_round_trip") {
         t3.name = "events";
         t3.storage_mode = table_storage_mode_t::DISK;
         t3.columns = {
-            {"ts", components::types::logical_type::TIMESTAMP_MS},
-            {"data", components::types::logical_type::BLOB},
-            {"count", components::types::logical_type::UINTEGER},
+            {"ts", components::types::complex_logical_type(components::types::logical_type::TIMESTAMP_MS)},
+            {"data", components::types::complex_logical_type(components::types::logical_type::BLOB)},
+            {"count", components::types::complex_logical_type(components::types::logical_type::UINTEGER)},
         };
         cs.append_table("db2", t3);
 
@@ -193,9 +193,9 @@ TEST_CASE("services::disk::catalog_storage::save_and_load_round_trip") {
         auto* events = cs.find_table("db2", "events");
         REQUIRE(events != nullptr);
         REQUIRE(events->columns.size() == 3);
-        REQUIRE(events->columns[0].type == components::types::logical_type::TIMESTAMP_MS);
-        REQUIRE(events->columns[1].type == components::types::logical_type::BLOB);
-        REQUIRE(events->columns[2].type == components::types::logical_type::UINTEGER);
+        REQUIRE(events->columns[0].full_type.type() == components::types::logical_type::TIMESTAMP_MS);
+        REQUIRE(events->columns[1].full_type.type() == components::types::logical_type::BLOB);
+        REQUIRE(events->columns[2].full_type.type() == components::types::logical_type::UINTEGER);
 
         auto* logs = cs.find_table("db1", "logs");
         REQUIRE(logs != nullptr);
@@ -259,9 +259,9 @@ TEST_CASE("services::disk::catalog_storage::constraint_round_trip") {
         tbl.name = "constrained";
         tbl.storage_mode = table_storage_mode_t::DISK;
         tbl.columns = {
-            {"id", components::types::logical_type::BIGINT, true, false},
-            {"name", components::types::logical_type::STRING_LITERAL, false, true},
-            {"score", components::types::logical_type::DOUBLE, false, false},
+            {"id", components::types::complex_logical_type(components::types::logical_type::BIGINT), true, false},
+            {"name", components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL), false, true},
+            {"score", components::types::complex_logical_type(components::types::logical_type::DOUBLE), false, false},
         };
         tbl.primary_key_columns = {"id"};
         cs.append_table("db", tbl);

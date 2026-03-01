@@ -406,12 +406,12 @@ namespace components::sql::transform {
                 auto cmp = get_compare_type(op_name);
                 if (left_is_func) {
                     auto alias = find_having_alias(pg_ptr_cast<FuncCall>(expr->lexpr));
-                    auto key = expressions::key_t{resource_, std::move(alias)};
+                    auto key = expressions::key_t{resource_, std::move(alias), expressions::side_t::left};
                     auto param_id = add_param_value(expr->rexpr, params);
                     return make_compare_expression(params->parameters().resource(), cmp, key, param_id);
                 } else {
                     auto alias = find_having_alias(pg_ptr_cast<FuncCall>(expr->rexpr));
-                    auto key = expressions::key_t{resource_, std::move(alias)};
+                    auto key = expressions::key_t{resource_, std::move(alias), expressions::side_t::left};
                     auto param_id = add_param_value(expr->lexpr, params);
                     // Flip comparison direction for value op aggregate
                     if (cmp == compare_type::gt)

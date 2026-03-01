@@ -55,14 +55,13 @@ namespace services::planner::impl {
                                  const components::compute::function_registry_t& function_registry,
                                  boost::intrusive_ptr<components::operators::operator_group_t>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
-            // TODO: handle expr->is_distinct()
-            assert(!expr->is_distinct());
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
                                  resource,
                                  log,
                                  function_registry.get_function(expr->function_uid()),
-                                 expr->params())));
+                                 expr->params(),
+                                 expr->is_distinct())));
         }
 
     } // namespace

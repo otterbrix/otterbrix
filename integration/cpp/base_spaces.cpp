@@ -275,14 +275,45 @@ namespace otterbrix {
                 components::catalog::table_id table_id(&resource, info.name);
 
                 if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
-                    trace(log_, "spaces::creating computing table: {}.{}", info.name.database, info.name.collection);
-                    auto err = catalog.create_computing_table(table_id);
-                    if (err) {
-                        warn(log_,
-                             "spaces::failed to create computing table {}.{}: {}",
-                             info.name.database,
-                             info.name.collection,
-                             err.what());
+                    if (info.columns.empty()) {
+                        trace(log_, "spaces::creating computing table: {}.{}", info.name.database, info.name.collection);
+                        auto err = catalog.create_computing_table(table_id);
+                        if (err) {
+                            warn(log_,
+                                 "spaces::failed to create computing table {}.{}: {}",
+                                 info.name.database,
+                                 info.name.collection,
+                                 err.what());
+                        }
+                    } else {
+                        trace(log_,
+                              "spaces::creating in-memory table: {}.{} ({} columns)",
+                              info.name.database,
+                              info.name.collection,
+                              info.columns.size());
+                        using namespace components::types;
+                        using namespace components::catalog;
+                        std::vector<complex_logical_type> schema_cols;
+                        std::vector<field_description> descs;
+                        schema_cols.reserve(info.columns.size());
+                        descs.reserve(info.columns.size());
+                        for (size_t i = 0; i < info.columns.size(); ++i) {
+                            auto col_type = info.columns[i].full_type;
+                            if (!col_type.has_alias()) {
+                                col_type.set_alias(info.columns[i].name);
+                            }
+                            schema_cols.push_back(std::move(col_type));
+                            descs.push_back(field_description(static_cast<field_id_t>(i)));
+                        }
+                        auto sch = schema(&resource, create_struct("schema", schema_cols, std::move(descs)));
+                        auto err = catalog.create_table(table_id, table_metadata(&resource, std::move(sch)));
+                        if (err) {
+                            warn(log_,
+                                 "spaces::failed to create in-memory table {}.{}: {}",
+                                 info.name.database,
+                                 info.name.collection,
+                                 err.what());
+                        }
                     }
                 } else {
                     trace(log_,
@@ -298,8 +329,10 @@ namespace otterbrix {
                     schema_cols.reserve(info.columns.size());
                     descs.reserve(info.columns.size());
                     for (size_t i = 0; i < info.columns.size(); ++i) {
-                        auto col_type = complex_logical_type(info.columns[i].type);
-                        col_type.set_alias(info.columns[i].name);
+                        auto col_type = info.columns[i].full_type;
+                        if (!col_type.has_alias()) {
+                            col_type.set_alias(info.columns[i].name);
+                        }
                         schema_cols.push_back(std::move(col_type));
                         descs.push_back(field_description(static_cast<field_id_t>(i)));
                     }
@@ -320,7 +353,20 @@ namespace otterbrix {
         if (disk_ptr) {
             for (const auto& info : collection_infos) {
                 if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
-                    disk_ptr->create_storage_sync(info.name);
+                    if (info.columns.empty()) {
+                        disk_ptr->create_storage_sync(info.name);
+                    } else {
+                        std::vector<components::table::column_definition_t> col_defs;
+                        col_defs.reserve(info.columns.size());
+                        for (const auto& col : info.columns) {
+                            auto ft = col.full_type;
+                            if (!ft.has_alias()) {
+                                ft.set_alias(col.name);
+                            }
+                            col_defs.emplace_back(col.name, std::move(ft), col.not_null);
+                        }
+                        disk_ptr->create_storage_with_columns_sync(info.name, std::move(col_defs));
+                    }
                 } else {
                     auto otbx_path =
                         config.disk.path / info.name.database / "main" / info.name.collection / "table.otbx";

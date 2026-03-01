@@ -21,7 +21,7 @@ namespace services::disk {
 
     struct catalog_column_entry_t {
         std::string name;
-        components::types::logical_type type;
+        components::types::complex_logical_type full_type;
         bool not_null{false};
         bool has_default{false};
     };
@@ -146,6 +146,10 @@ namespace services::disk {
         size_t size_;
         size_t pos_;
     };
+
+    // Binary serialization for complex_logical_type (recursive)
+    void write_complex_type(binary_writer_t& w, const components::types::complex_logical_type& type);
+    components::types::complex_logical_type read_complex_type(binary_reader_t& r);
 
     // Serialize/deserialize catalog
     std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases);

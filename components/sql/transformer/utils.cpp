@@ -310,7 +310,7 @@ namespace components::sql::transform {
                     case T_Integer:
                         return types::logical_value_t(resource, intVal(value));
                     case T_Float:
-                        return types::logical_value_t(resource, static_cast<float>(floatVal(value)));
+                        return types::logical_value_t(resource, static_cast<double>(floatVal(value)));
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:

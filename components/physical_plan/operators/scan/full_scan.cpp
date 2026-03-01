@@ -57,14 +57,16 @@ namespace components::operators {
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                return std::make_unique<table::is_null_filter_t>(expression->type(), path);
+                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
+                return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
             }
             default: {
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 auto id = std::get<core::parameter_id_t>(expression->right());
+                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(id),
-                                                                  path);
+                                                                  std::move(indices));
             }
         }
     }

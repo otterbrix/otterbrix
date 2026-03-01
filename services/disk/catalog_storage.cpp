@@ -2,15 +2,200 @@
 
 #include <absl/crc/crc32c.h>
 #include <algorithm>
+#include <components/types/logical_value.hpp>
 #include <fstream>
 #include <stdexcept>
 
 namespace services::disk {
 
+    // ---- write_complex_type / read_complex_type ----
+
+    using namespace components::types;
+    using ext_t = logical_type_extension::extension_type;
+
+    void write_complex_type(binary_writer_t& w, const complex_logical_type& type) {
+        w.write_u8(static_cast<uint8_t>(type.type()));
+        w.write_string(type.has_alias() ? type.alias() : "");
+        auto* ext = type.extension();
+        w.write_u8(ext ? 1 : 0);
+        if (!ext)
+            return;
+
+        w.write_u8(static_cast<uint8_t>(ext->type()));
+        switch (ext->type()) {
+            case ext_t::GENERIC:
+                break;
+            case ext_t::ARRAY: {
+                auto* a = static_cast<const array_logical_type_extension*>(ext);
+                write_complex_type(w, a->internal_type());
+                w.write_u32(static_cast<uint32_t>(a->size()));
+                break;
+            }
+            case ext_t::LIST: {
+                auto* l = static_cast<const list_logical_type_extension*>(ext);
+                write_complex_type(w, l->node());
+                w.write_u32(static_cast<uint32_t>(l->field_id()));
+                w.write_u8(l->required() ? 1 : 0);
+                break;
+            }
+            case ext_t::MAP: {
+                auto* m = static_cast<const map_logical_type_extension*>(ext);
+                write_complex_type(w, m->key());
+                write_complex_type(w, m->value());
+                w.write_u32(static_cast<uint32_t>(m->key_id()));
+                w.write_u32(static_cast<uint32_t>(m->value_id()));
+                w.write_u8(m->value_required() ? 1 : 0);
+                break;
+            }
+            case ext_t::STRUCT: {
+                auto* s = static_cast<const struct_logical_type_extension*>(ext);
+                w.write_string(s->type_name());
+                const auto& fields = s->child_types();
+                const auto& descs = s->descriptions();
+                w.write_u32(static_cast<uint32_t>(fields.size()));
+                for (size_t i = 0; i < fields.size(); ++i) {
+                    write_complex_type(w, fields[i]);
+                    w.write_u8(i < descs.size() ? (descs[i].required ? 1 : 0) : 1);
+                }
+                break;
+            }
+            case ext_t::DECIMAL: {
+                auto* d = static_cast<const decimal_logical_type_extension*>(ext);
+                w.write_u8(d->width());
+                w.write_u8(d->scale());
+                break;
+            }
+            case ext_t::ENUM: {
+                auto* e = static_cast<const enum_logical_type_extension*>(ext);
+                w.write_string(e->type_name());
+                const auto& entries = e->entries();
+                w.write_u32(static_cast<uint32_t>(entries.size()));
+                for (const auto& entry : entries) {
+                    w.write_string(entry.type().has_alias() ? entry.type().alias() : "");
+                    w.write_u8(static_cast<uint8_t>(entry.type().type()));
+                }
+                break;
+            }
+            case ext_t::FUNCTION: {
+                auto* f = static_cast<const function_logical_type_extension*>(ext);
+                write_complex_type(w, f->return_type());
+                const auto& args = f->argument_types();
+                w.write_u32(static_cast<uint32_t>(args.size()));
+                for (const auto& arg : args) {
+                    write_complex_type(w, arg);
+                }
+                break;
+            }
+            case ext_t::USER: {
+                auto* u = static_cast<const user_logical_type_extension*>(ext);
+                w.write_string(u->catalog());
+                break;
+            }
+            case ext_t::UNKNOWN: {
+                auto* u = static_cast<const unknown_logical_type_extension*>(ext);
+                w.write_string(u->type_name());
+                break;
+            }
+        }
+    }
+
+    complex_logical_type read_complex_type(binary_reader_t& r) {
+        auto base_type = static_cast<logical_type>(r.read_u8());
+        auto alias = r.read_string();
+        auto has_ext = r.read_u8() != 0;
+
+        if (!has_ext) {
+            return complex_logical_type(base_type, std::move(alias));
+        }
+
+        auto ext_type = static_cast<ext_t>(r.read_u8());
+        switch (ext_type) {
+            case ext_t::GENERIC: {
+                return complex_logical_type(base_type, std::move(alias));
+            }
+            case ext_t::ARRAY: {
+                auto child = read_complex_type(r);
+                auto size = r.read_u32();
+                return complex_logical_type::create_array(child, size, std::move(alias));
+            }
+            case ext_t::LIST: {
+                auto child = read_complex_type(r);
+                auto field_id = static_cast<uint64_t>(r.read_u32());
+                bool required = r.read_u8() != 0;
+                auto ext = std::make_unique<list_logical_type_extension>(field_id, std::move(child), required);
+                ext->set_alias(alias);
+                return complex_logical_type(base_type, std::move(ext), std::move(alias));
+            }
+            case ext_t::MAP: {
+                auto key = read_complex_type(r);
+                auto value = read_complex_type(r);
+                auto key_id = static_cast<uint64_t>(r.read_u32());
+                auto value_id = static_cast<uint64_t>(r.read_u32());
+                bool value_required = r.read_u8() != 0;
+                auto ext = std::make_unique<map_logical_type_extension>(key_id, key, value_id, value, value_required);
+                ext->set_alias(alias);
+                return complex_logical_type(base_type, std::move(ext), std::move(alias));
+            }
+            case ext_t::STRUCT: {
+                auto type_name = r.read_string();
+                auto field_count = r.read_u32();
+                std::vector<complex_logical_type> fields;
+                fields.reserve(field_count);
+                for (uint32_t i = 0; i < field_count; ++i) {
+                    fields.push_back(read_complex_type(r));
+                    r.read_u8(); // required flag (consumed but not used in create_struct)
+                }
+                return complex_logical_type::create_struct(std::move(type_name), fields, std::move(alias));
+            }
+            case ext_t::DECIMAL: {
+                auto width = r.read_u8();
+                auto scale = r.read_u8();
+                return complex_logical_type::create_decimal(width, scale, std::move(alias));
+            }
+            case ext_t::ENUM: {
+                auto type_name = r.read_string();
+                auto entry_count = r.read_u32();
+                std::vector<logical_value_t> entries;
+                entries.reserve(entry_count);
+                for (uint32_t i = 0; i < entry_count; ++i) {
+                    auto entry_alias = r.read_string();
+                    auto entry_type = static_cast<logical_type>(r.read_u8());
+                    // Reconstruct enum entry as logical_value_t with alias
+                    logical_value_t val(nullptr, complex_logical_type(entry_type, entry_alias));
+                    entries.push_back(std::move(val));
+                }
+                return complex_logical_type::create_enum(std::move(type_name), std::move(entries), std::move(alias));
+            }
+            case ext_t::FUNCTION: {
+                auto ret = read_complex_type(r);
+                auto arg_count = r.read_u32();
+                std::vector<complex_logical_type> args;
+                args.reserve(arg_count);
+                for (uint32_t i = 0; i < arg_count; ++i) {
+                    args.push_back(read_complex_type(r));
+                }
+                auto ext = std::make_unique<function_logical_type_extension>(std::move(ret), std::move(args));
+                return complex_logical_type(base_type, std::move(ext), std::move(alias));
+            }
+            case ext_t::USER: {
+                auto catalog_name = r.read_string();
+                auto ext = std::make_unique<user_logical_type_extension>(std::move(catalog_name),
+                                                                         std::vector<logical_value_t>{});
+                return complex_logical_type(base_type, std::move(ext), std::move(alias));
+            }
+            case ext_t::UNKNOWN: {
+                auto type_name = r.read_string();
+                return complex_logical_type::create_unknown(std::move(type_name), std::move(alias));
+            }
+            default:
+                return complex_logical_type(base_type, std::move(alias));
+        }
+    }
+
     // ---- Serialize/Deserialize ----
 
     static constexpr uint32_t CATALOG_MAGIC = 0x5842544F; // "OTBX"
-    static constexpr uint32_t CATALOG_FORMAT_VERSION = 2;
+    static constexpr uint32_t CATALOG_FORMAT_VERSION = 3;
 
     std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases) {
         binary_writer_t w;
@@ -27,8 +212,12 @@ namespace services::disk {
                 w.write_u8(static_cast<uint8_t>(tbl.storage_mode));
                 w.write_u32(static_cast<uint32_t>(tbl.columns.size()));
                 for (const auto& col : tbl.columns) {
-                    w.write_string(col.name);
-                    w.write_u8(static_cast<uint8_t>(col.type));
+                    // Ensure column name is embedded as alias in the type
+                    auto type_with_name = col.full_type;
+                    if (!type_with_name.has_alias() && !col.name.empty()) {
+                        type_with_name.set_alias(col.name);
+                    }
+                    write_complex_type(w, type_with_name);
                     w.write_u8(col.not_null ? 1 : 0);
                     w.write_u8(col.has_default ? 1 : 0);
                 }
@@ -116,24 +305,20 @@ namespace services::disk {
                 tbl.columns.reserve(num_cols);
                 for (uint32_t k = 0; k < num_cols; ++k) {
                     catalog_column_entry_t col;
-                    col.name = r.read_string();
-                    col.type = static_cast<components::types::logical_type>(r.read_u8());
-                    if (version >= 2) {
-                        col.not_null = r.read_u8() != 0;
-                        col.has_default = r.read_u8() != 0;
-                    }
+                    col.full_type = read_complex_type(r);
+                    col.name = col.full_type.has_alias() ? col.full_type.alias() : "";
+                    col.not_null = r.read_u8() != 0;
+                    col.has_default = r.read_u8() != 0;
                     tbl.columns.push_back(std::move(col));
                 }
-                if (version >= 2) {
-                    auto num_pk = r.read_u32();
-                    tbl.primary_key_columns.reserve(num_pk);
-                    for (uint32_t k = 0; k < num_pk; ++k) {
-                        tbl.primary_key_columns.push_back(r.read_string());
-                    }
+                auto num_pk = r.read_u32();
+                tbl.primary_key_columns.reserve(num_pk);
+                for (uint32_t k = 0; k < num_pk; ++k) {
+                    tbl.primary_key_columns.push_back(r.read_string());
                 }
                 db.tables.push_back(std::move(tbl));
             }
-            if (version >= 2) {
+            {
                 // Sequences
                 auto num_seqs = r.read_u32();
                 db.sequences.reserve(num_seqs);

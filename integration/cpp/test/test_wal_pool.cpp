@@ -274,7 +274,14 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        INIT_COLLECTION_WAL(database_name, collection_name);
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_database(session, database_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);");
+        }
 
         // Create index on count column — makes index path real
         {

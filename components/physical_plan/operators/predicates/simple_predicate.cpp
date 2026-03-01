@@ -47,8 +47,13 @@ namespace components::operators::predicates {
                                                             const vector::data_chunk_t& chunk_right,
                                                             size_t index_left,
                                                             size_t index_right) {
-                return evaluate_comp<COMP>(left_getter(chunk_left, chunk_right, index_left, index_right),
-                                           right_getter(chunk_left, chunk_right, index_left, index_right));
+                auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
+                auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
+                // SQL standard: any comparison with NULL yields UNKNOWN (false)
+                if (left_val.is_null() || right_val.is_null()) {
+                    return false;
+                }
+                return evaluate_comp<COMP>(left_val, right_val);
             };
         }
 

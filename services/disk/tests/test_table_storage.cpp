@@ -259,8 +259,8 @@ TEST_CASE("services::disk::catalog_schema_update_via_disk") {
         // Create database and disk table with columns
         disk.append_database("test_db");
         std::vector<catalog_column_entry_t> columns;
-        columns.push_back({"id", logical_type::BIGINT});
-        columns.push_back({"name", logical_type::STRING_LITERAL});
+        columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
+        columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
         disk.append_collection("test_db", "test_table", table_storage_mode_t::DISK, columns);
 
         // Verify table entry
@@ -274,9 +274,9 @@ TEST_CASE("services::disk::catalog_schema_update_via_disk") {
 
         // Update schema via catalog
         std::vector<catalog_column_entry_t> new_columns;
-        new_columns.push_back({"id", logical_type::BIGINT});
-        new_columns.push_back({"name", logical_type::STRING_LITERAL});
-        new_columns.push_back({"score", logical_type::DOUBLE});
+        new_columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
+        new_columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
+        new_columns.push_back({"score", complex_logical_type(logical_type::DOUBLE)});
         disk.catalog().update_table_columns("test_db", "test_table", new_columns);
 
         // Verify updated schema
@@ -284,7 +284,7 @@ TEST_CASE("services::disk::catalog_schema_update_via_disk") {
         REQUIRE(updated_entries.size() == 1);
         REQUIRE(updated_entries[0].columns.size() == 3);
         REQUIRE(updated_entries[0].columns[2].name == "score");
-        REQUIRE(updated_entries[0].columns[2].type == logical_type::DOUBLE);
+        REQUIRE(updated_entries[0].columns[2].full_type.type() == logical_type::DOUBLE);
     }
 
     // Verify persistence

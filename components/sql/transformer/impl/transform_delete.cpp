@@ -22,12 +22,16 @@ namespace components::sql::transform {
             names.right_name = rangevar_to_collection(clause);
             names.right_alias = construct_alias(clause->alias);
         }
+        expression_ptr where_expr;
+        if (nodeTag(node.whereClause) == T_NullTest) {
+            where_expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, params);
+        } else {
+            where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
+        }
         return logical_plan::make_node_delete_many(
             resource_,
             names.left_name,
             names.right_name,
-            logical_plan::make_node_match(resource_,
-                                          names.left_name,
-                                          transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params)));
+            logical_plan::make_node_match(resource_, names.left_name, where_expr));
     }
 } // namespace components::sql::transform

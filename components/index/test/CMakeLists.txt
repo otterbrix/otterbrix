@@ -5,6 +5,7 @@ add_definitions(-DDEV_MODE)
 set(${PROJECT_NAME}_SOURCES
         test_single_field_index.cpp
         test_create_index.cpp
+        test_index_mvcc.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

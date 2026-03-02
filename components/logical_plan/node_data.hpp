@@ -19,14 +19,11 @@ namespace components::logical_plan {
 
         size_t size() const;
 
-        static boost::intrusive_ptr<node_data_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         data_t data_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     using node_data_ptr = boost::intrusive_ptr<node_data_t>;

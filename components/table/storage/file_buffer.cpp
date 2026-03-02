@@ -97,4 +97,8 @@ namespace components::table::storage {
         assert((allocation_size() & (SECTOR_SIZE - 1)) == 0);
     }
 
+    uint32_t meta_block_pointer_t::block_id() const { return static_cast<uint32_t>(block_pointer / 64); }
+
+    uint32_t meta_block_pointer_t::GetBlockIndex() const { return static_cast<uint32_t>(block_pointer % 64); }
+
 } // namespace components::table::storage

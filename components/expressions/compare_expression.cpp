@@ -1,6 +1,4 @@
 #include "compare_expression.hpp"
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 #include <sstream>
 
 namespace std {
@@ -53,32 +51,6 @@ namespace components::expressions {
 
     bool compare_expression_t::is_union() const { return is_union_compare_condition(type_); }
 
-    expression_ptr compare_expression_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<compare_type>(1);
-        auto arg_left = deserialize_param_storage(deserializer, 2);
-        auto arg_right = deserialize_param_storage(deserializer, 3);
-        deserializer->advance_array(4);
-        std::pmr::vector<expression_ptr> exprs(deserializer->resource());
-        exprs.reserve(deserializer->current_array_size());
-        for (size_t i = 0; i < deserializer->current_array_size(); i++) {
-            deserializer->advance_array(i);
-            exprs.emplace_back(expression_i::deserialize(deserializer));
-            deserializer->pop_array();
-        }
-        deserializer->pop_array();
-
-        compare_expression_ptr res;
-        if (is_union_compare_condition(type)) {
-            res = make_compare_union_expression(deserializer->resource(), type);
-            for (const auto& expr : exprs) {
-                res->append_child(expr);
-            }
-        } else {
-            res = make_compare_expression(deserializer->resource(), type, arg_left, arg_right);
-        }
-        return res;
-    }
-
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
@@ -114,20 +86,6 @@ namespace components::expressions {
         return type_ == other->type_ && left_ == other->left_ && right_ == other->right_ &&
                children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
-    }
-
-    void compare_expression_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(5);
-        serializer->append_enum(serializer::serialization_type::expression_compare);
-        serializer->append_enum(type_);
-        serialize_param_storage(serializer, left_);
-        serialize_param_storage(serializer, right_);
-        serializer->start_array(children_.size());
-        for (const auto& expr : children_) {
-            expr->serialize(serializer);
-        }
-        serializer->end_array();
-        serializer->end_array();
     }
 
     compare_expression_ptr make_compare_expression(std::pmr::memory_resource* resource,

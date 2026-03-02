@@ -1,5 +1,6 @@
 #include "collection.hpp"
 
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <queue>
 
@@ -31,6 +32,14 @@ namespace components::table {
 
     uint64_t collection_t::total_rows() const { return total_rows_.load(); }
 
+    uint64_t collection_t::committed_row_count() const {
+        uint64_t total = 0;
+        for (auto* rg = row_groups_->root_segment(); rg; rg = row_groups_->next_segment(rg)) {
+            total += rg->committed_row_count();
+        }
+        return total;
+    }
+
     const std::pmr::vector<types::complex_logical_type>& collection_t::types() const { return types_; }
 
     void collection_t::adopt_types(std::pmr::vector<types::complex_logical_type> types) {
@@ -46,6 +55,12 @@ namespace components::table {
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);
         new_row_group->initialize_empty(types_);
         row_groups_->append_segment(l, std::move(new_row_group));
+    }
+
+    row_group_t* collection_t::append_row_group(int64_t start_row) {
+        auto l = row_groups_->lock();
+        append_row_group(l, start_row);
+        return row_groups_->last_segment(l);
     }
 
     row_group_t* collection_t::row_group(int64_t index) { return row_groups_->segment_at(index); }
@@ -167,6 +182,16 @@ namespace components::table {
         return res;
     }
 
+    void collection_t::cleanup_versions(uint64_t lowest_active_start_time) {
+        for (auto& rg : row_groups_->segments()) {
+            auto count = rg.count.load();
+            if (count > 0) {
+                // cleanup_append is safe on get_or_create — only creates lightweight info
+                rg.get_or_create_version_info().cleanup_append(lowest_active_start_time, 0, count);
+            }
+        }
+    }
+
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
     void collection_t::initialize_append(table_append_state& state) {
@@ -221,12 +246,12 @@ namespace components::table {
         return new_row_group;
     }
 
-    void collection_t::finalize_append(table_append_state& state) {
+    void collection_t::finalize_append(table_append_state& state, transaction_data txn) {
         auto remaining = state.total_append_count;
         auto row_group = state.start_row_group;
         while (remaining > 0) {
             auto append_count = std::min<uint64_t>(remaining, row_group_size_ - row_group->count);
-            row_group->append_version_info(append_count);
+            row_group->append_version_info(txn, append_count);
             remaining -= append_count;
             row_group = row_groups_->next_segment(row_group);
         }
@@ -234,6 +259,44 @@ namespace components::table {
 
         state.total_append_count = 0;
         state.start_row_group = nullptr;
+    }
+
+    void collection_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
+        for (auto& rg : row_groups_->segments()) {
+            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
+            if (rg.start >= row_start + static_cast<int64_t>(count))
+                break;
+            if (rg_end <= row_start)
+                continue;
+            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
+            auto local_end =
+                std::min(rg.count.load(), static_cast<uint64_t>(row_start + static_cast<int64_t>(count) - rg.start));
+            auto local_count = local_end - local_start;
+            rg.commit_append(commit_id, local_start, local_count);
+        }
+    }
+
+    void collection_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        for (auto& rg : row_groups_->segments()) {
+            rg.commit_all_deletes(txn_id, commit_id);
+        }
+    }
+
+    void collection_t::revert_append(int64_t row_start, uint64_t count) {
+        for (auto& rg : row_groups_->segments()) {
+            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
+            if (rg_end <= row_start)
+                continue;
+            if (rg.start >= row_start + static_cast<int64_t>(count))
+                break;
+            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
+            rg.revert_append(local_start);
+        }
+        if (total_rows_.load() >= count) {
+            total_rows_ -= count;
+        } else {
+            total_rows_ = 0;
+        }
     }
 
     void collection_t::merge_storage(collection_t& data) {
@@ -252,7 +315,7 @@ namespace components::table {
         total_rows_ += data.total_rows_.load();
     }
 
-    uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count) {
+    uint64_t collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
@@ -267,7 +330,7 @@ namespace components::table {
                     break;
                 }
             }
-            delete_count += row_group->delete_rows(table, ids + start, pos - start);
+            delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id);
         } while (pos < count);
         return delete_count;
     }
@@ -366,6 +429,21 @@ namespace components::table {
             result->row_groups_->append_segment(std::move(new_row_group));
         }
         return result;
+    }
+
+    std::vector<storage::row_group_pointer_t>
+    collection_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
+        std::vector<storage::row_group_pointer_t> pointers;
+
+        auto l = row_groups_->lock();
+        auto& segments = row_groups_->reference_segments(l);
+        for (const auto& segment : segments) {
+            auto pointer = segment.node->write_to_disk(partial_block_manager);
+            pointers.push_back(std::move(pointer));
+        }
+
+        partial_block_manager.flush_partial_blocks();
+        return pointers;
     }
 
 } // namespace components::table

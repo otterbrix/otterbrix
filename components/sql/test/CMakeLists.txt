@@ -13,6 +13,8 @@ set(${PROJECT_NAME}_SOURCES
         test_errors.cpp
         test_function.cpp
         test_parameter.cpp
+        test_checkpoint.cpp
+        test_constraints_ddl.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

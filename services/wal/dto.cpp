@@ -1,6 +1,6 @@
 #include "dto.hpp"
+#include "record.hpp"
 
-#include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
 
 #include <absl/crc/crc32c.h>
@@ -20,7 +20,6 @@ namespace services::wal {
     }
 
     void append_size(buffer_t& storage, size_tt size) {
-        // Write 4 bytes (32-bit) instead of 2 bytes (16-bit)
         storage.push_back(buffer_element_t((size >> 24) & 0xff));
         storage.push_back(buffer_element_t((size >> 16) & 0xff));
         storage.push_back(buffer_element_t((size >> 8) & 0xff));
@@ -32,31 +31,6 @@ namespace services::wal {
         std::copy(ptr, ptr + size, std::back_inserter(storage));
     }
 
-    crc32_t read_crc32(buffer_t& input, size_tt index_start) {
-        crc32_t crc32_tmp = 0;
-        crc32_tmp = 0xff000000 & (uint32_t(input[index_start]) << 24);
-        crc32_tmp |= 0x00ff0000 & (uint32_t(input[index_start + 1]) << 16);
-        crc32_tmp |= 0x0000ff00 & (uint32_t(input[index_start + 2]) << 8);
-        crc32_tmp |= 0x000000ff & (uint32_t(input[index_start + 3]));
-        return crc32_tmp;
-    }
-
-    buffer_t read_payload(buffer_t& input, size_tt index_start, size_tt index_stop) {
-        buffer_t buffer(input.begin() + static_cast<std::ptrdiff_t>(index_start),
-                        input.begin() + static_cast<std::ptrdiff_t>(index_stop));
-        return buffer;
-    }
-
-    size_tt read_size_impl(buffer_t& input, size_tt index_start) {
-        // Read 4 bytes (32-bit) instead of 2 bytes (16-bit)
-        size_tt size_tmp = 0;
-        size_tmp = 0xff000000 & (size_tt(uint8_t(input[index_start])) << 24);
-        size_tmp |= 0x00ff0000 & (size_tt(uint8_t(input[index_start + 1])) << 16);
-        size_tmp |= 0x0000ff00 & (size_tt(uint8_t(input[index_start + 2])) << 8);
-        size_tmp |= 0x000000ff & (size_tt(uint8_t(input[index_start + 3])));
-        return size_tmp;
-    }
-
     crc32_t pack(buffer_t& storage, char* input, size_t data_size) {
         auto last_crc32_ = absl::ComputeCrc32c({input, data_size});
         append_size(storage, size_tt(data_size));
@@ -65,35 +39,14 @@ namespace services::wal {
         return static_cast<uint32_t>(last_crc32_);
     }
 
-    crc32_t pack(buffer_t& storage,
-                 crc32_t last_crc32,
-                 id_t id,
-                 const components::logical_plan::node_ptr& data,
-                 const components::logical_plan::parameter_node_ptr& params) {
-        components::serializer::msgpack_serializer_t serializer(data->resource());
-        serializer.start_array(4);
-        serializer.append(static_cast<uint64_t>(last_crc32));
-        serializer.append(static_cast<uint64_t>(id));
-        data->serialize(&serializer);
-        params->serialize(&serializer);
-        serializer.end_array();
-        auto buffer = serializer.result();
-
-        return pack(storage, buffer.data(), buffer.size());
-    }
-
-    void unpack(buffer_t& storage, wal_entry_t& entry) {
-        components::serializer::msgpack_deserializer_t deserializer(storage);
-
-        entry.last_crc32_ = static_cast<uint32_t>(deserializer.deserialize_uint64(0));
-        entry.id_ = deserializer.deserialize_uint64(1);
-
-        deserializer.advance_array(2);
-        entry.entry_ = components::logical_plan::node_t::deserialize(&deserializer);
-        deserializer.pop_array();
-        deserializer.advance_array(3);
-        entry.params_ = components::logical_plan::parameter_node_t::deserialize(&deserializer);
-        deserializer.pop_array();
+    crc32_t pack_commit_marker(buffer_t& storage, crc32_t last_crc32, id_t id, uint64_t transaction_id) {
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(&sbuf);
+        pk.pack_array(3);
+        pk.pack(static_cast<uint64_t>(last_crc32));
+        pk.pack(static_cast<uint64_t>(id));
+        pk.pack(transaction_id);
+        return pack(storage, sbuf.data(), sbuf.size());
     }
 
     id_t unpack_wal_id(buffer_t& storage) {
@@ -101,6 +54,87 @@ namespace services::wal {
         msgpack::unpack(msg, storage.data(), storage.size());
         const auto& o = msg.get();
         return o.via.array.ptr[1].as<id_t>();
+    }
+
+    crc32_t pack_physical_insert(buffer_t& storage,
+                                 std::pmr::memory_resource* resource,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const components::vector::data_chunk_t& data_chunk,
+                                 uint64_t row_start,
+                                 uint64_t row_count) {
+        components::serializer::msgpack_serializer_t serializer(resource);
+        serializer.start_array(9);
+        serializer.append(static_cast<uint64_t>(last_crc32));
+        serializer.append(static_cast<uint64_t>(id));
+        serializer.append(txn_id);
+        serializer.append(static_cast<uint64_t>(wal_record_type::PHYSICAL_INSERT));
+        serializer.append(database);
+        serializer.append(collection);
+        data_chunk.serialize(&serializer);
+        serializer.append(row_start);
+        serializer.append(row_count);
+        serializer.end_array();
+        auto buffer = serializer.result();
+        return pack(storage, buffer.data(), buffer.size());
+    }
+
+    crc32_t pack_physical_delete(buffer_t& storage,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const std::pmr::vector<int64_t>& row_ids,
+                                 uint64_t count) {
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(&sbuf);
+        pk.pack_array(8);
+        pk.pack(static_cast<uint64_t>(last_crc32));
+        pk.pack(static_cast<uint64_t>(id));
+        pk.pack(txn_id);
+        pk.pack(static_cast<uint64_t>(wal_record_type::PHYSICAL_DELETE));
+        pk.pack(database);
+        pk.pack(collection);
+        pk.pack_array(static_cast<uint32_t>(row_ids.size()));
+        for (auto rid : row_ids) {
+            pk.pack(rid);
+        }
+        pk.pack(count);
+        return pack(storage, sbuf.data(), sbuf.size());
+    }
+
+    crc32_t pack_physical_update(buffer_t& storage,
+                                 std::pmr::memory_resource* resource,
+                                 crc32_t last_crc32,
+                                 id_t id,
+                                 uint64_t txn_id,
+                                 const std::string& database,
+                                 const std::string& collection,
+                                 const std::pmr::vector<int64_t>& row_ids,
+                                 const components::vector::data_chunk_t& new_data,
+                                 uint64_t count) {
+        components::serializer::msgpack_serializer_t serializer(resource);
+        serializer.start_array(9);
+        serializer.append(static_cast<uint64_t>(last_crc32));
+        serializer.append(static_cast<uint64_t>(id));
+        serializer.append(txn_id);
+        serializer.append(static_cast<uint64_t>(wal_record_type::PHYSICAL_UPDATE));
+        serializer.append(database);
+        serializer.append(collection);
+        serializer.start_array(row_ids.size());
+        for (auto rid : row_ids) {
+            serializer.append(static_cast<int64_t>(rid));
+        }
+        serializer.end_array();
+        new_data.serialize(&serializer);
+        serializer.append(count);
+        serializer.end_array();
+        auto buffer = serializer.result();
+        return pack(storage, buffer.data(), buffer.size());
     }
 
 } //namespace services::wal

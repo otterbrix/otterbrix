@@ -17,26 +17,29 @@ namespace services::planner {
     components::operators::operator_ptr create_plan(const context_storage_t& context,
                                                     const components::compute::function_registry_t& function_registry,
                                                     const components::logical_plan::node_ptr& node,
-                                                    components::logical_plan::limit_t limit) {
+                                                    components::logical_plan::limit_t limit,
+                                                    const components::logical_plan::storage_parameters* params) {
         switch (node->type()) {
             case node_type::aggregate_t:
-                return impl::create_plan_aggregate(context, function_registry, node, std::move(limit));
+                return impl::create_plan_aggregate(context, function_registry, node, std::move(limit), params);
             case node_type::data_t:
                 return impl::create_plan_data(node);
             case node_type::delete_t:
                 return impl::create_plan_delete(context, node);
             case node_type::insert_t:
-                return impl::create_plan_insert(context, function_registry, node, std::move(limit));
+                return impl::create_plan_insert(context, function_registry, node, std::move(limit), params);
             case node_type::match_t:
                 return impl::create_plan_match(context, node, std::move(limit));
+            case node_type::having_t:
+                return impl::create_plan_having(context, node, std::move(limit));
             case node_type::group_t:
-                return impl::create_plan_group(context, function_registry, node);
+                return impl::create_plan_group(context, function_registry, node, params);
             case node_type::sort_t:
                 return impl::create_plan_sort(context, node);
             case node_type::update_t:
                 return impl::create_plan_update(context, node);
             case node_type::join_t:
-                return impl::create_plan_join(context, function_registry, node, std::move(limit));
+                return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
             default:
                 break;
         }

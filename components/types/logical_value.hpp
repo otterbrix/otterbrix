@@ -5,7 +5,6 @@
 #include <cstring>
 #include <memory>
 #include <memory_resource>
-#include <msgpack.hpp>
 
 #include "types.hpp"
 
@@ -18,6 +17,7 @@ namespace components::types {
 
         template<typename T>
         logical_value_t(std::pmr::memory_resource* r, T value);
+        logical_value_t(std::pmr::memory_resource* r, const logical_value_t& other);
         logical_value_t(const logical_value_t& other);
         logical_value_t(logical_value_t&& other) noexcept;
         logical_value_t& operator=(const logical_value_t& other);
@@ -382,7 +382,7 @@ namespace components::types {
     public:
         explicit enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries);
 
-        const std::string& type_name() { return type_name_; }
+        const std::string& type_name() const { return type_name_; }
         const std::vector<logical_value_t>& entries() const noexcept { return entries_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
@@ -398,6 +398,9 @@ namespace components::types {
     public:
         explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
 
+        const std::string& catalog() const noexcept { return catalog_; }
+        const std::vector<logical_value_t>& user_type_modifiers() const noexcept { return user_type_modifiers_; }
+
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
@@ -408,163 +411,3 @@ namespace components::types {
     };
 
 } // namespace components::types
-
-template<typename Stream>
-void to_msgpack_(msgpack::packer<Stream>& o, const components::types::logical_value_t& value) {
-    switch (value.type().type()) {
-        case components::types::logical_type::BOOLEAN: {
-            o.pack(value.value<bool>());
-            break;
-        }
-        case components::types::logical_type::UTINYINT: {
-            o.pack(value.value<uint8_t>());
-            break;
-        }
-        case components::types::logical_type::USMALLINT: {
-            o.pack(value.value<uint16_t>());
-            break;
-        }
-        case components::types::logical_type::UINTEGER: {
-            o.pack(value.value<uint32_t>());
-            break;
-        }
-        case components::types::logical_type::UBIGINT: {
-            o.pack(value.value<uint64_t>());
-            break;
-        }
-        case components::types::logical_type::TINYINT: {
-            o.pack(value.value<int8_t>());
-            break;
-        }
-        case components::types::logical_type::SMALLINT: {
-            o.pack(value.value<int16_t>());
-            break;
-        }
-        case components::types::logical_type::INTEGER: {
-            o.pack(value.value<int32_t>());
-            break;
-        }
-        case components::types::logical_type::BIGINT: {
-            o.pack(value.value<int64_t>());
-            break;
-        }
-        case components::types::logical_type::FLOAT: {
-            o.pack(value.value<float>());
-            break;
-        }
-        case components::types::logical_type::DOUBLE: {
-            o.pack(value.value<double>());
-            break;
-        }
-        case components::types::logical_type::STRING_LITERAL: {
-            o.pack(value.value<const std::string&>());
-            break;
-        }
-        case components::types::logical_type::NA: {
-            o.pack(msgpack::type::nil_t());
-            break;
-        }
-        default:
-            throw std::logic_error("logical_value_t::to_msgpack_: incorrect logical type");
-            break;
-    }
-}
-
-inline void to_msgpack_(const components::types::logical_value_t& value, msgpack::object& o) {
-    switch (value.type().type()) {
-        case components::types::logical_type::BOOLEAN: {
-            o.type = msgpack::type::BOOLEAN;
-            o.via.boolean = value.value<bool>();
-            break;
-        }
-        case components::types::logical_type::UTINYINT: {
-            o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.u64 = value.value<uint8_t>();
-            break;
-        }
-        case components::types::logical_type::USMALLINT: {
-            o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.u64 = value.value<uint16_t>();
-            break;
-        }
-        case components::types::logical_type::UINTEGER: {
-            o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.u64 = value.value<uint32_t>();
-            break;
-        }
-        case components::types::logical_type::UBIGINT: {
-            o.type = msgpack::type::POSITIVE_INTEGER;
-            o.via.u64 = value.value<uint64_t>();
-            break;
-        }
-        case components::types::logical_type::TINYINT: {
-            o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.i64 = value.value<int8_t>();
-            break;
-        }
-        case components::types::logical_type::SMALLINT: {
-            o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.i64 = value.value<int16_t>();
-            break;
-        }
-        case components::types::logical_type::INTEGER: {
-            o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.i64 = value.value<int32_t>();
-            break;
-        }
-        case components::types::logical_type::BIGINT: {
-            o.type = msgpack::type::NEGATIVE_INTEGER;
-            o.via.i64 = value.value<int64_t>();
-            break;
-        }
-        case components::types::logical_type::FLOAT: {
-            o.type = msgpack::type::FLOAT32;
-            o.via.f64 = value.value<float>();
-            break;
-        }
-        case components::types::logical_type::DOUBLE: {
-            o.type = msgpack::type::FLOAT64;
-            o.via.f64 = value.value<double>();
-            break;
-        }
-        case components::types::logical_type::STRING_LITERAL: {
-            std::string s = value.value<const std::string&>();
-            o.type = msgpack::type::object_type::STR;
-            o.via.str.size = uint32_t(s.size());
-            o.via.str.ptr = s.c_str();
-            break;
-        }
-        case components::types::logical_type::NA: {
-            o.type = msgpack::type::object_type::NIL;
-            break;
-        }
-        default:
-            assert(false); // should be unreachable;
-            break;
-    }
-}
-
-namespace msgpack {
-    MSGPACK_API_VERSION_NAMESPACE(MSGPACK_DEFAULT_API_NS) {
-        namespace adaptor {
-
-            template<>
-            struct pack<components::types::logical_value_t> final {
-                template<typename Stream>
-                packer<Stream>& operator()(msgpack::packer<Stream>& o,
-                                           const components::types::logical_value_t& v) const {
-                    to_msgpack_(o, v);
-                    return o;
-                }
-            };
-
-            template<>
-            struct object_with_zone<components::types::logical_value_t> final {
-                void operator()(msgpack::object::with_zone& o, const components::types::logical_value_t& v) const {
-                    to_msgpack_(v, o);
-                }
-            };
-
-        } // namespace adaptor
-    }     // MSGPACK_API_VERSION_NAMESPACE(MSGPACK_DEFAULT_API_NS)
-} // namespace msgpack

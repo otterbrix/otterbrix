@@ -650,7 +650,7 @@ namespace components::types {
                                       const std::vector<types::complex_logical_type>& columns,
                                       std::vector<field_description> descriptions);
 
-        const std::string& type_name() { return type_name_; }
+        const std::string& type_name() const { return type_name_; }
         std::vector<complex_logical_type>& child_types() { return fields_; }
         const std::vector<complex_logical_type>& child_types() const { return fields_; }
         const std::vector<field_description>& descriptions() const { return descriptions_; }
@@ -685,6 +685,9 @@ namespace components::types {
     public:
         explicit function_logical_type_extension(complex_logical_type return_type,
                                                  std::vector<complex_logical_type> arguments);
+
+        const complex_logical_type& return_type() const noexcept { return return_type_; }
+        const std::vector<complex_logical_type>& argument_types() const noexcept { return argument_types_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,

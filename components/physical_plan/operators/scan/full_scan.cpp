@@ -35,28 +35,35 @@ namespace components::operators {
                 }
                 return filter;
             }
-            case expressions::compare_type::invalid:
-                throw std::runtime_error("unsupported compare_type in expression to filter conversion");
-            default: {
-                std::vector<uint64_t> indices;
-                // pointer + size to avoid std::vector and std::pmr::vector clashing
-                auto* local_types = types.data();
-                size_t size = types.size();
-                const auto& primary_key = std::get<expressions::key_t>(expression->left());
-                auto id = std::get<core::parameter_id_t>(expression->right());
-                for (size_t i = 0; i < primary_key.storage().size(); i++) {
-                    auto it =
-                        std::find_if(local_types, local_types + size, [&](const types::complex_logical_type& type) {
-                            return core::pmr::operator==(type.alias(), primary_key.storage()[i]);
-                        });
-                    assert(it != local_types + size);
-                    indices.emplace_back(it - local_types);
-                    // if it isn't the last one
-                    if (i + 1 != primary_key.storage().size()) {
-                        local_types = it->child_types().data();
-                        size = it->child_types().size();
+            case expressions::compare_type::union_not: {
+                auto filter = std::make_unique<table::conjunction_not_filter_t>();
+                filter->child_filters.reserve(expression->children().size());
+                for (const auto& child : expression->children()) {
+                    auto child_filter =
+                        transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
+                                            types,
+                                            parameters);
+                    if (child_filter) {
+                        filter->child_filters.emplace_back(std::move(child_filter));
                     }
                 }
+                if (filter->child_filters.empty()) {
+                    throw std::runtime_error("empty NOT filter — expression construction error");
+                }
+                return filter;
+            }
+            case expressions::compare_type::invalid:
+                throw std::runtime_error("unsupported compare_type in expression to filter conversion");
+            case expressions::compare_type::is_null:
+            case expressions::compare_type::is_not_null: {
+                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
+                return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
+            }
+            default: {
+                const auto& path = std::get<expressions::key_t>(expression->left()).path();
+                auto id = std::get<core::parameter_id_t>(expression->right());
+                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 return std::make_unique<table::constant_filter_t>(expression->type(),
                                                                   parameters->parameters.at(id),
                                                                   std::move(indices));
@@ -100,7 +107,8 @@ namespace components::operators {
                                          ctx->session,
                                          name_,
                                          std::move(filter),
-                                         limit_val);
+                                         limit_val,
+                                         ctx->txn);
         auto data = co_await std::move(sf);
 
         if (data) {

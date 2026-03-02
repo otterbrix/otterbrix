@@ -189,6 +189,7 @@ namespace components::table {
                     vector::vector_t& base_data);
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
         bool check_row(int64_t row_id, const table_filter_t* filter);
+        bool row_is_updated(int64_t row_id);
 
         void cleanup_update(update_info_t& info);
 

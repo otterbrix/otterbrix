@@ -16,6 +16,12 @@ set(SOURCE_${PROJECT_NAME}
         collection.cpp
         data_table.cpp
         row_version_manager.cpp
+        transaction.cpp
+        transaction_manager.cpp
+        base_statistics.cpp
+        persistent_column_data.cpp
+        column_checkpoint_state.cpp
+        column_data_checkpointer.cpp
 
         storage/file_buffer.cpp
         storage/block_handle.cpp
@@ -24,6 +30,12 @@ set(SOURCE_${PROJECT_NAME}
         storage/buffer_manager.cpp
         storage/standard_buffer_manager.cpp
         storage/buffer_pool.cpp
+        storage/single_file_block_manager.cpp
+        storage/metadata_manager.cpp
+        storage/metadata_writer.cpp
+        storage/metadata_reader.cpp
+        storage/data_pointer.cpp
+        storage/partial_block_manager.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -42,6 +54,7 @@ target_link_libraries(
         otterbrix::vector
         magic_enum::magic_enum
         msgpackc-cxx
+        absl::crc32c
 )
 
 target_include_directories(

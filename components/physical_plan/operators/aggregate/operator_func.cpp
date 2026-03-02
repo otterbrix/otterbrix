@@ -7,10 +7,12 @@ namespace components::operators::aggregate {
     operator_func_t::operator_func_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      compute::function* func,
-                                     std::pmr::vector<expressions::param_storage> args)
+                                     std::pmr::vector<expressions::param_storage> args,
+                                     bool distinct)
         : operator_aggregate_t(resource, std::move(log))
         , args_(std::move(args))
-        , func_(func) {
+        , func_(func)
+        , distinct_(distinct) {
         assert(func);
     }
 
@@ -58,6 +60,27 @@ namespace components::operators::aggregate {
                         c.data[i].flatten(vector::indexing_vector_t(left_->output()->resource(), chunk.size()),
                                           chunk.size());
                     }
+                }
+                if (distinct_ && c.size() > 0) {
+                    std::pmr::vector<uint64_t> unique_indices(resource_);
+                    unique_indices.reserve(c.size());
+                    for (uint64_t row = 0; row < c.size(); row++) {
+                        bool dup = false;
+                        for (auto idx : unique_indices) {
+                            // TODO: distinct by the appropriate column, instead of the first one
+                            if (c.data[0].value(row) == c.data[0].value(idx)) {
+                                dup = true;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            unique_indices.push_back(row);
+                        }
+                    }
+                    vector::indexing_vector_t indexing(resource_, unique_indices.data());
+                    vector::data_chunk_t unique_c(left_->output()->resource(), types, unique_indices.size());
+                    c.copy(unique_c, indexing, unique_indices.size(), 0);
+                    c = std::move(unique_c);
                 }
                 auto res = func_->execute(c, c.size());
                 if (res.status() == compute::compute_status::ok()) {

@@ -16,6 +16,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <list>
 #include <queue>
 
 namespace services::dispatcher {
@@ -61,9 +62,6 @@ namespace services::dispatcher {
                                              const named_schema& schema) {
             assert(!key.storage().empty());
             type_paths result{resource};
-            if (schema.empty()) {
-                return schema_result{std::move(result)};
-            }
             if (key.storage().at(0) == "*") {
                 for (size_t i = 0; i < schema.size(); i++) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
@@ -468,6 +466,20 @@ namespace services::dispatcher {
                     }
                     break;
                 }
+                case compare_type::is_null:
+                case compare_type::is_not_null: {
+                    if (std::holds_alternative<components::expressions::key_t>(expr->left())) {
+                        auto key_res = validate_key(resource,
+                                                    std::get<components::expressions::key_t>(expr->left()),
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema);
+                        if (key_res.is_error()) {
+                            return schema_result<named_schema>(resource, key_res.error());
+                        }
+                    }
+                    break;
+                }
                 default:
                     break;
             }
@@ -688,6 +700,7 @@ namespace services::dispatcher {
                 node_match_t* node_match = nullptr;
                 node_sort_t* node_sort = nullptr;
                 node_t* node_data = nullptr;
+                node_t* node_having = nullptr;
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
@@ -704,6 +717,9 @@ namespace services::dispatcher {
                             node_sort = reinterpret_cast<node_sort_t*>(child.get());
                             break;
                         case node_type::limit_t:
+                            break;
+                        case node_type::having_t:
+                            node_having = child.get();
                             break;
                         default:
                             node_data = child.get();
@@ -739,10 +755,7 @@ namespace services::dispatcher {
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
-                    return schema_result<named_schema>{
-                        resource,
-                        components::cursor::error_t{error_code_t::schema_error,
-                                                    "invalid aggregate node, that contains no fields"}};
+                    // Empty computing table — still need aggregate validation for function_uid
                 }
                 if (incoming_schema.empty()) {
                     incoming_schema = table_schema;
@@ -861,6 +874,18 @@ namespace services::dispatcher {
                         return res;
                     }
                 }
+                if (node_having && !node_having->expressions().empty()) {
+                    for (auto& expr : node_having->expressions()) {
+                        if (expr->group() == expression_group::compare) {
+                            auto* cmp_expr = reinterpret_cast<compare_expression_t*>(expr.get());
+                            auto res =
+                                impl::validate_schema(resource, catalog, cmp_expr, parameters, result, result, true);
+                            if (res.is_error()) {
+                                return res;
+                            }
+                        }
+                    }
+                }
                 break;
             }
             case node_type::data_t: {
@@ -953,6 +978,7 @@ namespace services::dispatcher {
                     return incoming_schema;
                 } else {
                     named_schema table_schema(resource);
+                    bool is_computed = false;
                     if (catalog.table_exists(id)) {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
@@ -960,13 +986,20 @@ namespace services::dispatcher {
                                                                   column});
                         }
                     } else {
+                        is_computed = true;
                         auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
                         for (const auto& column : sch.child_types()) {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
                     }
-                    // TODO: incomplete rows insert
-                    if (table_schema.empty() || table_schema.size() == incoming_schema.value().size()) {
+                    if (table_schema.empty() && is_computed) {
+                        // Computing table — accept any INSERT
+                    } else if (incoming_schema.value().size() > table_schema.size()) {
+                        return schema_result<named_schema>{
+                            resource,
+                            components::cursor::error_t{error_code_t::schema_error,
+                                                        "insert_node: too many columns in INSERT"}};
+                    } else if (incoming_schema.value().size() == table_schema.size()) {
                         for (size_t i = 0; i < table_schema.size(); i++) {
                             // TODO: key translation and type compare, instead of names:
                             if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
@@ -977,11 +1010,23 @@ namespace services::dispatcher {
                             }
                         }
                     } else {
-                        return schema_result<named_schema>{
-                            resource,
-                            components::cursor::error_t{
-                                error_code_t::schema_error,
-                                "insert_node: number of data columns does not match the table one"}};
+                        // Partial INSERT: each incoming column must exist in table schema
+                        for (size_t i = 0; i < incoming_schema.value().size(); i++) {
+                            bool found = false;
+                            for (size_t j = 0; j < table_schema.size(); j++) {
+                                // TODO: key translation and type compare, instead of names:
+                                if (table_schema[j].type.alias() == incoming_schema.value()[i].type.alias()) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                return schema_result<named_schema>{
+                                    resource,
+                                    components::cursor::error_t{error_code_t::schema_error,
+                                                                "insert_node: field not found in table schema"}};
+                            }
+                        }
                     }
                 }
                 return schema_result{std::move(result)};

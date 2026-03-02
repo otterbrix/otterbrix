@@ -103,6 +103,37 @@ namespace components::types {
         }
     }
 
+    logical_value_t::logical_value_t(std::pmr::memory_resource* r, const logical_value_t& other)
+        : type_(other.type_)
+        , resource_(r) {
+        switch (type_.type()) {
+            case logical_type::HUGEINT:
+                data128_ = other.data128_;
+                break;
+            case logical_type::UHUGEINT:
+                udata128_ = other.udata128_;
+                break;
+            case logical_type::STRING_LITERAL:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
+                break;
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
+                break;
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                if (other.data_) {
+                    data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>(*other.vec_ptr()));
+                }
+                break;
+            default:
+                data_ = other.data_;
+                break;
+        }
+    }
+
     logical_value_t::logical_value_t(const logical_value_t& other)
         : type_(other.type_)
         , resource_(other.resource_) {
@@ -287,7 +318,7 @@ namespace components::types {
         if (type_ == type) {
             return logical_value_t(*this);
         }
-        if (is_numeric(type.type())) {
+        if (is_numeric(type.type()) || (type.type() == logical_type::STRING_LITERAL && is_numeric(type_.type()))) {
             // same problem as in physical_value
             // ideally use something like this
             // return logicaL_value<type.type()>{value<type_.type()>()};
@@ -1426,6 +1457,9 @@ namespace components::types {
                 result = create_struct(r, type, std::move(nested_values));
                 break;
             }
+            case logical_type::NA:
+                // Null value — already initialized as NA
+                break;
             default:
                 assert(false);
                 return logical_value_t{r, complex_logical_type{logical_type::NA}};

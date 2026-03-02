@@ -79,25 +79,4 @@ namespace components::logical_plan {
         return {new node_create_index_t{resource, collection, name, type}};
     }
 
-    node_create_index_ptr to_node_create_index(const msgpack::object& msg_object, std::pmr::memory_resource* resource) {
-        if (msg_object.type != msgpack::type::ARRAY) {
-            throw msgpack::type_error();
-        }
-        if (msg_object.via.array.size != 5) {
-            throw msgpack::type_error();
-        }
-        auto database = msg_object.via.array.ptr[0].as<std::string>();
-        auto collection = msg_object.via.array.ptr[1].as<std::string>();
-        auto name = msg_object.via.array.ptr[2].as<std::string>();
-        auto type = static_cast<components::logical_plan::index_type>(msg_object.via.array.ptr[3].as<uint8_t>());
-        auto data = msg_object.via.array.ptr[4].as<std::vector<std::string>>();
-        components::logical_plan::keys_base_storage_t keys(resource);
-        for (const auto& str : data) {
-            keys.emplace_back(resource, str);
-        }
-        auto node = make_node_create_index(resource, {database, collection}, name, type);
-        node->keys() = keys;
-        return node;
-    }
-
 } // namespace components::logical_plan

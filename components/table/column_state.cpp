@@ -69,6 +69,16 @@ namespace components::table {
         return std::make_unique<conjunction_and_filter_t>();
     }
 
+    std::unique_ptr<table_filter_t> conjunction_not_filter_t::copy() const {
+        auto result = std::make_unique<conjunction_not_filter_t>();
+        for (auto& child : child_filters) {
+            if (child) {
+                result->child_filters.push_back(child->copy());
+            }
+        }
+        return result;
+    }
+
     void column_scan_state::initialize(const types::complex_logical_type& type,
                                        const std::vector<storage_index_t>& children) {
         if (type.type() == types::logical_type::VALIDITY) {

@@ -93,10 +93,11 @@ namespace components::table {
     }
 
     bool chunk_constant_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>&) const {
-        if (delete_id != NOT_DELETED_ID) {
+        if (insert_id > lowest_transaction) {
             return false;
         }
-        if (insert_id > lowest_transaction) {
+        // Committed deletes are fine — they're visible to all active transactions
+        if (delete_id != NOT_DELETED_ID && delete_id > lowest_transaction) {
             return false;
         }
         return true;
@@ -212,6 +213,17 @@ namespace components::table {
         }
     }
 
+    void chunk_vector_info::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        if (!any_deleted) {
+            return;
+        }
+        for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
+            if (deleted[i] == txn_id) {
+                deleted[i] = commit_id;
+            }
+        }
+    }
+
     void chunk_vector_info::append(uint64_t start, uint64_t end, uint64_t commit_id) {
         if (start == 0) {
             insert_id = commit_id;
@@ -233,18 +245,50 @@ namespace components::table {
         }
     }
 
-    bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>&) const {
-        if (any_deleted) {
-            return false;
-        }
+    bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
+        // Check inserts: all must be committed and old enough
         if (!same_inserted_id) {
-            for (uint64_t idx = 1; idx < vector::DEFAULT_VECTOR_CAPACITY; idx++) {
+            for (uint64_t idx = 0; idx < vector::DEFAULT_VECTOR_CAPACITY; idx++) {
                 if (inserted[idx] > lowest_transaction) {
                     return false;
                 }
             }
         } else if (insert_id > lowest_transaction) {
             return false;
+        }
+
+        if (any_deleted) {
+            // Check if ALL deletes are committed (< TRANSACTION_ID_START) and old enough
+            bool all_committed = true;
+            bool all_deleted = true;
+            uint64_t min_delete_id = NOT_DELETED_ID;
+            for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
+                if (deleted[i] == NOT_DELETED_ID) {
+                    all_deleted = false;
+                    continue;
+                }
+                if (deleted[i] >= TRANSACTION_ID_START || deleted[i] > lowest_transaction) {
+                    // Uncommitted or too recent delete — can't cleanup
+                    all_committed = false;
+                    break;
+                }
+                if (deleted[i] < min_delete_id) {
+                    min_delete_id = deleted[i];
+                }
+            }
+            if (!all_committed) {
+                return false;
+            }
+            // All deletes are committed and old enough.
+            // If every row is deleted, convert to chunk_constant_info
+            if (all_deleted) {
+                auto constant = std::make_unique<chunk_constant_info>(start);
+                constant->insert_id = same_inserted_id ? insert_id : inserted[0];
+                constant->delete_id = min_delete_id;
+                result = std::move(constant);
+            }
+            // else: partial deletes — still allow cleanup (version info no longer needed
+            //       because all versions are visible to all active transactions)
         }
         return true;
     }
@@ -480,6 +524,15 @@ namespace components::table {
         std::lock_guard lock(version_lock_);
         has_changes_ = true;
         vector_info(vector_idx).commit_delete(commit_id, info);
+    }
+
+    void row_version_manager_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
+        std::lock_guard lock(version_lock_);
+        for (auto& info : vector_info_) {
+            if (info && info->type == chunk_info_type::VECTOR_INFO) {
+                info->cast<chunk_vector_info>().commit_all_deletes(txn_id, commit_id);
+            }
+        }
     }
 
 } // namespace components::table

@@ -27,18 +27,19 @@ namespace components::expressions {
 
         void append_param(const param_storage& param);
 
-        static expression_ptr deserialize(serializer::msgpack_deserializer_t* deserializer);
+        void set_distinct(bool d) { distinct_ = d; }
+        bool is_distinct() const { return distinct_; }
 
     private:
         std::string function_name_;
         compute::function_uid function_uid_{compute::invalid_function_uid};
         key_t key_;
         std::pmr::vector<param_storage> params_;
+        bool distinct_{false};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
         bool equal_impl(const expression_i* rhs) const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     aggregate_expression_ptr

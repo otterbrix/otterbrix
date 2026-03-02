@@ -12,6 +12,8 @@ namespace components::operators {
         void set_match(operator_ptr&& match);
         void set_group(operator_ptr&& group);
         void set_sort(operator_ptr&& sort);
+        void set_having(operator_ptr&& having);
+        void set_distinct(operator_ptr&& distinct);
         void set_limit(logical_plan::limit_t limit);
 
     private:
@@ -19,6 +21,8 @@ namespace components::operators {
         operator_ptr match_{nullptr};
         operator_ptr group_{nullptr};
         operator_ptr sort_{nullptr};
+        operator_ptr having_{nullptr};
+        operator_ptr distinct_{nullptr};
         logical_plan::limit_t limit_;
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;

@@ -152,7 +152,7 @@ TEST_CASE("components::sql::update_from") {
         f.back()->left() = std::move(calculate);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
                            R"_($update: {$upsert: 0, $match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 1.5f)}),
+                           vec({v(&resource, 1.5)}),
                            f);
     }
 

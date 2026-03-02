@@ -5,9 +5,15 @@
 #include <functional>
 
 #include "column_data.hpp"
+#include "row_version_manager.hpp"
 #include "table_state.hpp"
 
 #include "column_definition.hpp"
+
+namespace components::table::storage {
+    struct row_group_pointer_t;
+    class partial_block_manager_t;
+} // namespace components::table::storage
 
 namespace components::table {
 
@@ -34,10 +40,12 @@ namespace components::table {
                      uint64_t row_group_size = vector::DEFAULT_VECTOR_CAPACITY);
 
         uint64_t total_rows() const;
+        uint64_t committed_row_count() const;
 
         bool is_empty() const;
 
         void append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row);
+        row_group_t* append_row_group(int64_t start_row);
         row_group_t* row_group(int64_t index);
 
         void initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>& column_ids);
@@ -64,13 +72,15 @@ namespace components::table {
 
         void initialize_append(table_append_state& state);
         bool append(vector::data_chunk_t& chunk, table_append_state& state);
-        void finalize_append(table_append_state& state);
-        void commit_append(int64_t row_start, uint64_t count);
+        void finalize_append(table_append_state& state, transaction_data txn);
+        void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
+        void revert_append(int64_t row_start, uint64_t count);
+        void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void cleanup_append(int64_t start, uint64_t count);
 
         void merge_storage(collection_t& data);
 
-        uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count);
+        uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
         void update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
         void update_column(vector::vector_t& row_ids,
                            const std::vector<uint64_t>& column_path,
@@ -86,15 +96,22 @@ namespace components::table {
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);
 
+        std::vector<storage::row_group_pointer_t> checkpoint(storage::partial_block_manager_t& partial_block_manager);
+
         storage::block_manager_t& block_manager() { return block_manager_; }
 
         uint64_t allocation_size() const { return allocation_size_; }
 
         uint64_t row_group_size() const { return row_group_size_; }
 
+        row_group_segment_tree_t* row_group_tree() { return row_groups_.get(); }
+
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
         uint64_t calculate_size();
+        void cleanup_versions(uint64_t lowest_active_start_time);
+
+        void set_total_rows(uint64_t total) { total_rows_ = total; }
 
     private:
         bool is_empty(std::unique_lock<std::mutex>&) const;

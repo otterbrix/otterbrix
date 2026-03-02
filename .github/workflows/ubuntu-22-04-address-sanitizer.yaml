@@ -41,6 +41,8 @@ jobs:
           cmake --build .
 
       - name: Test
+        env:
+          ASAN_OPTIONS: fast_unwind_on_malloc=0
         run: |
           cd build
           ctest -C Release -V --output-on-failure

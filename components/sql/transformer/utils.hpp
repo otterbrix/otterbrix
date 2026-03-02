@@ -6,6 +6,8 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/table/column_definition.hpp>
+#include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
 #include <string>
 
@@ -148,6 +150,7 @@ namespace components::sql::transform {
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
+    std::string like_to_regex(const std::string& pattern);
 
     types::complex_logical_type get_type(TypeName* type);
     std::vector<types::complex_logical_type> get_types(PGList& list);
@@ -155,5 +158,10 @@ namespace components::sql::transform {
 
     types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);
     types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list);
+
+    void fill_column_definitions(std::vector<table::column_definition_t>& out,
+                                 std::pmr::memory_resource* resource,
+                                 PGList& table_elts);
+    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
 
 } // namespace components::sql::transform

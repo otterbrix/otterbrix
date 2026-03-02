@@ -1,20 +1,16 @@
 #pragma once
-#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <filesystem>
 #include <services/wal/base.hpp>
 
-#include "metadata.hpp"
+#include "catalog_storage.hpp"
 
 #include <components/base/collection_full_name.hpp>
 
 namespace services::disk {
 
     using path_t = std::filesystem::path;
-    using metadata_ptr = std::unique_ptr<metadata_t>;
     using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
-    using btree_ptr = std::unique_ptr<core::b_plus_tree::btree_t>;
 
-    // TODO: add checkpoints to avoid flushing b+tree after each call
     class disk_t {
     public:
         explicit disk_t(const path_t& storage_directory, std::pmr::memory_resource* resource);
@@ -29,15 +25,23 @@ namespace services::disk {
         bool append_collection(const database_name_t& database, const collection_name_t& collection);
         bool remove_collection(const database_name_t& database, const collection_name_t& collection);
 
+        // Enriched collection operations (with storage mode + columns)
+        bool append_collection(const database_name_t& database,
+                               const collection_name_t& collection,
+                               table_storage_mode_t mode,
+                               const std::vector<catalog_column_entry_t>& columns);
+        [[nodiscard]] std::vector<catalog_table_entry_t> table_entries(const database_name_t& database) const;
+
         void fix_wal_id(wal::id_t wal_id);
         wal::id_t wal_id() const;
+
+        catalog_storage_t& catalog() { return catalog_; }
 
     private:
         path_t path_;
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;
-        std::pmr::unordered_map<collection_full_name_t, btree_ptr, collection_name_hash> db_;
-        metadata_ptr metadata_;
+        catalog_storage_t catalog_;
         file_ptr file_wal_id_;
     };
 

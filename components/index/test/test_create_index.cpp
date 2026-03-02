@@ -31,6 +31,14 @@ private:
     }
     iterator cbegin_impl() const override { return iterator(new impl_t(dummy_storage_.cbegin())); }
     iterator cend_impl() const override { return iterator(new impl_t(dummy_storage_.cend())); }
+    void insert_txn_impl(value_t, int64_t, uint64_t) override {}
+    void mark_delete_impl(value_t, int64_t, uint64_t) override {}
+    void commit_insert_impl(uint64_t, uint64_t) override {}
+    void commit_delete_impl(uint64_t, uint64_t) override {}
+    void revert_insert_impl(uint64_t) override {}
+    void cleanup_versions_impl(uint64_t) override {}
+    void for_each_pending_insert_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}
+    void for_each_pending_delete_impl(uint64_t, const std::function<void(const value_t&, int64_t)>&) const override {}
     void clean_memory_to_new_elements_impl(size_t) override {}
 
     class impl_t final : public iterator::iterator_impl_t {

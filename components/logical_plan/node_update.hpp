@@ -22,8 +22,6 @@ namespace components::logical_plan {
         bool upsert() const;
         const collection_full_name_t& collection_from() const;
 
-        static boost::intrusive_ptr<node_update_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         collection_full_name_t collection_from_;
         std::pmr::vector<expressions::update_expr_ptr> update_expressions_;
@@ -31,7 +29,6 @@ namespace components::logical_plan {
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

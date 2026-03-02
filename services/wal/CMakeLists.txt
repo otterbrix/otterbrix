@@ -7,6 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         dto.cpp
         manager_wal_replicate.cpp
         wal.cpp
+        wal_reader.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

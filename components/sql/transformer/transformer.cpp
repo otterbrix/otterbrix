@@ -42,6 +42,21 @@ namespace components::sql::transform {
             case T_IndexStmt:
                 log_node = transform_create_index(pg_cast<IndexStmt>(node));
                 break;
+            case T_CheckPointStmt:
+                log_node = transform_checkpoint(pg_cast<CheckPointStmt>(node));
+                break;
+            case T_VacuumStmt:
+                log_node = transform_vacuum(pg_cast<VacuumStmt>(node));
+                break;
+            case T_CreateSeqStmt:
+                log_node = transform_create_sequence(pg_cast<CreateSeqStmt>(node));
+                break;
+            case T_ViewStmt:
+                log_node = transform_create_view(pg_cast<ViewStmt>(node));
+                break;
+            case T_CreateFunctionStmt:
+                log_node = transform_create_function(pg_cast<CreateFunctionStmt>(node));
+                break;
             default:
                 throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node.type));
         }

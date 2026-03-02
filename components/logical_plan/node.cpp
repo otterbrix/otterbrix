@@ -1,24 +1,7 @@
 #include "node.hpp"
 
-#include "node_aggregate.hpp"
-#include "node_create_collection.hpp"
-#include "node_create_database.hpp"
-#include "node_create_index.hpp"
-#include "node_create_type.hpp"
-#include "node_data.hpp"
 #include "node_delete.hpp"
-#include "node_drop_collection.hpp"
-#include "node_drop_database.hpp"
-#include "node_drop_index.hpp"
-#include "node_drop_type.hpp"
-#include "node_function.hpp"
-#include "node_group.hpp"
-#include "node_insert.hpp"
-#include "node_join.hpp"
-#include "node_sort.hpp"
 #include "node_update.hpp"
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 
 #include <algorithm>
 #include <boost/container_hash/hash.hpp>
@@ -92,52 +75,6 @@ namespace components::logical_plan {
 
     void node_t::serialize(serializer::msgpack_serializer_t* serializer) const { return serialize_impl(serializer); }
 
-    node_ptr node_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->current_type();
-        switch (type) {
-            case serializer::serialization_type::logical_node_aggregate:
-                return node_aggregate_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_create_collection:
-                return node_create_collection_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_create_database:
-                return node_create_database_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_create_index:
-                return node_create_index_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_create_type:
-                return node_create_type_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_data:
-                return node_data_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_delete:
-                return node_delete_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_drop_collection:
-                return node_drop_collection_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_drop_database:
-                return node_drop_database_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_drop_index:
-                return node_drop_index_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_drop_type:
-                return node_drop_type_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_insert:
-                return node_insert_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_join:
-                return node_join_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_limit:
-                return node_limit_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_match:
-                return node_match_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_group:
-                return node_group_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_sort:
-                return node_sort_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_function:
-                return node_function_t::deserialize(deserializer);
-            case serializer::serialization_type::logical_node_update:
-                return node_update_t::deserialize(deserializer);
-            default:
-                return {nullptr};
-        }
-    }
-
     std::string node_t::to_string() const { return to_string_impl(); }
 
     std::pmr::memory_resource* node_t::resource() const noexcept { return children_.get_allocator().resource(); }
@@ -173,29 +110,6 @@ namespace components::logical_plan {
         }
         for (const auto& child : children_) {
             child->collection_dependencies_(upper_dependencies);
-        }
-    }
-    node_ptr to_node_default(const msgpack::object& msg_object, node_type type, std::pmr::memory_resource* resource) {
-        if (msg_object.type != msgpack::type::ARRAY) {
-            throw msgpack::type_error();
-        }
-        if (msg_object.via.array.size != 2) {
-            throw msgpack::type_error();
-        }
-        auto database = msg_object.via.array.ptr[0].as<std::string>();
-        auto collection = msg_object.via.array.ptr[1].as<std::string>();
-        switch (type) {
-            case node_type::create_collection_t:
-                return make_node_create_collection(resource, {database, collection});
-            case node_type::create_database_t:
-                return make_node_create_database(resource, {database, collection});
-            case node_type::drop_collection_t:
-                return make_node_drop_collection(resource, {database, collection});
-            case node_type::drop_database_t:
-                return make_node_drop_database(resource, {database, collection});
-            default:
-                assert(false && "unsupported node_type for to_node_default()");
-                return nullptr;
         }
     }
 

@@ -4,6 +4,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
 #include <components/session/session.hpp>
+#include <services/disk/catalog_storage.hpp>
 #include <variant>
 
 namespace services::disk {
@@ -19,18 +20,12 @@ namespace services::disk {
     struct command_append_collection_t {
         database_name_t database;
         collection_name_t collection;
+        table_storage_mode_t mode{table_storage_mode_t::IN_MEMORY};
     };
 
     struct command_remove_collection_t {
         database_name_t database;
         collection_name_t collection;
-    };
-
-    struct command_remove_documents_t {
-        using document_ids_t = components::operators::operator_write_data_t::ids_t;
-        database_name_t database;
-        collection_name_t collection;
-        document_ids_t documents;
     };
 
     struct command_drop_index_t {
@@ -58,7 +53,6 @@ namespace services::disk {
                      command_remove_database_t,
                      command_append_collection_t,
                      command_remove_collection_t,
-                     command_remove_documents_t,
                      command_drop_index_t>
             command_;
     };

@@ -191,7 +191,7 @@ TEST_CASE("components::table::data_table") {
         data_table->append_lock(state);
         data_table->initialize_append(state);
         data_table->append(chunk, state);
-        data_table->finalize_append(state);
+        data_table->finalize_append(state, transaction_data{0, 0});
     }
     INFO("Fetch") {
         column_fetch_state state;
@@ -444,11 +444,11 @@ TEST_CASE("components::table::data_table") {
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::gte,
                                                 logical_value_t{&resource, row_range.first},
-                                                std::vector<uint64_t>{0}));
+                                                std::pmr::vector<uint64_t>{{uint64_t{0}}, &resource}));
         conj_and->child_filters.emplace_back(
             std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
                                                 logical_value_t{&resource, generate_string(row_range.second)},
-                                                std::vector<uint64_t>{1}));
+                                                std::pmr::vector<uint64_t>{{uint64_t{1}}, &resource}));
         data_chunk_t result(&resource, data_table->copy_types(), row_range.second - row_range.first);
         data_table->initialize_scan(state, column_indices, conj_and.get());
         data_table->scan(result, state);
@@ -566,7 +566,7 @@ TEST_CASE("components::table::data_table") {
             v.set_value(i / 2, logical_value_t(&resource, int64_t(i)));
         }
         auto state = data_table->initialize_delete({});
-        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2);
+        auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete") {

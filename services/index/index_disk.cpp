@@ -1,5 +1,6 @@
 #include "index_disk.hpp"
 
+#include <components/types/logical_value_msgpack.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <msgpack.hpp>
 
@@ -78,13 +79,17 @@ namespace services::index {
             packer.pack(key);
             packer.pack(value);
             db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
-            db_->flush();
+            dirty_ = true;
+            ++ops_since_flush_;
+            flush_if_needed();
         }
     }
 
     void index_disk_t::remove(value_t key) {
         db_->remove_index(convert(key));
-        db_->flush();
+        dirty_ = true;
+        ++ops_since_flush_;
+        flush_if_needed();
     }
 
     void index_disk_t::remove(const value_t& key, size_t row_id) {
@@ -97,7 +102,23 @@ namespace services::index {
             packer.pack(key);
             packer.pack(row_id);
             db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+            dirty_ = true;
+            ++ops_since_flush_;
+            flush_if_needed();
+        }
+    }
+
+    void index_disk_t::flush_if_needed() {
+        if (ops_since_flush_ >= flush_threshold_) {
+            force_flush();
+        }
+    }
+
+    void index_disk_t::force_flush() {
+        if (dirty_ && db_) {
             db_->flush();
+            dirty_ = false;
+            ops_since_flush_ = 0;
         }
     }
 

@@ -12,12 +12,9 @@ namespace components::logical_plan {
 
         const std::string& name() const noexcept;
 
-        static boost::intrusive_ptr<node_drop_index_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
 
         std::string name_;
     };

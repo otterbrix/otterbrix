@@ -498,7 +498,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     INFO("create index before insert") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "CREATE INDEX base_name ON TestDatabase.TestCollection (name);");
-        REQUIRE(cur->is_success());
+        REQUIRE(cur->is_error());
     }
 
     INFO("insert") {
@@ -520,9 +520,18 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     }
 
     INFO("create_index") {
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE INDEX base_count ON TestDatabase.TestCollection (count);");
-        REQUIRE(cur->is_success());
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX base_name ON TestDatabase.TestCollection (name);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE INDEX base_count ON TestDatabase.TestCollection (count);");
+            REQUIRE(cur->is_success());
+        }
     }
 
     INFO("find") {

@@ -18,6 +18,7 @@ namespace configuration {
         bool on{true};
         bool sync_to_disk{true};
         int agent = 2;
+        std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
 
         explicit config_wal(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}

@@ -5,6 +5,8 @@ set(${PROJECT_NAME}_SOURCES
     test_disk_database.cpp
     test_disk_collection.cpp
     test_metadata.cpp
+    test_catalog_storage.cpp
+    test_table_storage.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

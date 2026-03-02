@@ -1,7 +1,6 @@
 #include "manager_index.hpp"
 
 #include <actor-zeta/spawn.hpp>
-#include <boost/polymorphic_pointer_cast.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -10,6 +9,7 @@
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <core/executor.hpp>
 #include <msgpack.hpp>
+#include <unordered_map>
 
 namespace {
     using namespace core::b_plus_tree;
@@ -63,6 +63,28 @@ namespace {
     }
 } // anonymous namespace
 
+namespace {
+    // Batched disk operation types — collect per-agent ops, send once
+    using disk_batch_t = std::vector<std::pair<value_t, size_t>>;
+    using agent_batch_map_t = std::unordered_map<uintptr_t, disk_batch_t>;
+    using agent_addr_map_t = std::unordered_map<uintptr_t, actor_zeta::address_t>;
+
+    void collect_disk_op(const components::index::index_engine_ptr& engine,
+                         const components::vector::data_chunk_t& chunk,
+                         size_t row,
+                         std::pmr::memory_resource* target_resource,
+                         agent_batch_map_t& batches,
+                         agent_addr_map_t& addrs) {
+        engine->for_each_disk_op(chunk,
+                                 row,
+                                 [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
+                                     auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                                     addrs.try_emplace(id, agent_addr);
+                                     batches[id].emplace_back(value_t(target_resource, key), row);
+                                 });
+    }
+} // anonymous namespace
+
 namespace services::index {
     manager_index_t::manager_index_t(std::pmr::memory_resource* resource,
                                      actor_zeta::scheduler_raw scheduler,
@@ -81,7 +103,7 @@ namespace services::index {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
             metafile_indexes_ = open_file(fs_,
-                                          path_db_ / "indexes_METADATA",
+                                          path_db_ / INDEXES_METADATA_FILENAME,
                                           core::filesystem::file_flags::READ | core::filesystem::file_flags::WRITE |
                                               core::filesystem::file_flags::FILE_CREATE,
                                           core::filesystem::file_lock_type::NO_LOCK);
@@ -136,6 +158,46 @@ namespace services::index {
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::has_index>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::has_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::insert_rows_txn>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::insert_rows_txn, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::delete_rows_txn>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::delete_rows_txn, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::update_rows_txn>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::update_rows_txn, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::commit_insert>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::commit_insert, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::commit_delete>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::commit_delete, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::revert_insert>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::revert_insert, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::cleanup_all_versions>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::cleanup_all_versions, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::rebuild_indexes>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::rebuild_indexes, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search_txn>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::search_txn, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
                 break;
             }
             default:
@@ -226,20 +288,19 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
+        agent_batch_map_t insert_batches;
+        agent_addr_map_t insert_addrs;
         for (uint64_t i = 0; i < count; i++) {
             size_t row = static_cast<size_t>(start_row_id + i);
-            engine->insert_row(*data, row);
-
-            // Mirror to disk agents
-            engine->for_each_disk_op(
-                *data,
-                row,
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    auto [needs_sched, future] =
-                        actor_zeta::otterbrix::send(agent_addr, &index_agent_disk_t::insert, session, key, row);
-                    schedule_agent(agent_addr, needs_sched);
-                    pending_void_.emplace_back(std::move(future));
-                });
+            engine->insert_row(*data, row, 0);
+            collect_disk_op(engine, *data, row, resource_, insert_batches, insert_addrs);
+        }
+        for (auto& [id, batch] : insert_batches) {
+            auto& addr = insert_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         co_return;
@@ -258,19 +319,18 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
+        agent_batch_map_t remove_batches;
+        agent_addr_map_t remove_addrs;
         for (auto row_id : row_ids) {
-            engine->delete_row(*data, row_id);
-
-            // Mirror to disk agents
-            engine->for_each_disk_op(
-                *data,
-                row_id,
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    auto [needs_sched, future] =
-                        actor_zeta::otterbrix::send(agent_addr, &index_agent_disk_t::remove, session, key, row_id);
-                    schedule_agent(agent_addr, needs_sched);
-                    pending_void_.emplace_back(std::move(future));
-                });
+            engine->mark_delete_row(*data, row_id, 0);
+            collect_disk_op(engine, *data, row_id, resource_, remove_batches, remove_addrs);
+        }
+        for (auto& [id, batch] : remove_batches) {
+            auto& addr = remove_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         co_return;
@@ -292,35 +352,33 @@ namespace services::index {
         auto& engine = it->second;
 
         // Delete old entries
+        agent_batch_map_t remove_batches;
+        agent_addr_map_t remove_addrs;
         for (auto row_id : row_ids) {
-            engine->delete_row(*old_data, row_id);
-
-            // Mirror remove to disk agents
-            engine->for_each_disk_op(
-                *old_data,
-                row_id,
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    auto [needs_sched, future] =
-                        actor_zeta::otterbrix::send(agent_addr, &index_agent_disk_t::remove, session, key, row_id);
-                    schedule_agent(agent_addr, needs_sched);
-                    pending_void_.emplace_back(std::move(future));
-                });
+            engine->mark_delete_row(*old_data, row_id, 0);
+            collect_disk_op(engine, *old_data, row_id, resource_, remove_batches, remove_addrs);
+        }
+        for (auto& [id, batch] : remove_batches) {
+            auto& addr = remove_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         // Insert new entries
+        agent_batch_map_t insert_batches;
+        agent_addr_map_t insert_addrs;
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, row_ids[i]);
-
-            // Mirror insert to disk agents
-            engine->for_each_disk_op(
-                *new_data,
-                row_ids[i],
-                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {
-                    auto [needs_sched, future] =
-                        actor_zeta::otterbrix::send(agent_addr, &index_agent_disk_t::insert, session, key, row_ids[i]);
-                    schedule_agent(agent_addr, needs_sched);
-                    pending_void_.emplace_back(std::move(future));
-                });
+            engine->insert_row(*new_data, row_ids[i], 0);
+            collect_disk_op(engine, *new_data, row_ids[i], resource_, insert_batches, insert_addrs);
+        }
+        for (auto& [id, batch] : insert_batches) {
+            auto& addr = insert_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
         }
 
         co_return;
@@ -495,6 +553,213 @@ namespace services::index {
         co_return it->second->has_index(index_name);
     }
 
+    // --- Txn-aware DML ---
+
+    manager_index_t::unique_future<void>
+    manager_index_t::insert_rows_txn(execution_context_t ctx,
+                                     std::unique_ptr<components::vector::data_chunk_t> data,
+                                     uint64_t start_row_id,
+                                     uint64_t count) {
+        if (!data || count == 0)
+            co_return;
+
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+        for (uint64_t i = 0; i < count; i++) {
+            size_t row = static_cast<size_t>(start_row_id + i);
+            engine->insert_row(*data, row, txn_id);
+        }
+        // No disk mirroring — uncommitted entries don't go to disk
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void>
+    manager_index_t::delete_rows_txn(execution_context_t ctx,
+                                     std::unique_ptr<components::vector::data_chunk_t> data,
+                                     std::pmr::vector<size_t> row_ids) {
+        if (!data || row_ids.empty())
+            co_return;
+
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+        for (auto row_id : row_ids) {
+            engine->mark_delete_row(*data, row_id, txn_id);
+        }
+        // No disk mirroring — uncommitted deletes don't go to disk
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void>
+    manager_index_t::update_rows_txn(execution_context_t ctx,
+                                     std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                     std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                     std::pmr::vector<size_t> row_ids) {
+        if (!old_data || !new_data || row_ids.empty())
+            co_return;
+
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+
+        // Mark old entries as deleted
+        for (auto row_id : row_ids) {
+            engine->mark_delete_row(*old_data, row_id, txn_id);
+        }
+
+        // Insert new entries
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->insert_row(*new_data, row_ids[i], txn_id);
+        }
+
+        co_return;
+    }
+
+    // --- MVCC commit/revert/cleanup ---
+
+    manager_index_t::unique_future<void> manager_index_t::commit_insert(execution_context_t ctx, uint64_t commit_id) {
+        auto session = ctx.session;
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+
+        // Mirror committed inserts to disk agents BEFORE commit clears pending maps
+        agent_batch_map_t insert_batches;
+        agent_addr_map_t insert_addrs;
+        engine->for_each_pending_disk_insert(
+            txn_id,
+            [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                insert_addrs.try_emplace(id, agent_addr);
+                insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+            });
+        for (auto& [id, batch] : insert_batches) {
+            auto& addr = insert_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
+        }
+
+        engine->commit_insert(txn_id, commit_id);
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::commit_delete(execution_context_t ctx, uint64_t commit_id) {
+        auto session = ctx.session;
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+
+        // Mirror committed deletes to disk agents BEFORE commit clears pending maps
+        agent_batch_map_t remove_batches;
+        agent_addr_map_t remove_addrs;
+        engine->for_each_pending_disk_delete(
+            txn_id,
+            [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
+                auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                remove_addrs.try_emplace(id, agent_addr);
+                remove_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+            });
+        for (auto& [id, batch] : remove_batches) {
+            auto& addr = remove_addrs.at(id);
+            auto [ns, f] =
+                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
+            schedule_agent(addr, ns);
+            pending_void_.emplace_back(std::move(f));
+        }
+
+        engine->commit_delete(txn_id, commit_id);
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx) {
+        auto txn_id = ctx.txn.transaction_id;
+        auto it = engines_.find(ctx.name);
+        if (it == engines_.end())
+            co_return;
+
+        it->second->revert_insert(txn_id);
+        // No disk action — uncommitted entries never went to disk
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::cleanup_all_versions(session_id_t /*session*/,
+                                                                               uint64_t lowest_active) {
+        for (auto& [name, engine] : engines_) {
+            engine->cleanup_versions(lowest_active);
+        }
+
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::rebuild_indexes(session_id_t /*session*/,
+                                                                          collection_full_name_t name) {
+        auto it = engines_.find(name);
+        if (it == engines_.end())
+            co_return;
+
+        auto& engine = it->second;
+
+        // Clear all indexes in this engine
+        for (auto& idx_name : engine->indexes()) {
+            auto* idx = components::index::search_index(engine, idx_name);
+            if (idx) {
+                idx->clean_memory_to_new_elements(0);
+            }
+        }
+
+        // Rebuild will be triggered by executor sending scan data back
+        // (Phase 7G integration with dispatcher)
+        trace(log_, "manager_index_t::rebuild_indexes: cleared indexes for {}", name.to_string());
+
+        co_return;
+    }
+
+    // --- Txn-aware Query ---
+
+    manager_index_t::unique_future<std::pmr::vector<int64_t>>
+    manager_index_t::search_txn(session_id_t /*session*/,
+                                collection_full_name_t name,
+                                components::index::keys_base_storage_t keys,
+                                components::types::logical_value_t value,
+                                components::expressions::compare_type compare,
+                                uint64_t start_time,
+                                uint64_t txn_id) {
+        std::pmr::vector<int64_t> result(resource_);
+
+        auto it = engines_.find(name);
+        if (it == engines_.end())
+            co_return result;
+
+        auto* index = components::index::search_index(it->second, keys);
+        if (!index)
+            co_return result;
+
+        co_return index->search(compare, value, start_time, txn_id);
+    }
+
     // --- Index metafile persistence ---
 
     void manager_index_t::write_index_to_metafile(const components::logical_plan::node_create_index_ptr& index) {
@@ -532,10 +797,9 @@ namespace services::index {
                 offset += size;
                 components::serializer::msgpack_deserializer_t deserializer(buf);
                 deserializer.advance_array(0);
-                auto index = components::logical_plan::node_t::deserialize(&deserializer);
+                auto index = components::logical_plan::node_create_index_t::deserialize(&deserializer);
                 deserializer.pop_array();
-                res.push_back(
-                    boost::polymorphic_pointer_downcast<components::logical_plan::node_create_index_t>(index));
+                res.push_back(index);
             } else {
                 break;
             }
@@ -573,6 +837,22 @@ namespace services::index {
         for (const auto& index : indexes) {
             write_index_to_metafile(index);
         }
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {
+        trace(log_, "manager_index_t::flush_all_indexes, session: {}", session.data());
+        // Await all pending agent operations to ensure no in-flight writes
+        for (auto& f : pending_void_) {
+            co_await std::move(f);
+        }
+        pending_void_.clear();
+        // Now safe to call synchronously — no actor messaging, avoids TSan race
+        for (auto& agent : disk_agents_) {
+            if (agent && !agent->is_dropped()) {
+                agent->force_flush_sync();
+            }
+        }
+        co_return;
     }
 
 } // namespace services::index

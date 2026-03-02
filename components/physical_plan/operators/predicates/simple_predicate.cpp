@@ -49,7 +49,7 @@ namespace components::operators::predicates {
                                                             size_t index_right) {
                 auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
                 auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
-                // SQL standard: any comparison with NULL yields UNKNOWN (false)
+                // TODO: by SQL standard any comparison with NULL yields UNKNOWN, which is neither true or false
                 if (left_val.is_null() || right_val.is_null()) {
                     return false;
                 }

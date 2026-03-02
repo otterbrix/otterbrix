@@ -487,9 +487,8 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     INFO("empty table COUNT") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
-        REQUIRE(cur->is_success());
-        // COUNT on empty table returns 0 rows (no groups to aggregate)
-        REQUIRE(cur->size() == 0);
+        // column with name 'name' does not exists
+        REQUIRE(cur->is_error());
     }
 
     INFO("single row operations") {

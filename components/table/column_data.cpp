@@ -413,8 +413,7 @@ namespace components::table {
         }
         // For compressed segments, fetch the actual decompressed value
         auto comp = segment->compression();
-        if (comp == compression::compression_type::RLE ||
-            comp == compression::compression_type::DICTIONARY) {
+        if (comp == compression::compression_type::RLE || comp == compression::compression_type::DICTIONARY) {
             column_fetch_state fetch_state;
             vector::vector_t result(resource_, type_, 1);
             fetch_row(fetch_state, row_id, result, 0);

@@ -62,9 +62,6 @@ namespace services::dispatcher {
                                              const named_schema& schema) {
             assert(!key.storage().empty());
             type_paths result{resource};
-            if (schema.empty()) {
-                return schema_result{std::move(result)};
-            }
             if (key.storage().at(0) == "*") {
                 for (size_t i = 0; i < schema.size(); i++) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
@@ -805,15 +802,11 @@ namespace services::dispatcher {
                             auto* agg_expr = reinterpret_cast<aggregate_expression_t*>(expr.get());
                             std::pmr::vector<complex_logical_type> function_input_types(resource);
                             function_input_types.reserve(agg_expr->params().size());
-                            bool empty_schema_fallback = false;
                             for (auto& param : agg_expr->params()) {
                                 if (std::holds_alternative<components::expressions::key_t>(param)) {
                                     auto& key = std::get<components::expressions::key_t>(param);
                                     auto field = impl::find_types(resource, key, incoming_schema);
-                                    if (!field.is_error() && field.value().empty() && incoming_schema.empty()) {
-                                        // Empty table — can't resolve field types
-                                        empty_schema_fallback = true;
-                                    } else if (field.is_error()) {
+                                    if (field.is_error()) {
                                         return schema_result<named_schema>{resource, field.error()};
                                     } else {
                                         for (const auto& sub_field : field.value()) {
@@ -831,20 +824,6 @@ namespace services::dispatcher {
                                     components::cursor::error_t{error_code_t::unrecognized_function,
                                                                 "function: \'" + agg_expr->function_name() +
                                                                     "(...)\' was not found by the name"}};
-                            } else if (empty_schema_fallback) {
-                                // Empty table — set function_uid by name using DEFAULT_FUNCTIONS
-                                for (const auto& [name, func_id] : components::compute::DEFAULT_FUNCTIONS) {
-                                    if (name == agg_expr->function_name()) {
-                                        agg_expr->add_function_uid(func_id.uid);
-                                        break;
-                                    }
-                                }
-                                // Use UBIGINT as default output (correct for COUNT, reasonable for others)
-                                complex_logical_type output_t(logical_type::UBIGINT);
-                                if (!agg_expr->key().is_null()) {
-                                    output_t.set_alias(agg_expr->key().as_string());
-                                }
-                                result.emplace_back(type_from_t{node->result_alias(), output_t});
                             } else if (catalog.function_exists(agg_expr->function_name(), function_input_types)) {
                                 auto func = catalog.get_function(agg_expr->function_name(), function_input_types);
                                 std::vector<complex_logical_type> function_output_types;
@@ -899,13 +878,8 @@ namespace services::dispatcher {
                     for (auto& expr : node_having->expressions()) {
                         if (expr->group() == expression_group::compare) {
                             auto* cmp_expr = reinterpret_cast<compare_expression_t*>(expr.get());
-                            auto res = impl::validate_schema(resource,
-                                                              catalog,
-                                                              cmp_expr,
-                                                              parameters,
-                                                              result,
-                                                              result,
-                                                              true);
+                            auto res =
+                                impl::validate_schema(resource, catalog, cmp_expr, parameters, result, result, true);
                             if (res.is_error()) {
                                 return res;
                             }
@@ -1004,6 +978,7 @@ namespace services::dispatcher {
                     return incoming_schema;
                 } else {
                     named_schema table_schema(resource);
+                    bool is_computed = false;
                     if (catalog.table_exists(id)) {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
@@ -1011,21 +986,22 @@ namespace services::dispatcher {
                                                                   column});
                         }
                     } else {
+                        is_computed = true;
                         auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
                         for (const auto& column : sch.child_types()) {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
                     }
-                    if (table_schema.empty()) {
+                    if (table_schema.empty() && is_computed) {
                         // Computing table — accept any INSERT
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,
-                            components::cursor::error_t{
-                                error_code_t::schema_error,
-                                "insert_node: too many columns in INSERT"}};
+                            components::cursor::error_t{error_code_t::schema_error,
+                                                        "insert_node: too many columns in INSERT"}};
                     } else if (incoming_schema.value().size() == table_schema.size()) {
                         for (size_t i = 0; i < table_schema.size(); i++) {
+                            // TODO: key translation and type compare, instead of names:
                             if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
                                 return schema_result<named_schema>{
                                     resource,
@@ -1038,6 +1014,7 @@ namespace services::dispatcher {
                         for (size_t i = 0; i < incoming_schema.value().size(); i++) {
                             bool found = false;
                             for (size_t j = 0; j < table_schema.size(); j++) {
+                                // TODO: key translation and type compare, instead of names:
                                 if (table_schema[j].type.alias() == incoming_schema.value()[i].type.alias()) {
                                     found = true;
                                     break;
@@ -1046,9 +1023,8 @@ namespace services::dispatcher {
                             if (!found) {
                                 return schema_result<named_schema>{
                                     resource,
-                                    components::cursor::error_t{
-                                        error_code_t::schema_error,
-                                        "insert_node: field not found in table schema"}};
+                                    components::cursor::error_t{error_code_t::schema_error,
+                                                                "insert_node: field not found in table schema"}};
                             }
                         }
                     }

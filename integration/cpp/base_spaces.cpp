@@ -276,7 +276,10 @@ namespace otterbrix {
 
                 if (info.storage_mode == services::disk::table_storage_mode_t::IN_MEMORY) {
                     if (info.columns.empty()) {
-                        trace(log_, "spaces::creating computing table: {}.{}", info.name.database, info.name.collection);
+                        trace(log_,
+                              "spaces::creating computing table: {}.{}",
+                              info.name.database,
+                              info.name.collection);
                         auto err = catalog.create_computing_table(table_id);
                         if (err) {
                             warn(log_,

@@ -840,10 +840,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         // Partial INSERT: only (name, score) — tag uses default
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
-                "('alice', 100), ('bob', 200), ('charlie', 300);");
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
+                                               "('alice', 100), ('bob', 200), ('charlie', 300);");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
         }
@@ -855,9 +854,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         // Partial INSERT: only (name) — score NULL, tag default
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave'), ('eve');");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave'), ('eve');");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
@@ -910,10 +909,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         // INSERT with all columns
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.TestCollection (name, status) VALUES "
-                "('alice', 'active'), ('bob', 'pending');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, status) VALUES "
+                                               "('alice', 'active'), ('bob', 'pending');");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }
@@ -931,9 +929,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         // Partial INSERT: only (name) — status gets DEFAULT 'pending'
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('charlie');");
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (name) VALUES ('charlie');");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -976,10 +973,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                "WITH (storage = 'disk');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
             REQUIRE(cur->is_success());
         }
 
@@ -1025,10 +1021,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                "WITH (storage = 'disk');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
             REQUIRE(cur->is_success());
         }
 
@@ -1105,10 +1100,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                "WITH (storage = 'disk');");
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
+                                               "WITH (storage = 'disk');");
             REQUIRE(cur->is_success());
         }
 
@@ -1128,8 +1122,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         // DELETE WHERE count > 90 (removes 9 rows: 91..99)
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
         }
@@ -1139,8 +1132,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         // UPDATE SET count=999 WHERE count=50
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session, "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }

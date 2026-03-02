@@ -107,7 +107,8 @@ TEST_CASE("services::disk::catalog_storage::storage_mode_distinction") {
         catalog_table_entry_t disk_entry;
         disk_entry.name = "disk_table";
         disk_entry.storage_mode = table_storage_mode_t::DISK;
-        disk_entry.columns = {{"col1", components::types::complex_logical_type(components::types::logical_type::INTEGER)}};
+        disk_entry.columns = {
+            {"col1", components::types::complex_logical_type(components::types::logical_type::INTEGER)}};
         cs.append_table("db", disk_entry);
     }
 
@@ -260,7 +261,10 @@ TEST_CASE("services::disk::catalog_storage::constraint_round_trip") {
         tbl.storage_mode = table_storage_mode_t::DISK;
         tbl.columns = {
             {"id", components::types::complex_logical_type(components::types::logical_type::BIGINT), true, false},
-            {"name", components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL), false, true},
+            {"name",
+             components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL),
+             false,
+             true},
             {"score", components::types::complex_logical_type(components::types::logical_type::DOUBLE), false, false},
         };
         tbl.primary_key_columns = {"id"};

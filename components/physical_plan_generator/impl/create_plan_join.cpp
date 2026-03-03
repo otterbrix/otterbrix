@@ -11,7 +11,8 @@ namespace services::planner::impl {
     create_plan_join(const context_storage_t& context,
                      const components::compute::function_registry_t& function_registry,
                      const components::logical_plan::node_ptr& node,
-                     components::logical_plan::limit_t limit) {
+                     components::logical_plan::limit_t limit,
+                     const components::logical_plan::storage_parameters* params) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
         // Try left child context first, fall back to right (one side may be raw data with nullptr context)
@@ -30,10 +31,10 @@ namespace services::planner::impl {
         components::operators::operator_ptr left;
         components::operators::operator_ptr right;
         if (node->children().front()) {
-            left = create_plan(context, function_registry, node->children().front(), limit);
+            left = create_plan(context, function_registry, node->children().front(), limit, params);
         }
         if (node->children().back()) {
-            right = create_plan(context, function_registry, node->children().back(), limit);
+            right = create_plan(context, function_registry, node->children().back(), limit, params);
         }
         join->set_children(std::move(left), std::move(right));
         return join;

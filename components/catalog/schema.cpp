@@ -1,5 +1,8 @@
 #include "schema.hpp"
 
+#include <memory_resource>
+#include <unordered_set>
+
 using namespace components::types;
 
 // todo: use result, monad interface of it will make this code MUCH cleaner
@@ -15,12 +18,13 @@ namespace components::catalog {
         {
             std::pmr::unordered_set<std::pmr::string> names(resource);
             for (const auto& type : detailed_struct.child_types()) {
-                if (names.find(type.alias().c_str()) != names.end()) {
+                std::pmr::string alias(type.alias(), resource);
+                if (names.count(alias)) {
                     error_ = catalog_error(catalog_mistake_t::DUPLICATE_COLUMN,
                                            "Duplicate column with name \"" + type.alias() + "\", names must be unique");
                 }
 
-                names.emplace(type.alias());
+                names.emplace(std::move(alias));
             }
         }
 

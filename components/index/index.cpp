@@ -88,7 +88,7 @@ namespace components::index {
 
     auto index_t::insert(value_t key, index_value_t value) -> void { return insert_impl(key, std::move(value)); }
 
-    auto index_t::insert(value_t key, int64_t row_index) -> void { return insert_impl(key, {row_index}); }
+    auto index_t::insert(value_t key, int64_t row_index) -> void { return insert_impl(key, index_value_t(row_index)); }
 
     auto index_t::remove(value_t key) -> void { remove_impl(key); }
 
@@ -111,6 +111,98 @@ namespace components::index {
     void index_t::set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept {
         disk_agent_ = std::move(agent);
         disk_manager_ = std::move(manager);
+    }
+
+    std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare,
+                                              const value_t& value,
+                                              uint64_t start_time,
+                                              uint64_t txn_id) const {
+        std::pmr::vector<int64_t> result(resource_);
+
+        auto filter = [&](auto begin, auto end) {
+            for (auto iter = begin; iter != end; ++iter) {
+                if (index_entry_visible(*iter, start_time, txn_id)) {
+                    result.push_back(iter->row_index);
+                }
+            }
+        };
+
+        switch (compare) {
+            case expressions::compare_type::eq: {
+                auto range = find(value);
+                filter(range.first, range.second);
+                break;
+            }
+            case expressions::compare_type::lt: {
+                auto range = lower_bound(value);
+                filter(range.first, range.second);
+                break;
+            }
+            case expressions::compare_type::lte: {
+                auto ub = upper_bound(value);
+                filter(cbegin(), ub.first);
+                break;
+            }
+            case expressions::compare_type::gt: {
+                auto range = upper_bound(value);
+                filter(range.first, range.second);
+                break;
+            }
+            case expressions::compare_type::gte: {
+                auto lb = lower_bound(value);
+                filter(lb.second, cend());
+                break;
+            }
+            case expressions::compare_type::ne: {
+                auto eq_range = find(value);
+                for (auto iter = cbegin(); iter != cend(); ++iter) {
+                    if (!index_entry_visible(*iter, start_time, txn_id)) {
+                        continue;
+                    }
+                    bool in_eq = false;
+                    for (auto eq_it = eq_range.first; eq_it != eq_range.second; ++eq_it) {
+                        if (eq_it->row_index == iter->row_index) {
+                            in_eq = true;
+                            break;
+                        }
+                    }
+                    if (!in_eq) {
+                        result.push_back(iter->row_index);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+
+        return result;
+    }
+
+    auto index_t::insert(value_t key, int64_t row_index, uint64_t txn_id) -> void {
+        insert_txn_impl(std::move(key), row_index, txn_id);
+    }
+
+    auto index_t::mark_delete(value_t key, int64_t row_index, uint64_t txn_id) -> void {
+        mark_delete_impl(std::move(key), row_index, txn_id);
+    }
+
+    void index_t::commit_insert(uint64_t txn_id, uint64_t commit_id) { commit_insert_impl(txn_id, commit_id); }
+
+    void index_t::commit_delete(uint64_t txn_id, uint64_t commit_id) { commit_delete_impl(txn_id, commit_id); }
+
+    void index_t::revert_insert(uint64_t txn_id) { revert_insert_impl(txn_id); }
+
+    void index_t::cleanup_versions(uint64_t lowest_active) { cleanup_versions_impl(lowest_active); }
+
+    void index_t::for_each_pending_insert(uint64_t txn_id,
+                                          const std::function<void(const value_t&, int64_t)>& fn) const {
+        for_each_pending_insert_impl(txn_id, fn);
+    }
+
+    void index_t::for_each_pending_delete(uint64_t txn_id,
+                                          const std::function<void(const value_t&, int64_t)>& fn) const {
+        for_each_pending_delete_impl(txn_id, fn);
     }
 
     void index_t::clean_memory_to_new_elements(std::size_t count) noexcept { clean_memory_to_new_elements_impl(count); }

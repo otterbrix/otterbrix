@@ -12,14 +12,11 @@ namespace components::logical_plan {
 
         const expression_ptr& having() const { return having_; }
 
-        static boost::intrusive_ptr<node_group_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         expression_ptr having_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const override;
     };
 
     using node_group_ptr = boost::intrusive_ptr<node_group_t>;

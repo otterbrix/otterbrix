@@ -88,6 +88,8 @@ namespace components::operators {
         const operator_write_data_ptr& no_modified() const;
         void set_children(ptr left, ptr right = nullptr);
         void take_output(ptr& src);
+        void set_output(operator_data_ptr data);
+        void mark_executed();
         void clear(); //todo: replace by copy
 
         void set_error(std::string msg);
@@ -95,7 +97,6 @@ namespace components::operators {
         const std::string& error_message() const noexcept;
 
     protected:
-        void mark_executed();
         std::pmr::memory_resource* resource_;
         log_t log_;
 

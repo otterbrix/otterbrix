@@ -11,23 +11,34 @@ namespace components::operators::predicates::impl {
                                                 const logical_plan::storage_parameters* parameters);
 
     value_getter create_value_getter(const expressions::key_t& key) {
+        assert(key.side() != expressions::side_t::undefined);
         if (!key.path().empty()) {
-            if (key.side() == expressions::side_t::right) {
-                return [path = key.path()](const vector::data_chunk_t&,
-                                           const vector::data_chunk_t& chunk_right,
-                                           size_t,
-                                           size_t index_right) -> types::logical_value_t {
-                    return chunk_right.at(path)->value(index_right);
-                };
-            } else {
+            // Path-based lookup with NULL validity checking
+            if (key.side() == expressions::side_t::left) {
                 return [path = key.path()](const vector::data_chunk_t& chunk_left,
                                            const vector::data_chunk_t&,
                                            size_t index_left,
                                            size_t) -> types::logical_value_t {
-                    return chunk_left.at(path)->value(index_left);
+                    auto* vec = chunk_left.at(path);
+                    if (!vec->validity().row_is_valid(index_left)) {
+                        return types::logical_value_t(chunk_left.resource(), nullptr);
+                    }
+                    return vec->value(index_left);
+                };
+            } else {
+                return [path = key.path()](const vector::data_chunk_t&,
+                                           const vector::data_chunk_t& chunk_right,
+                                           size_t,
+                                           size_t index_right) -> types::logical_value_t {
+                    auto* vec = chunk_right.at(path);
+                    if (!vec->validity().row_is_valid(index_right)) {
+                        return types::logical_value_t(chunk_right.resource(), nullptr);
+                    }
+                    return vec->value(index_right);
                 };
             }
         }
+        // Name-based fallback (for computed/arithmetic columns without paths)
         auto name = key.as_string();
         if (key.side() == expressions::side_t::right) {
             return [name](const vector::data_chunk_t&,

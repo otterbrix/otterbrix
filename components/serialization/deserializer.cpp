@@ -1,7 +1,5 @@
 #include "deserializer.hpp"
 
-#include <components/logical_plan/node_limit.hpp>
-
 namespace components::serializer {
 
     msgpack_deserializer_t::msgpack_deserializer_t(const std::pmr::string& input)

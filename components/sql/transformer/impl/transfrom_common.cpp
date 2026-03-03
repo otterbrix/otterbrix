@@ -229,6 +229,8 @@ namespace components::sql::transform {
                         child_expr = transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, params);
                     } else if (nodeTag(node) == T_FuncCall) {
                         child_expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, params);
+                    } else if (nodeTag(node) == T_NullTest) {
+                        child_expr = transform_null_test(pg_ptr_cast<NullTest>(node), names, params);
                     } else {
                         throw parser_exception_t({"Unsupported expression: unknown expr type in transform_a_expr"}, {});
                     }
@@ -259,6 +261,36 @@ namespace components::sql::transform {
                     return transform_a_expr_arithmetic(node, names, params);
                 }
 
+                // Check for LIKE / NOT LIKE
+                if (op_str == "~~" || op_str == "!~~") {
+                    column_ref_t key_left(resource_);
+                    if (nodeTag(node->lexpr) == T_ColumnRef) {
+                        key_left = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names);
+                    } else if (nodeTag(node->lexpr) == T_A_Indirection) {
+                        key_left = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->lexpr), names);
+                    } else {
+                        throw parser_exception_t{"LIKE: left side must be a column reference", ""};
+                    }
+                    key_left.deduce_side(names);
+                    auto raw_val = get_value(resource_, node->rexpr);
+                    auto pattern = like_to_regex(std::string(raw_val.value<std::string_view>()));
+                    auto param_id = params->add_parameter(types::logical_value_t(resource_, pattern));
+                    if (op_str == "!~~") {
+                        auto inner = make_compare_expression(params->parameters().resource(),
+                                                             compare_type::regex,
+                                                             key_left.field,
+                                                             param_id);
+                        auto not_expr =
+                            make_compare_union_expression(params->parameters().resource(), compare_type::union_not);
+                        not_expr->append_child(inner);
+                        return not_expr;
+                    }
+                    return make_compare_expression(params->parameters().resource(),
+                                                   compare_type::regex,
+                                                   key_left.field,
+                                                   param_id);
+                }
+
                 auto comp_type = get_compare_type(op_str);
 
                 auto get_arg = [this, &names, &params](Node* node) -> param_storage {
@@ -268,7 +300,6 @@ namespace components::sql::transform {
                             key.deduce_side(names);
                             return key.field;
                         }
-                        // TODO: indirection can hide every other type besides T_ColumnRef
                         case T_A_Indirection: {
                             auto key = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node), names);
                             key.deduce_side(names);
@@ -325,6 +356,31 @@ namespace components::sql::transform {
                 }
                 expr->append_child(right);
                 return expr;
+            }
+            case AEXPR_IN: {
+                // col IN (1,2,3) → union_or(col=1, col=2, col=3)
+                // col NOT IN (1,2,3) → union_and(col<>1, col<>2, col<>3)
+                if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
+                    throw parser_exception_t({"IN expression: left side must be a column reference"}, {});
+                }
+                auto key_in = nodeTag(node->lexpr) == T_ColumnRef
+                                  ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names)
+                                  : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->lexpr), names);
+                key_in.deduce_side(names);
+
+                auto op_str = std::string(strVal(node->name->lst.front().data));
+                bool is_not_in = (op_str == "<>");
+                auto union_type = is_not_in ? compare_type::union_and : compare_type::union_or;
+                auto cmp_type = is_not_in ? compare_type::ne : compare_type::eq;
+
+                auto list_node = pg_ptr_cast<List>(node->rexpr);
+                auto union_expr = make_compare_union_expression(params->parameters().resource(), union_type);
+                for (const auto& elem : list_node->lst) {
+                    auto param_id = add_param_value(pg_ptr_cast<Node>(elem.data), params);
+                    union_expr->append_child(
+                        make_compare_expression(params->parameters().resource(), cmp_type, key_in.field, param_id));
+                }
+                return union_expr;
             }
             default:
                 throw parser_exception_t({"Unsupported node type: " + expr_kind_to_string(node->kind)}, {});
@@ -413,16 +469,27 @@ namespace components::sql::transform {
         for (auto& arg : node->args->lst) {
             auto when = pg_ptr_cast<CaseWhen>(arg.data);
 
-            // Condition: boolean expression
-            auto cond_node = pg_ptr_cast<Node>(when->expr);
-            if (nodeTag(cond_node) == T_A_Expr) {
-                auto condition = transform_a_expr(pg_ptr_cast<A_Expr>(cond_node), names, params);
-                expr->append_param(condition);
-            } else if (nodeTag(cond_node) == T_FuncCall) {
-                auto condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, params);
-                expr->append_param(condition);
+            // Condition
+            if (node->arg) {
+                // Simple CASE: CASE col WHEN val THEN ... → generate equality: col = val
+                auto col_key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names);
+                col_key.deduce_side(names);
+                auto param_id = add_param_value(pg_ptr_cast<Node>(when->expr), params);
+                auto cond = make_compare_expression(
+                    params->parameters().resource(), compare_type::eq, col_key.field, param_id);
+                expr->append_param(expression_ptr(cond));
             } else {
-                throw parser_exception_t{"Unsupported WHEN condition type", ""};
+                // Searched CASE: CASE WHEN condition THEN ... → boolean expression
+                auto cond_node = pg_ptr_cast<Node>(when->expr);
+                if (nodeTag(cond_node) == T_A_Expr) {
+                    auto condition = transform_a_expr(pg_ptr_cast<A_Expr>(cond_node), names, params);
+                    expr->append_param(condition);
+                } else if (nodeTag(cond_node) == T_FuncCall) {
+                    auto condition = transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, params);
+                    expr->append_param(condition);
+                } else {
+                    throw parser_exception_t{"Unsupported WHEN condition type", ""};
+                }
             }
 
             // Result: any value expression
@@ -517,6 +584,24 @@ namespace components::sql::transform {
             }
         }
         throw parser_exception_t{"Unsupported expression in HAVING clause", {}};
+    }
+
+    expression_ptr transformer::transform_null_test(NullTest* node,
+                                                    const name_collection_t& names,
+                                                    logical_plan::parameter_node_t* params) {
+        if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
+            throw parser_exception_t({"IS NULL: argument must be a column reference"}, {});
+        }
+        auto key = nodeTag(node->arg) == T_ColumnRef
+                       ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names)
+                       : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->arg), names);
+        key.deduce_side(names);
+
+        auto cmp = node->nulltesttype == IS_NULL ? compare_type::is_null : compare_type::is_not_null;
+        // is_null/is_not_null don't need a value, use a dummy parameter
+        auto param_id = params->add_parameter(
+            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+        return make_compare_expression(params->parameters().resource(), cmp, key.field, param_id);
     }
 
 } // namespace components::sql::transform

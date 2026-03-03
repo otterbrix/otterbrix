@@ -17,8 +17,7 @@ namespace components::operators {
         , upsert_(upsert) {}
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // Predicate matching + data prep only — table.update()/table.append() are now handled
-        // by executor via send(disk_address_, &manager_disk_t::storage_update/storage_append).
+        // Predicate matching + data prep only — storage I/O is handled by await_async_and_resume.
         if (left_ && left_->output() && right_ && right_->output()) {
             auto& chunk_left = left_->output()->data_chunk();
             auto& chunk_right = right_->output()->data_chunk();
@@ -117,6 +116,10 @@ namespace components::operators {
                 }
                 out_chunk.set_cardinality(index);
             }
+        }
+
+        if (output_ && modified_ && modified_->size() > 0 && !name_.empty()) {
+            async_wait();
         }
     }
 

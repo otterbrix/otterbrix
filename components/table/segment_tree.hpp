@@ -214,6 +214,17 @@ namespace components::table {
 
         segment_iteration_helper segments() { return segment_iteration_helper(*this); }
 
+        std::vector<T*> copy_segments() {
+            auto l = lock();
+            load_all_segments(l);
+            std::vector<T*> result;
+            result.reserve(nodes_.size());
+            for (auto& entry : nodes_) {
+                result.push_back(entry.node.get());
+            }
+            return result;
+        }
+
         void reinitialize() {
             if (nodes_.empty()) {
                 return;

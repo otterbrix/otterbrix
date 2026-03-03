@@ -12,12 +12,9 @@ namespace components::logical_plan {
         types::complex_logical_type& type() noexcept;
         const types::complex_logical_type& type() const noexcept;
 
-        static boost::intrusive_ptr<node_create_type_t> deserialize(serializer::msgpack_deserializer_t* deserializer);
-
     private:
         hash_t hash_impl() const final;
         std::string to_string_impl() const final;
-        void serialize_impl(serializer::msgpack_serializer_t* serializer) const final;
 
         types::complex_logical_type type_;
     };

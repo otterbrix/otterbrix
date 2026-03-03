@@ -77,7 +77,7 @@ jobs:
           
           cp integration/python/otterbrix/get_path.py .
           mkdir -p $(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
-          conan install conanfile.py --build missing -s build_type=Release -of=$(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
+          conan install conanfile.py --build missing -s build_type=Release -o build_python=True -of=$(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
 
       - name: Build wheel
         run: |

@@ -168,6 +168,9 @@ namespace components::sql::transform {
                         for (const auto& arg : args) {
                             expr->append_param(arg);
                         }
+                        if (func->agg_distinct) {
+                            expr->set_distinct(true);
+                        }
                         group->append_expression(expr);
 
                         break;
@@ -258,9 +261,33 @@ namespace components::sql::transform {
                         break;
                     }
                     case T_CaseExpr: {
-                        auto case_node = pg_ptr_cast<CaseExpr>(res->val);
                         logical_plan::node_ptr group_node = group;
-                        transform_select_case_expr(case_node, res->name, names, params, group_node);
+                        transform_select_case_expr(
+                            pg_ptr_cast<CaseExpr>(res->val), res->name, names, params, group_node);
+                        break;
+                    }
+                    case T_CoalesceExpr: {
+                        auto* coalesce = pg_ptr_cast<CoalesceExpr>(res->val);
+                        std::string expr_name;
+                        if (res->name) {
+                            expr_name = res->name;
+                        } else {
+                            expr_name = "coalesce";
+                        }
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::coalesce,
+                                                           expressions::key_t{resource_, std::move(expr_name)});
+                        for (auto& arg_item : coalesce->args->lst) {
+                            auto arg_node = pg_ptr_cast<Node>(arg_item.data);
+                            if (nodeTag(arg_node) == T_ColumnRef) {
+                                auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg_node), names);
+                                key.deduce_side(names);
+                                expr->append_param(std::move(key.field));
+                            } else {
+                                expr->append_param(add_param_value(arg_node, params));
+                            }
+                        }
+                        group->append_expression(expr);
                         break;
                     }
                     default:
@@ -275,6 +302,8 @@ namespace components::sql::transform {
             expression_ptr expr;
             if (nodeTag(node.whereClause) == T_FuncCall) {
                 expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node.whereClause), names, params);
+            } else if (nodeTag(node.whereClause) == T_NullTest) {
+                expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, params);
             } else {
                 expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, params);
             }
@@ -314,6 +343,11 @@ namespace components::sql::transform {
             } else {
                 agg->append_child(group);
             }
+        }
+
+        // distinct
+        if (node.distinctClause && !node.distinctClause->lst.empty()) {
+            agg->set_distinct(true);
         }
 
         // order by

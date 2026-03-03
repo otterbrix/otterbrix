@@ -7,16 +7,19 @@
 #include <actor-zeta/spawn.hpp>
 #include <boost/polymorphic_pointer_cast.hpp>
 #include <components/log/log.hpp>
+#include <fstream>
 #include <string>
 #include <thread>
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal.hpp>
+#include <services/wal/wal_reader.hpp>
 
 using namespace std::chrono_literals;
 
@@ -26,15 +29,6 @@ using namespace components::expressions;
 
 constexpr auto database_name = "test_database";
 constexpr auto collection_name = "test_collection";
-
-void test_insert_one_row(wal_replicate_t* wal, std::pmr::memory_resource* resource) {
-    for (int num = 0; num < 5; ++num) {
-        auto chunk = gen_data_chunk(1, num, resource);
-        auto data = make_node_insert(resource, {database_name, collection_name}, {std::move(chunk)});
-        auto session = components::session::session_id_t();
-        wal->insert_one(session, data);
-    }
-}
 
 struct test_wal {
     test_wal(const std::filesystem::path& path, std::pmr::memory_resource* resource)
@@ -69,382 +63,236 @@ test_wal create_test_wal(const std::filesystem::path& path, std::pmr::memory_res
     return {path, resource};
 }
 
-TEST_CASE("services::wal::insert_one_test") {
+TEST_CASE("services::wal::physical_insert_write_and_read") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/insert_one_row", &resource);
-    test_insert_one_row(test_wal.wal.get(), &resource);
+    auto test_wal = create_test_wal("/tmp/wal/physical_insert", &resource);
 
-    std::size_t read_index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        wal_entry_t entry;
+    auto chunk = gen_data_chunk(5, 0, &resource);
+    auto session = components::session::session_id_t();
+    auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+    test_wal.wal->write_physical_insert(session, database_name, collection_name, std::move(data_chunk_ptr), 0, 5, 0);
 
-        entry.size_ = test_wal.wal->test_read_size(read_index);
-
-        auto start = read_index + sizeof(size_tt);
-        auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-        auto output = test_wal.wal->test_read(start, finish);
-
-        auto crc32_index = entry.size_;
-        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-        unpack(output, entry);
-        entry.crc32_ = read_crc32(output, entry.size_);
-        test_wal.scheduler->run();
-        REQUIRE(entry.crc32_ == crc32);
-        REQUIRE(entry.entry_->database_name() == database_name);
-        REQUIRE(entry.entry_->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
-        const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
-        REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-        REQUIRE(chunk.value(1, 0).value<std::string_view>() == std::to_string(num));
-
-        read_index = finish;
-    }
+    auto record = test_wal.wal->test_read_record(0);
+    REQUIRE(record.is_physical());
+    REQUIRE(record.record_type == wal_record_type::PHYSICAL_INSERT);
+    REQUIRE(record.collection_name.database == database_name);
+    REQUIRE(record.collection_name.collection == collection_name);
+    REQUIRE(record.physical_data != nullptr);
+    REQUIRE(record.physical_data->size() == 5);
+    REQUIRE(record.physical_row_start == 0);
+    REQUIRE(record.physical_row_count == 5);
 }
 
-TEST_CASE("services::wal::insert_many_empty_test") {
+TEST_CASE("services::wal::physical_delete_write_and_read") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/insert_many_rows_empty", &resource);
+    auto test_wal = create_test_wal("/tmp/wal/physical_delete", &resource);
 
-    auto chunk = gen_data_chunk(0, &resource);
-    auto data =
-        components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
+    std::pmr::vector<int64_t> row_ids(&resource);
+    row_ids.push_back(0);
+    row_ids.push_back(2);
+    row_ids.push_back(4);
 
     auto session = components::session::session_id_t();
-    test_wal.wal->insert_many(session, data);
+    test_wal.wal->write_physical_delete(session, database_name, collection_name, std::move(row_ids), 3, 0);
 
-    wal_entry_t entry;
-
-    entry.size_ = test_wal.wal->test_read_size(0);
-
-    auto start = sizeof(size_tt);
-    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-    auto output = test_wal.wal->test_read(start, finish);
-
-    auto crc32_index = entry.size_;
-    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-    unpack(output, entry);
-    entry.crc32_ = read_crc32(output, entry.size_);
-    test_wal.scheduler->run();
-    REQUIRE(entry.crc32_ == crc32);
+    auto record = test_wal.wal->test_read_record(0);
+    REQUIRE(record.is_physical());
+    REQUIRE(record.record_type == wal_record_type::PHYSICAL_DELETE);
+    REQUIRE(record.collection_name.database == database_name);
+    REQUIRE(record.collection_name.collection == collection_name);
+    REQUIRE(record.physical_row_ids.size() == 3);
+    REQUIRE(record.physical_row_ids[0] == 0);
+    REQUIRE(record.physical_row_ids[1] == 2);
+    REQUIRE(record.physical_row_ids[2] == 4);
+    REQUIRE(record.physical_row_count == 3);
 }
 
-TEST_CASE("services::wal::insert_many_test") {
+TEST_CASE("services::wal::physical_update_write_and_read") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/insert_many_rows", &resource);
+    auto test_wal = create_test_wal("/tmp/wal/physical_update", &resource);
 
-    for (int i = 0; i <= 3; ++i) {
+    std::pmr::vector<int64_t> row_ids(&resource);
+    row_ids.push_back(1);
+    row_ids.push_back(3);
+
+    auto chunk = gen_data_chunk(2, 0, &resource);
+    auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+
+    auto session = components::session::session_id_t();
+    test_wal.wal->write_physical_update(session,
+                                        database_name,
+                                        collection_name,
+                                        std::move(row_ids),
+                                        std::move(data_chunk_ptr),
+                                        2,
+                                        0);
+
+    auto record = test_wal.wal->test_read_record(0);
+    REQUIRE(record.is_physical());
+    REQUIRE(record.record_type == wal_record_type::PHYSICAL_UPDATE);
+    REQUIRE(record.collection_name.database == database_name);
+    REQUIRE(record.collection_name.collection == collection_name);
+    REQUIRE(record.physical_row_ids.size() == 2);
+    REQUIRE(record.physical_row_ids[0] == 1);
+    REQUIRE(record.physical_row_ids[1] == 3);
+    REQUIRE(record.physical_data != nullptr);
+    REQUIRE(record.physical_data->size() == 2);
+    REQUIRE(record.physical_row_count == 2);
+}
+
+TEST_CASE("services::wal::commit_marker_write_and_read") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto test_wal = create_test_wal("/tmp/wal/commit_marker", &resource);
+
+    auto session = components::session::session_id_t();
+    uint64_t txn_id = 4611686018427387904ULL;
+    test_wal.wal->commit_txn(session, txn_id);
+
+    auto record = test_wal.wal->test_read_record(0);
+    REQUIRE(record.is_commit_marker());
+    REQUIRE(record.transaction_id == txn_id);
+}
+
+TEST_CASE("services::wal::corrupted_record_detected") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    const std::filesystem::path wal_path("/tmp/wal/corrupt_single");
+    std::filesystem::remove_all(wal_path);
+    std::filesystem::create_directories(wal_path);
+
+    // Phase 1: write a valid INSERT record via WAL actor, keeping it alive to ensure file write
+    {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        log.set_level(log_t::level::trace);
+        auto scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
+        configuration::config_wal config;
+        config.path = wal_path;
+
+        auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler, config, log);
+        auto wal = actor_zeta::spawn<wal_replicate_t>(&resource, manager.get(), log, config);
+
         auto chunk = gen_data_chunk(5, 0, &resource);
-        auto data =
-            components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
         auto session = components::session::session_id_t();
-        test_wal.wal->insert_many(session, data);
+        auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+        wal->write_physical_insert(session, database_name, collection_name, std::move(data_chunk_ptr), 0, 5, 0);
+
+        // wal/manager destroyed here, file handle closed, data flushed to disk
+        delete scheduler;
     }
 
-    std::size_t read_index = 0;
-    for (int i = 0; i <= 3; ++i) {
-        wal_entry_t entry;
-
-        entry.size_ = test_wal.wal->test_read_size(read_index);
-
-        auto start = read_index + sizeof(size_tt);
-        auto finish = read_index + sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-        auto output = test_wal.wal->test_read(start, finish);
-
-        auto crc32_index = entry.size_;
-        crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-        unpack(output, entry);
-        entry.crc32_ = read_crc32(output, entry.size_);
-        test_wal.scheduler->run();
-        REQUIRE(entry.crc32_ == crc32);
-        REQUIRE(entry.entry_->database_name() == database_name);
-        REQUIRE(entry.entry_->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
-        const auto& chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
-        int num = 0;
-        for (size_t j = 0; j < chunk.size(); j++) {
-            ++num;
-            REQUIRE(chunk.value(0, j).value<int64_t>() == num);
-            REQUIRE(chunk.value(1, j).value<std::string_view>() == std::to_string(num));
+    // Phase 2: corrupt the WAL file — flip bytes in the payload
+    auto wal_file = wal_path / ".wal_0_000000";
+    REQUIRE(std::filesystem::exists(wal_file));
+    {
+        std::fstream fs(wal_file.string(), std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(fs.is_open());
+        // Skip the 4-byte size header, then corrupt bytes 10-20 in the payload
+        for (int offset = 10; offset < 20; ++offset) {
+            fs.seekp(offset);
+            char c;
+            fs.read(&c, 1);
+            c = static_cast<char>(~c); // flip all bits
+            fs.seekp(offset);
+            fs.write(&c, 1);
         }
+        fs.flush();
+    }
 
-        read_index = finish;
+    // Phase 3: read via wal_reader_t — should detect corruption
+    {
+        configuration::config_wal config;
+        config.path = wal_path;
+        config.agent = 1;
+        auto log = initialization_logger("wal_test_corrupt", "/tmp/docker_logs/");
+        wal_reader_t reader(config, &resource, log);
+        auto records = reader.read_committed_records(services::wal::id_t{0});
+        // Corrupted record should not appear in committed records
+        REQUIRE(records.empty());
     }
 }
 
-TEST_CASE("services::wal::delete_one_test") {
+TEST_CASE("services::wal::mixed_valid_corrupt_records") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/delete_one", &resource);
+    const std::filesystem::path wal_path("/tmp/wal/corrupt_mixed");
+    std::filesystem::remove_all(wal_path);
+    std::filesystem::create_directories(wal_path);
 
-    for (int num = 1; num <= 5; ++num) {
-        auto match = components::logical_plan::make_node_match(
-            &resource,
-            {database_name, collection_name},
-            make_compare_expression(&resource,
-                                    compare_type::eq,
-                                    components::expressions::key_t{&resource, "count", side_t::left},
-                                    core::parameter_id_t{1}));
-        auto params = make_parameter_node(&resource);
-        params->add_parameter(core::parameter_id_t{1}, num);
-        auto data = components::logical_plan::make_node_delete_one(&resource, {database_name, collection_name}, match);
+    // Phase 1: write 3 INSERT records + COMMIT via WAL actor
+    {
+        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        log.set_level(log_t::level::trace);
+        auto scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
+        configuration::config_wal config;
+        config.path = wal_path;
+
+        auto manager = actor_zeta::spawn<manager_wal_replicate_t>(&resource, scheduler, config, log);
+        auto wal = actor_zeta::spawn<wal_replicate_t>(&resource, manager.get(), log, config);
+
         auto session = components::session::session_id_t();
-        test_wal.wal->delete_one(session, data, params);
-    }
+        uint64_t txn_id = 4611686018427387904ULL;
 
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.id == services::wal::id_t(num));
-        REQUIRE(record.data->type() == node_type::delete_t);
-        REQUIRE(record.data->database_name() == database_name);
-        REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(record.data->children().front()->expressions().front()->group() == expression_group::compare);
-        auto match =
-            reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
-        REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
-        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
-                components::expressions::key_t{&resource, "count"});
-        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
-        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
-        REQUIRE(record.params->parameters().parameters.size() == 1);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        index = test_wal.wal->test_next_record(index);
-    }
-}
-
-TEST_CASE("services::wal::delete_many_test") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/delete_many", &resource);
-
-    for (int num = 1; num <= 5; ++num) {
-        auto match = components::logical_plan::make_node_match(
-            &resource,
-            {database_name, collection_name},
-            make_compare_expression(&resource,
-                                    compare_type::eq,
-                                    components::expressions::key_t{&resource, "count", side_t::left},
-                                    core::parameter_id_t{1}));
-        auto params = make_parameter_node(&resource);
-        params->add_parameter(core::parameter_id_t{1}, num);
-        auto data = components::logical_plan::make_node_delete_many(&resource, {database_name, collection_name}, match);
-        auto session = components::session::session_id_t();
-        test_wal.wal->delete_many(session, data, params);
-    }
-
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.id == services::wal::id_t(num));
-        REQUIRE(record.data->type() == node_type::delete_t);
-        REQUIRE(record.data->database_name() == database_name);
-        REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(record.data->children().front()->expressions().front()->group() == expression_group::compare);
-        auto match =
-            reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
-        REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
-        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
-                components::expressions::key_t{&resource, "count"});
-        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
-        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
-        REQUIRE(record.params->parameters().parameters.size() == 1);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        index = test_wal.wal->test_next_record(index);
-    }
-}
-
-TEST_CASE("services::wal::update_one_test") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/update_one", &resource);
-
-    for (int num = 1; num <= 5; ++num) {
-        auto match = components::logical_plan::make_node_match(
-            &resource,
-            {database_name, collection_name},
-            make_compare_expression(&resource,
-                                    compare_type::eq,
-                                    components::expressions::key_t{&resource, "count", side_t::left},
-                                    core::parameter_id_t{1}));
-        auto params = make_parameter_node(&resource);
-        params->add_parameter(core::parameter_id_t{1}, num);
-        params->add_parameter(core::parameter_id_t{2}, num + 10);
-
-        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
-        update->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
-
-        auto data = make_node_update_one(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
-        auto session = components::session::session_id_t();
-        test_wal.wal->update_one(session, data, params);
-    }
-
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.id == services::wal::id_t(num));
-        REQUIRE(record.data->type() == node_type::update_t);
-        REQUIRE(record.data->database_name() == database_name);
-        REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(record.data->children().front()->expressions().front()->group() == expression_group::compare);
-        auto match =
-            reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
-        REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
-        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
-                components::expressions::key_t{&resource, "count"});
-        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
-        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
-        REQUIRE(record.params->parameters().parameters.size() == 2);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
-        {
-            REQUIRE(updates.front()->type() == update_expr_type::set);
-            REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
-                    core::parameter_id_t{2});
-            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
+        for (int i = 0; i < 3; ++i) {
+            auto chunk = gen_data_chunk(5, 0, &resource);
+            auto data_chunk_ptr = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+            wal->write_physical_insert(session,
+                                       database_name,
+                                       collection_name,
+                                       std::move(data_chunk_ptr),
+                                       uint64_t(i * 5),
+                                       5,
+                                       txn_id);
         }
-        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
-        index = test_wal.wal->test_next_record(index);
-    }
-}
+        wal->commit_txn(session, txn_id);
 
-TEST_CASE("services::wal::update_many_test") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/update_many", &resource);
-
-    for (int num = 1; num <= 5; ++num) {
-        auto match = components::logical_plan::make_node_match(
-            &resource,
-            {database_name, collection_name},
-            make_compare_expression(&resource,
-                                    compare_type::eq,
-                                    components::expressions::key_t{&resource, "count", side_t::left},
-                                    core::parameter_id_t{1}));
-        auto params = make_parameter_node(&resource);
-        params->add_parameter(core::parameter_id_t{1}, num);
-        params->add_parameter(core::parameter_id_t{2}, num + 10);
-
-        update_expr_ptr update = new update_expr_set_t(components::expressions::key_t{&resource, "count"});
-        update->left() = new update_expr_get_const_value_t(core::parameter_id_t{2});
-
-        auto data = make_node_update_many(&resource, {database_name, collection_name}, match, {update}, num % 2 == 0);
-        auto session = components::session::session_id_t();
-        test_wal.wal->update_many(session, data, params);
+        delete scheduler;
     }
 
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.id == services::wal::id_t(num));
-        REQUIRE(record.data->type() == node_type::update_t);
-        REQUIRE(record.data->database_name() == database_name);
-        REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(record.data->children().front()->expressions().front()->group() == expression_group::compare);
-        auto match =
-            reinterpret_cast<const compare_expression_ptr&>(record.data->children().front()->expressions().front());
-        REQUIRE(match->type() == compare_type::eq);
-        REQUIRE(std::holds_alternative<components::expressions::key_t>(match->left()));
-        REQUIRE(std::get<components::expressions::key_t>(match->left()) ==
-                components::expressions::key_t{&resource, "count"});
-        REQUIRE(std::holds_alternative<core::parameter_id_t>(match->right()));
-        REQUIRE(std::get<core::parameter_id_t>(match->right()) == core::parameter_id_t{1});
-        REQUIRE(record.params->parameters().parameters.size() == 2);
-        REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{1}).value<int>() == num);
-        auto updates = boost::polymorphic_pointer_downcast<node_update_t>(record.data)->updates();
-        {
-            REQUIRE(updates.front()->type() == update_expr_type::set);
-            REQUIRE(reinterpret_cast<const update_expr_get_const_value_ptr&>(updates.front()->left())->id() ==
-                    core::parameter_id_t{2});
-            REQUIRE(get_parameter(&record.params->parameters(), core::parameter_id_t{2}).value<int>() == num + 10);
+    // Phase 2: read the WAL file to find record boundaries, then corrupt the 2nd record
+    auto wal_file = wal_path / ".wal_0_000000";
+    REQUIRE(std::filesystem::exists(wal_file));
+    {
+        // Read the size of the first record to find the start of the second
+        std::ifstream ifs(wal_file.string(), std::ios::binary);
+        REQUIRE(ifs.is_open());
+
+        // Read size_tt (4 bytes big-endian)
+        uint8_t size_buf[4];
+        ifs.read(reinterpret_cast<char*>(size_buf), 4);
+        uint32_t first_size = (uint32_t(size_buf[0]) << 24) | (uint32_t(size_buf[1]) << 16) |
+                              (uint32_t(size_buf[2]) << 8) | uint32_t(size_buf[3]);
+        ifs.close();
+
+        // Second record starts at: sizeof(size_tt) + first_size + sizeof(crc32_t)
+        std::size_t second_record_offset = 4 + first_size + 4;
+
+        // Corrupt the payload of the second record (offset into payload)
+        std::fstream fs(wal_file.string(), std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(fs.is_open());
+        // Skip size header of 2nd record (4 bytes), then corrupt 10 bytes in payload
+        for (int i = 0; i < 10; ++i) {
+            auto pos = static_cast<std::streamoff>(second_record_offset + 4 + 5 + static_cast<std::size_t>(i));
+            fs.seekp(pos);
+            char c;
+            fs.seekg(pos);
+            fs.read(&c, 1);
+            c = static_cast<char>(~c);
+            fs.seekp(pos);
+            fs.write(&c, 1);
         }
-        REQUIRE(boost::polymorphic_pointer_downcast<node_update_t>(record.data)->upsert() == (num % 2 == 0));
-        index = test_wal.wal->test_next_record(index);
+        fs.flush();
     }
-}
 
-TEST_CASE("services::wal::find_start_record") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/find_start_record_rows", &resource);
-    test_insert_one_row(test_wal.wal.get(), &resource);
-
-    std::size_t start_index;
-    REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(1), start_index));
-    REQUIRE(test_wal.wal->test_find_start_record(services::wal::id_t(5), start_index));
-    REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(6), start_index));
-    REQUIRE_FALSE(test_wal.wal->test_find_start_record(services::wal::id_t(0), start_index));
-}
-
-TEST_CASE("services::wal::read_id") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/read_id_rows", &resource);
-    test_insert_one_row(test_wal.wal.get(), &resource);
-
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(num));
-        index = test_wal.wal->test_next_record(index);
+    // Phase 3: read via wal_reader_t — should get first record only, stop at corruption
+    {
+        configuration::config_wal config;
+        config.path = wal_path;
+        config.agent = 1;
+        auto log = initialization_logger("wal_test_mixed", "/tmp/docker_logs/");
+        wal_reader_t reader(config, &resource, log);
+        auto records = reader.read_committed_records(services::wal::id_t{0});
+        // The corrupt 2nd record stops iteration.
+        // The COMMIT marker comes AFTER the corrupt record, so never reached.
+        // First record is valid but its txn was never committed (commit marker lost).
+        // So we expect 0 committed records.
+        REQUIRE(records.empty());
     }
-    REQUIRE(test_wal.wal->test_read_id(index) == services::wal::id_t(0));
-}
-
-TEST_CASE("services::wal::read_record") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/read_record_rows", &resource);
-    test_insert_one_row(test_wal.wal.get(), &resource);
-
-    std::size_t index = 0;
-    for (int num = 1; num <= 5; ++num) {
-        auto record = test_wal.wal->test_read_record(index);
-        REQUIRE(record.data->type() == node_type::insert_t);
-        REQUIRE(record.data->database_name() == database_name);
-        REQUIRE(record.data->collection_name() == collection_name);
-        REQUIRE(reinterpret_cast<const node_data_ptr&>(record.data->children().front())->size() > 0);
-        const auto& chunk = reinterpret_cast<const node_data_ptr&>(record.data->children().front())->data_chunk();
-        REQUIRE(chunk.value(0, 0).value<int64_t>() == num);
-        REQUIRE(chunk.value(1, 0).value<std::string_view>() == std::to_string(num));
-        index = test_wal.wal->test_next_record(index);
-    }
-    REQUIRE(test_wal.wal->test_read_record(index).data == nullptr);
-}
-
-TEST_CASE("services::wal::large_insert_many_rows") {
-    auto resource = std::pmr::synchronized_pool_resource();
-    auto test_wal = create_test_wal("/tmp/wal/large_insert_many_rows", &resource);
-
-    constexpr int kRows = 500;
-    auto chunk = gen_data_chunk(kRows, 0, &resource);
-    auto data =
-        components::logical_plan::make_node_insert(&resource, {database_name, collection_name}, std::move(chunk));
-    auto session = components::session::session_id_t();
-    test_wal.wal->insert_many(session, data);
-
-    wal_entry_t entry;
-    entry.size_ = test_wal.wal->test_read_size(0);
-
-    INFO("WAL record size: " << entry.size_ << " bytes");
-    REQUIRE(entry.size_ > 0);
-
-    auto start = sizeof(size_tt);
-    auto finish = sizeof(size_tt) + entry.size_ + sizeof(crc32_t);
-    auto output = test_wal.wal->test_read(start, finish);
-
-    auto crc32_index = entry.size_;
-    crc32_t crc32 = static_cast<uint32_t>(absl::ComputeCrc32c({output.data(), crc32_index}));
-
-    unpack(output, entry);
-    entry.crc32_ = read_crc32(output, entry.size_);
-    test_wal.scheduler->run();
-
-    REQUIRE(entry.crc32_ == crc32);
-    REQUIRE(entry.entry_->database_name() == database_name);
-    REQUIRE(entry.entry_->collection_name() == collection_name);
-    REQUIRE(reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->size() > 0);
-
-    const auto& read_chunk = reinterpret_cast<const node_data_ptr&>(entry.entry_->children().front())->data_chunk();
-    REQUIRE(read_chunk.size() == kRows);
-
-    REQUIRE(read_chunk.value(0, 0).value<int64_t>() == 1);
-    REQUIRE(read_chunk.value(0, kRows - 1).value<int64_t>() == kRows);
 }

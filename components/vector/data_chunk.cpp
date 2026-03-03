@@ -377,8 +377,10 @@ namespace components::vector {
         if (row_ids.empty()) {
             return result;
         }
-        std::vector<uint64_t> u64_ids(row_ids.begin(), row_ids.end());
-        indexing_vector_t indexing(resource, u64_ids.data());
+        indexing_vector_t indexing(resource, count);
+        for (uint64_t i = 0; i < count; i++) {
+            indexing.set_index(i, static_cast<uint64_t>(row_ids[i]));
+        }
         copy(result, indexing, count, 0);
         return result;
     }

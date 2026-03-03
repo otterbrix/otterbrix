@@ -78,9 +78,11 @@ namespace components::sort {
                 return compare_typed<std::string_view>(vec, a, b);
             default: {
                 // Fallback for composite types (STRUCT, LIST, etc.) — use logical_value_t
+                if (!vec.resource()) return 0;
                 auto va = vec.value(a);
                 auto vb = vec.value(b);
-                return (va < vb) ? -1 : (vb < va) ? 1 : 0;
+                auto cmp = va.compare(vb);
+                return (cmp == types::compare_t::less) ? -1 : (cmp == types::compare_t::more) ? 1 : 0;
             }
         }
     }

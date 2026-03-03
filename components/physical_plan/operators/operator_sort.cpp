@@ -33,8 +33,10 @@ namespace components::operators {
             std::sort(indices.begin(), indices.end(), std::ref(sorter_));
 
             // 3. Build indexing vector from sorted indices
-            std::vector<uint64_t> u64_indices(indices.begin(), indices.end());
-            vector::indexing_vector_t indexing(resource_, u64_indices.data());
+            vector::indexing_vector_t indexing(resource_, num_rows);
+            for (size_t i = 0; i < num_rows; i++) {
+                indexing.set_index(i, static_cast<uint64_t>(indices[i]));
+            }
 
             // 4. Create result via copy with indexing (no transpose needed)
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);

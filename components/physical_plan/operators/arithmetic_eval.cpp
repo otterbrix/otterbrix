@@ -116,6 +116,9 @@ namespace components::operators {
 
                     auto op = scalar_to_arithmetic_op(scalar_expr->type());
                     auto& operands = scalar_expr->params();
+                    if (operands.size() < 2) {
+                        throw std::logic_error("Arithmetic expression requires at least 2 operands");
+                    }
 
                     std::deque<vector::vector_t> sub_temps;
                     auto [left_op, left_err] = resolve_operand(operands[0], chunk, params, resource, sub_temps);
@@ -139,7 +142,7 @@ namespace components::operators {
                     } else {
                         auto lval = *left_op.scalar;
                         auto rval = *right_op.scalar;
-                        types::logical_value_t result_val(resource, types::logical_type::NA);
+                        types::logical_value_t result_val(resource, types::complex_logical_type{types::logical_type::NA});
                         switch (scalar_expr->type()) {
                             case expressions::scalar_type::add:
                                 result_val = types::logical_value_t::sum(lval, rval);
@@ -219,6 +222,9 @@ namespace components::operators {
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
                     // Arithmetic sub-expression
+                    if (scalar->params().size() < 2) {
+                        throw std::logic_error("CASE: arithmetic sub-expression requires 2 operands");
+                    }
                     auto l = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx);
                     auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx);
                     switch (scalar->type()) {
@@ -334,6 +340,10 @@ namespace components::operators {
 
         if (op == expressions::scalar_type::case_expr) {
             return {detail::evaluate_case_expr(resource, operands, chunk, params), {}};
+        }
+
+        if (operands.size() < 2) {
+            return {std::move(dummy), "arithmetic expression requires at least 2 operands"};
         }
 
         std::deque<vector::vector_t> temp_vecs;

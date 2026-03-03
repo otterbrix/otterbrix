@@ -344,6 +344,7 @@ namespace components::operators {
     void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context,
                                                  vector::data_chunk_t& result) {
         auto num_groups = result.size();
+        result.data.reserve(result.data.size() + post_aggregates_.size());
         for (auto& post : post_aggregates_) {
             // Determine result type from first row computation
             types::complex_logical_type col_type{types::logical_type::NA};
@@ -391,11 +392,12 @@ namespace components::operators {
             };
 
             // Compute result for each group and collect into a new vector
+            if (post.operands.size() < 2) continue;
             std::pmr::vector<types::logical_value_t> col_values(resource_);
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 auto left_val = resolve(post.operands[0], group_idx, resolve);
                 auto right_val = resolve(post.operands[1], group_idx, resolve);
-                types::logical_value_t result_val(resource_, types::logical_type::NA);
+                types::logical_value_t result_val(resource_, types::complex_logical_type{types::logical_type::NA});
                 switch (post.op) {
                     case expressions::scalar_type::add:
                         result_val = types::logical_value_t::sum(left_val, right_val);

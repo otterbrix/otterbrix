@@ -51,6 +51,35 @@ namespace components::operators {
                         return {result, {}};
                     }
 
+                    if (scalar_expr->type() == expressions::scalar_type::unary_minus) {
+                        auto& operands = scalar_expr->params();
+                        if (operands.empty()) {
+                            throw std::logic_error("Unary minus requires 1 operand");
+                        }
+                        std::deque<vector::vector_t> sub_temps;
+                        auto [inner_op, inner_err] = resolve_operand(operands[0], chunk, params, resource, sub_temps);
+                        if (!inner_err.empty()) return {result, std::move(inner_err)};
+                        uint64_t count = chunk.size();
+                        vector::vector_t computed(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
+                        if (inner_op.vec) {
+                            computed = vector::compute_unary_neg(resource, *inner_op.vec, count);
+                        } else {
+                            auto neg_val = types::logical_value_t::subtract(
+                                types::logical_value_t(resource, int64_t(0)), *inner_op.scalar);
+                            uint64_t out_count = count > 0 ? count : 1;
+                            computed = vector::vector_t(resource, neg_val.type(), out_count);
+                            for (uint64_t i = 0; i < out_count; i++) {
+                                computed.set_value(i, neg_val);
+                            }
+                        }
+                        for (auto& t : sub_temps) {
+                            temp_vecs.emplace_back(std::move(t));
+                        }
+                        temp_vecs.emplace_back(std::move(computed));
+                        result.vec = &temp_vecs.back();
+                        return {result, {}};
+                    }
+
                     auto op = scalar_to_arithmetic_op(scalar_expr->type());
                     auto& operands = scalar_expr->params();
                     if (operands.size() < 2) {
@@ -154,6 +183,15 @@ namespace components::operators {
                             return resolve_row_value(resource, ops.back(), chunk, params, row_idx);
                         }
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    }
+                    // Unary minus sub-expression
+                    if (scalar->type() == expressions::scalar_type::unary_minus) {
+                        if (scalar->params().empty()) {
+                            throw std::logic_error("CASE: unary minus requires 1 operand");
+                        }
+                        auto inner = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx);
+                        return types::logical_value_t::subtract(
+                            types::logical_value_t(resource, int64_t(0)), inner);
                     }
                     // Arithmetic sub-expression
                     if (scalar->params().size() < 2) {
@@ -274,6 +312,28 @@ namespace components::operators {
 
         if (op == expressions::scalar_type::case_expr) {
             return {detail::evaluate_case_expr(resource, operands, chunk, params), {}};
+        }
+
+        if (op == expressions::scalar_type::unary_minus) {
+            if (operands.empty()) {
+                return {std::move(dummy), "unary minus requires 1 operand"};
+            }
+            std::deque<vector::vector_t> temp_vecs;
+            auto [inner_op, inner_err] = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs);
+            if (!inner_err.empty()) return {std::move(dummy), std::move(inner_err)};
+            uint64_t count = chunk.size();
+            if (inner_op.vec) {
+                return {vector::compute_unary_neg(resource, *inner_op.vec, count), {}};
+            } else {
+                auto neg_val = types::logical_value_t::subtract(
+                    types::logical_value_t(resource, int64_t(0)), *inner_op.scalar);
+                uint64_t out_count = count > 0 ? count : 1;
+                vector::vector_t output(resource, neg_val.type(), out_count);
+                for (uint64_t i = 0; i < out_count; i++) {
+                    output.set_value(i, neg_val);
+                }
+                return {std::move(output), {}};
+            }
         }
 
         if (operands.size() < 2) {

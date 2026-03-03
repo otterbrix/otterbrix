@@ -104,7 +104,6 @@ namespace components::vector {
 
         vector_type get_vector_type() const noexcept { return vector_type_; }
         const types::complex_logical_type& type() const noexcept { return type_; }
-        types::complex_logical_type& type() noexcept { return type_; }
         void set_type_alias(const std::string& alias) { type_.set_alias(alias); }
         std::byte* data() noexcept { return data_; }
         const std::byte* data() const noexcept { return data_; }

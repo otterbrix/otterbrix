@@ -18,12 +18,12 @@ namespace components::sql::transform {
 
         if (node->lexpr) {
             expr->append_param(transform_a_expr_operand(node->lexpr, names, params));
+            expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         } else {
-            // Unary minus: 0 - x
-            auto zero_id = params->add_parameter(types::logical_value_t(resource_, int64_t(0)));
-            expr->append_param(zero_id);
+            // Unary minus: proper unary operator with single operand
+            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+            expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         }
-        expr->append_param(transform_a_expr_operand(node->rexpr, names, params));
         return expr;
     }
 
@@ -70,19 +70,20 @@ namespace components::sql::transform {
         if (!is_arithmetic_operator(op_str)) {
             throw parser_exception_t{"Unsupported operator in SELECT: " + std::string(op_str), ""};
         }
-        auto stype = get_arithmetic_scalar_type(op_str);
-
         std::string expr_name = alias ? alias : std::string(op_str);
-        auto expr = make_scalar_expression(resource_, stype, expressions::key_t{resource_, std::move(expr_name)});
+        scalar_expression_ptr expr;
 
         if (node->lexpr) {
+            auto stype = get_arithmetic_scalar_type(op_str);
+            expr = make_scalar_expression(resource_, stype, expressions::key_t{resource_, std::move(expr_name)});
             expr->append_param(resolve_select_operand(node->lexpr, names, params, group));
+            expr->append_param(resolve_select_operand(node->rexpr, names, params, group));
         } else {
-            // Unary minus
-            auto zero_id = params->add_parameter(types::logical_value_t(resource_, int64_t(0)));
-            expr->append_param(zero_id);
+            // Unary minus: proper unary operator with single operand
+            expr = make_scalar_expression(resource_, scalar_type::unary_minus,
+                                          expressions::key_t{resource_, std::move(expr_name)});
+            expr->append_param(resolve_select_operand(node->rexpr, names, params, group));
         }
-        expr->append_param(resolve_select_operand(node->rexpr, names, params, group));
 
         group->append_expression(expr);
     }
@@ -546,11 +547,12 @@ namespace components::sql::transform {
                         auto expr = make_scalar_expression(resource_, stype);
                         if (sub->lexpr) {
                             expr->append_param(resolve_having_operand(sub->lexpr, names, params, group));
+                            expr->append_param(resolve_having_operand(sub->rexpr, names, params, group));
                         } else {
-                            auto zero_id = params->add_parameter(types::logical_value_t(resource_, int64_t(0)));
-                            expr->append_param(zero_id);
+                            // Unary minus: proper unary operator with single operand
+                            expr = make_scalar_expression(resource_, scalar_type::unary_minus);
+                            expr->append_param(resolve_having_operand(sub->rexpr, names, params, group));
                         }
-                        expr->append_param(resolve_having_operand(sub->rexpr, names, params, group));
                         return expr;
                     }
                 }

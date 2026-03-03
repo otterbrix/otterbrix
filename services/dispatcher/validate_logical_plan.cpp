@@ -966,7 +966,8 @@ namespace services::dispatcher {
                                     }
                                     result.emplace_back(type_from_t{node->result_alias(), std::move(case_result_type)});
                                 }
-                            } else if (scalar_expr->type() == scalar_type::add ||
+                            } else if (scalar_expr->type() == scalar_type::unary_minus ||
+                                       scalar_expr->type() == scalar_type::add ||
                                        scalar_expr->type() == scalar_type::subtract ||
                                        scalar_expr->type() == scalar_type::multiply ||
                                        scalar_expr->type() == scalar_type::divide ||
@@ -1012,9 +1013,11 @@ namespace services::dispatcher {
                                     }
                                 };
 
-                                if (scalar_expr->params().size() >= 2) {
+                                if (scalar_expr->params().size() >= 1) {
                                     auto left_type = resolve_type(scalar_expr->params()[0], resolve_type);
-                                    auto right_type = resolve_type(scalar_expr->params()[1], resolve_type);
+                                    auto right_type = scalar_expr->params().size() > 1
+                                                          ? resolve_type(scalar_expr->params()[1], resolve_type)
+                                                          : left_type;
                                     auto promoted = promote_type(left_type.type(), right_type.type());
                                     auto result_type = complex_logical_type(promoted);
                                     if (!scalar_expr->key().is_null()) {

@@ -22,7 +22,8 @@ namespace services::planner::impl {
         bool is_arithmetic_scalar_type(scalar_type t) {
             return t == scalar_type::add || t == scalar_type::subtract ||
                    t == scalar_type::multiply || t == scalar_type::divide ||
-                   t == scalar_type::mod || t == scalar_type::case_expr;
+                   t == scalar_type::mod || t == scalar_type::case_expr ||
+                   t == scalar_type::unary_minus;
         }
 
         // Check if any operand (recursively) references an aggregate result

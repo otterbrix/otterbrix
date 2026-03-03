@@ -312,6 +312,12 @@ namespace components::sql::transform {
             }
         }
 
+        // having (parse before GROUP BY so the group node is created only once)
+        expression_ptr having_expr;
+        if (node.havingClause) {
+            having_expr = transform_having_expr(node.havingClause, names, params, group);
+        }
+
         if (node.groupClause && !node.groupClause->lst.empty()) {
             // TODO: check GROUP BY & SELECT field correctness: every non-agg & non-const field MUST BE in GROUP BY!
             // Note: right now execution implicitly assumes that every SELECT field is in GROUP BY
@@ -328,15 +334,8 @@ namespace components::sql::transform {
             }
         }
 
-        // having
-        expression_ptr having_expr;
-        if (node.havingClause) {
-            having_expr = transform_having_expr(node.havingClause, names, params, group);
-        }
-
         if (!group->expressions().empty()) {
             if (having_expr) {
-                // Recreate group with HAVING through constructor
                 auto final_group = logical_plan::make_node_group(
                     resource_, agg->collection_full_name(), group->expressions(), std::move(having_expr));
                 agg->append_child(final_group);

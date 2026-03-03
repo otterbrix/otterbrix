@@ -66,7 +66,7 @@ namespace components::operators {
                     set_error(std::move(arith_error));
                     return;
                 }
-                result_vec.type().set_alias(std::string(comp.alias));
+                result_vec.set_type_alias(std::string(comp.alias));
                 chunk.data.emplace_back(std::move(result_vec));
             }
 
@@ -132,7 +132,7 @@ namespace components::operators {
                     set_error(std::move(arith_error));
                     return;
                 }
-                result_vec.type().set_alias(std::string(comp.alias));
+                result_vec.set_type_alias(std::string(comp.alias));
                 chunk.data.emplace_back(std::move(result_vec));
             }
 
@@ -371,6 +371,12 @@ namespace components::operators {
                     if (sub_expr->group() == expressions::expression_group::scalar) {
                         auto* sub_scalar =
                             static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
+                        if (sub_scalar->type() == expressions::scalar_type::unary_minus &&
+                            !sub_scalar->params().empty()) {
+                            auto inner = self(sub_scalar->params()[0], row_idx, self);
+                            return types::logical_value_t::subtract(
+                                types::logical_value_t(resource_, int64_t(0)), inner);
+                        }
                         if (sub_scalar->params().size() >= 2) {
                             auto left_val = self(sub_scalar->params()[0], row_idx, self);
                             auto right_val = self(sub_scalar->params()[1], row_idx, self);
@@ -395,6 +401,27 @@ namespace components::operators {
             };
 
             // Compute result for each group and collect into a new vector
+            if (post.op == expressions::scalar_type::unary_minus) {
+                if (post.operands.empty()) continue;
+                std::pmr::vector<types::logical_value_t> col_values(resource_);
+                for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                    auto inner = resolve(post.operands[0], group_idx, resolve);
+                    auto result_val = types::logical_value_t::subtract(
+                        types::logical_value_t(resource_, int64_t(0)), inner);
+                    result_val.set_alias(std::string(post.alias));
+                    if (group_idx == 0) {
+                        col_type = result_val.type();
+                    }
+                    col_values.push_back(std::move(result_val));
+                }
+                vector::vector_t new_col(resource_, col_type, result.capacity());
+                for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                    new_col.set_value(group_idx, std::move(col_values[group_idx]));
+                }
+                new_col.set_type_alias(std::string(post.alias));
+                result.data.emplace_back(std::move(new_col));
+                continue;
+            }
             if (post.operands.size() < 2) continue;
             std::pmr::vector<types::logical_value_t> col_values(resource_);
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
@@ -432,7 +459,7 @@ namespace components::operators {
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 new_col.set_value(group_idx, std::move(col_values[group_idx]));
             }
-            new_col.type().set_alias(std::string(post.alias));
+            new_col.set_type_alias(std::string(post.alias));
             result.data.emplace_back(std::move(new_col));
         }
     }
@@ -462,6 +489,12 @@ namespace components::operators {
                 auto& sub_expr = std::get<expressions::expression_ptr>(param);
                 if (sub_expr->group() == expressions::expression_group::scalar) {
                     auto* scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
+                    if (scalar->type() == expressions::scalar_type::unary_minus &&
+                        !scalar->params().empty()) {
+                        auto inner = self(scalar->params()[0], row_idx, self);
+                        return types::logical_value_t::subtract(
+                            types::logical_value_t(resource_, int64_t(0)), inner);
+                    }
                     if (scalar->params().size() >= 2) {
                         auto l = self(scalar->params()[0], row_idx, self);
                         auto r = self(scalar->params()[1], row_idx, self);

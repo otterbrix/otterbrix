@@ -57,9 +57,9 @@ namespace services::dispatcher {
             return merged;
         }
 
-        schema_result<type_paths> find_types(std::pmr::memory_resource* resource,
-                                             components::expressions::key_t& key,
-                                             const named_schema& schema) {
+        [[nodiscard]] schema_result<type_paths> find_types(std::pmr::memory_resource* resource,
+                                                         components::expressions::key_t& key,
+                                                         const named_schema& schema) {
             assert(!key.storage().empty());
             type_paths result{resource};
             if (key.storage().at(0) == "*") {
@@ -192,11 +192,11 @@ namespace services::dispatcher {
             return schema_result{std::move(result)};
         }
 
-        schema_result<type_paths> validate_key(std::pmr::memory_resource* resource,
-                                               components::expressions::key_t& key,
-                                               const named_schema& schema_left,
-                                               const named_schema& schema_right,
-                                               bool same_schema) {
+        [[nodiscard]] schema_result<type_paths> validate_key(std::pmr::memory_resource* resource,
+                                                           components::expressions::key_t& key,
+                                                           const named_schema& schema_left,
+                                                           const named_schema& schema_right,
+                                                           bool same_schema) {
             if (key.side() == side_t::left) {
                 return find_types(resource, key, schema_left);
             } else if (key.side() == side_t::right) {
@@ -228,11 +228,11 @@ namespace services::dispatcher {
             }
         }
 
-        schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                    const catalog& catalog,
-                                                    function_expression_t* expr,
-                                                    const storage_parameters& parameters,
-                                                    const named_schema& schema_left,
+        [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                                const catalog& catalog,
+                                                                function_expression_t* expr,
+                                                                const storage_parameters& parameters,
+                                                                const named_schema& schema_left,
                                                     const named_schema& schema_right,
                                                     bool same_schema) {
             named_schema result(resource);
@@ -314,11 +314,11 @@ namespace services::dispatcher {
 
         // TODO: validate parameters
         // TODO: validate algebra
-        schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                    update_expr_t* expr,
-                                                    const named_schema& schema_left,
-                                                    const named_schema& schema_right,
-                                                    bool same_schema) {
+        [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                                update_expr_t* expr,
+                                                                const named_schema& schema_left,
+                                                                const named_schema& schema_right,
+                                                                bool same_schema) {
             switch (expr->type()) {
                 case update_expr_type::set: {
                     auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr);
@@ -381,7 +381,7 @@ namespace services::dispatcher {
 
         // Recursively validate keys inside scalar expression params
         // TODO: validate non-scalar sub-expressions
-        schema_result<named_schema> validate_scalar_params(
+        [[nodiscard]] schema_result<named_schema> validate_scalar_params(
             std::pmr::memory_resource* resource,
             std::pmr::vector<param_storage>& params,
             const named_schema& schema_left,
@@ -410,13 +410,13 @@ namespace services::dispatcher {
             return schema_result<named_schema>{named_schema(resource)};
         }
 
-        schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
-                                                    param_storage& param,
-                                                    const named_schema& schema);
+        [[nodiscard]] schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                               param_storage& param,
+                                                               const named_schema& schema);
 
-        schema_result<type_paths> resolve_key_paths_in_group(std::pmr::memory_resource* resource,
-                                                              std::pmr::vector<param_storage>& params,
-                                                              const named_schema& schema) {
+        [[nodiscard]] schema_result<type_paths> resolve_key_paths_in_group(std::pmr::memory_resource* resource,
+                                                                           std::pmr::vector<param_storage>& params,
+                                                                           const named_schema& schema) {
             for (auto& param : params) {
                 auto res = resolve_key_path(resource, param, schema);
                 if (res.is_error()) {
@@ -426,9 +426,9 @@ namespace services::dispatcher {
             return schema_result{type_paths{resource}};
         }
 
-        schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
-                                                    param_storage& param,
-                                                    const named_schema& schema) {
+        [[nodiscard]] schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                               param_storage& param,
+                                                               const named_schema& schema) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
                 return find_types(resource, key, schema);
@@ -468,11 +468,11 @@ namespace services::dispatcher {
             return schema_result{type_paths{resource}};
         }
 
-        schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                    const catalog& catalog,
-                                                    compare_expression_t* expr,
-                                                    const storage_parameters& parameters,
-                                                    const named_schema& schema_left,
+        [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                                const catalog& catalog,
+                                                                compare_expression_t* expr,
+                                                                const storage_parameters& parameters,
+                                                                const named_schema& schema_left,
                                                     const named_schema& schema_right,
                                                     bool same_schema) {
             named_schema result(resource);
@@ -595,11 +595,11 @@ namespace services::dispatcher {
             return schema_result{std::move(result)};
         }
 
-        schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                    const catalog& catalog,
-                                                    node_match_t* node,
-                                                    const storage_parameters& parameters,
-                                                    const named_schema& schema_left,
+        [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                                const catalog& catalog,
+                                                                node_match_t* node,
+                                                                const storage_parameters& parameters,
+                                                                const named_schema& schema_left,
                                                     const named_schema& schema_right,
                                                     bool same_schema) {
             if (node->expressions().empty()) {
@@ -797,10 +797,10 @@ namespace services::dispatcher {
         return make_cursor(resource, operation_status_t::success);
     }
 
-    schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                const catalog& catalog,
-                                                node_t* node,
-                                                const components::logical_plan::storage_parameters& parameters) {
+    [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                             const catalog& catalog,
+                                                             node_t* node,
+                                                             const components::logical_plan::storage_parameters& parameters) {
         named_schema result{resource};
 
         switch (node->type()) {

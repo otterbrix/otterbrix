@@ -55,9 +55,9 @@ namespace services::dispatcher {
     components::cursor::cursor_t_ptr validate_types(std::pmr::memory_resource* resource,
                                                     const components::catalog::catalog& catalog,
                                                     components::logical_plan::node_t* node);
-    schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                const components::catalog::catalog& catalog,
-                                                components::logical_plan::node_t* node,
-                                                const components::logical_plan::storage_parameters& parameters);
+    [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
+                                                             const components::catalog::catalog& catalog,
+                                                             components::logical_plan::node_t* node,
+                                                             const components::logical_plan::storage_parameters& parameters);
 
 } // namespace services::dispatcher

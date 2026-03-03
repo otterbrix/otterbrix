@@ -410,44 +410,62 @@ namespace services::dispatcher {
             return schema_result<named_schema>{named_schema(resource)};
         }
 
-        void resolve_key_path(std::pmr::memory_resource* resource,
-                              param_storage& param,
-                              const named_schema& schema);
+        schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                    param_storage& param,
+                                                    const named_schema& schema);
 
-        void resolve_key_paths_in_group(std::pmr::memory_resource* resource,
-                                        std::pmr::vector<param_storage>& params,
-                                        const named_schema& schema) {
+        schema_result<type_paths> resolve_key_paths_in_group(std::pmr::memory_resource* resource,
+                                                              std::pmr::vector<param_storage>& params,
+                                                              const named_schema& schema) {
             for (auto& param : params) {
-                resolve_key_path(resource, param, schema);
+                auto res = resolve_key_path(resource, param, schema);
+                if (res.is_error()) {
+                    return res;
+                }
             }
+            return schema_result{type_paths{resource}};
         }
 
-        void resolve_key_path(std::pmr::memory_resource* resource,
-                              param_storage& param,
-                              const named_schema& schema) {
+        schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
+                                                    param_storage& param,
+                                                    const named_schema& schema) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
-                if (key.path().empty()) {
-                    find_types(resource, key, schema);
-                }
+                return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
-                    resolve_key_paths_in_group(resource, scalar->params(), schema);
+                    auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);
+                    if (res.is_error()) {
+                        return res;
+                    }
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
-                    resolve_key_path(resource, cmp->left(), schema);
-                    resolve_key_path(resource, cmp->right(), schema);
+                    auto res = resolve_key_path(resource, cmp->left(), schema);
+                    if (res.is_error()) {
+                        return res;
+                    }
+                    res = resolve_key_path(resource, cmp->right(), schema);
+                    if (res.is_error()) {
+                        return res;
+                    }
                     for (auto& child : cmp->children()) {
                         if (child->group() == expression_group::compare) {
                             auto* child_cmp = static_cast<compare_expression_t*>(child.get());
-                            resolve_key_path(resource, child_cmp->left(), schema);
-                            resolve_key_path(resource, child_cmp->right(), schema);
+                            res = resolve_key_path(resource, child_cmp->left(), schema);
+                            if (res.is_error()) {
+                                return res;
+                            }
+                            res = resolve_key_path(resource, child_cmp->right(), schema);
+                            if (res.is_error()) {
+                                return res;
+                            }
                         }
                     }
                 }
             }
+            return schema_result{type_paths{resource}};
         }
 
         schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
@@ -1130,11 +1148,17 @@ namespace services::dispatcher {
                     if (expr->group() == expression_group::scalar) {
                         auto* scalar = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (scalar->type() != scalar_type::get_field) {
-                            impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
+                            auto res = impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
+                            if (res.is_error()) {
+                                return schema_result<named_schema>{resource, res.error()};
+                            }
                         }
                     } else if (expr->group() == expression_group::aggregate) {
                         auto* agg = reinterpret_cast<aggregate_expression_t*>(expr.get());
-                        impl::resolve_key_paths_in_group(resource, agg->params(), incoming_schema);
+                        auto res = impl::resolve_key_paths_in_group(resource, agg->params(), incoming_schema);
+                        if (res.is_error()) {
+                            return schema_result<named_schema>{resource, res.error()};
+                        }
                     }
                 }
                 if (node_sort) {

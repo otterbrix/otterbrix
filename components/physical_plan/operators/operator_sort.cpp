@@ -25,18 +25,15 @@ namespace components::operators {
             }
 
             // 1. Create index array [0, 1, 2, ..., N-1]
-            std::vector<size_t> indices(num_rows);
-            std::iota(indices.begin(), indices.end(), size_t(0));
+            std::vector<uint64_t> indices(num_rows);
+            std::iota(indices.begin(), indices.end(), uint64_t(0));
 
             // 2. Sort indices using columnar comparator
             sorter_.set_chunk(chunk);
             std::sort(indices.begin(), indices.end(), std::ref(sorter_));
 
             // 3. Build indexing vector from sorted indices
-            vector::indexing_vector_t indexing(resource_, num_rows);
-            for (size_t i = 0; i < num_rows; i++) {
-                indexing.set_index(i, static_cast<uint64_t>(indices[i]));
-            }
+            vector::indexing_vector_t indexing(resource_, indices.data());
 
             // 4. Create result via copy with indexing (no transpose needed)
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);

@@ -12,51 +12,28 @@ namespace components::operators::predicates::impl {
 
     value_getter create_value_getter(const expressions::key_t& key) {
         assert(key.side() != expressions::side_t::undefined);
-        if (!key.path().empty()) {
-            // Path-based lookup with NULL validity checking
-            if (key.side() == expressions::side_t::left) {
-                return [path = key.path()](const vector::data_chunk_t& chunk_left,
-                                           const vector::data_chunk_t&,
-                                           size_t index_left,
-                                           size_t) -> types::logical_value_t {
-                    auto* vec = chunk_left.at(path);
-                    if (!vec->validity().row_is_valid(index_left)) {
-                        return types::logical_value_t(chunk_left.resource(), nullptr);
-                    }
-                    return vec->value(index_left);
-                };
-            } else {
-                return [path = key.path()](const vector::data_chunk_t&,
-                                           const vector::data_chunk_t& chunk_right,
-                                           size_t,
-                                           size_t index_right) -> types::logical_value_t {
-                    auto* vec = chunk_right.at(path);
-                    if (!vec->validity().row_is_valid(index_right)) {
-                        return types::logical_value_t(chunk_right.resource(), nullptr);
-                    }
-                    return vec->value(index_right);
-                };
-            }
-        }
-        // Name-based fallback (for computed/arithmetic columns without paths)
-        // TODO: eliminate this fallback once all columns are path-resolved during validation
-        assert(!key.as_string().empty());
-        auto name = key.as_string();
-        if (key.side() == expressions::side_t::right) {
-            return [name](const vector::data_chunk_t&,
-                          const vector::data_chunk_t& chunk_right,
-                          size_t,
-                          size_t index_right) -> types::logical_value_t {
-                auto col_idx = chunk_right.column_index(name);
-                return chunk_right.data[col_idx].value(index_right);
+        assert(!key.path().empty());
+        if (key.side() == expressions::side_t::left) {
+            return [path = key.path()](const vector::data_chunk_t& chunk_left,
+                                       const vector::data_chunk_t&,
+                                       size_t index_left,
+                                       size_t) -> types::logical_value_t {
+                auto* vec = chunk_left.at(path);
+                if (!vec->validity().row_is_valid(index_left)) {
+                    return types::logical_value_t(chunk_left.resource(), nullptr);
+                }
+                return vec->value(index_left);
             };
         } else {
-            return [name](const vector::data_chunk_t& chunk_left,
-                          const vector::data_chunk_t&,
-                          size_t index_left,
-                          size_t) -> types::logical_value_t {
-                auto col_idx = chunk_left.column_index(name);
-                return chunk_left.data[col_idx].value(index_left);
+            return [path = key.path()](const vector::data_chunk_t&,
+                                       const vector::data_chunk_t& chunk_right,
+                                       size_t,
+                                       size_t index_right) -> types::logical_value_t {
+                auto* vec = chunk_right.at(path);
+                if (!vec->validity().row_is_valid(index_right)) {
+                    return types::logical_value_t(chunk_right.resource(), nullptr);
+                }
+                return vec->value(index_right);
             };
         }
     }
@@ -119,21 +96,18 @@ namespace components::operators::predicates::impl {
                                                 const compute::function_registry_t* function_registry,
                                                 const expressions::scalar_expression_ptr& expr,
                                                 const logical_plan::storage_parameters* parameters) {
-        // Build sub-getters for each operand
-        std::pmr::vector<value_getter> operand_getters(resource);
-        for (const auto& param : expr->params()) {
-            operand_getters.emplace_back(
-                create_value_getter(resource, function_registry, param, parameters));
-        }
+        assert(expr->params().size() >= 2);
+        auto left_getter = create_value_getter(resource, function_registry, expr->params()[0], parameters);
+        auto right_getter = create_value_getter(resource, function_registry, expr->params()[1], parameters);
 
         auto op = expr->type();
-        return [operand_getters = std::move(operand_getters), op](
+        return [left_getter = std::move(left_getter), right_getter = std::move(right_getter), op](
                    const vector::data_chunk_t& chunk_left,
                    const vector::data_chunk_t& chunk_right,
                    size_t index_left,
                    size_t index_right) -> types::logical_value_t {
-            auto left_val = operand_getters[0](chunk_left, chunk_right, index_left, index_right);
-            auto right_val = operand_getters[1](chunk_left, chunk_right, index_left, index_right);
+            auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
+            auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
             switch (op) {
                 case expressions::scalar_type::add:
                     return types::logical_value_t::sum(left_val, right_val);

@@ -366,28 +366,6 @@ namespace components::types {
         switch (type_.type()) {
             case logical_type::NA:
                 break;
-            case logical_type::BOOLEAN:
-            case logical_type::TINYINT:
-            case logical_type::SMALLINT:
-            case logical_type::INTEGER:
-            case logical_type::BIGINT:
-            case logical_type::UTINYINT:
-            case logical_type::USMALLINT:
-            case logical_type::UINTEGER:
-            case logical_type::UBIGINT:
-            case logical_type::POINTER:
-                boost::hash_combine(h, data_);
-                break;
-            case logical_type::FLOAT: {
-                float f = value<float>();
-                boost::hash_combine(h, f);
-                break;
-            }
-            case logical_type::DOUBLE: {
-                double d = value<double>();
-                boost::hash_combine(h, d);
-                break;
-            }
             case logical_type::STRING_LITERAL:
                 if (data_) {
                     boost::hash_combine(h, std::hash<std::string>{}(*str_ptr()));

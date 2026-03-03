@@ -55,6 +55,7 @@ elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
 endif()
 
+# -Werror disabled on macOS (incomplete sanitizer support) and with ASAN (absl built locally has warnings)
 set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))

@@ -54,11 +54,9 @@ namespace components::operators::aggregate {
             for (const auto& arg : args_) {
                 if (std::holds_alternative<expressions::key_t>(arg)) {
                     const auto& key = std::get<expressions::key_t>(arg);
-                    auto it = std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& v) {
-                        return v.type().alias() == key.as_string();
-                    });
-                    if (it != chunk.data.end()) {
-                        columns.emplace_back(it);
+                    if (!key.path().empty() && key.path().front() < chunk.data.size()) {
+                        columns.emplace_back(chunk.data.begin() +
+                                             static_cast<std::ptrdiff_t>(key.path().front()));
                     } else {
                         break;
                     }

@@ -62,7 +62,7 @@ namespace services::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
-                    const auto& path = expr->key().path();
+                    const auto& path = field.path();
                     if (!path.empty()) {
                         std::pmr::vector<size_t> col_path(path.begin(), path.end(), resource);
                         group->add_key(expr->key().storage().back(),

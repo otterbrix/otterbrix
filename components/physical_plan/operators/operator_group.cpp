@@ -70,6 +70,19 @@ namespace components::operators {
                 chunk.data.emplace_back(std::move(result_vec));
             }
 
+            // Resolve col_path for computed-column keys (they were appended at known positions)
+            if (!computed_columns_.empty()) {
+                size_t base = chunk.column_count() - computed_columns_.size();
+                for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
+                    for (auto& key : keys_) {
+                        if (key.col_path.empty() && key.name == computed_columns_[ci].alias) {
+                            key.col_path.push_back(base + ci);
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Phase 2: Group by keys (columnar, no transpose)
             create_list_rows();
 
@@ -148,19 +161,9 @@ namespace components::operators {
                 key_col_indices.push_back(key.col_path[0]);
                 continue;
             }
-            // Fallback: alias-based search for wildcard/computed columns
-            bool found = false;
-            for (size_t col = 0; col < chunk.column_count(); col++) {
-                if (chunk.data[col].type().alias() == std::string_view(key.name)) {
-                    key_col_indices.push_back(col);
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                use_fast_path = false;
-                break;
-            }
+            // No resolved path — fall through to slow (getter-based) path
+            use_fast_path = false;
+            break;
         }
 
         if (use_fast_path && !key_col_indices.empty()) {
@@ -309,13 +312,13 @@ namespace components::operators {
         // Build result types: key types + aggregate types
         std::pmr::vector<types::complex_logical_type> result_types(resource_);
         if (num_groups > 0) {
-            for (size_t k = 0; k < key_count; k++) {
-                result_types.push_back(group_keys_[0][k].type());
+            for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
+                result_types.push_back(group_keys_[0][key_idx].type());
             }
         }
-        for (size_t a = 0; a < values_.size(); a++) {
-            if (!agg_results[a].empty()) {
-                result_types.push_back(agg_results[a][0].type());
+        for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {
+            if (!agg_results[agg_idx].empty()) {
+                result_types.push_back(agg_results[agg_idx][0].type());
             }
         }
 
@@ -325,16 +328,16 @@ namespace components::operators {
         result.set_cardinality(static_cast<uint64_t>(num_groups));
 
         // Fill key columns
-        for (size_t g = 0; g < num_groups; g++) {
-            for (size_t k = 0; k < key_count; k++) {
-                result.set_value(k, g, std::move(group_keys_[g][k]));
+        for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+            for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
+                result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
             }
         }
 
         // Fill aggregate columns
-        for (size_t a = 0; a < values_.size(); a++) {
-            for (size_t g = 0; g < num_groups; g++) {
-                result.set_value(key_count + a, g, std::move(agg_results[a][g]));
+        for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                result.set_value(key_count + agg_idx, group_idx, std::move(agg_results[agg_idx][group_idx]));
             }
         }
 
@@ -354,9 +357,9 @@ namespace components::operators {
                                auto& self) -> types::logical_value_t {
                 if (std::holds_alternative<expressions::key_t>(param)) {
                     auto& key = std::get<expressions::key_t>(param);
-                    for (size_t c = 0; c < result.column_count(); c++) {
-                        if (result.data[c].type().alias() == key.as_string()) {
-                            return result.value(c, row_idx);
+                    for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
+                        if (result.data[col_idx].type().alias() == key.as_string()) {
+                            return result.value(col_idx, row_idx);
                         }
                     }
                     throw std::logic_error("Post-aggregate: column not found: " + key.as_string());

@@ -386,7 +386,8 @@ namespace services::dispatcher {
             std::pmr::vector<param_storage>& params,
             const named_schema& schema_left,
             const named_schema& schema_right,
-            bool same_schema) {
+            bool same_schema,
+            const storage_parameters* parameters = nullptr) {
             for (auto& param : params) {
                 if (std::holds_alternative<components::expressions::key_t>(param)) {
                     auto key_res = validate_key(resource,std::get<components::expressions::key_t>(param),schema_left, schema_right, same_schema);
@@ -394,13 +395,21 @@ namespace services::dispatcher {
                         return schema_result<named_schema>(resource, key_res.error());
                     }
                 } else if (std::holds_alternative<core::parameter_id_t>(param)) {
-                    // TODO: validate that parameter_id_t exists in the parameter set
+                    if (parameters) {
+                        auto id = std::get<core::parameter_id_t>(param);
+                        if (parameters->parameters.find(id) == parameters->parameters.end()) {
+                            return schema_result<named_schema>{
+                                resource,
+                                components::cursor::error_t{error_code_t::invalid_parameter,
+                                                            "Unknown parameter id in expression"}};
+                        }
+                    }
                 } else if (std::holds_alternative<expression_ptr>(param)) {
                     auto& sub = std::get<expression_ptr>(param);
                     if (sub->group() == expression_group::scalar) {
                         auto* scalar = static_cast<scalar_expression_t*>(sub.get());
                         auto sub_res = validate_scalar_params(resource, scalar->params(),
-                                                              schema_left, schema_right, same_schema);
+                                                              schema_left, schema_right, same_schema, parameters);
                         if (sub_res.is_error()) {
                             return sub_res;
                         }
@@ -533,7 +542,7 @@ namespace services::dispatcher {
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
                             auto val_res = validate_scalar_params(resource, scalar->params(),
-                                                                  schema_left, schema_right, same_schema);
+                                                                  schema_left, schema_right, same_schema, &parameters);
                             if (val_res.is_error()) {
                                 return schema_result<named_schema>(resource, val_res.error());
                             }
@@ -567,7 +576,7 @@ namespace services::dispatcher {
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
                             auto val_res = validate_scalar_params(resource, scalar->params(),
-                                                                  schema_left, schema_right, same_schema);
+                                                                  schema_left, schema_right, same_schema, &parameters);
                             if (val_res.is_error()) {
                                 return schema_result<named_schema>(resource, val_res.error());
                             }
@@ -978,6 +987,7 @@ namespace services::dispatcher {
                                         if (!field.is_error() && !field.value().empty()) {
                                             return field.value().front().type;
                                         }
+                                        // TODO: propagate error instead of defaulting to BIGINT
                                         return complex_logical_type(logical_type::BIGINT);
                                     } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                         auto id = std::get<core::parameter_id_t>(param);
@@ -997,6 +1007,7 @@ namespace services::dispatcher {
                                                     promote_type(left_type.type(), right_type.type()));
                                             }
                                         }
+                                        // TODO: propagate error instead of defaulting to BIGINT
                                         return complex_logical_type(logical_type::BIGINT);
                                     }
                                 };
@@ -1022,10 +1033,9 @@ namespace services::dispatcher {
                                     auto field = impl::find_types(resource, key, incoming_schema);
                                     if (field.is_error()) {
                                         return schema_result<named_schema>{resource, field.error()};
-                                    } else {
-                                        for (const auto& sub_field : field.value()) {
-                                            function_input_types.emplace_back(sub_field.type);
-                                        }
+                                    }
+                                    for (const auto& sub_field : field.value()) {
+                                        function_input_types.emplace_back(sub_field.type);
                                     }
                                 } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                     auto id = std::get<core::parameter_id_t>(param);
@@ -1082,9 +1092,8 @@ namespace services::dispatcher {
                                     }
                                 }
                             }
-                            // COUNT(*) and similar star-aggregates have no params;
-                            // use UBIGINT because count returns unsigned integer
-                            if (function_input_types.empty()) {
+                            // COUNT(*) has no params; use UBIGINT because count returns unsigned integer
+                            if (function_input_types.empty() && agg_expr->function_name() == "count") {
                                 function_input_types.emplace_back(logical_type::UBIGINT);
                             }
                             if (!catalog.function_name_exists(agg_expr->function_name())) {
@@ -1143,14 +1152,36 @@ namespace services::dispatcher {
                         }
                     }
                 }
+                // Collect aggregate alias names for post-aggregate detection
+                std::pmr::vector<std::string> agg_aliases(resource);
+                for (auto& expr : node_group->expressions()) {
+                    if (expr->group() == expression_group::aggregate) {
+                        auto* agg_e = reinterpret_cast<aggregate_expression_t*>(expr.get());
+                        agg_aliases.emplace_back(agg_e->key().as_string());
+                    }
+                }
                 // Resolve key paths for all scalar/aggregate expression params
                 for (auto& expr : node_group->expressions()) {
                     if (expr->group() == expression_group::scalar) {
                         auto* scalar = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (scalar->type() != scalar_type::get_field) {
-                            auto res = impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
-                            if (res.is_error()) {
-                                return schema_result<named_schema>{resource, res.error()};
+                            // Skip post-aggregate arithmetic (references aggregate result aliases)
+                            bool is_post_agg = false;
+                            for (const auto& p : scalar->params()) {
+                                if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                    auto& k = std::get<components::expressions::key_t>(p);
+                                    auto ks = k.as_string();
+                                    for (const auto& a : agg_aliases) {
+                                        if (ks == a) { is_post_agg = true; break; }
+                                    }
+                                    if (is_post_agg) break;
+                                }
+                            }
+                            if (!is_post_agg) {
+                                auto res = impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
+                                if (res.is_error()) {
+                                    return schema_result<named_schema>{resource, res.error()};
+                                }
                             }
                         }
                     } else if (expr->group() == expression_group::aggregate) {
@@ -1166,22 +1197,19 @@ namespace services::dispatcher {
                     for (auto& sort_child : node_sort->expressions()) {
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
                         auto& skey = sort_expr->key();
-                        bool found_in_result = false;
-                        for (const auto& r : result) {
-                            if (r.type.alias() == skey.as_string()) {
-                                found_in_result = true;
-                                break;
-                            }
+                        // Try resolving in the GROUP result schema first
+                        auto field_in_result = impl::find_types(resource, skey, result);
+                        if (!field_in_result.is_error() && !field_in_result.value().empty()) {
+                            continue; // already in result
                         }
-                        if (!found_in_result) {
-                            auto field = impl::find_types(resource, skey, incoming_schema);
-                            if (!field.is_error() && !field.value().empty()) {
-                                auto hidden_expr = make_scalar_expression(
-                                    resource, scalar_type::get_field, skey);
-                                node_group->append_expression(hidden_expr);
-                                result.emplace_back(
-                                    type_from_t{node->result_alias(), field.value().front().type});
-                            }
+                        // Not in result — try incoming schema and add as hidden column
+                        auto field = impl::find_types(resource, skey, incoming_schema);
+                        if (!field.is_error() && !field.value().empty()) {
+                            auto hidden_expr = make_scalar_expression(
+                                resource, scalar_type::get_field, skey);
+                            node_group->append_expression(hidden_expr);
+                            result.emplace_back(
+                                type_from_t{node->result_alias(), field.value().front().type});
                         }
                     }
                     auto res = impl::validate_schema(resource, node_sort, result);

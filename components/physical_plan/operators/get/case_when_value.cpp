@@ -116,25 +116,19 @@ namespace components::operators::get {
 
     types::logical_value_t case_when_value_t::lookup_column(const expressions::key_t& key,
                                                             const std::pmr::vector<types::logical_value_t>& row) const {
-        auto* local_values = row.data();
-        size_t size = row.size();
-        for (size_t i = 0; i < key.storage().size(); i++) {
-            auto it = std::find_if(local_values, local_values + size, [&](const types::logical_value_t& value) {
-                return core::pmr::operator==(value.type().alias(), key.storage()[i]);
-            });
-            if (it == local_values + size) {
-                auto* resource = row.empty() ? std::pmr::get_default_resource() : row.get_allocator().resource();
-                return types::logical_value_t(resource, types::logical_type::NA);
-            }
-            if (i + 1 != key.storage().size()) {
-                local_values = it->children().data();
-                size = it->children().size();
-            } else {
-                return *it;
-            }
-        }
         auto* resource = row.empty() ? std::pmr::get_default_resource() : row.get_allocator().resource();
-        return types::logical_value_t(resource, types::logical_type::NA);
+        const auto& path = key.path();
+        if (path.empty() || path[0] >= row.size()) {
+            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+        }
+        auto* val = &row[path[0]];
+        for (size_t i = 1; i < path.size(); i++) {
+            if (path[i] >= val->children().size()) {
+                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+            }
+            val = &val->children()[path[i]];
+        }
+        return *val;
     }
 
     types::logical_value_t case_when_value_t::evaluate_expression(

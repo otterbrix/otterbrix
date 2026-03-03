@@ -15,7 +15,7 @@ namespace components::sort {
 
     class columnar_sorter_t {
         struct sort_key {
-            std::vector<size_t> col_path{0};
+            std::vector<size_t> col_path{0}; // std::vector used to avoid pmr dependency in sort header
             order order_ = order::ascending;
             const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
         };

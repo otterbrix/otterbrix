@@ -1,6 +1,7 @@
 #include "arithmetic.hpp"
 
 #include <functional>
+#include <limits>
 
 namespace components::vector {
 
@@ -9,12 +10,12 @@ namespace components::vector {
         // Detect problematic int128 <-> float/double combinations
         template<typename L, typename R>
         constexpr bool is_int128_float_mix_v =
-            ((std::is_same_v<std::remove_cv_t<L>, types::int128_t> ||
-              std::is_same_v<std::remove_cv_t<L>, types::uint128_t>) &&
+            ((std::is_same_v<std::decay_t<L>, types::int128_t> ||
+              std::is_same_v<std::decay_t<L>, types::uint128_t>) &&
              std::is_floating_point_v<R>) ||
             (std::is_floating_point_v<L> &&
-             (std::is_same_v<std::remove_cv_t<R>, types::int128_t> ||
-              std::is_same_v<std::remove_cv_t<R>, types::uint128_t>));
+             (std::is_same_v<std::decay_t<R>, types::int128_t> ||
+              std::is_same_v<std::decay_t<R>, types::uint128_t>));
 
         // Binary vector-vector
         template<template<typename...> class Op>
@@ -74,7 +75,7 @@ namespace components::vector {
                         for (uint64_t i = 0; i < count; i++) {
                             if (detail::is_zero(rhs[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = double{};
+                                out[i] = std::numeric_limits<double>::quiet_NaN();
                             } else {
                                 out[i] = op(static_cast<double>(lhs[i]),
                                             static_cast<double>(rhs[i]));
@@ -87,7 +88,6 @@ namespace components::vector {
                         for (uint64_t i = 0; i < count; i++) {
                             if (detail::is_zero(rhs[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = result_t{};
                             } else {
                                 out[i] = op(lhs[i], rhs[i]);
                             }
@@ -153,9 +153,17 @@ namespace components::vector {
                 {
                     ScalarT cval = scalar_val.value<ScalarT>();
                     if (detail::is_zero(cval)) {
-                        // All results are NULL
-                        for (uint64_t i = 0; i < count; i++) {
-                            output.validity().set_invalid(i);
+                        if constexpr (is_int128_float_mix_v<VecT, ScalarT> ||
+                                      std::is_floating_point_v<VecT> || std::is_floating_point_v<ScalarT>) {
+                            auto* out = output.data<double>();
+                            for (uint64_t i = 0; i < count; i++) {
+                                output.validity().set_invalid(i);
+                                out[i] = std::numeric_limits<double>::quiet_NaN();
+                            }
+                        } else {
+                            for (uint64_t i = 0; i < count; i++) {
+                                output.validity().set_invalid(i);
+                            }
                         }
                         return;
                     }
@@ -244,7 +252,7 @@ namespace components::vector {
                         for (uint64_t i = 0; i < count; i++) {
                             if (detail::is_zero(src[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = double{};
+                                out[i] = std::numeric_limits<double>::quiet_NaN();
                             } else {
                                 out[i] = op(dcval, static_cast<double>(src[i]));
                             }
@@ -256,7 +264,6 @@ namespace components::vector {
                         for (uint64_t i = 0; i < count; i++) {
                             if (detail::is_zero(src[i])) {
                                 output.validity().set_invalid(i);
-                                out[i] = result_t{};
                             } else {
                                 out[i] = op(cval, src[i]);
                             }

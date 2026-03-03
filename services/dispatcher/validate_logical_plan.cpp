@@ -410,6 +410,46 @@ namespace services::dispatcher {
             return schema_result<named_schema>{named_schema(resource)};
         }
 
+        void resolve_key_path(std::pmr::memory_resource* resource,
+                              param_storage& param,
+                              const named_schema& schema);
+
+        void resolve_key_paths_in_group(std::pmr::memory_resource* resource,
+                                        std::pmr::vector<param_storage>& params,
+                                        const named_schema& schema) {
+            for (auto& param : params) {
+                resolve_key_path(resource, param, schema);
+            }
+        }
+
+        void resolve_key_path(std::pmr::memory_resource* resource,
+                              param_storage& param,
+                              const named_schema& schema) {
+            if (std::holds_alternative<components::expressions::key_t>(param)) {
+                auto& key = std::get<components::expressions::key_t>(param);
+                if (key.path().empty()) {
+                    find_types(resource, key, schema);
+                }
+            } else if (std::holds_alternative<expression_ptr>(param)) {
+                auto& sub = std::get<expression_ptr>(param);
+                if (sub->group() == expression_group::scalar) {
+                    auto* scalar = static_cast<scalar_expression_t*>(sub.get());
+                    resolve_key_paths_in_group(resource, scalar->params(), schema);
+                } else if (sub->group() == expression_group::compare) {
+                    auto* cmp = static_cast<compare_expression_t*>(sub.get());
+                    resolve_key_path(resource, cmp->left(), schema);
+                    resolve_key_path(resource, cmp->right(), schema);
+                    for (auto& child : cmp->children()) {
+                        if (child->group() == expression_group::compare) {
+                            auto* child_cmp = static_cast<compare_expression_t*>(child.get());
+                            resolve_key_path(resource, child_cmp->left(), schema);
+                            resolve_key_path(resource, child_cmp->right(), schema);
+                        }
+                    }
+                }
+            }
+        }
+
         schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                     const catalog& catalog,
                                                     compare_expression_t* expr,
@@ -830,6 +870,12 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
+                    if (node_sort) {
+                        auto res = impl::validate_schema(resource, node_sort, incoming_schema);
+                        if (res.is_error()) {
+                            return res;
+                        }
+                    }
                     return schema_result{std::move(incoming_schema)};
                 } else {
                     for (auto& expr : node_group->expressions()) {
@@ -851,10 +897,10 @@ namespace services::dispatcher {
                             } else if (scalar_expr->type() == scalar_type::case_expr) {
                                 // CASE expression: result type from first THEN branch
                                 auto resolve_case_type =
-                                    [&](const param_storage& param,
+                                    [&](param_storage& param,
                                         auto& self) -> complex_logical_type {
                                     if (std::holds_alternative<components::expressions::key_t>(param)) {
-                                        auto key = std::get<components::expressions::key_t>(param);
+                                        auto& key = std::get<components::expressions::key_t>(param);
                                         for (const auto& r : result) {
                                             if (r.type.alias() == key.as_string()) {
                                                 return r.type;
@@ -900,10 +946,10 @@ namespace services::dispatcher {
                                        scalar_expr->type() == scalar_type::mod) {
                                 // Arithmetic expression: resolve operand types and promote
                                 auto resolve_type =
-                                    [&](const param_storage& param,
+                                    [&](param_storage& param,
                                         auto& self) -> complex_logical_type {
                                     if (std::holds_alternative<components::expressions::key_t>(param)) {
-                                        auto key = std::get<components::expressions::key_t>(param);
+                                        auto& key = std::get<components::expressions::key_t>(param);
                                         // Check if key references an aggregate result alias
                                         for (const auto& r : result) {
                                             if (r.type.alias() == key.as_string()) {
@@ -974,12 +1020,12 @@ namespace services::dispatcher {
                                         auto* sub_scalar =
                                             reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         // Approximate: resolve from params recursively
-                                        std::function<complex_logical_type(const param_storage&)>
+                                        std::function<complex_logical_type(param_storage&)>
                                             resolve_arith_type;
-                                        resolve_arith_type = [&](const param_storage& p)
+                                        resolve_arith_type = [&](param_storage& p)
                                             -> complex_logical_type {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                                auto k = std::get<components::expressions::key_t>(p);
+                                                auto& k = std::get<components::expressions::key_t>(p);
                                                 auto f = impl::find_types(resource, k, incoming_schema);
                                                 if (!f.is_error() && !f.value().empty()) {
                                                     return f.value().front().type;
@@ -1079,9 +1125,41 @@ namespace services::dispatcher {
                         }
                     }
                 }
+                // Resolve key paths for all scalar/aggregate expression params
+                for (auto& expr : node_group->expressions()) {
+                    if (expr->group() == expression_group::scalar) {
+                        auto* scalar = reinterpret_cast<scalar_expression_t*>(expr.get());
+                        if (scalar->type() != scalar_type::get_field) {
+                            impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
+                        }
+                    } else if (expr->group() == expression_group::aggregate) {
+                        auto* agg = reinterpret_cast<aggregate_expression_t*>(expr.get());
+                        impl::resolve_key_paths_in_group(resource, agg->params(), incoming_schema);
+                    }
+                }
                 if (node_sort) {
-                    // Validate sort fields against the GROUP BY output schema (result).
-                    // Sort can only reference columns that appear in the output.
+                    // Add hidden columns for sort keys not in the GROUP output
+                    for (auto& sort_child : node_sort->expressions()) {
+                        auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
+                        auto& skey = sort_expr->key();
+                        bool found_in_result = false;
+                        for (const auto& r : result) {
+                            if (r.type.alias() == skey.as_string()) {
+                                found_in_result = true;
+                                break;
+                            }
+                        }
+                        if (!found_in_result) {
+                            auto field = impl::find_types(resource, skey, incoming_schema);
+                            if (!field.is_error() && !field.value().empty()) {
+                                auto hidden_expr = make_scalar_expression(
+                                    resource, scalar_type::get_field, skey);
+                                node_group->append_expression(hidden_expr);
+                                result.emplace_back(
+                                    type_from_t{node->result_alias(), field.value().front().type});
+                            }
+                        }
+                    }
                     auto res = impl::validate_schema(resource, node_sort, result);
                     if (res.is_error()) {
                         return res;

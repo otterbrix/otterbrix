@@ -368,7 +368,7 @@ namespace components::operators {
         } else {
             auto lval = *left_op.scalar;
             auto rval = *right_op.scalar;
-            types::logical_value_t result_val(resource, types::logical_type::NA);
+            types::logical_value_t result_val(resource, types::complex_logical_type{types::logical_type::NA});
             switch (op) {
                 case expressions::scalar_type::add:
                     result_val = types::logical_value_t::sum(lval, rval);

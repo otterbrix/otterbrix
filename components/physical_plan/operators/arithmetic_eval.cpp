@@ -93,16 +93,9 @@ namespace components::operators {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
-                if (!key.path().empty()) {
-                    result.vec = chunk.at(key.path());
-                    if (result.vec) return {result, {}};
-                }
-                for (auto& vec : chunk.data) {
-                    if (vec.type().alias() == key.as_string()) {
-                        result.vec = &vec;
-                        return {result, {}};
-                    }
-                }
+                assert(!key.path().empty());
+                result.vec = chunk.at(key.path());
+                if (result.vec) return {result, {}};
                 throw std::logic_error("Column not found in chunk: " + key.as_string());
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
@@ -196,12 +189,7 @@ namespace components::operators {
                     auto* vec = chunk.at(key.path());
                     if (vec) return vec->value(row_idx);
                 }
-                // Fallback: search by alias (for computed columns added at runtime)
-                for (auto& vec : chunk.data) {
-                    if (vec.type().alias() == key.as_string()) {
-                        return vec.value(row_idx);
-                    }
-                }
+                // This error should be caught during validation; defensive check
                 throw std::logic_error("CASE: column not found: " + key.as_string());
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
@@ -335,6 +323,7 @@ namespace components::operators {
 
     } // namespace detail
 
+    // TODO: validate arithmetic column resolution during plan validation phase
     std::pair<vector::vector_t, std::string> evaluate_arithmetic(
         std::pmr::memory_resource* resource,
         expressions::scalar_type op,

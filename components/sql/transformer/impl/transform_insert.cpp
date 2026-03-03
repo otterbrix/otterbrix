@@ -54,6 +54,7 @@ namespace components::sql::transform {
                         }
                     } else if (nodeTag(it_value->data) == T_A_Expr) {
                         // Evaluate constant arithmetic at parse time
+                        // TODO: move column matching to validation/optimizer phase for complex path resolution
                         auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {

@@ -17,14 +17,9 @@ namespace services::planner::impl {
                       [&sort](const components::expressions::expression_ptr& expr) {
                           const auto* sort_expr = static_cast<components::expressions::sort_expression_t*>(expr.get());
                           const auto& path = sort_expr->key().path();
-                          if (!path.empty()) {
-                              sort->add(std::vector<size_t>(path.begin(), path.end()),
-                                        sort_expr->key().as_string(),
-                                        components::operators::operator_sort_t::order(sort_expr->order()));
-                          } else {
-                              sort->add(sort_expr->key().as_string(),
-                                        components::operators::operator_sort_t::order(sort_expr->order()));
-                          }
+                          assert(!path.empty());
+                          sort->add(std::vector<size_t>(path.begin(), path.end()),
+                                    components::operators::operator_sort_t::order(sort_expr->order()));
                       });
         return sort;
     }

@@ -39,6 +39,8 @@ namespace components::operators::predicates::impl {
             }
         }
         // Name-based fallback (for computed/arithmetic columns without paths)
+        // TODO: eliminate this fallback once all columns are path-resolved during validation
+        assert(!key.as_string().empty());
         auto name = key.as_string();
         if (key.side() == expressions::side_t::right) {
             return [name](const vector::data_chunk_t&,

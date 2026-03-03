@@ -16,21 +16,16 @@ namespace components::sort {
     class columnar_sorter_t {
         struct sort_key {
             std::vector<size_t> col_path{0};
-            std::string col_name;
             order order_ = order::ascending;
-            bool by_name = false;
             const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
         };
 
     public:
         explicit columnar_sorter_t() = default;
         explicit columnar_sorter_t(size_t index, order order_ = order::ascending);
-        explicit columnar_sorter_t(const std::string& key, order order_ = order::ascending);
 
         void add(size_t index, order order_ = order::ascending);
-        void add(const std::string& key, order order_ = order::ascending);
         void add(const std::vector<size_t>& col_path, order order_ = order::ascending);
-        void add(const std::vector<size_t>& col_path, const std::string& key, order order_ = order::ascending);
 
         void set_chunk(const vector::data_chunk_t& chunk);
 

@@ -62,8 +62,16 @@ namespace services::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
-                    group->add_key(expr->key().storage().back(),
-                                   components::operators::get::simple_value_t::create(field));
+                    const auto& path = expr->key().path();
+                    if (!path.empty()) {
+                        std::pmr::vector<size_t> col_path(path.begin(), path.end(), resource);
+                        group->add_key(expr->key().storage().back(),
+                                       components::operators::get::simple_value_t::create(field),
+                                       std::move(col_path));
+                    } else {
+                        group->add_key(expr->key().storage().back(),
+                                       components::operators::get::simple_value_t::create(field));
+                    }
                     break;
                 }
                 case scalar_type::coalesce: {

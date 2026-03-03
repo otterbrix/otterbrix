@@ -12,9 +12,7 @@ namespace components::operators {
         operator_sort_t(std::pmr::memory_resource* resource, log_t log);
 
         void add(size_t index, order order_ = order::ascending);
-        void add(const std::string& key, order order_ = order::ascending);
         void add(const std::vector<size_t>& col_path, order order_ = order::ascending);
-        void add(const std::vector<size_t>& col_path, const std::string& key, order order_ = order::ascending);
 
     private:
         sort::columnar_sorter_t sorter_;

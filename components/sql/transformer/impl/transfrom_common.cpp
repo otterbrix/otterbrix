@@ -154,6 +154,7 @@ namespace components::sql::transform {
                 }
 
                 // Create aggregate with auto-generated alias
+                // TODO: default aggregate aliases should come from function registry, not hardcoded here
                 std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname,
                                                            expressions::key_t{resource_, auto_alias});

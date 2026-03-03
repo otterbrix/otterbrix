@@ -110,6 +110,7 @@ namespace components::operators::aggregate {
                         }
                     }
                     // DISTINCT: de-duplicate rows before executing aggregate function
+                    // TODO: move DISTINCT deduplication to function-specific handler
                     if (distinct_ && c.size() > 0) {
                         std::pmr::vector<uint64_t> unique_indices(resource_);
                         unique_indices.reserve(c.size());

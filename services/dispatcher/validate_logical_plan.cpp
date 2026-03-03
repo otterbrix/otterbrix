@@ -380,6 +380,7 @@ namespace services::dispatcher {
         }
 
         // Recursively validate keys inside scalar expression params
+        // TODO: validate non-scalar sub-expressions
         schema_result<named_schema> validate_scalar_params(
             std::pmr::memory_resource* resource,
             std::pmr::vector<param_storage>& params,
@@ -392,6 +393,8 @@ namespace services::dispatcher {
                     if (key_res.is_error()) {
                         return schema_result<named_schema>(resource, key_res.error());
                     }
+                } else if (std::holds_alternative<core::parameter_id_t>(param)) {
+                    // TODO: validate that parameter_id_t exists in the parameter set
                 } else if (std::holds_alternative<expression_ptr>(param)) {
                     auto& sub = std::get<expression_ptr>(param);
                     if (sub->group() == expression_group::scalar) {
@@ -996,6 +999,7 @@ namespace services::dispatcher {
                                                             promote_type(lt.type(), rt.type()));
                                                     }
                                                 }
+                                                // Default to BIGINT for unresolvable arithmetic sub-expressions
                                                 return complex_logical_type(logical_type::BIGINT);
                                             }
                                         };
@@ -1005,14 +1009,17 @@ namespace services::dispatcher {
                                             function_input_types.emplace_back(
                                                 promote_type(lt.type(), rt.type()));
                                         } else {
+                                            // Single-operand scalar: default to BIGINT
                                             function_input_types.emplace_back(logical_type::BIGINT);
                                         }
                                     } else {
+                                        // Non-scalar expression param: default to BIGINT
                                         function_input_types.emplace_back(logical_type::BIGINT);
                                     }
                                 }
                             }
-                            // COUNT(*) and similar star-aggregates have no params
+                            // COUNT(*) and similar star-aggregates have no params;
+                            // use UBIGINT because count returns unsigned integer
                             if (function_input_types.empty()) {
                                 function_input_types.emplace_back(logical_type::UBIGINT);
                             }
@@ -1073,20 +1080,9 @@ namespace services::dispatcher {
                     }
                 }
                 if (node_sort) {
-                    auto merged = result;
-                    for (const auto& s : incoming_schema) {
-                        bool found = false;
-                        for (const auto& r : merged) {
-                            if (r.type.alias() == s.type.alias()) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            merged.emplace_back(s);
-                        }
-                    }
-                    auto res = impl::validate_schema(resource, node_sort, merged);
+                    // Validate sort fields against the GROUP BY output schema (result).
+                    // Sort can only reference columns that appear in the output.
+                    auto res = impl::validate_schema(resource, node_sort, result);
                     if (res.is_error()) {
                         return res;
                     }
@@ -1216,6 +1212,7 @@ namespace services::dispatcher {
                             resource,
                             components::cursor::error_t{error_code_t::schema_error,
                                                         "insert_node: too many columns in INSERT"}};
+                    // TODO: validate that missing columns in INSERT have DEFAULT or are nullable
                     } else if (incoming_schema.value().size() == table_schema.size()) {
                         for (size_t i = 0; i < table_schema.size(); i++) {
                             // TODO: key translation and type compare, instead of names:

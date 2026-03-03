@@ -34,7 +34,12 @@ namespace components::operators {
         , group_index_(resource_) {}
 
     void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
-        keys_.push_back({name, std::move(getter)});
+        keys_.push_back({name, std::move(getter), std::pmr::vector<size_t>(resource_)});
+    }
+
+    void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
+                                    std::pmr::vector<size_t> col_path) {
+        keys_.push_back({name, std::move(getter), std::move(col_path)});
     }
 
     void operator_group_t::add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
@@ -138,6 +143,12 @@ namespace components::operators {
                 use_fast_path = false;
                 break;
             }
+            // Use pre-resolved col_path when available
+            if (!key.col_path.empty() && key.col_path.size() == 1) {
+                key_col_indices.push_back(key.col_path[0]);
+                continue;
+            }
+            // Fallback: alias-based search for wildcard/computed columns
             bool found = false;
             for (size_t col = 0; col < chunk.column_count(); col++) {
                 if (chunk.data[col].type().alias() == std::string_view(key.name)) {
@@ -172,8 +183,8 @@ namespace components::operators {
                     continue;
                 }
 
-                auto h = static_cast<size_t>(hashes[row_idx]);
-                auto it = group_index_.find(h);
+                auto hash_val = static_cast<size_t>(hashes[row_idx]);
+                auto it = group_index_.find(hash_val);
                 bool is_new = true;
                 if (it != group_index_.end()) {
                     for (size_t idx : it->second) {
@@ -193,7 +204,7 @@ namespace components::operators {
                         key_vals.push_back(std::move(val));
                     }
                     size_t idx = group_keys_.size();
-                    group_index_[h].push_back(idx);
+                    group_index_[hash_val].push_back(idx);
                     group_keys_.push_back(std::move(key_vals));
                     std::pmr::vector<size_t> row_ids(resource_);
                     row_ids.push_back(row_idx);
@@ -243,8 +254,8 @@ namespace components::operators {
                     continue;
                 }
 
-                size_t h = types::hash_row(key_vals);
-                auto it = group_index_.find(h);
+                size_t hash_val = types::hash_row(key_vals);
+                auto it = group_index_.find(hash_val);
                 bool is_new = true;
                 if (it != group_index_.end()) {
                     for (size_t idx : it->second) {
@@ -257,7 +268,7 @@ namespace components::operators {
                 }
                 if (is_new) {
                     size_t idx = group_keys_.size();
-                    group_index_[h].push_back(idx);
+                    group_index_[hash_val].push_back(idx);
                     group_keys_.push_back(std::move(key_vals));
                     std::pmr::vector<size_t> row_ids(resource_);
                     row_ids.push_back(row_idx);
@@ -381,9 +392,9 @@ namespace components::operators {
 
             // Compute result for each group and collect into a new vector
             std::pmr::vector<types::logical_value_t> col_values(resource_);
-            for (size_t g = 0; g < num_groups; g++) {
-                auto left_val = resolve(post.operands[0], g, resolve);
-                auto right_val = resolve(post.operands[1], g, resolve);
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                auto left_val = resolve(post.operands[0], group_idx, resolve);
+                auto right_val = resolve(post.operands[1], group_idx, resolve);
                 types::logical_value_t result_val(resource_, types::logical_type::NA);
                 switch (post.op) {
                     case expressions::scalar_type::add:
@@ -405,7 +416,7 @@ namespace components::operators {
                         break;
                 }
                 result_val.set_alias(std::string(post.alias));
-                if (g == 0) {
+                if (group_idx == 0) {
                     col_type = result_val.type();
                 }
                 col_values.push_back(std::move(result_val));
@@ -413,8 +424,8 @@ namespace components::operators {
 
             // Add new column to result chunk
             vector::vector_t new_col(resource_, col_type, result.capacity());
-            for (size_t g = 0; g < num_groups; g++) {
-                new_col.set_value(g, std::move(col_values[g]));
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                new_col.set_value(group_idx, std::move(col_values[group_idx]));
             }
             new_col.type().set_alias(std::string(post.alias));
             result.data.emplace_back(std::move(new_col));

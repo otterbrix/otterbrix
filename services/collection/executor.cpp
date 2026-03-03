@@ -407,7 +407,7 @@ namespace services::collection::executor {
             plan->on_execute(&pipeline_context);
 
             if (plan->has_error()) {
-                cursor = make_cursor(resource(), error_code_t::other_error, plan->error_message());
+                cursor = make_cursor(resource(), error_code_t::create_physical_plan_error, plan->error_message());
                 break;
             }
 

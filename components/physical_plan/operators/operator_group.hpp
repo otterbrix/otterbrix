@@ -15,6 +15,7 @@ namespace components::operators {
     struct group_key_t {
         std::pmr::string name;
         get::operator_get_ptr getter;
+        std::pmr::vector<size_t> col_path; // resolved column path from validation
     };
 
     struct group_value_t {
@@ -42,6 +43,8 @@ namespace components::operators {
                          expressions::expression_ptr having = nullptr);
 
         void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
+        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
+                     std::pmr::vector<size_t> col_path);
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);

@@ -1,5 +1,7 @@
 #include "coalesce_value.hpp"
 
+#include <stdexcept>
+
 namespace components::operators::get {
 
     operator_get_ptr coalesce_value_t::create(std::vector<expressions::param_storage> params,
@@ -37,7 +39,7 @@ namespace components::operators::get {
                 const auto& key = keys_[entry.index];
                 const auto& path = key.path();
                 if (path.empty() || path[0] >= row.size()) {
-                    continue;
+                    throw std::logic_error("coalesce_value_t: invalid key path");
                 }
                 auto* val = &row[path[0]];
                 bool found = true;
@@ -49,7 +51,7 @@ namespace components::operators::get {
                     val = &val->children()[path[i]];
                 }
                 if (!found) {
-                    continue;
+                    throw std::logic_error("coalesce_value_t: child path out of range");
                 }
                 if (val->type().type() != types::logical_type::NA) {
                     return {*val};

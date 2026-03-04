@@ -1,7 +1,5 @@
 #include "operator_sort.hpp"
 
-#include <numeric>
-
 namespace components::operators {
 
     operator_sort_t::operator_sort_t(std::pmr::memory_resource* resource, log_t log)
@@ -9,7 +7,7 @@ namespace components::operators {
 
     void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
 
-    void operator_sort_t::add(const std::vector<size_t>& col_path, order order_) {
+    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) {
         sorter_.add(col_path, order_);
     }
 
@@ -24,16 +22,10 @@ namespace components::operators {
                 return;
             }
 
-            // 1. Create index array [0, 1, 2, ..., N-1]
-            std::vector<uint64_t> indices(num_rows);
-            std::iota(indices.begin(), indices.end(), uint64_t(0));
-
-            // 2. Sort indices using columnar comparator
+            // 1. Create index array [0, 1, 2, ..., N-1] and sort
+            vector::indexing_vector_t indexing(resource_, uint64_t(0), num_rows);
             sorter_.set_chunk(chunk);
-            std::sort(indices.begin(), indices.end(), std::ref(sorter_));
-
-            // 3. Build indexing vector from sorted indices
-            vector::indexing_vector_t indexing(resource_, indices.data());
+            std::sort(indexing.data(), indexing.data() + num_rows, std::ref(sorter_));
 
             // 4. Create result via copy with indexing (no transpose needed)
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);

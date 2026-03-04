@@ -33,7 +33,8 @@ namespace services::planner::impl {
                 if (std::holds_alternative<components::expressions::key_t>(op)) {
                     auto& key = std::get<components::expressions::key_t>(op);
                     for (const auto& alias : aggregate_aliases) {
-                        if (key.as_string() == alias) {
+                        if (!key.storage().empty() &&
+                            std::string_view(key.storage().back()) == std::string_view(alias)) {
                             return true;
                         }
                     }
@@ -64,15 +65,14 @@ namespace services::planner::impl {
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
                     const auto& path = field.path();
-                    if (!path.empty()) {
-                        std::pmr::vector<size_t> col_path(path.begin(), path.end(), resource);
-                        group->add_key(expr->key().storage().back(),
-                                       components::operators::get::simple_value_t::create(field),
-                                       std::move(col_path));
-                    } else {
-                        group->add_key(expr->key().storage().back(),
-                                       components::operators::get::simple_value_t::create(field));
+                    if (path.empty()) {
+                        throw std::logic_error("create_plan_group: get_field has empty path for key: " +
+                                               expr->key().as_string());
                     }
+                    std::pmr::vector<size_t> col_path(path.begin(), path.end(), resource);
+                    group->add_key(expr->key().storage().back(),
+                                   components::operators::get::simple_value_t::create(field),
+                                   std::move(col_path));
                     break;
                 }
                 case scalar_type::coalesce: {
@@ -91,24 +91,36 @@ namespace services::planner::impl {
                 }
                 default: {
                     if (is_arithmetic_scalar_type(expr->type())) {
+                        auto alias = expr->key().storage().empty()
+                                         ? std::pmr::string(expr->key().as_string(), resource)
+                                         : std::pmr::string(expr->key().storage().back(), resource);
                         if (has_aggregate_operand(expr->params(), aggregate_aliases)) {
                             // Post-aggregate arithmetic
                             components::operators::post_aggregate_column_t post{
-                                std::pmr::string(expr->key().as_string(), resource),
+                                alias,
                                 expr->type(),
                                 expr->params()};
                             group->add_post_aggregate(std::move(post));
                         } else {
                             // Pre-group computed column
                             components::operators::computed_column_t comp{
-                                std::pmr::string(expr->key().as_string(), resource),
+                                alias,
                                 expr->type(),
                                 expr->params()};
                             group->add_computed_column(std::move(comp));
                             // Also add as key for output projection
-                            group->add_key(
-                                std::pmr::string(expr->key().as_string(), resource),
-                                components::operators::get::simple_value_t::create(expr->key()));
+                            const auto& key_path = expr->key().path();
+                            if (!key_path.empty()) {
+                                std::pmr::vector<size_t> col_path(key_path.begin(), key_path.end(), resource);
+                                group->add_key(
+                                    alias,
+                                    components::operators::get::simple_value_t::create(expr->key()),
+                                    std::move(col_path));
+                            } else {
+                                group->add_key(
+                                    alias,
+                                    components::operators::get::simple_value_t::create(expr->key()));
+                            }
                         }
                     }
                     break;

@@ -54,7 +54,7 @@ namespace components::types {
     struct pow<void> {
         template<typename T, typename U>
         constexpr auto operator()(T&& t, U&& u) const {
-            if constexpr (std::is_same<T, int128_t>::value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return t ^ u;
             } else {
                 return std::pow(std::forward<T>(t), std::forward<U>(u));
@@ -90,7 +90,7 @@ namespace components::types {
     struct abs<void> {
         template<typename T>
         constexpr auto operator()(T&& x) const {
-            if constexpr (std::is_same<T, int128_t>::value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return x < 0 ? -x : x;
             } else {
                 return std::abs<T>(std::forward<T>(x));

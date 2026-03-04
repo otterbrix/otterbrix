@@ -92,18 +92,21 @@ namespace components::operators {
             // Phase 4: Post-aggregate arithmetic (columnar)
             calc_post_aggregates(pipeline_context, result);
 
-            // Phase 5: Remove internal __agg_ columns
+            // Phase 5: Remove internal __agg_ columns (batch erase)
             if (!post_aggregates_.empty()) {
                 size_t key_count = group_keys_.empty() ? 0 : group_keys_[0].size();
-                for (size_t i = values_.size(); i > 0; --i) {
-                    auto& name = values_[i - 1].name;
-                    if (name.find("__agg_") == 0) {
-                        size_t col_idx = key_count + (i - 1);
+                std::vector<size_t> erase_indices;
+                for (size_t val_idx = 0; val_idx < values_.size(); val_idx++) {
+                    if (values_[val_idx].name.find("__agg_") == 0) {
+                        size_t col_idx = key_count + val_idx;
                         if (col_idx < result.data.size()) {
-                            result.data.erase(result.data.begin() +
-                                              static_cast<std::ptrdiff_t>(col_idx));
+                            erase_indices.push_back(col_idx);
                         }
                     }
+                }
+                // Erase in reverse order to preserve indices
+                for (auto it = erase_indices.rbegin(); it != erase_indices.rend(); ++it) {
+                    result.data.erase(result.data.begin() + static_cast<std::ptrdiff_t>(*it));
                 }
             }
 
@@ -236,8 +239,8 @@ namespace components::operators {
                 } else {
                     std::pmr::vector<types::logical_value_t> row(resource_);
                     row.reserve(chunk.column_count());
-                    for (size_t c = 0; c < chunk.column_count(); c++) {
-                        row.push_back(chunk.value(c, row_idx));
+                    for (size_t col_idx = 0; col_idx < chunk.column_count(); col_idx++) {
+                        row.push_back(chunk.value(col_idx, row_idx));
                     }
                     for (const auto& key : keys_) {
                         auto values = key.getter->values(row);
@@ -344,6 +347,8 @@ namespace components::operators {
         return result;
     }
 
+    // TODO: post-aggregate keys use string matching (alias) because columns are synthetic;
+    //       consider path-based resolution when aggregate output schema is formalized
     void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context,
                                                  vector::data_chunk_t& result) {
         auto num_groups = result.size();
@@ -476,9 +481,9 @@ namespace components::operators {
                            auto& self) -> types::logical_value_t {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
-                for (size_t c = 0; c < result.column_count(); c++) {
-                    if (result.data[c].type().has_alias() && result.data[c].type().alias() == key.as_string()) {
-                        return result.value(c, row_idx);
+                for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
+                    if (result.data[col_idx].type().has_alias() && result.data[col_idx].type().alias() == key.as_string()) {
+                        return result.value(col_idx, row_idx);
                     }
                 }
                 return types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA});
@@ -496,19 +501,19 @@ namespace components::operators {
                             types::logical_value_t(resource_, int64_t(0)), inner);
                     }
                     if (scalar->params().size() >= 2) {
-                        auto l = self(scalar->params()[0], row_idx, self);
-                        auto r = self(scalar->params()[1], row_idx, self);
+                        auto left_val = self(scalar->params()[0], row_idx, self);
+                        auto right_val = self(scalar->params()[1], row_idx, self);
                         switch (scalar->type()) {
                             case expressions::scalar_type::add:
-                                return types::logical_value_t::sum(l, r);
+                                return types::logical_value_t::sum(left_val, right_val);
                             case expressions::scalar_type::subtract:
-                                return types::logical_value_t::subtract(l, r);
+                                return types::logical_value_t::subtract(left_val, right_val);
                             case expressions::scalar_type::multiply:
-                                return types::logical_value_t::mult(l, r);
+                                return types::logical_value_t::mult(left_val, right_val);
                             case expressions::scalar_type::divide:
-                                return types::logical_value_t::divide(l, r);
+                                return types::logical_value_t::divide(left_val, right_val);
                             case expressions::scalar_type::mod:
-                                return types::logical_value_t::modulus(l, r);
+                                return types::logical_value_t::modulus(left_val, right_val);
                             default:
                                 break;
                         }
@@ -519,9 +524,9 @@ namespace components::operators {
         };
 
         std::pmr::vector<size_t> keep_indices(resource_);
-        for (size_t g = 0; g < result.size(); g++) {
-            auto left_val = resolve(cmp->left(), g, resolve);
-            auto right_val = resolve(cmp->right(), g, resolve);
+        for (size_t group_idx = 0; group_idx < result.size(); group_idx++) {
+            auto left_val = resolve(cmp->left(), group_idx, resolve);
+            auto right_val = resolve(cmp->right(), group_idx, resolve);
             auto cmp_result = left_val.compare(right_val);
             bool passes = false;
             switch (cmp->type()) {
@@ -548,7 +553,7 @@ namespace components::operators {
                     break;
             }
             if (passes) {
-                keep_indices.push_back(g);
+                keep_indices.push_back(group_idx);
             }
         }
 

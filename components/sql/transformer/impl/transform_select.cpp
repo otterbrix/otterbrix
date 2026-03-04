@@ -350,6 +350,8 @@ namespace components::sql::transform {
         }
 
         // order by
+        // TODO: validate that ORDER BY expressions reference named columns or SELECT-list aliases;
+        //       sorting by unnamed expressions is non-standard and may produce unexpected results
         if (node.sortClause && !node.sortClause->lst.empty()) {
             std::vector<expression_ptr> expressions;
             expressions.reserve(node.sortClause->lst.size());

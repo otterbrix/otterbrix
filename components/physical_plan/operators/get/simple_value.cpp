@@ -1,5 +1,7 @@
 #include "simple_value.hpp"
 
+#include <stdexcept>
+
 namespace components::operators::get {
 
     operator_get_ptr simple_value_t::create(const expressions::key_t& key) {
@@ -14,10 +16,10 @@ namespace components::operators::get {
     simple_value_t::get_values_impl(const std::pmr::vector<types::logical_value_t>& row) {
         const auto& path = key_.path();
         if (path.empty()) {
-            return {row.data(), row.data() + row.size()};
+            throw std::logic_error("simple_value_t: key path is empty");
         }
         if (path[0] >= row.size()) {
-            return {};
+            throw std::logic_error("simple_value_t: path[0] out of range");
         }
 
         // Wildcard: navigate to parent, return all children
@@ -26,7 +28,7 @@ namespace components::operators::get {
             auto* val = &row[path[0]];
             for (size_t i = 1; i < path.size() - 1; i++) {
                 if (path[i] >= val->children().size()) {
-                    return {};
+                    throw std::logic_error("simple_value_t: child path out of range");
                 }
                 val = &val->children()[path[i]];
             }
@@ -37,7 +39,7 @@ namespace components::operators::get {
         auto* val = &row[path[0]];
         for (size_t i = 1; i < path.size(); i++) {
             if (path[i] >= val->children().size()) {
-                return {};
+                throw std::logic_error("simple_value_t: child path out of range");
             }
             val = &val->children()[path[i]];
         }

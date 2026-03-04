@@ -13,9 +13,10 @@ namespace components::sort {
         ascending = 1
     };
 
+    // TODO: search-by-key — resolve sort keys by name during plan building
     class columnar_sorter_t {
         struct sort_key {
-            std::vector<size_t> col_path{0}; // std::vector used to avoid pmr dependency in sort header
+            std::pmr::vector<size_t> col_path;
             order order_ = order::ascending;
             const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
         };
@@ -25,7 +26,7 @@ namespace components::sort {
         explicit columnar_sorter_t(size_t index, order order_ = order::ascending);
 
         void add(size_t index, order order_ = order::ascending);
-        void add(const std::vector<size_t>& col_path, order order_ = order::ascending);
+        void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
 
         void set_chunk(const vector::data_chunk_t& chunk);
 

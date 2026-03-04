@@ -11,8 +11,9 @@ namespace components::operators {
 
         operator_sort_t(std::pmr::memory_resource* resource, log_t log);
 
+        // TODO: search-by-key — resolve sort keys by name during plan building
         void add(size_t index, order order_ = order::ascending);
-        void add(const std::vector<size_t>& col_path, order order_ = order::ascending);
+        void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
 
     private:
         sort::columnar_sorter_t sorter_;

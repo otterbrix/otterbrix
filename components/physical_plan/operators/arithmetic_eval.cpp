@@ -4,6 +4,7 @@ namespace components::operators {
 
     namespace detail {
 
+        // TODO: consider removing arithmetic_op enum in favor of using scalar_type directly
         vector::arithmetic_op scalar_to_arithmetic_op(expressions::scalar_type t) {
             switch (t) {
                 case expressions::scalar_type::add:

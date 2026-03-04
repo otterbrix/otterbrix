@@ -463,12 +463,17 @@ namespace {
                                                         size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::var_args(1), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::var_args(0), doc, available_kernel_slots + 1);
 
         kernel_signature_t sig({always_true_type_matcher()}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
-
         fn->add_kernel(std::move(k));
+
+        // COUNT(*) — zero-argument kernel
+        kernel_signature_t sig_star({}, {output_type::fixed(logical_type::UBIGINT)});
+        aggregate_kernel k_star{std::move(sig_star), count_init, count_consume, count_merge, count_finalize};
+        fn->add_kernel(std::move(k_star));
+
         return fn;
     }
 

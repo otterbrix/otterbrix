@@ -1,6 +1,7 @@
 #include "utils.hpp"
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <stdexcept>
 
 namespace components::operators::predicates::impl {
 
@@ -11,8 +12,12 @@ namespace components::operators::predicates::impl {
                                                 const logical_plan::storage_parameters* parameters);
 
     value_getter create_value_getter(const expressions::key_t& key) {
-        assert(key.side() != expressions::side_t::undefined);
-        assert(!key.path().empty());
+        if (key.side() == expressions::side_t::undefined) {
+            throw std::logic_error("create_value_getter: key side is undefined");
+        }
+        if (key.path().empty()) {
+            throw std::logic_error("create_value_getter: key path is empty");
+        }
         if (key.side() == expressions::side_t::left) {
             return [path = key.path()](const vector::data_chunk_t& chunk_left,
                                        const vector::data_chunk_t&,

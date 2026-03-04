@@ -20,8 +20,7 @@ namespace services::planner::impl {
                           if (path.empty()) {
                               throw std::logic_error("Sort key has unresolved path: " + sort_expr->key().as_string());
                           }
-                          sort->add(std::vector<size_t>(path.begin(), path.end()),
-                                    components::operators::operator_sort_t::order(sort_expr->order()));
+                          sort->add(path,components::operators::operator_sort_t::order(sort_expr->order()));
                       });
         return sort;
     }

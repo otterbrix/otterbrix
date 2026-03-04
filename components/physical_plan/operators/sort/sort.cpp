@@ -5,10 +5,12 @@ namespace components::sort {
     columnar_sorter_t::columnar_sorter_t(size_t index, order order_) { add(index, order_); }
 
     void columnar_sorter_t::add(size_t index, order order_) {
-        keys_.push_back({{index}, order_, nullptr});
+        std::pmr::vector<size_t> path;
+        path.push_back(index);
+        keys_.push_back({std::move(path), order_, nullptr});
     }
 
-    void columnar_sorter_t::add(const std::vector<size_t>& col_path, order order_) {
+    void columnar_sorter_t::add(const std::pmr::vector<size_t>& col_path, order order_) {
         assert(!col_path.empty());
         keys_.push_back({col_path, order_, nullptr});
     }
@@ -17,15 +19,12 @@ namespace components::sort {
         chunk_ = &chunk;
         for (auto& k : keys_) {
             assert(!k.col_path.empty());
-            // Resolve vector pointer via path
             if (k.col_path.size() == 1) {
                 if (k.col_path[0] < chunk.column_count()) {
                     k.vec = &chunk.data[k.col_path[0]];
                 }
             } else {
-                std::pmr::vector<size_t> pmr_path(k.col_path.begin(), k.col_path.end(),
-                                                  chunk.resource());
-                k.vec = chunk.at(pmr_path);
+                k.vec = chunk.at(k.col_path);
             }
         }
     }

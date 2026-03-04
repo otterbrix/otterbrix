@@ -114,7 +114,7 @@ namespace components::vector {
         }
         template<typename T>
         const T* data() const noexcept {
-            return reinterpret_cast<T*>(data_);
+            return reinterpret_cast<const T*>(data_);
         }
         std::shared_ptr<vector_buffer_t> auxiliary() { return auxiliary_; }
         std::shared_ptr<vector_buffer_t> get_buffer() { return buffer_; }

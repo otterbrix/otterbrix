@@ -440,6 +440,10 @@ namespace services::dispatcher {
                                                                const named_schema& schema) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
+                if (key.storage().empty()) {
+                    // TODO: validate parameter keys during plan construction
+                    return schema_result{type_paths{resource}};
+                }
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
@@ -1094,10 +1098,6 @@ namespace services::dispatcher {
                                         function_input_types.emplace_back(logical_type::BIGINT);
                                     }
                                 }
-                            }
-                            // COUNT(*) has no params; use UBIGINT because count returns unsigned integer
-                            if (function_input_types.empty() && agg_expr->function_name() == "count") {
-                                function_input_types.emplace_back(logical_type::UBIGINT);
                             }
                             if (!catalog.function_name_exists(agg_expr->function_name())) {
                                 return schema_result<named_schema>{

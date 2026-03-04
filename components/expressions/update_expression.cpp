@@ -138,16 +138,7 @@ namespace components::expressions {
                                                size_t row_from,
                                                const logical_plan::storage_parameters*) {
         auto side = key_.side();
-        // we have to check it twice
-        if (side == side_t::undefined && !key().path().empty()) {
-            if (key().path().front() < to.data.size()) {
-                side = side_t::left;
-                key_.set_side(side);
-            } else if (key().path().front() < from.data.size()) {
-                side = side_t::right;
-                key_.set_side(side);
-            }
-        }
+        assert(side != side_t::undefined && "validation must resolve side before execution");
         if (side == side_t::right) {
             assert(key_.path().front() != size_t(-1));
             output_ = from.value(key_.path(), row_from);

@@ -361,10 +361,7 @@ namespace components::vector {
 
     void data_chunk_t::slice(std::pmr::memory_resource* resource, uint64_t offset, uint64_t slice_count) {
         assert(offset + slice_count <= size());
-        indexing_vector_t indexing(resource, slice_count);
-        for (uint64_t i = 0; i < slice_count; i++) {
-            indexing.set_index(i, offset + i);
-        }
+        indexing_vector_t indexing(resource, offset, slice_count);
         slice(indexing, slice_count);
     }
 
@@ -377,10 +374,8 @@ namespace components::vector {
         if (row_ids.empty()) {
             return result;
         }
-        indexing_vector_t indexing(resource, count);
-        for (uint64_t i = 0; i < count; i++) {
-            indexing.set_index(i, static_cast<uint64_t>(row_ids[i]));
-        }
+        static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
+        indexing_vector_t indexing(resource, const_cast<uint64_t*>(reinterpret_cast<const uint64_t*>(row_ids.data())));
         copy(result, indexing, count, 0);
         return result;
     }

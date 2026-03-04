@@ -378,7 +378,7 @@ namespace components::types {
                 float v;
                 std::memcpy(&v, &data_, sizeof(float));
                 if (std::isnan(v)) v = std::numeric_limits<float>::quiet_NaN();
-                else if (v == 0.0f) v = 0.0f;
+                else if (std::fpclassify(v) == FP_ZERO) v = 0.0f;
                 uint32_t bits;
                 std::memcpy(&bits, &v, sizeof(bits));
                 boost::hash_combine(h, bits);
@@ -388,7 +388,7 @@ namespace components::types {
                 double v;
                 std::memcpy(&v, &data_, sizeof(double));
                 if (std::isnan(v)) v = std::numeric_limits<double>::quiet_NaN();
-                else if (v == 0.0) v = 0.0;
+                else if (std::fpclassify(v) == FP_ZERO) v = 0.0;
                 uint64_t bits;
                 std::memcpy(&bits, &v, sizeof(bits));
                 boost::hash_combine(h, bits);

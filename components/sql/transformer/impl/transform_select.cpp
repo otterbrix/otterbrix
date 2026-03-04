@@ -334,10 +334,21 @@ namespace components::sql::transform {
             }
         }
 
+        // Flush buffered internal aggregates to end of group expressions
+        for (auto& internal_agg : pending_internal_aggs_) {
+            group->append_expression(internal_agg);
+        }
+        if (auto* group_node = dynamic_cast<logical_plan::node_group_t*>(group.get())) {
+            group_node->internal_aggregate_count = pending_internal_aggs_.size();
+        }
+        pending_internal_aggs_.clear();
+
         if (!group->expressions().empty()) {
             if (having_expr) {
                 auto final_group = logical_plan::make_node_group(
                     resource_, agg->collection_full_name(), group->expressions(), std::move(having_expr));
+                final_group->internal_aggregate_count =
+                    dynamic_cast<logical_plan::node_group_t*>(group.get())->internal_aggregate_count;
                 agg->append_child(final_group);
             } else {
                 agg->append_child(group);

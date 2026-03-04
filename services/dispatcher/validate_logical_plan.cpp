@@ -441,8 +441,10 @@ namespace services::dispatcher {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
                 if (key.storage().empty()) {
-                    // TODO: validate parameter keys during plan construction
-                    return schema_result{type_paths{resource}};
+                    return schema_result<type_paths>{
+                        resource,
+                        components::cursor::error_t{error_code_t::schema_error,
+                                                    "key has empty storage: " + key.as_string()}};
                 }
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
@@ -941,6 +943,7 @@ namespace services::dispatcher {
                                         if (!field.is_error() && !field.value().empty()) {
                                             return field.value().front().type;
                                         }
+                                        // May reference forward aggregate alias — fallback OK
                                         return complex_logical_type(logical_type::BIGINT);
                                     } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                         auto id = std::get<core::parameter_id_t>(param);
@@ -992,7 +995,7 @@ namespace services::dispatcher {
                                         if (!field.is_error() && !field.value().empty()) {
                                             return field.value().front().type;
                                         }
-                                        // TODO: propagate error instead of defaulting to BIGINT
+                                        // May reference forward aggregate alias — fallback OK
                                         return complex_logical_type(logical_type::BIGINT);
                                     } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                         auto id = std::get<core::parameter_id_t>(param);
@@ -1012,7 +1015,6 @@ namespace services::dispatcher {
                                                     promote_type(left_type.type(), right_type.type()));
                                             }
                                         }
-                                        // TODO: propagate error instead of defaulting to BIGINT
                                         return complex_logical_type(logical_type::BIGINT);
                                     }
                                 };
@@ -1055,6 +1057,7 @@ namespace services::dispatcher {
                                         auto* sub_scalar =
                                             reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         // Approximate: resolve from params recursively
+                                        error_t resolve_error{error_code_t::none};
                                         std::function<complex_logical_type(param_storage&)>
                                             resolve_arith_type;
                                         resolve_arith_type = [&](param_storage& p)
@@ -1064,6 +1067,9 @@ namespace services::dispatcher {
                                                 auto f = impl::find_types(resource, k, incoming_schema);
                                                 if (!f.is_error() && !f.value().empty()) {
                                                     return f.value().front().type;
+                                                }
+                                                if (f.is_error()) {
+                                                    resolve_error = f.error();
                                                 }
                                                 return complex_logical_type(logical_type::BIGINT);
                                             } else if (std::holds_alternative<core::parameter_id_t>(p)) {
@@ -1080,13 +1086,15 @@ namespace services::dispatcher {
                                                             promote_type(lt.type(), rt.type()));
                                                     }
                                                 }
-                                                // Default to BIGINT for unresolvable arithmetic sub-expressions
                                                 return complex_logical_type(logical_type::BIGINT);
                                             }
                                         };
                                         if (sub_scalar->params().size() >= 2) {
                                             auto lt = resolve_arith_type(sub_scalar->params()[0]);
                                             auto rt = resolve_arith_type(sub_scalar->params()[1]);
+                                            if (resolve_error.type != error_code_t::none) {
+                                                return schema_result<named_schema>{resource, resolve_error};
+                                            }
                                             function_input_types.emplace_back(
                                                 promote_type(lt.type(), rt.type()));
                                         } else {

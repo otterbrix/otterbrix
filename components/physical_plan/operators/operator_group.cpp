@@ -22,13 +22,15 @@ namespace components::operators {
     } // anonymous namespace
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log,
-                                       expressions::expression_ptr having)
+                                       expressions::expression_ptr having,
+                                       size_t internal_aggregate_count)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
         , values_(resource_)
         , computed_columns_(resource_)
         , post_aggregates_(resource_)
         , having_(std::move(having))
+        , internal_aggregate_count_(internal_aggregate_count)
         , row_ids_per_group_(resource_)
         , group_keys_(resource_)
         , group_index_(resource_) {}
@@ -90,24 +92,14 @@ namespace components::operators {
             auto result = calc_aggregate_values(pipeline_context);
 
             // Phase 4: Post-aggregate arithmetic (columnar)
+            size_t size_before_post = result.data.size();
             calc_post_aggregates(pipeline_context, result);
 
-            // Phase 5: Remove internal __agg_ columns (batch erase)
-            if (!post_aggregates_.empty()) {
-                size_t key_count = group_keys_.empty() ? 0 : group_keys_[0].size();
-                std::vector<size_t> erase_indices;
-                for (size_t val_idx = 0; val_idx < values_.size(); val_idx++) {
-                    if (values_[val_idx].name.find("__agg_") == 0) {
-                        size_t col_idx = key_count + val_idx;
-                        if (col_idx < result.data.size()) {
-                            erase_indices.push_back(col_idx);
-                        }
-                    }
-                }
-                // Erase in reverse order to preserve indices
-                for (auto it = erase_indices.rbegin(); it != erase_indices.rend(); ++it) {
-                    result.data.erase(result.data.begin() + static_cast<std::ptrdiff_t>(*it));
-                }
+            // Phase 5: Remove internal aggregate columns by position
+            if (internal_aggregate_count_ > 0) {
+                auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
+                auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
+                result.data.erase(it_begin, it_end);
             }
 
             // Phase 6: HAVING filter (columnar)
@@ -299,7 +291,16 @@ namespace components::operators {
             results.reserve(num_groups);
 
             for (size_t i = 0; i < num_groups; i++) {
-                auto sub_chunk = chunk.slice(resource_, row_ids_per_group_[i]);
+                auto& row_ids = row_ids_per_group_[i];
+                auto idx_count = static_cast<uint64_t>(row_ids.size());
+                auto sub_types = chunk.types();
+                uint64_t sub_cap = idx_count > 0 ? idx_count : 1;
+                vector::data_chunk_t sub_chunk(resource_, sub_types, sub_cap);
+                if (idx_count > 0) {
+                    static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
+                    vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(row_ids.data()));
+                    chunk.copy(sub_chunk, idx, idx_count, 0);
+                }
                 aggregator->clear();
                 aggregator->set_children(boost::intrusive_ptr(new operator_empty_t(
                     resource_,
@@ -558,7 +559,10 @@ namespace components::operators {
         }
 
         if (keep_indices.size() < result.size()) {
-            result = result.slice(resource_, keep_indices);
+            static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
+            auto keep_count = static_cast<uint64_t>(keep_indices.size());
+            vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(keep_indices.data()));
+            result.slice(idx, keep_count);
         }
     }
 

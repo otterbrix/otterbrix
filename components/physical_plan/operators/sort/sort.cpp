@@ -19,13 +19,7 @@ namespace components::sort {
         chunk_ = &chunk;
         for (auto& k : keys_) {
             assert(!k.col_path.empty());
-            if (k.col_path.size() == 1) {
-                if (k.col_path[0] < chunk.column_count()) {
-                    k.vec = &chunk.data[k.col_path[0]];
-                }
-            } else {
-                k.vec = chunk.at(k.col_path);
-            }
+            k.vec = chunk.at(k.col_path);
         }
     }
 

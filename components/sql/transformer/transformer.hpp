@@ -122,5 +122,6 @@ namespace components::sql::transform {
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;
         size_t aggregate_counter_{0};
+        std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
     };
 } // namespace components::sql::transform

@@ -40,7 +40,8 @@ namespace components::operators {
     class operator_group_t final : public read_write_operator_t {
     public:
         operator_group_t(std::pmr::memory_resource* resource, log_t log,
-                         expressions::expression_ptr having = nullptr);
+                         expressions::expression_ptr having = nullptr,
+                         size_t internal_aggregate_count = 0);
 
         void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
         void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
@@ -55,6 +56,7 @@ namespace components::operators {
         std::pmr::vector<computed_column_t> computed_columns_;
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         expressions::expression_ptr having_;
+        size_t internal_aggregate_count_;
 
         std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;

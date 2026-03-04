@@ -91,9 +91,11 @@ namespace services::planner::impl {
                 }
                 default: {
                     if (is_arithmetic_scalar_type(expr->type())) {
-                        auto alias = expr->key().storage().empty()
-                                         ? std::pmr::string(expr->key().as_string(), resource)
-                                         : std::pmr::string(expr->key().storage().back(), resource);
+                        if (expr->key().storage().empty()) {
+                            throw std::logic_error("create_plan_group: arithmetic expression has empty storage for key: " +
+                                                   expr->key().as_string());
+                        }
+                        auto alias = std::pmr::string(expr->key().storage().back(), resource);
                         if (has_aggregate_operand(expr->params(), aggregate_aliases)) {
                             // Post-aggregate arithmetic
                             components::operators::post_aggregate_column_t post{
@@ -117,6 +119,8 @@ namespace services::planner::impl {
                                     components::operators::get::simple_value_t::create(expr->key()),
                                     std::move(col_path));
                             } else {
+                                // Computed columns have empty path at plan time;
+                                // resolved at runtime by operator_group
                                 group->add_key(
                                     alias,
                                     components::operators::get::simple_value_t::create(expr->key()));
@@ -154,14 +158,16 @@ namespace services::planner::impl {
         bool known = context.has_collection(coll_name);
         
         components::expressions::expression_ptr having;
+        size_t internal_aggregate_count = 0;
         if (auto* group_node = dynamic_cast<const components::logical_plan::node_group_t*>(node.get())) {
             having = group_node->having();
+            internal_aggregate_count = group_node->internal_aggregate_count;
         }
 
         if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log.clone(), std::move(having));
+            group = new components::operators::operator_group_t(context.resource, context.log.clone(), std::move(having), internal_aggregate_count);
         } else {
-            group = new components::operators::operator_group_t(node->resource(), log_t{}, std::move(having));
+            group = new components::operators::operator_group_t(node->resource(), log_t{}, std::move(having), internal_aggregate_count);
         }
 
         // First pass: collect aggregate aliases

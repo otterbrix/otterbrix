@@ -365,21 +365,6 @@ namespace components::vector {
         slice(indexing, slice_count);
     }
 
-    data_chunk_t
-    data_chunk_t::slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const {
-        auto result_types = types();
-        auto count = static_cast<uint64_t>(row_ids.size());
-        uint64_t cap = count > 0 ? count : 1;
-        data_chunk_t result(resource, result_types, cap);
-        if (row_ids.empty()) {
-            return result;
-        }
-        static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
-        indexing_vector_t indexing(resource, const_cast<uint64_t*>(reinterpret_cast<const uint64_t*>(row_ids.data())));
-        copy(result, indexing, count, 0);
-        return result;
-    }
-
     std::vector<unified_vector_format> data_chunk_t::to_unified_format(std::pmr::memory_resource* resource) {
         std::vector<unified_vector_format> unified_data;
         unified_data.reserve(column_count());

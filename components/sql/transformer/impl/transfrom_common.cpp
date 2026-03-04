@@ -162,7 +162,7 @@ namespace components::sql::transform {
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
-                group->append_expression(agg_expr);
+                pending_internal_aggs_.push_back(agg_expr);
 
                 // Return key referencing the aggregate result
                 return expressions::key_t{resource_, auto_alias};

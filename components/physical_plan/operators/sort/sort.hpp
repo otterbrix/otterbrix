@@ -13,7 +13,6 @@ namespace components::sort {
         ascending = 1
     };
 
-    // TODO: search-by-key — resolve sort keys by name during plan building
     class columnar_sorter_t {
         struct sort_key {
             std::pmr::vector<size_t> col_path;

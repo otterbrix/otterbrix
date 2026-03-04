@@ -1057,7 +1057,7 @@ namespace services::dispatcher {
                                         auto* sub_scalar =
                                             reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         // Approximate: resolve from params recursively
-                                        error_t resolve_error{error_code_t::none};
+                                        components::cursor::error_t resolve_error{error_code_t::none};
                                         std::function<complex_logical_type(param_storage&)>
                                             resolve_arith_type;
                                         resolve_arith_type = [&](param_storage& p)

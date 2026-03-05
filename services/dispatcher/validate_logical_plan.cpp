@@ -3,6 +3,7 @@
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
+#include "logical_plan/node_insert.hpp"
 #include "logical_plan/node_update.hpp"
 
 #include <components/catalog/table_id.hpp>
@@ -58,8 +59,8 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<type_paths> find_types(std::pmr::memory_resource* resource,
-                                                         components::expressions::key_t& key,
-                                                         const named_schema& schema) {
+                                                           components::expressions::key_t& key,
+                                                           const named_schema& schema) {
             assert(!key.storage().empty());
             type_paths result{resource};
             if (key.storage().at(0) == "*") {
@@ -193,10 +194,10 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<type_paths> validate_key(std::pmr::memory_resource* resource,
-                                                           components::expressions::key_t& key,
-                                                           const named_schema& schema_left,
-                                                           const named_schema& schema_right,
-                                                           bool same_schema) {
+                                                             components::expressions::key_t& key,
+                                                             const named_schema& schema_left,
+                                                             const named_schema& schema_right,
+                                                             bool same_schema) {
             if (key.side() == side_t::left) {
                 return find_types(resource, key, schema_left);
             } else if (key.side() == side_t::right) {
@@ -229,12 +230,12 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                const catalog& catalog,
-                                                                function_expression_t* expr,
-                                                                const storage_parameters& parameters,
-                                                                const named_schema& schema_left,
-                                                    const named_schema& schema_right,
-                                                    bool same_schema) {
+                                                                  const catalog& catalog,
+                                                                  function_expression_t* expr,
+                                                                  const storage_parameters& parameters,
+                                                                  const named_schema& schema_left,
+                                                                  const named_schema& schema_right,
+                                                                  bool same_schema) {
             named_schema result(resource);
             std::pmr::vector<complex_logical_type> function_input_types(resource);
             function_input_types.reserve(expr->args().size());
@@ -315,10 +316,10 @@ namespace services::dispatcher {
         // TODO: validate parameters
         // TODO: validate algebra
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                update_expr_t* expr,
-                                                                const named_schema& schema_left,
-                                                                const named_schema& schema_right,
-                                                                bool same_schema) {
+                                                                  update_expr_t* expr,
+                                                                  const named_schema& schema_left,
+                                                                  const named_schema& schema_right,
+                                                                  bool same_schema) {
             switch (expr->type()) {
                 case update_expr_type::set: {
                     auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr);
@@ -381,16 +382,20 @@ namespace services::dispatcher {
 
         // Recursively validate keys inside scalar expression params
         // TODO: validate non-scalar sub-expressions
-        [[nodiscard]] schema_result<named_schema> validate_scalar_params(
-            std::pmr::memory_resource* resource,
-            std::pmr::vector<param_storage>& params,
-            const named_schema& schema_left,
-            const named_schema& schema_right,
-            bool same_schema,
-            const storage_parameters* parameters = nullptr) {
+        [[nodiscard]] schema_result<named_schema>
+        validate_scalar_params(std::pmr::memory_resource* resource,
+                               std::pmr::vector<param_storage>& params,
+                               const named_schema& schema_left,
+                               const named_schema& schema_right,
+                               bool same_schema,
+                               const storage_parameters* parameters = nullptr) {
             for (auto& param : params) {
                 if (std::holds_alternative<components::expressions::key_t>(param)) {
-                    auto key_res = validate_key(resource,std::get<components::expressions::key_t>(param),schema_left, schema_right, same_schema);
+                    auto key_res = validate_key(resource,
+                                                std::get<components::expressions::key_t>(param),
+                                                schema_left,
+                                                schema_right,
+                                                same_schema);
                     if (key_res.is_error()) {
                         return schema_result<named_schema>(resource, key_res.error());
                     }
@@ -408,8 +413,12 @@ namespace services::dispatcher {
                     auto& sub = std::get<expression_ptr>(param);
                     if (sub->group() == expression_group::scalar) {
                         auto* scalar = static_cast<scalar_expression_t*>(sub.get());
-                        auto sub_res = validate_scalar_params(resource, scalar->params(),
-                                                              schema_left, schema_right, same_schema, parameters);
+                        auto sub_res = validate_scalar_params(resource,
+                                                              scalar->params(),
+                                                              schema_left,
+                                                              schema_right,
+                                                              same_schema,
+                                                              parameters);
                         if (sub_res.is_error()) {
                             return sub_res;
                         }
@@ -419,9 +428,8 @@ namespace services::dispatcher {
             return schema_result<named_schema>{named_schema(resource)};
         }
 
-        [[nodiscard]] schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
-                                                               param_storage& param,
-                                                               const named_schema& schema);
+        [[nodiscard]] schema_result<type_paths>
+        resolve_key_path(std::pmr::memory_resource* resource, param_storage& param, const named_schema& schema);
 
         [[nodiscard]] schema_result<type_paths> resolve_key_paths_in_group(std::pmr::memory_resource* resource,
                                                                            std::pmr::vector<param_storage>& params,
@@ -435,9 +443,8 @@ namespace services::dispatcher {
             return schema_result{type_paths{resource}};
         }
 
-        [[nodiscard]] schema_result<type_paths> resolve_key_path(std::pmr::memory_resource* resource,
-                                                               param_storage& param,
-                                                               const named_schema& schema) {
+        [[nodiscard]] schema_result<type_paths>
+        resolve_key_path(std::pmr::memory_resource* resource, param_storage& param, const named_schema& schema) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
                 auto& key = std::get<components::expressions::key_t>(param);
                 if (key.storage().empty()) {
@@ -484,12 +491,12 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                const catalog& catalog,
-                                                                compare_expression_t* expr,
-                                                                const storage_parameters& parameters,
-                                                                const named_schema& schema_left,
-                                                    const named_schema& schema_right,
-                                                    bool same_schema) {
+                                                                  const catalog& catalog,
+                                                                  compare_expression_t* expr,
+                                                                  const storage_parameters& parameters,
+                                                                  const named_schema& schema_left,
+                                                                  const named_schema& schema_right,
+                                                                  bool same_schema) {
             named_schema result(resource);
             result.emplace_back(type_from_t{"", logical_type::BOOLEAN});
 
@@ -547,8 +554,12 @@ namespace services::dispatcher {
                             }
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
-                            auto val_res = validate_scalar_params(resource, scalar->params(),
-                                                                  schema_left, schema_right, same_schema, &parameters);
+                            auto val_res = validate_scalar_params(resource,
+                                                                  scalar->params(),
+                                                                  schema_left,
+                                                                  schema_right,
+                                                                  same_schema,
+                                                                  &parameters);
                             if (val_res.is_error()) {
                                 return schema_result<named_schema>(resource, val_res.error());
                             }
@@ -581,8 +592,12 @@ namespace services::dispatcher {
                             }
                         } else if (sub_expr->group() == expression_group::scalar) {
                             auto* scalar = static_cast<scalar_expression_t*>(sub_expr.get());
-                            auto val_res = validate_scalar_params(resource, scalar->params(),
-                                                                  schema_left, schema_right, same_schema, &parameters);
+                            auto val_res = validate_scalar_params(resource,
+                                                                  scalar->params(),
+                                                                  schema_left,
+                                                                  schema_right,
+                                                                  same_schema,
+                                                                  &parameters);
                             if (val_res.is_error()) {
                                 return schema_result<named_schema>(resource, val_res.error());
                             }
@@ -611,19 +626,19 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                const catalog& catalog,
-                                                                node_match_t* node,
-                                                                const storage_parameters& parameters,
-                                                                const named_schema& schema_left,
-                                                    const named_schema& schema_right,
-                                                    bool same_schema) {
+                                                                  const catalog& catalog,
+                                                                  node_match_t* node,
+                                                                  const storage_parameters& parameters,
+                                                                  const named_schema& schema_left,
+                                                                  const named_schema& schema_right,
+                                                                  bool same_schema) {
             if (node->expressions().empty()) {
                 // physical plan reinterprets this as default scan
                 table_id id(resource, node->collection_full_name());
                 if (catalog.table_exists(id)) {
                     named_schema result(resource);
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
-                        result.emplace_back(type_from_t{node->collection_name(), column});
+                        result.emplace_back(type_from_t{node->collection_name(), column.type()});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 }
@@ -733,8 +748,8 @@ namespace services::dispatcher {
                 table_id id(resource, node->collection_full_name());
                 if (auto res = check_collection_exists(resource, catalog, id); !res) {
                     if (!catalog.table_computes(id)) {
-                        for (const auto& type : catalog.get_table_schema(id).columns()) {
-                            encountered_types.emplace_back(type);
+                        for (const auto& column : catalog.get_table_schema(id).columns()) {
+                            encountered_types.emplace_back(column.type());
                         }
                     }
                 } else {
@@ -812,10 +827,11 @@ namespace services::dispatcher {
         return make_cursor(resource, operation_status_t::success);
     }
 
-    [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                             const catalog& catalog,
-                                                             node_t* node,
-                                                             const components::logical_plan::storage_parameters& parameters) {
+    [[nodiscard]] schema_result<named_schema>
+    validate_schema(std::pmr::memory_resource* resource,
+                    const catalog& catalog,
+                    node_t* node,
+                    const components::logical_plan::storage_parameters& parameters) {
         named_schema result{resource};
 
         switch (node->type()) {
@@ -863,7 +879,7 @@ namespace services::dispatcher {
                     table_id id(resource, node->collection_full_name());
                     if (catalog.table_exists(id)) {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
                         }
                     } else if (catalog.table_computes(id)) {
                         auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
@@ -929,9 +945,7 @@ namespace services::dispatcher {
                                 }
                             } else if (scalar_expr->type() == scalar_type::case_expr) {
                                 // CASE expression: result type from first THEN branch
-                                auto resolve_case_type =
-                                    [&](param_storage& param,
-                                        auto& self) -> complex_logical_type {
+                                auto resolve_case_type = [&](param_storage& param, auto& self) -> complex_logical_type {
                                     if (std::holds_alternative<components::expressions::key_t>(param)) {
                                         auto& key = std::get<components::expressions::key_t>(param);
                                         for (const auto& r : result) {
@@ -951,8 +965,7 @@ namespace services::dispatcher {
                                     } else {
                                         auto& sub_expr = std::get<expression_ptr>(param);
                                         if (sub_expr->group() == expression_group::scalar) {
-                                            auto* sub_scalar =
-                                                reinterpret_cast<scalar_expression_t*>(sub_expr.get());
+                                            auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                             if (!sub_scalar->params().empty()) {
                                                 auto left_type = self(sub_scalar->params()[0], self);
                                                 auto right_type = sub_scalar->params().size() > 1
@@ -967,7 +980,8 @@ namespace services::dispatcher {
                                 };
                                 // Use type of first THEN result (params[1])
                                 if (scalar_expr->params().size() >= 2) {
-                                    auto case_result_type = resolve_case_type(scalar_expr->params()[1], resolve_case_type);
+                                    auto case_result_type =
+                                        resolve_case_type(scalar_expr->params()[1], resolve_case_type);
                                     if (!scalar_expr->key().is_null()) {
                                         case_result_type.set_alias(scalar_expr->key().as_string());
                                     }
@@ -980,9 +994,7 @@ namespace services::dispatcher {
                                        scalar_expr->type() == scalar_type::divide ||
                                        scalar_expr->type() == scalar_type::mod) {
                                 // Arithmetic expression: resolve operand types and promote
-                                auto resolve_type =
-                                    [&](param_storage& param,
-                                        auto& self) -> complex_logical_type {
+                                auto resolve_type = [&](param_storage& param, auto& self) -> complex_logical_type {
                                     if (std::holds_alternative<components::expressions::key_t>(param)) {
                                         auto& key = std::get<components::expressions::key_t>(param);
                                         // Check if key references an aggregate result alias
@@ -1004,8 +1016,7 @@ namespace services::dispatcher {
                                         // expression_ptr → recursive
                                         auto& sub_expr = std::get<expression_ptr>(param);
                                         if (sub_expr->group() == expression_group::scalar) {
-                                            auto* sub_scalar =
-                                                reinterpret_cast<scalar_expression_t*>(sub_expr.get());
+                                            auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                             if (!sub_scalar->params().empty()) {
                                                 auto left_type = self(sub_scalar->params()[0], self);
                                                 auto right_type = sub_scalar->params().size() > 1
@@ -1054,14 +1065,11 @@ namespace services::dispatcher {
                                     // Resolve the expression type recursively
                                     auto& sub_expr = std::get<expression_ptr>(param);
                                     if (sub_expr->group() == expression_group::scalar) {
-                                        auto* sub_scalar =
-                                            reinterpret_cast<scalar_expression_t*>(sub_expr.get());
+                                        auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         // Approximate: resolve from params recursively
                                         components::cursor::error_t resolve_error{error_code_t::none};
-                                        std::function<complex_logical_type(param_storage&)>
-                                            resolve_arith_type;
-                                        resolve_arith_type = [&](param_storage& p)
-                                            -> complex_logical_type {
+                                        std::function<complex_logical_type(param_storage&)> resolve_arith_type;
+                                        resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {
                                                 auto& k = std::get<components::expressions::key_t>(p);
                                                 auto f = impl::find_types(resource, k, incoming_schema);
@@ -1082,8 +1090,7 @@ namespace services::dispatcher {
                                                     if (s->params().size() >= 2) {
                                                         auto lt = resolve_arith_type(s->params()[0]);
                                                         auto rt = resolve_arith_type(s->params()[1]);
-                                                        return complex_logical_type(
-                                                            promote_type(lt.type(), rt.type()));
+                                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
                                                     }
                                                 }
                                                 return complex_logical_type(logical_type::BIGINT);
@@ -1095,8 +1102,7 @@ namespace services::dispatcher {
                                             if (resolve_error.type != error_code_t::none) {
                                                 return schema_result<named_schema>{resource, resolve_error};
                                             }
-                                            function_input_types.emplace_back(
-                                                promote_type(lt.type(), rt.type()));
+                                            function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
                                         } else {
                                             // Single-operand scalar: default to BIGINT
                                             function_input_types.emplace_back(logical_type::BIGINT);
@@ -1140,12 +1146,9 @@ namespace services::dispatcher {
                                             result.back().type.set_alias(agg_alias);
                                         }
                                     } else {
-                                        result.emplace_back(
-                                            type_from_t{node->result_alias(),
-                                                        complex_logical_type::create_struct(
-                                                            "",
-                                                            function_output_types,
-                                                            agg_alias)});
+                                        result.emplace_back(type_from_t{
+                                            node->result_alias(),
+                                            complex_logical_type::create_struct("", function_output_types, agg_alias)});
                                     }
                                 }
                                 agg_expr->add_function_uid(func.first);
@@ -1183,13 +1186,18 @@ namespace services::dispatcher {
                                     auto& k = std::get<components::expressions::key_t>(p);
                                     auto ks = k.as_string();
                                     for (const auto& a : agg_aliases) {
-                                        if (ks == a) { is_post_agg = true; break; }
+                                        if (ks == a) {
+                                            is_post_agg = true;
+                                            break;
+                                        }
                                     }
-                                    if (is_post_agg) break;
+                                    if (is_post_agg)
+                                        break;
                                 }
                             }
                             if (!is_post_agg) {
-                                auto res = impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
+                                auto res =
+                                    impl::resolve_key_paths_in_group(resource, scalar->params(), incoming_schema);
                                 if (res.is_error()) {
                                     return schema_result<named_schema>{resource, res.error()};
                                 }
@@ -1216,11 +1224,9 @@ namespace services::dispatcher {
                         // Not in result — try incoming schema and add as hidden column
                         auto field = impl::find_types(resource, skey, incoming_schema);
                         if (!field.is_error() && !field.value().empty()) {
-                            auto hidden_expr = make_scalar_expression(
-                                resource, scalar_type::get_field, skey);
+                            auto hidden_expr = make_scalar_expression(resource, scalar_type::get_field, skey);
                             node_group->append_expression(hidden_expr);
-                            result.emplace_back(
-                                type_from_t{node->result_alias(), field.value().front().type});
+                            result.emplace_back(type_from_t{node->result_alias(), field.value().front().type});
                         }
                     }
                     auto res = impl::validate_schema(resource, node_sort, result);
@@ -1322,6 +1328,7 @@ namespace services::dispatcher {
             }
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
+                auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 table_id id(resource, node->collection_full_name());
                 if (auto err = check_collection_exists(resource, catalog, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
@@ -1337,7 +1344,7 @@ namespace services::dispatcher {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
                                                                                                : node->result_alias(),
-                                                                  column});
+                                                                  column.type()});
                         }
                     } else {
                         is_computed = true;
@@ -1353,33 +1360,57 @@ namespace services::dispatcher {
                             resource,
                             components::cursor::error_t{error_code_t::schema_error,
                                                         "insert_node: too many columns in INSERT"}};
-                    // TODO: validate that missing columns in INSERT have DEFAULT or are nullable
-                    } else if (incoming_schema.value().size() == table_schema.size()) {
-                        for (size_t i = 0; i < table_schema.size(); i++) {
-                            // TODO: key translation and type compare, instead of names:
-                            if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
-                                return schema_result<named_schema>{
-                                    resource,
-                                    components::cursor::error_t{error_code_t::schema_error,
-                                                                "insert_node: field name mismatch"}};
-                            }
-                        }
                     } else {
-                        // Partial INSERT: each incoming column must exist in table schema
-                        for (size_t i = 0; i < incoming_schema.value().size(); i++) {
-                            bool found = false;
-                            for (size_t j = 0; j < table_schema.size(); j++) {
-                                // TODO: key translation and type compare, instead of names:
-                                if (table_schema[j].type.alias() == incoming_schema.value()[i].type.alias()) {
-                                    found = true;
-                                    break;
+                        if (insert_node->key_translation().size() != incoming_schema.value().size() &&
+                            table_schema.size() != incoming_schema.value().size()) {
+                            return schema_result<named_schema>{
+                                resource,
+                                components::cursor::error_t{error_code_t::schema_error,
+                                                            "insert_node: number of columns do not match"}};
+                        } else {
+                            // validate key
+                            for (auto& key : insert_node->key_translation()) {
+                                auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
+                                if (key_res.is_error()) {
+                                    return schema_result<named_schema>{resource, key_res.error()};
                                 }
                             }
-                            if (!found) {
-                                return schema_result<named_schema>{
-                                    resource,
-                                    components::cursor::error_t{error_code_t::schema_error,
-                                                                "insert_node: field not found in table schema"}};
+                            // validate corresponding types
+                            std::pmr::unordered_set<size_t> unchecked_columns(resource);
+                            for (size_t i = 0; i < table_schema.size(); i++) {
+                                unchecked_columns.emplace(i);
+                            }
+
+                            for (size_t i = 0; i < incoming_schema.value().size(); i++) {
+                                // TODO: support partial inserts into complex types
+                                // for now only first order is checked
+                                size_t index = insert_node->key_translation().empty()
+                                                   ? i
+                                                   : insert_node->key_translation()[i].path().front();
+                                const auto& corresponding_table_type = table_schema[index].type;
+                                unchecked_columns.erase(index);
+                                if (!incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
+                                    return schema_result<named_schema>{
+                                        resource,
+                                        components::cursor::error_t{error_code_t::schema_error,
+                                                                    "insert_node: can not convert data column[" +
+                                                                        std::to_string(i) + "] type to table type"}};
+                                }
+                            }
+
+                            if (!unchecked_columns.empty()) {
+                                const auto& catalog_schema = catalog.get_table_schema(id).columns();
+                                for (auto index : unchecked_columns) {
+                                    if (!catalog_schema[index].has_default_value() &&
+                                        catalog_schema[index].is_not_null()) {
+                                        return schema_result<named_schema>{
+                                            resource,
+                                            components::cursor::error_t{
+                                                error_code_t::schema_error,
+                                                "insert_node: can not fill column \'" + catalog_schema[index].name() +
+                                                    "\', because it lacks a default value and do not except null"}};
+                                    }
+                                }
                             }
                         }
                     }
@@ -1406,7 +1437,7 @@ namespace services::dispatcher {
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
-                                        column});
+                                        column.type()});
                     }
                 } else if (catalog.table_computes(id)) {
                     auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
@@ -1491,7 +1522,7 @@ namespace services::dispatcher {
                 } else {
                     const auto& sch = catalog.get_table_schema(id).columns();
                     for (const auto& column : sch) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
                     }
                 }
                 auto& keys = reinterpret_cast<node_create_index_t*>(node)->keys();

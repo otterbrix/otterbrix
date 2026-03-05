@@ -43,8 +43,9 @@ namespace components::operators {
             }
         } else {
             executor =
-                match_ ? std::move(match_)
-                       : static_cast<operator_ptr>(boost::intrusive_ptr(new transfer_scan(resource_, name_, scan_limit)));
+                match_
+                    ? std::move(match_)
+                    : static_cast<operator_ptr>(boost::intrusive_ptr(new transfer_scan(resource_, name_, scan_limit)));
         }
         if (group_) {
             group_->set_children(std::move(executor));

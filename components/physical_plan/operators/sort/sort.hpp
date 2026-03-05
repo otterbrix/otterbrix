@@ -31,9 +31,11 @@ namespace components::sort {
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                if (!k.vec) continue;
+                if (!k.vec)
+                    continue;
                 int cmp = compare_raw(*k.vec, row_a, row_b);
-                if (cmp == 0) continue;
+                if (cmp == 0)
+                    continue;
                 return (k.order_ == order::ascending) ? (cmp < 0) : (cmp > 0);
             }
             return false;

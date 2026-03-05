@@ -377,8 +377,10 @@ namespace components::types {
             case logical_type::FLOAT: {
                 float v;
                 std::memcpy(&v, &data_, sizeof(float));
-                if (std::isnan(v)) v = std::numeric_limits<float>::quiet_NaN();
-                else if (std::fpclassify(v) == FP_ZERO) v = 0.0f;
+                if (std::isnan(v))
+                    v = std::numeric_limits<float>::quiet_NaN();
+                else if (std::fpclassify(v) == FP_ZERO)
+                    v = 0.0f;
                 uint32_t bits;
                 std::memcpy(&bits, &v, sizeof(bits));
                 boost::hash_combine(h, bits);
@@ -387,8 +389,10 @@ namespace components::types {
             case logical_type::DOUBLE: {
                 double v;
                 std::memcpy(&v, &data_, sizeof(double));
-                if (std::isnan(v)) v = std::numeric_limits<double>::quiet_NaN();
-                else if (std::fpclassify(v) == FP_ZERO) v = 0.0;
+                if (std::isnan(v))
+                    v = std::numeric_limits<double>::quiet_NaN();
+                else if (std::fpclassify(v) == FP_ZERO)
+                    v = 0.0;
                 uint64_t bits;
                 std::memcpy(&bits, &v, sizeof(bits));
                 boost::hash_combine(h, bits);
@@ -758,12 +762,10 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() &&
-            value1.type().type() != value2.type().type() &&
+        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return sum(value1.cast_as(complex_logical_type(promoted)),
-                       value2.cast_as(complex_logical_type(promoted)));
+            return sum(value1.cast_as(complex_logical_type(promoted)), value2.cast_as(complex_logical_type(promoted)));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -814,8 +816,7 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() &&
-            value1.type().type() != value2.type().type() &&
+        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
             return subtract(value1.cast_as(complex_logical_type(promoted)),
@@ -868,12 +869,10 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() &&
-            value1.type().type() != value2.type().type() &&
+        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return mult(value1.cast_as(complex_logical_type(promoted)),
-                        value2.cast_as(complex_logical_type(promoted)));
+            return mult(value1.cast_as(complex_logical_type(promoted)), value2.cast_as(complex_logical_type(promoted)));
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -924,8 +923,7 @@ namespace components::types {
             }
         }
 
-        if (!value1.is_null() && !value2.is_null() &&
-            value1.type().type() != value2.type().type() &&
+        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
             return divide(value1.cast_as(complex_logical_type(promoted)),
@@ -970,8 +968,7 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() &&
-            value1.type().type() != value2.type().type() &&
+        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
             return modulus(value1.cast_as(complex_logical_type(promoted)),

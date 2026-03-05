@@ -1,9 +1,9 @@
 #include "operator_group.hpp"
 
+#include "arithmetic_eval.hpp"
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/operator_empty.hpp>
-#include "arithmetic_eval.hpp"
 
 namespace components::operators {
 
@@ -21,7 +21,8 @@ namespace components::operators {
         }
     } // anonymous namespace
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log,
+    operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
+                                       log_t log,
                                        expressions::expression_ptr having,
                                        size_t internal_aggregate_count)
         : read_write_operator_t(resource, log, operator_type::aggregate)
@@ -39,8 +40,9 @@ namespace components::operators {
         keys_.push_back({name, std::move(getter), std::pmr::vector<size_t>(resource_)});
     }
 
-    void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
-                                    std::pmr::vector<size_t> col_path) {
+    void operator_group_t::add_key(const std::pmr::string& name,
+                                   get::operator_get_ptr&& getter,
+                                   std::pmr::vector<size_t> col_path) {
         keys_.push_back({name, std::move(getter), std::move(col_path)});
     }
 
@@ -62,8 +64,8 @@ namespace components::operators {
 
             // Phase 1: Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto [result_vec, arith_error] =
+                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
@@ -121,8 +123,8 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto [result_vec, arith_error] =
+                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
@@ -350,17 +352,15 @@ namespace components::operators {
 
     // TODO: post-aggregate keys use string matching (alias) because columns are synthetic;
     //       consider path-based resolution when aggregate output schema is formalized
-    void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context,
-                                                 vector::data_chunk_t& result) {
+    void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         auto num_groups = result.size();
         result.data.reserve(result.data.size() + post_aggregates_.size());
         for (auto& post : post_aggregates_) {
             // Determine result type from first row computation
             types::complex_logical_type col_type{types::logical_type::NA};
 
-            auto resolve = [&](const expressions::param_storage& param,
-                               size_t row_idx,
-                               auto& self) -> types::logical_value_t {
+            auto resolve =
+                [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
                 if (std::holds_alternative<expressions::key_t>(param)) {
                     auto& key = std::get<expressions::key_t>(param);
                     for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
@@ -375,13 +375,12 @@ namespace components::operators {
                 } else {
                     auto& sub_expr = std::get<expressions::expression_ptr>(param);
                     if (sub_expr->group() == expressions::expression_group::scalar) {
-                        auto* sub_scalar =
-                            static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
+                        auto* sub_scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
                         if (sub_scalar->type() == expressions::scalar_type::unary_minus &&
                             !sub_scalar->params().empty()) {
                             auto inner = self(sub_scalar->params()[0], row_idx, self);
-                            return types::logical_value_t::subtract(
-                                types::logical_value_t(resource_, int64_t(0)), inner);
+                            return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)),
+                                                                    inner);
                         }
                         if (sub_scalar->params().size() >= 2) {
                             auto left_val = self(sub_scalar->params()[0], row_idx, self);
@@ -408,12 +407,13 @@ namespace components::operators {
 
             // Compute result for each group and collect into a new vector
             if (post.op == expressions::scalar_type::unary_minus) {
-                if (post.operands.empty()) continue;
+                if (post.operands.empty())
+                    continue;
                 std::pmr::vector<types::logical_value_t> col_values(resource_);
                 for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                     auto inner = resolve(post.operands[0], group_idx, resolve);
-                    auto result_val = types::logical_value_t::subtract(
-                        types::logical_value_t(resource_, int64_t(0)), inner);
+                    auto result_val =
+                        types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
                     result_val.set_alias(std::string(post.alias));
                     if (group_idx == 0) {
                         col_type = result_val.type();
@@ -428,7 +428,8 @@ namespace components::operators {
                 result.data.emplace_back(std::move(new_col));
                 continue;
             }
-            if (post.operands.size() < 2) continue;
+            if (post.operands.size() < 2)
+                continue;
             std::pmr::vector<types::logical_value_t> col_values(resource_);
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 auto left_val = resolve(post.operands[0], group_idx, resolve);
@@ -470,20 +471,19 @@ namespace components::operators {
         }
     }
 
-    void operator_group_t::filter_having(pipeline::context_t* pipeline_context,
-                                          vector::data_chunk_t& result) {
+    void operator_group_t::filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         if (!having_ || having_->group() != expressions::expression_group::compare) {
             return;
         }
         auto* cmp = static_cast<const expressions::compare_expression_t*>(having_.get());
 
-        auto resolve = [&](const expressions::param_storage& param,
-                           size_t row_idx,
-                           auto& self) -> types::logical_value_t {
+        auto resolve =
+            [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
                 for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
-                    if (result.data[col_idx].type().has_alias() && result.data[col_idx].type().alias() == key.as_string()) {
+                    if (result.data[col_idx].type().has_alias() &&
+                        result.data[col_idx].type().alias() == key.as_string()) {
                         return result.value(col_idx, row_idx);
                     }
                 }
@@ -495,11 +495,9 @@ namespace components::operators {
                 auto& sub_expr = std::get<expressions::expression_ptr>(param);
                 if (sub_expr->group() == expressions::expression_group::scalar) {
                     auto* scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
-                    if (scalar->type() == expressions::scalar_type::unary_minus &&
-                        !scalar->params().empty()) {
+                    if (scalar->type() == expressions::scalar_type::unary_minus && !scalar->params().empty()) {
                         auto inner = self(scalar->params()[0], row_idx, self);
-                        return types::logical_value_t::subtract(
-                            types::logical_value_t(resource_, int64_t(0)), inner);
+                        return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
                     }
                     if (scalar->params().size() >= 2) {
                         auto left_val = self(scalar->params()[0], row_idx, self);

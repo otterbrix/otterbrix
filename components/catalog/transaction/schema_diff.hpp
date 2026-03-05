@@ -12,10 +12,8 @@ namespace components::catalog {
     public:
         explicit schema_diff(std::pmr::memory_resource* resource);
 
-        void add_column(const std::string& name,
-                        const types::complex_logical_type& type,
-                        bool required = false,
-                        const std::pmr::string& doc = "");
+        void
+        add_column(const table::column_definition_t& column, bool required = false, const std::pmr::string& doc = "");
         void delete_column(const std::string& name);
         void rename_column(const std::string& name, const std::string& new_name);
         void update_column_type(const std::string& name, const types::complex_logical_type& new_type);
@@ -39,20 +37,20 @@ namespace components::catalog {
         };
 
         struct struct_entry {
-            types::complex_logical_type type;
+            table::column_definition_t column;
             types::field_description desc;
         };
 
         struct diff_info {
             diff_info(diff_info_type info_type,
-                      types::field_description desc = types::field_description(),
-                      types::complex_logical_type type = types::complex_logical_type());
+                      table::column_definition_t column,
+                      types::field_description desc = types::field_description());
 
             std::bitset<diff_info_type::COUNT> info;
             struct_entry entry;
         };
 
-        bool do_update(std::vector<types::complex_logical_type>& new_columns,
+        bool do_update(std::vector<components::table::column_definition_t>& new_columns,
                        std::vector<types::field_description>& new_desc,
                        const std::string& name) const;
 

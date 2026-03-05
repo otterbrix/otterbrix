@@ -37,9 +37,12 @@ namespace components::sort {
         // Handle NULLs: NULLs sort last
         bool a_null = vec.is_null(a);
         bool b_null = vec.is_null(b);
-        if (a_null && b_null) return 0;
-        if (a_null) return 1;
-        if (b_null) return -1;
+        if (a_null && b_null)
+            return 0;
+        if (a_null)
+            return 1;
+        if (b_null)
+            return -1;
 
         switch (vec.type().to_physical_type()) {
             case types::physical_type::BOOL:
@@ -71,7 +74,8 @@ namespace components::sort {
                 return compare_typed<std::string_view>(vec, a, b);
             default: {
                 // Fallback for composite types (STRUCT, LIST, etc.) — use logical_value_t
-                if (!vec.resource()) return 0;
+                if (!vec.resource())
+                    return 0;
                 auto va = vec.value(a);
                 auto vb = vec.value(b);
                 auto cmp = va.compare(vb);

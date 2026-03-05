@@ -361,10 +361,7 @@ namespace components::vector {
 
     void data_chunk_t::slice(std::pmr::memory_resource* resource, uint64_t offset, uint64_t slice_count) {
         assert(offset + slice_count <= size());
-        indexing_vector_t indexing(resource, slice_count);
-        for (uint64_t i = 0; i < slice_count; i++) {
-            indexing.set_index(i, offset + i);
-        }
+        indexing_vector_t indexing(resource, offset, slice_count);
         slice(indexing, slice_count);
     }
 

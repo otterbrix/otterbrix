@@ -1,10 +1,23 @@
 #include "utils.hpp"
 #include <components/expressions/key.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <stdexcept>
 
 namespace components::operators::predicates::impl {
 
+    // Forward declaration
+    value_getter create_arithmetic_value_getter(std::pmr::memory_resource* resource,
+                                                const compute::function_registry_t* function_registry,
+                                                const expressions::scalar_expression_ptr& expr,
+                                                const logical_plan::storage_parameters* parameters);
+
     value_getter create_value_getter(const expressions::key_t& key) {
-        assert(key.side() != expressions::side_t::undefined);
+        if (key.side() == expressions::side_t::undefined) {
+            throw std::logic_error("create_value_getter: key side is undefined");
+        }
+        if (key.path().empty()) {
+            throw std::logic_error("create_value_getter: key path is empty");
+        }
         if (key.side() == expressions::side_t::left) {
             return [path = key.path()](const vector::data_chunk_t& chunk_left,
                                        const vector::data_chunk_t&,
@@ -48,9 +61,18 @@ namespace components::operators::predicates::impl {
                 auto id = std::get<core::parameter_id_t>(arg);
                 args_getters.emplace_back(create_value_getter(id, parameters));
             } else {
-                const auto& sub_expr = reinterpret_cast<const expressions::function_expression_ptr&>(
-                    std::get<expressions::expression_ptr>(arg));
-                args_getters.emplace_back(create_value_getter(resource, function_registry, sub_expr, parameters));
+                const auto& sub_expr_ptr = std::get<expressions::expression_ptr>(arg);
+                if (sub_expr_ptr->group() == expressions::expression_group::scalar) {
+                    const auto& scalar_expr =
+                        reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr_ptr);
+                    args_getters.emplace_back(
+                        create_arithmetic_value_getter(resource, function_registry, scalar_expr, parameters));
+                } else {
+                    const auto& func_expr =
+                        reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr_ptr);
+                    args_getters.emplace_back(
+                        create_value_getter(resource, function_registry, func_expr, parameters));
+                }
             }
         }
 
@@ -75,6 +97,39 @@ namespace components::operators::predicates::impl {
         };
     }
 
+    value_getter create_arithmetic_value_getter(std::pmr::memory_resource* resource,
+                                                const compute::function_registry_t* function_registry,
+                                                const expressions::scalar_expression_ptr& expr,
+                                                const logical_plan::storage_parameters* parameters) {
+        assert(expr->params().size() >= 2);
+        auto left_getter = create_value_getter(resource, function_registry, expr->params()[0], parameters);
+        auto right_getter = create_value_getter(resource, function_registry, expr->params()[1], parameters);
+
+        auto op = expr->type();
+        return [left_getter = std::move(left_getter), right_getter = std::move(right_getter), op](
+                   const vector::data_chunk_t& chunk_left,
+                   const vector::data_chunk_t& chunk_right,
+                   size_t index_left,
+                   size_t index_right) -> types::logical_value_t {
+            auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
+            auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
+            switch (op) {
+                case expressions::scalar_type::add:
+                    return types::logical_value_t::sum(left_val, right_val);
+                case expressions::scalar_type::subtract:
+                    return types::logical_value_t::subtract(left_val, right_val);
+                case expressions::scalar_type::multiply:
+                    return types::logical_value_t::mult(left_val, right_val);
+                case expressions::scalar_type::divide:
+                    return types::logical_value_t::divide(left_val, right_val);
+                case expressions::scalar_type::mod:
+                    return types::logical_value_t::modulus(left_val, right_val);
+                default:
+                    throw std::logic_error("Unsupported arithmetic op in predicate");
+            }
+        };
+    }
+
     value_getter create_value_getter(std::pmr::memory_resource* resource,
                                      const compute::function_registry_t* function_registry,
                                      const expressions::param_storage& var,
@@ -86,9 +141,16 @@ namespace components::operators::predicates::impl {
             auto id = std::get<core::parameter_id_t>(var);
             return create_value_getter(id, parameters);
         } else {
-            const auto& sub_expr = reinterpret_cast<const expressions::function_expression_ptr&>(
-                std::get<expressions::expression_ptr>(var));
-            return create_value_getter(resource, function_registry, sub_expr, parameters);
+            const auto& sub_expr = std::get<expressions::expression_ptr>(var);
+            if (sub_expr->group() == expressions::expression_group::scalar) {
+                const auto& scalar_expr =
+                    reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr);
+                return create_arithmetic_value_getter(resource, function_registry, scalar_expr, parameters);
+            } else {
+                const auto& func_expr =
+                    reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr);
+                return create_value_getter(resource, function_registry, func_expr, parameters);
+            }
         }
     }
 

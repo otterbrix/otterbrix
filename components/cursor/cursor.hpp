@@ -38,7 +38,8 @@ namespace components::cursor {
         incorrect_function_argument = 12,
         incorrect_function_return_type = 13,
         ambiguous_name = 14,
-        field_not_exists = 15
+        field_not_exists = 15,
+        invalid_parameter = 16
     };
 
     struct error_t {

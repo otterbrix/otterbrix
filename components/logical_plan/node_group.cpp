@@ -4,8 +4,11 @@
 
 namespace components::logical_plan {
 
-    node_group_t::node_group_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection)
-        : node_t(resource, node_type::group_t, collection) {}
+    node_group_t::node_group_t(std::pmr::memory_resource* resource,
+                               const collection_full_name_t& collection,
+                               expression_ptr having)
+        : node_t(resource, node_type::group_t, collection)
+        , having_(std::move(having)) {}
 
     hash_t node_group_t::hash_impl() const { return 0; }
 
@@ -25,22 +28,26 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_group_ptr make_node_group(std::pmr::memory_resource* resource, const collection_full_name_t& collection) {
-        return {new node_group_t{resource, collection}};
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
+                                   const collection_full_name_t& collection,
+                                   expression_ptr having) {
+        return {new node_group_t{resource, collection, std::move(having)}};
     }
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    const collection_full_name_t& collection,
-                                   const std::vector<expression_ptr>& expressions) {
-        auto node = new node_group_t{resource, collection};
+                                   const std::vector<expression_ptr>& expressions,
+                                   expression_ptr having) {
+        auto node = new node_group_t{resource, collection, std::move(having)};
         node->append_expressions(expressions);
         return node;
     }
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    const collection_full_name_t& collection,
-                                   const std::pmr::vector<expression_ptr>& expressions) {
-        auto node = new node_group_t{resource, collection};
+                                   const std::pmr::vector<expression_ptr>& expressions,
+                                   expression_ptr having) {
+        auto node = new node_group_t{resource, collection, std::move(having)};
         node->append_expressions(expressions);
         return node;
     }

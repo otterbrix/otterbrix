@@ -1,5 +1,7 @@
 #include "coalesce_value.hpp"
 
+#include <stdexcept>
+
 namespace components::operators::get {
 
     operator_get_ptr coalesce_value_t::create(std::vector<expressions::param_storage> params,
@@ -35,28 +37,24 @@ namespace components::operators::get {
         for (const auto& entry : entries_) {
             if (entry.type == coalesce_entry::kind::key) {
                 const auto& key = keys_[entry.index];
-                auto* local_values = row.data();
-                size_t size = row.size();
-                bool found = false;
-                for (size_t i = 0; i < key.storage().size(); i++) {
-                    auto it = std::find_if(local_values, local_values + size, [&](const types::logical_value_t& value) {
-                        return core::pmr::operator==(value.type().alias(), key.storage()[i]);
-                    });
-                    if (it == local_values + size) {
+                const auto& path = key.path();
+                if (path.empty() || path[0] >= row.size()) {
+                    throw std::logic_error("coalesce_value_t: invalid key path");
+                }
+                auto* val = &row[path[0]];
+                bool found = true;
+                for (size_t i = 1; i < path.size(); i++) {
+                    if (path[i] >= val->children().size()) {
+                        found = false;
                         break;
                     }
-                    if (i + 1 != key.storage().size()) {
-                        local_values = it->children().data();
-                        size = it->children().size();
-                    } else {
-                        if (it->type().type() != types::logical_type::NA) {
-                            return {*it};
-                        }
-                        found = true;
-                    }
+                    val = &val->children()[path[i]];
                 }
                 if (!found) {
-                    continue;
+                    throw std::logic_error("coalesce_value_t: child path out of range");
+                }
+                if (val->type().type() != types::logical_type::NA) {
+                    return {*val};
                 }
             } else {
                 return {constants_[entry.index]};

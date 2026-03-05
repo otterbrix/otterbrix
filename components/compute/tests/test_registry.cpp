@@ -20,7 +20,12 @@ TEST_CASE("components::compute::registry::basic") {
             auto* fn = reg->get_function(uid);
             REQUIRE(fn != nullptr);
             REQUIRE(fn->name() == name);
-            REQUIRE(fn->fn_arity().num_args == 1);
+            if (name == "count") {
+                REQUIRE(fn->fn_arity().num_args == 0);
+                REQUIRE(fn->fn_arity().varargs == true);
+            } else {
+                REQUIRE(fn->fn_arity().num_args == 1);
+            }
         }
     }
 

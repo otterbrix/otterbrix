@@ -138,25 +138,7 @@ namespace components::expressions {
                                                size_t row_from,
                                                const logical_plan::storage_parameters*) {
         auto side = key_.side();
-        // we have to check it twice
-        if (side == side_t::undefined) {
-            for (const auto& column : to.data) {
-                if (core::pmr::operator==(column.type().alias(), key().storage().front())) {
-                    side = side_t::left;
-                    key_.set_side(side);
-                    break;
-                }
-            }
-        }
-        if (side == side_t::undefined) {
-            for (const auto& column : from.data) {
-                if (core::pmr::operator==(column.type().alias(), key().storage().front())) {
-                    side = side_t::right;
-                    key_.set_side(side);
-                    break;
-                }
-            }
-        }
+        assert(side != side_t::undefined && "validation must resolve side before execution");
         if (side == side_t::right) {
             assert(key_.path().front() != size_t(-1));
             output_ = from.value(key_.path(), row_from);
@@ -193,62 +175,61 @@ namespace components::expressions {
         return left_ == rhs.left_ && right_ == rhs.right_;
     }
 
+    namespace {
+        // Binary arithmetic dispatch for update expressions.
+        // Covers basic arithmetic (add/sub/mult/div/mod), exponent, and bitwise ops.
+        types::logical_value_t apply_binary_update_op(update_expr_type type,
+                                                      const types::logical_value_t& left,
+                                                      const types::logical_value_t& right) {
+            switch (type) {
+                case update_expr_type::add:     return types::logical_value_t::sum(left, right);
+                case update_expr_type::sub:     return types::logical_value_t::subtract(left, right);
+                case update_expr_type::mult:    return types::logical_value_t::mult(left, right);
+                case update_expr_type::div:     return types::logical_value_t::divide(left, right);
+                case update_expr_type::mod:     return types::logical_value_t::modulus(left, right);
+                case update_expr_type::exp:     return types::logical_value_t::exponent(left, right);
+                case update_expr_type::AND:     return types::logical_value_t::bit_and(left, right);
+                case update_expr_type::OR:      return types::logical_value_t::bit_or(left, right);
+                case update_expr_type::XOR:     return types::logical_value_t::bit_xor(left, right);
+                case update_expr_type::shift_left:  return types::logical_value_t::bit_shift_l(left, right);
+                case update_expr_type::shift_right: return types::logical_value_t::bit_shift_r(left, right);
+                default:
+                    throw std::logic_error("apply_binary_update_op: unsupported update_expr_type");
+            }
+        }
+
+        // Unary ops dispatch for update expressions.
+        types::logical_value_t apply_unary_update_op(update_expr_type type,
+                                                     const types::logical_value_t& operand) {
+            switch (type) {
+                case update_expr_type::sqr_root:  return types::logical_value_t::sqr_root(operand);
+                case update_expr_type::cube_root: return types::logical_value_t::cube_root(operand);
+                case update_expr_type::factorial:  return types::logical_value_t::factorial(operand);
+                case update_expr_type::abs:        return types::logical_value_t::absolute(operand);
+                case update_expr_type::NOT:        return types::logical_value_t::bit_not(operand);
+                default:
+                    throw std::logic_error("apply_unary_update_op: unsupported update_expr_type");
+            }
+        }
+
+        bool is_unary_update_op(update_expr_type type) {
+            return type == update_expr_type::sqr_root ||
+                   type == update_expr_type::cube_root ||
+                   type == update_expr_type::factorial ||
+                   type == update_expr_type::abs ||
+                   type == update_expr_type::NOT;
+        }
+    } // anonymous namespace
+
     bool update_expr_calculate_t::execute_impl(vector::data_chunk_t&,
                                                const vector::data_chunk_t&,
                                                size_t,
                                                size_t,
                                                const logical_plan::storage_parameters*) {
-        switch (type_) {
-            case update_expr_type::add:
-                output_ = types::logical_value_t::sum(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::sub:
-                output_ = types::logical_value_t::subtract(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::mult:
-                output_ = types::logical_value_t::mult(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::div:
-                output_ = types::logical_value_t::divide(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::mod:
-                output_ = types::logical_value_t::modulus(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::exp:
-                output_ = types::logical_value_t::exponent(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::sqr_root:
-                output_ = types::logical_value_t::sqr_root(left_->output().value());
-                break;
-            case update_expr_type::cube_root:
-                output_ = types::logical_value_t::cube_root(left_->output().value());
-                break;
-            case update_expr_type::factorial:
-                output_ = types::logical_value_t::factorial(left_->output().value());
-                break;
-            case update_expr_type::abs:
-                output_ = types::logical_value_t::absolute(left_->output().value());
-                break;
-            case update_expr_type::AND:
-                output_ = types::logical_value_t::bit_and(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::OR:
-                output_ = types::logical_value_t::bit_or(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::XOR:
-                output_ = types::logical_value_t::bit_xor(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::NOT:
-                output_ = types::logical_value_t::bit_not(left_->output().value());
-                break;
-            case update_expr_type::shift_left:
-                output_ = types::logical_value_t::bit_shift_l(left_->output().value(), right_->output().value());
-                break;
-            case update_expr_type::shift_right:
-                output_ = types::logical_value_t::bit_shift_r(left_->output().value(), right_->output().value());
-                break;
-            default:
-                break;
+        if (is_unary_update_op(type_)) {
+            output_ = apply_unary_update_op(type_, left_->output().value());
+        } else {
+            output_ = apply_binary_update_op(type_, left_->output().value(), right_->output().value());
         }
         return false;
     }

@@ -7,6 +7,7 @@ set(SOURCE_${PROJECT_NAME}
         vector_operations.cpp
         data_chunk.cpp
         validation.cpp
+        arithmetic.cpp
 
         arrow/appender/bool_data.cpp
         arrow/appender/fixed_size_list_data.cpp

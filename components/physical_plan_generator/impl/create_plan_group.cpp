@@ -2,6 +2,7 @@
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/node_group.hpp>
 
 #include <components/physical_plan/operators/operator_group.hpp>
 
@@ -15,11 +16,47 @@ namespace services::planner::impl {
 
     namespace {
 
+        using components::expressions::scalar_type;
+        using components::expressions::expression_group;
+
+        bool is_arithmetic_scalar_type(scalar_type t) {
+            return t == scalar_type::add || t == scalar_type::subtract ||
+                   t == scalar_type::multiply || t == scalar_type::divide ||
+                   t == scalar_type::mod || t == scalar_type::case_expr ||
+                   t == scalar_type::unary_minus;
+        }
+
+        // Check if any operand (recursively) references an aggregate result
+        bool has_aggregate_operand(const std::pmr::vector<components::expressions::param_storage>& operands,
+                                   const std::vector<std::string>& aggregate_aliases) {
+            for (const auto& op : operands) {
+                if (std::holds_alternative<components::expressions::key_t>(op)) {
+                    auto& key = std::get<components::expressions::key_t>(op);
+                    for (const auto& alias : aggregate_aliases) {
+                        if (!key.storage().empty() &&
+                            std::string_view(key.storage().back()) == std::string_view(alias)) {
+                            return true;
+                        }
+                    }
+                } else if (std::holds_alternative<components::expressions::expression_ptr>(op)) {
+                    auto& sub_expr = std::get<components::expressions::expression_ptr>(op);
+                    if (sub_expr->group() == expression_group::scalar) {
+                        auto* sub_scalar =
+                            static_cast<const components::expressions::scalar_expression_t*>(sub_expr.get());
+                        if (has_aggregate_operand(sub_scalar->params(), aggregate_aliases)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
         void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr,
+                              const std::vector<std::string>& aggregate_aliases,
+                              std::pmr::memory_resource* resource,
                               const components::logical_plan::storage_parameters* storage_params) {
-            using components::expressions::scalar_type;
-
             switch (expr->type()) {
                 case scalar_type::group_field:
                     break;
@@ -27,8 +64,15 @@ namespace services::planner::impl {
                     auto field = expr->params().empty()
                                      ? expr->key()
                                      : std::get<components::expressions::key_t>(expr->params().front());
+                    const auto& path = field.path();
+                    if (path.empty()) {
+                        throw std::logic_error("create_plan_group: get_field has empty path for key: " +
+                                               expr->key().as_string());
+                    }
+                    std::pmr::vector<size_t> col_path(path.begin(), path.end(), resource);
                     group->add_key(expr->key().storage().back(),
-                                   components::operators::get::simple_value_t::create(field));
+                                   components::operators::get::simple_value_t::create(field),
+                                   std::move(col_path));
                     break;
                 }
                 case scalar_type::coalesce: {
@@ -45,8 +89,46 @@ namespace services::planner::impl {
                         components::operators::get::case_when_value_t::create(expr->params(), storage_params));
                     break;
                 }
-                default:
+                default: {
+                    if (is_arithmetic_scalar_type(expr->type())) {
+                        if (expr->key().storage().empty()) {
+                            throw std::logic_error("create_plan_group: arithmetic expression has empty storage for key: " +
+                                                   expr->key().as_string());
+                        }
+                        auto alias = std::pmr::string(expr->key().storage().back(), resource);
+                        if (has_aggregate_operand(expr->params(), aggregate_aliases)) {
+                            // Post-aggregate arithmetic
+                            components::operators::post_aggregate_column_t post{
+                                alias,
+                                expr->type(),
+                                expr->params()};
+                            group->add_post_aggregate(std::move(post));
+                        } else {
+                            // Pre-group computed column
+                            components::operators::computed_column_t comp{
+                                alias,
+                                expr->type(),
+                                expr->params()};
+                            group->add_computed_column(std::move(comp));
+                            // Also add as key for output projection
+                            const auto& key_path = expr->key().path();
+                            if (!key_path.empty()) {
+                                std::pmr::vector<size_t> col_path(key_path.begin(), key_path.end(), resource);
+                                group->add_key(
+                                    alias,
+                                    components::operators::get::simple_value_t::create(expr->key()),
+                                    std::move(col_path));
+                            } else {
+                                // Computed columns have empty path at plan time;
+                                // resolved at runtime by operator_group
+                                group->add_key(
+                                    alias,
+                                    components::operators::get::simple_value_t::create(expr->key()));
+                            }
+                        }
+                    }
                     break;
+                }
             }
         }
 
@@ -74,22 +156,45 @@ namespace services::planner::impl {
         boost::intrusive_ptr<components::operators::operator_group_t> group;
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
-        if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log.clone());
-        } else {
-            group = new components::operators::operator_group_t(node->resource(), log_t{});
+        
+        components::expressions::expression_ptr having;
+        size_t internal_aggregate_count = 0;
+        if (auto* group_node = dynamic_cast<const components::logical_plan::node_group_t*>(node.get())) {
+            having = group_node->having();
+            internal_aggregate_count = group_node->internal_aggregate_count;
         }
+
+        if (known) {
+            group = new components::operators::operator_group_t(context.resource, context.log.clone(), std::move(having), internal_aggregate_count);
+        } else {
+            group = new components::operators::operator_group_t(node->resource(), log_t{}, std::move(having), internal_aggregate_count);
+        }
+
+        // First pass: collect aggregate aliases
+        std::vector<std::string> aggregate_aliases;
+        for (const auto& expr : node->expressions()) {
+            if (expr->group() == expression_group::aggregate) {
+                auto* agg_expr =
+                    static_cast<const components::expressions::aggregate_expression_t*>(expr.get());
+                aggregate_aliases.push_back(agg_expr->key().as_string());
+            }
+        }
+
+        // Second pass: create operators
+        auto plan_resource = known ? context.resource : node->resource();
         std::for_each(node->expressions().begin(),
                       node->expressions().end(),
                       [&](const components::expressions::expression_ptr& expr) {
-                          if (expr->group() == components::expressions::expression_group::scalar) {
+                          if (expr->group() == expression_group::scalar) {
                               add_group_scalar(
                                   group,
                                   static_cast<const components::expressions::scalar_expression_t*>(expr.get()),
+                                  aggregate_aliases,
+                                  plan_resource,
                                   params);
-                          } else if (expr->group() == components::expressions::expression_group::aggregate) {
+                          } else if (expr->group() == expression_group::aggregate) {
                               add_group_aggregate(
-                                  known ? context.resource : node->resource(),
+                                  plan_resource,
                                   known ? context.log.clone() : log_t{},
                                   function_registry,
                                   group,

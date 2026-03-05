@@ -34,6 +34,7 @@ namespace components::types {
 
         bool operator==(const logical_value_t& rhs) const;
         bool operator!=(const logical_value_t& rhs) const;
+        size_t hash() const noexcept;
         bool operator<(const logical_value_t& rhs) const;
         bool operator>(const logical_value_t& rhs) const;
         bool operator<=(const logical_value_t& rhs) const;
@@ -127,6 +128,8 @@ namespace components::types {
             }
         }
     };
+
+    size_t hash_row(const std::pmr::vector<logical_value_t>& row) noexcept;
 
     static const logical_value_t NULL_LOGICAL_VALUE =
         logical_value_t{std::pmr::null_memory_resource(), complex_logical_type{logical_type::NA}};

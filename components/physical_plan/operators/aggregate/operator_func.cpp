@@ -1,6 +1,8 @@
 #include "operator_func.hpp"
 
 #include <components/compute/function.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <components/physical_plan/operators/arithmetic_eval.hpp>
 
 namespace components::operators::aggregate {
 
@@ -19,25 +21,54 @@ namespace components::operators::aggregate {
     types::logical_value_t operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
         auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA);
         if (left_ && left_->output()) {
-            const auto& chunk = left_->output()->data_chunk();
+            auto& chunk = left_->output()->data_chunk();
             using column_it = decltype(vector::data_chunk_t::data)::const_iterator;
             using columns_var = std::variant<column_it, types::logical_value_t>;
+
+            // Pre-compute any arithmetic expression arguments
+            std::vector<vector::vector_t> computed_vecs;
+            for (const auto& arg : args_) {
+                if (std::holds_alternative<expressions::expression_ptr>(arg)) {
+                    auto& expr = std::get<expressions::expression_ptr>(arg);
+                    if (expr->group() == expressions::expression_group::scalar) {
+                        auto* scalar_expr =
+                            static_cast<const expressions::scalar_expression_t*>(expr.get());
+                        auto [computed, arith_error] = operators::evaluate_arithmetic(
+                            left_->output()->resource(),
+                            scalar_expr->type(),
+                            scalar_expr->params(),
+                            chunk,
+                            pipeline_context->parameters);
+                        if (!arith_error.empty()) {
+                            set_error(std::move(arith_error));
+                            return result;
+                        }
+                        computed_vecs.emplace_back(std::move(computed));
+                    }
+                }
+            }
+
             std::pmr::vector<columns_var> columns(left_->output()->resource());
             columns.reserve(args_.size());
+            size_t computed_idx = 0;
             for (const auto& arg : args_) {
                 if (std::holds_alternative<expressions::key_t>(arg)) {
                     const auto& key = std::get<expressions::key_t>(arg);
-                    auto it = std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& v) {
-                        return v.type().alias() == key.as_string();
-                    });
-                    if (it != chunk.data.end()) {
-                        columns.emplace_back(it);
-                    } else {
-                        break;
-                    }
-                } else {
+                    assert(!key.path().empty() && "aggregate key path must be resolved");
+                    assert(key.path().front() < chunk.data.size() && "aggregate key path out of range");
+                    columns.emplace_back(chunk.data.begin() +static_cast<std::ptrdiff_t>(key.path().front()));
+                } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
                     const auto& id = std::get<core::parameter_id_t>(arg);
                     columns.emplace_back(pipeline_context->parameters.parameters.at(id));
+                } else if (std::holds_alternative<expressions::expression_ptr>(arg)) {
+                    // Use the pre-computed vector - add it to chunk data temporarily
+                    if (computed_idx < computed_vecs.size()) {
+                        chunk.data.emplace_back(std::move(computed_vecs[computed_idx]));
+                        auto it = chunk.data.end() - 1;
+                        columns.emplace_back(
+                            static_cast<decltype(vector::data_chunk_t::data)::const_iterator>(it));
+                        computed_idx++;
+                    }
                 }
             }
             if (columns.size() == args_.size()) {
@@ -57,17 +88,19 @@ namespace components::operators::aggregate {
                         c.data[i].reference(*std::get<column_it>(columns.at(i)));
                     } else {
                         c.data[i].reference(std::get<types::logical_value_t>(columns.at(i)));
-                        c.data[i].flatten(vector::indexing_vector_t(left_->output()->resource(), chunk.size()),
-                                          chunk.size());
+                        c.data[i].flatten(
+                            vector::indexing_vector_t(left_->output()->resource(), chunk.size()),
+                            chunk.size());
                     }
                 }
-                if (distinct_ && c.size() > 0) {
+                // DISTINCT: de-duplicate rows before executing aggregate function
+                // TODO: move DISTINCT deduplication to function-specific handler
+                if (distinct_ && c.size() > 0 && c.column_count() > 0) {
                     std::pmr::vector<uint64_t> unique_indices(resource_);
                     unique_indices.reserve(c.size());
                     for (uint64_t row = 0; row < c.size(); row++) {
                         bool dup = false;
                         for (auto idx : unique_indices) {
-                            // TODO: distinct by the appropriate column, instead of the first one
                             if (c.data[0].value(row) == c.data[0].value(idx)) {
                                 dup = true;
                                 break;

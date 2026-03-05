@@ -92,6 +92,10 @@ namespace components::operators {
         void mark_executed();
         void clear(); //todo: replace by copy
 
+        void set_error(std::string msg);
+        bool has_error() const noexcept;
+        const std::string& error_message() const noexcept;
+
     protected:
         std::pmr::memory_resource* resource_;
         log_t log_;
@@ -111,6 +115,7 @@ namespace components::operators {
         operator_state state_{operator_state::created};
         bool root{false};
         bool prepared_{false};
+        std::string error_message_;
     };
 
     class read_only_operator_t : public operator_t {

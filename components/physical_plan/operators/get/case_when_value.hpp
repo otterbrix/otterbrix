@@ -3,6 +3,7 @@
 #include "operator_get.hpp"
 
 #include <expressions/expression.hpp>
+#include <expressions/scalar_expression.hpp>
 #include <logical_plan/param_storage.hpp>
 
 namespace components::operators::get {
@@ -13,6 +14,11 @@ namespace components::operators::get {
                                        const logical_plan::storage_parameters* storage_params);
 
     private:
+        struct result_expression_t {
+            expressions::scalar_type op;
+            std::vector<expressions::param_storage> params;
+        };
+
         struct when_clause {
             expressions::key_t condition_key;
             expressions::compare_type condition_cmp;
@@ -21,7 +27,8 @@ namespace components::operators::get {
             enum class result_kind
             {
                 key,
-                constant
+                constant,
+                expression
             };
             result_kind res_type;
             size_t res_index;
@@ -29,22 +36,28 @@ namespace components::operators::get {
 
         std::vector<expressions::key_t> result_keys_;
         std::vector<types::logical_value_t> result_constants_;
+        std::vector<result_expression_t> result_expressions_;
         std::vector<when_clause> clauses_;
 
         enum class else_kind
         {
             key,
             constant,
+            expression,
             null_value
         };
         else_kind else_type_{else_kind::null_value};
         size_t else_index_{0};
 
+        const logical_plan::storage_parameters* storage_params_{nullptr};
+
         case_when_value_t(std::vector<expressions::key_t> result_keys,
                           std::vector<types::logical_value_t> result_constants,
+                          std::vector<result_expression_t> result_expressions,
                           std::vector<when_clause> clauses,
                           else_kind else_type,
-                          size_t else_index);
+                          size_t else_index,
+                          const logical_plan::storage_parameters* storage_params);
 
         std::vector<types::logical_value_t>
         get_values_impl(const std::pmr::vector<types::logical_value_t>& row) override;
@@ -55,6 +68,9 @@ namespace components::operators::get {
         types::logical_value_t get_result(when_clause::result_kind kind,
                                           size_t index,
                                           const std::pmr::vector<types::logical_value_t>& row) const;
+
+        types::logical_value_t evaluate_expression(const result_expression_t& expr,
+                                                   const std::pmr::vector<types::logical_value_t>& row) const;
 
         bool evaluate_condition(const when_clause& clause, const std::pmr::vector<types::logical_value_t>& row) const;
     };

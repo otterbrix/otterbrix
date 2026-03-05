@@ -267,7 +267,7 @@ namespace components::compute {
             {2, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
         std::pair<std::string, registered_func_id>{
             "count",
-            {3, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+            {3,{kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}},kernel_signature_t{{}, {output_type::fixed(types::logical_type::UBIGINT)}}}}},
         std::pair<std::string, registered_func_id>{
             "avg",
             {4, {kernel_signature_t{{numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))}}}}}};

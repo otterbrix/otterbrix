@@ -104,6 +104,7 @@ namespace components::vector {
 
         vector_type get_vector_type() const noexcept { return vector_type_; }
         const types::complex_logical_type& type() const noexcept { return type_; }
+        void set_type_alias(const std::string& alias) { type_.set_alias(alias); }
         std::byte* data() noexcept { return data_; }
         const std::byte* data() const noexcept { return data_; }
         void set_data(std::byte* data) noexcept { data_ = data; }
@@ -113,7 +114,7 @@ namespace components::vector {
         }
         template<typename T>
         const T* data() const noexcept {
-            return reinterpret_cast<T*>(data_);
+            return reinterpret_cast<const T*>(data_);
         }
         std::shared_ptr<vector_buffer_t> auxiliary() { return auxiliary_; }
         std::shared_ptr<vector_buffer_t> get_buffer() { return buffer_; }

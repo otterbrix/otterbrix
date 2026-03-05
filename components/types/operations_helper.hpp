@@ -6,6 +6,13 @@
 
 namespace components::types {
 
+    // Trait to detect numeric types, including absl int128 which std::is_arithmetic_v misses
+    template<typename T>
+    inline constexpr bool is_numeric_type_v =
+        std::is_arithmetic_v<std::decay_t<T>> ||
+        std::is_same_v<std::decay_t<T>, int128_t> ||
+        std::is_same_v<std::decay_t<T>, uint128_t>;
+
     // This could be useful in other places, but for now it is here
     // Default only accepts int as amount
     constexpr int128_t operator<<(int128_t lhs, int128_t amount) { return lhs << static_cast<int>(amount); }
@@ -47,7 +54,7 @@ namespace components::types {
     struct pow<void> {
         template<typename T, typename U>
         constexpr auto operator()(T&& t, U&& u) const {
-            if constexpr (std::is_same<T, int128_t>::value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return t ^ u;
             } else {
                 return std::pow(std::forward<T>(t), std::forward<U>(u));
@@ -83,7 +90,7 @@ namespace components::types {
     struct abs<void> {
         template<typename T>
         constexpr auto operator()(T&& x) const {
-            if constexpr (std::is_same<T, int128_t>::value) {
+            if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return x < 0 ? -x : x;
             } else {
                 return std::abs<T>(std::forward<T>(x));

@@ -16,8 +16,11 @@ namespace services::planner::impl {
                       node->expressions().end(),
                       [&sort](const components::expressions::expression_ptr& expr) {
                           const auto* sort_expr = static_cast<components::expressions::sort_expression_t*>(expr.get());
-                          sort->add(sort_expr->key().as_string(),
-                                    components::operators::operator_sort_t::order(sort_expr->order()));
+                          const auto& path = sort_expr->key().path();
+                          if (path.empty()) {
+                              throw std::logic_error("Sort key has unresolved path: " + sort_expr->key().as_string());
+                          }
+                          sort->add(path,components::operators::operator_sort_t::order(sort_expr->order()));
                       });
         return sort;
     }

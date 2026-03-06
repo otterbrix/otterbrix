@@ -365,6 +365,38 @@ namespace components::vector {
         slice(indexing, slice_count);
     }
 
+    data_chunk_t
+    data_chunk_t::slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const {
+        auto result_types = types();
+        auto count = static_cast<uint64_t>(row_ids.size());
+        uint64_t cap = count > 0 ? count : 1;
+        data_chunk_t result(resource, result_types, cap);
+        if (row_ids.empty()) {
+            return result;
+        }
+        indexing_vector_t indexing(resource, count);
+        for (uint64_t i = 0; i < count; i++) {
+            indexing.set_index(i, row_ids[i]);
+        }
+        copy(result, indexing, count, 0);
+        return result;
+    }
+
+    data_chunk_t data_chunk_t::slice_contiguous(
+        std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
+        assert(offset + count <= size());
+        std::pmr::vector<types::complex_logical_type> empty_types(resource);
+        data_chunk_t result(resource, empty_types, 0);
+        result.capacity_ = count;
+        result.count_ = count;
+        result.data.reserve(column_count());
+        for (uint64_t c = 0; c < column_count(); c++) {
+            result.data.emplace_back(data[c], offset, count);
+        }
+        return result;
+    }
+
+
     std::vector<unified_vector_format> data_chunk_t::to_unified_format(std::pmr::memory_resource* resource) {
         std::vector<unified_vector_format> unified_data;
         unified_data.reserve(column_count());

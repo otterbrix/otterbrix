@@ -172,7 +172,7 @@ namespace components::types {
         //return type_ == rhs.type_ && *extension_.get() == *rhs.extension_.get();
     }
 
-    bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return !(*this == rhs); }
+    bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return type_ != rhs.type_; }
 
     size_t complex_logical_type::size() const noexcept {
         switch (type_) {

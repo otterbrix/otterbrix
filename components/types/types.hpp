@@ -430,6 +430,8 @@ namespace components::types {
         const std::vector<complex_logical_type>& child_types() const;
         logical_type_extension* extension() const;
 
+        bool is_convertable_to(const complex_logical_type& other) const;
+
         template<typename T>
         static bool contains(const complex_logical_type& type, T&& predicate);
 

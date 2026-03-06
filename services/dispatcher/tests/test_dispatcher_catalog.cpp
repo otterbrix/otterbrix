@@ -166,9 +166,9 @@ TEST_CASE("services::dispatcher::computed_operations") {
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         REQUIRE(cur->is_success());
 
-        REQUIRE(catalog.get_table_schema(id).columns()[0].alias() == "name");
+        REQUIRE(catalog.get_table_schema(id).columns()[0].name() == "name");
         REQUIRE(catalog.get_table_schema(id).columns()[0].type() == logical_type::STRING_LITERAL);
-        REQUIRE(catalog.get_table_schema(id).columns()[1].alias() == "count");
+        REQUIRE(catalog.get_table_schema(id).columns()[1].name() == "count");
         REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::BIGINT);
     });
     /*

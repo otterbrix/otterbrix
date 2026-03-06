@@ -27,7 +27,12 @@ static const collection_name_t collection_name = "testcollection";
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
             auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
-            dispatcher->create_collection(session, database_name, collection_name, types);                             \
+            std::vector<components::table::column_definition_t> columns;                                               \
+            columns.reserve(types.size());                                                                             \
+            for (const auto& type : types) {                                                                           \
+                columns.emplace_back(type.alias(), type);                                                              \
+            }                                                                                                          \
+            dispatcher->create_collection(session, database_name, collection_name, columns);                           \
         }                                                                                                              \
     } while (false)
 
@@ -128,7 +133,12 @@ TEST_CASE("integration::cpp::test_disk_index::sql_after_restart") {
         {
             auto session = otterbrix::session_id_t();
             auto types = gen_data_chunk(0, dispatcher->resource()).types();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            std::vector<components::table::column_definition_t> columns;
+            columns.reserve(types.size());
+            for (const auto& type : types) {
+                columns.emplace_back(type.alias(), type);
+            }
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
 
         {

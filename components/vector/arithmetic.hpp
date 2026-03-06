@@ -1,9 +1,9 @@
 #pragma once
 
 #include "data_chunk.hpp"
+#include <cmath>
 #include <components/types/operations_helper.hpp>
 #include <core/arithmetic_op.hpp>
-#include <cmath>
 
 namespace components::vector {
 
@@ -21,8 +21,7 @@ namespace components::vector {
         // Used only in unevaluated context for type deduction (safe_result_t).
         template<typename T>
         constexpr auto widen_type(T val) {
-            if constexpr (std::is_same_v<T, bool> ||
-                          (std::is_integral_v<T> && sizeof(T) < sizeof(int))) {
+            if constexpr (std::is_same_v<T, bool> || (std::is_integral_v<T> && sizeof(T) < sizeof(int))) {
                 if constexpr (std::is_unsigned_v<T>)
                     return static_cast<uint64_t>(val);
                 else
@@ -79,14 +78,12 @@ namespace components::vector {
         constexpr auto operator()(L a, R b) const {
             using result_t = detail::safe_result_t<L, R>;
             if constexpr (std::is_floating_point_v<result_t>) {
-                return static_cast<result_t>(
-                    std::fmod(detail::to_result<result_t>(a), detail::to_result<result_t>(b)));
+                return static_cast<result_t>(std::fmod(detail::to_result<result_t>(a), detail::to_result<result_t>(b)));
             } else {
                 return static_cast<result_t>(detail::to_result<result_t>(a) % detail::to_result<result_t>(b));
             }
         }
     };
-
 
     // Compute binary arithmetic on two vectors (element-wise)
     vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
@@ -110,8 +107,6 @@ namespace components::vector {
                                               uint64_t count);
 
     // Compute unary negation
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource,
-                               const vector_t& vec,
-                               uint64_t count);
+    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
 
 } // namespace components::vector

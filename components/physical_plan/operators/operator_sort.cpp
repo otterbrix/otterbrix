@@ -7,9 +7,7 @@ namespace components::operators {
 
     void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
 
-    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) {
-        sorter_.add(col_path, order_);
-    }
+    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) { sorter_.add(col_path, order_); }
 
     void operator_sort_t::on_execute_impl(pipeline::context_t*) {
         if (left_ && left_->output()) {

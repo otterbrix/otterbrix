@@ -58,11 +58,13 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::create_collection(const session_id_t& session,
                                                  const database_name_t& database,
                                                  const collection_name_t& collection,
-                                                 std::pmr::vector<components::types::complex_logical_type> schema)
+                                                 std::vector<components::table::column_definition_t> column_definitions,
+                                                 std::vector<components::table::table_constraint_t> constraints)
         -> cursor_t_ptr {
         auto plan = components::logical_plan::make_node_create_collection(resource(),
                                                                           {database, collection},
-                                                                          std::move(schema));
+                                                                          std::move(column_definitions),
+                                                                          std::move(constraints));
         return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 

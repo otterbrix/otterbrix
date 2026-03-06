@@ -27,7 +27,12 @@ static const collection_name_t collection_name_2 = "testcollection2";
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
             auto types = gen_data_chunk(0, dispatcher->resource()).types();                                            \
-            dispatcher->create_collection(session, DB, COLL, types);                                                   \
+            std::vector<components::table::column_definition_t> columns;                                               \
+            columns.reserve(types.size());                                                                             \
+            for (const auto& type : types) {                                                                           \
+                columns.emplace_back(type.alias(), type);                                                              \
+            }                                                                                                          \
+            dispatcher->create_collection(session, DB, COLL, columns);                                                 \
         }                                                                                                              \
     } while (false)
 
@@ -199,7 +204,12 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
         {
             auto session = otterbrix::session_id_t();
             auto types = gen_data_chunk(0, dispatcher->resource()).types();
-            dispatcher->create_collection(session, database_name, collection_name_2, types);
+            std::vector<components::table::column_definition_t> columns;
+            columns.reserve(types.size());
+            for (const auto& type : types) {
+                columns.emplace_back(type.alias(), type);
+            }
+            dispatcher->create_collection(session, database_name, collection_name_2, columns);
         }
         FILL_COLLECTION_WAL(database_name, collection_name_2, kDocuments);
 
@@ -403,8 +413,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) "
                                                "VALUES ('dave', NULL);");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         // Only original 3 rows exist (violation didn't corrupt state)
@@ -438,8 +447,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) "
                                                "VALUES ('ghost', NULL);");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         // Still 5 rows

@@ -145,8 +145,7 @@ namespace components::sql::transform {
                                 auto sub = pg_ptr_cast<A_Expr>(arg_value);
                                 if (sub->kind == AEXPR_OP &&
                                     is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                    args.emplace_back(
-                                        transform_a_expr_arithmetic(sub, names, params));
+                                    args.emplace_back(transform_a_expr_arithmetic(sub, names, params));
                                 } else {
                                     args.emplace_back(add_param_value(arg_value, params));
                                 }
@@ -262,8 +261,11 @@ namespace components::sql::transform {
                     }
                     case T_CaseExpr: {
                         logical_plan::node_ptr group_node = group;
-                        transform_select_case_expr(
-                            pg_ptr_cast<CaseExpr>(res->val), res->name, names, params, group_node);
+                        transform_select_case_expr(pg_ptr_cast<CaseExpr>(res->val),
+                                                   res->name,
+                                                   names,
+                                                   params,
+                                                   group_node);
                         break;
                     }
                     case T_CoalesceExpr: {
@@ -345,8 +347,10 @@ namespace components::sql::transform {
 
         if (!group->expressions().empty()) {
             if (having_expr) {
-                auto final_group = logical_plan::make_node_group(
-                    resource_, agg->collection_full_name(), group->expressions(), std::move(having_expr));
+                auto final_group = logical_plan::make_node_group(resource_,
+                                                                 agg->collection_full_name(),
+                                                                 group->expressions(),
+                                                                 std::move(having_expr));
                 final_group->internal_aggregate_count =
                     dynamic_cast<logical_plan::node_group_t*>(group.get())->internal_aggregate_count;
                 agg->append_child(final_group);

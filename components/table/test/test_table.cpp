@@ -698,7 +698,7 @@ TEST_CASE("components::table::data_table") {
         {
             column_definition_t new_column{"temp_column_name7",
                                            logical_type::SMALLINT,
-                                           std::make_unique<logical_value_t>(&resource, int16_t(0))};
+                                           logical_value_t{&resource, int16_t(0)}};
             extended_table = std::make_unique<data_table_t>(*data_table, new_column);
 
             // Update values in new column

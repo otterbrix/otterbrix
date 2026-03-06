@@ -131,9 +131,9 @@ namespace components::operators::get {
         return *val;
     }
 
-    types::logical_value_t case_when_value_t::evaluate_expression(
-        const result_expression_t& expr,
-        const std::pmr::vector<types::logical_value_t>& row) const {
+    types::logical_value_t
+    case_when_value_t::evaluate_expression(const result_expression_t& expr,
+                                           const std::pmr::vector<types::logical_value_t>& row) const {
         auto resolve_param = [&](const expressions::param_storage& p) -> types::logical_value_t {
             if (std::holds_alternative<expressions::key_t>(p)) {
                 return lookup_column(std::get<expressions::key_t>(p), row);

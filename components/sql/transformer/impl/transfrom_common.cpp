@@ -9,8 +9,9 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
 
-    expression_ptr transformer::transform_a_expr_arithmetic(
-        A_Expr* node, const name_collection_t& names, logical_plan::parameter_node_t* params) {
+    expression_ptr transformer::transform_a_expr_arithmetic(A_Expr* node,
+                                                            const name_collection_t& names,
+                                                            logical_plan::parameter_node_t* params) {
         auto op_str = std::string_view(strVal(node->name->lst.front().data));
         auto stype = get_arithmetic_scalar_type(op_str);
 
@@ -27,8 +28,9 @@ namespace components::sql::transform {
         return expr;
     }
 
-    param_storage transformer::transform_a_expr_operand(
-        Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params) {
+    param_storage transformer::transform_a_expr_operand(Node* node,
+                                                        const name_collection_t& names,
+                                                        logical_plan::parameter_node_t* params) {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
@@ -63,9 +65,11 @@ namespace components::sql::transform {
         }
     }
 
-    void transformer::transform_select_a_expr(
-        A_Expr* node, const char* alias, const name_collection_t& names,
-        logical_plan::parameter_node_t* params, logical_plan::node_ptr& group) {
+    void transformer::transform_select_a_expr(A_Expr* node,
+                                              const char* alias,
+                                              const name_collection_t& names,
+                                              logical_plan::parameter_node_t* params,
+                                              logical_plan::node_ptr& group) {
         auto op_str = std::string_view(strVal(node->name->lst.front().data));
         if (!is_arithmetic_operator(op_str)) {
             throw parser_exception_t{"Unsupported operator in SELECT: " + std::string(op_str), ""};
@@ -80,7 +84,8 @@ namespace components::sql::transform {
             expr->append_param(resolve_select_operand(node->rexpr, names, params, group));
         } else {
             // Unary minus: proper unary operator with single operand
-            expr = make_scalar_expression(resource_, scalar_type::unary_minus,
+            expr = make_scalar_expression(resource_,
+                                          scalar_type::unary_minus,
                                           expressions::key_t{resource_, std::move(expr_name)});
             expr->append_param(resolve_select_operand(node->rexpr, names, params, group));
         }
@@ -88,9 +93,10 @@ namespace components::sql::transform {
         group->append_expression(expr);
     }
 
-    param_storage transformer::resolve_select_operand(
-        Node* node, const name_collection_t& names,
-        logical_plan::parameter_node_t* params, logical_plan::node_ptr& group) {
+    param_storage transformer::resolve_select_operand(Node* node,
+                                                      const name_collection_t& names,
+                                                      logical_plan::parameter_node_t* params,
+                                                      logical_plan::node_ptr& group) {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
@@ -114,14 +120,12 @@ namespace components::sql::transform {
                         auto sub_stype = get_arithmetic_scalar_type(sub_op);
                         auto sub_scalar = make_scalar_expression(resource_, sub_stype);
                         if (sub_expr->lexpr) {
-                            sub_scalar->append_param(
-                                resolve_select_operand(sub_expr->lexpr, names, params, group));
+                            sub_scalar->append_param(resolve_select_operand(sub_expr->lexpr, names, params, group));
                         } else {
                             auto zero_id = params->add_parameter(types::logical_value_t(resource_, int64_t(0)));
                             sub_scalar->append_param(zero_id);
                         }
-                        sub_scalar->append_param(
-                            resolve_select_operand(sub_expr->rexpr, names, params, group));
+                        sub_scalar->append_param(resolve_select_operand(sub_expr->rexpr, names, params, group));
                         return sub_scalar;
                     }
                 }
@@ -157,8 +161,8 @@ namespace components::sql::transform {
                 // Create aggregate with auto-generated alias
                 // TODO: default aggregate aliases should come from function registry, not hardcoded here
                 std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
-                auto agg_expr = make_aggregate_expression(resource_, funcname,
-                                                           expressions::key_t{resource_, auto_alias});
+                auto agg_expr =
+                    make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, auto_alias});
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
@@ -460,12 +464,15 @@ namespace components::sql::transform {
         return logical_plan::make_node_function(params->parameters().resource(), std::move(funcname), std::move(args));
     }
 
-    void transformer::transform_select_case_expr(
-        CaseExpr* node, const char* alias, const name_collection_t& names,
-        logical_plan::parameter_node_t* params, logical_plan::node_ptr& group) {
+    void transformer::transform_select_case_expr(CaseExpr* node,
+                                                 const char* alias,
+                                                 const name_collection_t& names,
+                                                 logical_plan::parameter_node_t* params,
+                                                 logical_plan::node_ptr& group) {
         std::string expr_name = alias ? alias : "__case_" + std::to_string(aggregate_counter_++);
-        auto expr = make_scalar_expression(
-            resource_, scalar_type::case_expr, expressions::key_t{resource_, std::move(expr_name)});
+        auto expr = make_scalar_expression(resource_,
+                                           scalar_type::case_expr,
+                                           expressions::key_t{resource_, std::move(expr_name)});
 
         // Process WHEN clauses: params layout is [cond1, result1, cond2, result2, ..., default]
         for (auto& arg : node->args->lst) {
@@ -477,8 +484,8 @@ namespace components::sql::transform {
                 auto col_key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names);
                 col_key.deduce_side(names);
                 auto param_id = add_param_value(pg_ptr_cast<Node>(when->expr), params);
-                auto cond = make_compare_expression(
-                    params->parameters().resource(), compare_type::eq, col_key.field, param_id);
+                auto cond =
+                    make_compare_expression(params->parameters().resource(), compare_type::eq, col_key.field, param_id);
                 expr->append_param(expression_ptr(cond));
             } else {
                 // Searched CASE: CASE WHEN condition THEN ... → boolean expression
@@ -510,9 +517,9 @@ namespace components::sql::transform {
 
     // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group
     param_storage transformer::resolve_having_operand(Node* node,
-                                                       const name_collection_t& names,
-                                                       logical_plan::parameter_node_t* params,
-                                                       const logical_plan::node_ptr& group) {
+                                                      const name_collection_t& names,
+                                                      logical_plan::parameter_node_t* params,
+                                                      const logical_plan::node_ptr& group) {
         switch (nodeTag(node)) {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
@@ -564,9 +571,9 @@ namespace components::sql::transform {
     }
 
     expression_ptr transformer::transform_having_expr(Node* node,
-                                                       const name_collection_t& names,
-                                                       logical_plan::parameter_node_t* params,
-                                                       const logical_plan::node_ptr& group) {
+                                                      const name_collection_t& names,
+                                                      logical_plan::parameter_node_t* params,
+                                                      const logical_plan::node_ptr& group) {
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);
             if (a_expr->kind == AEXPR_OP) {
@@ -578,9 +585,9 @@ namespace components::sql::transform {
                     return make_compare_expression(params->parameters().resource(), comp_type, left, right);
                 }
             } else if (a_expr->kind == AEXPR_AND || a_expr->kind == AEXPR_OR) {
-                auto expr = make_compare_union_expression(
-                    params->parameters().resource(),
-                    a_expr->kind == AEXPR_AND ? compare_type::union_and : compare_type::union_or);
+                auto expr = make_compare_union_expression(params->parameters().resource(),
+                                                          a_expr->kind == AEXPR_AND ? compare_type::union_and
+                                                                                    : compare_type::union_or);
                 expr->append_child(transform_having_expr(a_expr->lexpr, names, params, group));
                 expr->append_child(transform_having_expr(a_expr->rexpr, names, params, group));
                 return expr;

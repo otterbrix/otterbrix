@@ -9,8 +9,7 @@ namespace components::types {
     // Trait to detect numeric types, including absl int128 which std::is_arithmetic_v misses
     template<typename T>
     inline constexpr bool is_numeric_type_v =
-        std::is_arithmetic_v<std::decay_t<T>> ||
-        std::is_same_v<std::decay_t<T>, int128_t> ||
+        std::is_arithmetic_v<std::decay_t<T>> || std::is_same_v<std::decay_t<T>, int128_t> ||
         std::is_same_v<std::decay_t<T>, uint128_t>;
 
     // This could be useful in other places, but for now it is here

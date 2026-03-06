@@ -31,14 +31,12 @@ namespace components::operators::aggregate {
                 if (std::holds_alternative<expressions::expression_ptr>(arg)) {
                     auto& expr = std::get<expressions::expression_ptr>(arg);
                     if (expr->group() == expressions::expression_group::scalar) {
-                        auto* scalar_expr =
-                            static_cast<const expressions::scalar_expression_t*>(expr.get());
-                        auto [computed, arith_error] = operators::evaluate_arithmetic(
-                            left_->output()->resource(),
-                            scalar_expr->type(),
-                            scalar_expr->params(),
-                            chunk,
-                            pipeline_context->parameters);
+                        auto* scalar_expr = static_cast<const expressions::scalar_expression_t*>(expr.get());
+                        auto [computed, arith_error] = operators::evaluate_arithmetic(left_->output()->resource(),
+                                                                                      scalar_expr->type(),
+                                                                                      scalar_expr->params(),
+                                                                                      chunk,
+                                                                                      pipeline_context->parameters);
                         if (!arith_error.empty()) {
                             set_error(std::move(arith_error));
                             return result;
@@ -56,7 +54,7 @@ namespace components::operators::aggregate {
                     const auto& key = std::get<expressions::key_t>(arg);
                     assert(!key.path().empty() && "aggregate key path must be resolved");
                     assert(key.path().front() < chunk.data.size() && "aggregate key path out of range");
-                    columns.emplace_back(chunk.data.begin() +static_cast<std::ptrdiff_t>(key.path().front()));
+                    columns.emplace_back(chunk.data.begin() + static_cast<std::ptrdiff_t>(key.path().front()));
                 } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
                     const auto& id = std::get<core::parameter_id_t>(arg);
                     columns.emplace_back(pipeline_context->parameters.parameters.at(id));
@@ -65,8 +63,7 @@ namespace components::operators::aggregate {
                     if (computed_idx < computed_vecs.size()) {
                         chunk.data.emplace_back(std::move(computed_vecs[computed_idx]));
                         auto it = chunk.data.end() - 1;
-                        columns.emplace_back(
-                            static_cast<decltype(vector::data_chunk_t::data)::const_iterator>(it));
+                        columns.emplace_back(static_cast<decltype(vector::data_chunk_t::data)::const_iterator>(it));
                         computed_idx++;
                     }
                 }
@@ -88,9 +85,8 @@ namespace components::operators::aggregate {
                         c.data[i].reference(*std::get<column_it>(columns.at(i)));
                     } else {
                         c.data[i].reference(std::get<types::logical_value_t>(columns.at(i)));
-                        c.data[i].flatten(
-                            vector::indexing_vector_t(left_->output()->resource(), chunk.size()),
-                            chunk.size());
+                        c.data[i].flatten(vector::indexing_vector_t(left_->output()->resource(), chunk.size()),
+                                          chunk.size());
                     }
                 }
                 // DISTINCT: de-duplicate rows before executing aggregate function

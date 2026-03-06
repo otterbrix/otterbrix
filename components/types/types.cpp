@@ -10,43 +10,41 @@ namespace components::types {
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
             for (auto& v : t) v = physical_type::INVALID;
-            t[uint8_t(logical_type::NA)]            = physical_type::BOOL;
-            t[uint8_t(logical_type::BOOLEAN)]       = physical_type::BOOL;
-            t[uint8_t(logical_type::TINYINT)]       = physical_type::INT8;
-            t[uint8_t(logical_type::UTINYINT)]      = physical_type::UINT8;
-            t[uint8_t(logical_type::SMALLINT)]      = physical_type::INT16;
-            t[uint8_t(logical_type::USMALLINT)]     = physical_type::UINT16;
-            t[uint8_t(logical_type::ENUM)]          = physical_type::INT32;
-            t[uint8_t(logical_type::INTEGER)]       = physical_type::INT32;
-            t[uint8_t(logical_type::UINTEGER)]      = physical_type::UINT32;
-            t[uint8_t(logical_type::BIGINT)]        = physical_type::INT64;
+            t[uint8_t(logical_type::NA)] = physical_type::BOOL;
+            t[uint8_t(logical_type::BOOLEAN)] = physical_type::BOOL;
+            t[uint8_t(logical_type::TINYINT)] = physical_type::INT8;
+            t[uint8_t(logical_type::UTINYINT)] = physical_type::UINT8;
+            t[uint8_t(logical_type::SMALLINT)] = physical_type::INT16;
+            t[uint8_t(logical_type::USMALLINT)] = physical_type::UINT16;
+            t[uint8_t(logical_type::ENUM)] = physical_type::INT32;
+            t[uint8_t(logical_type::INTEGER)] = physical_type::INT32;
+            t[uint8_t(logical_type::UINTEGER)] = physical_type::UINT32;
+            t[uint8_t(logical_type::BIGINT)] = physical_type::INT64;
             t[uint8_t(logical_type::TIMESTAMP_SEC)] = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_MS)]  = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_US)]  = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_NS)]  = physical_type::INT64;
-            t[uint8_t(logical_type::DECIMAL)]       = physical_type::INT64;
-            t[uint8_t(logical_type::UBIGINT)]       = physical_type::UINT64;
-            t[uint8_t(logical_type::UHUGEINT)]      = physical_type::UINT128;
-            t[uint8_t(logical_type::HUGEINT)]       = physical_type::INT128;
-            t[uint8_t(logical_type::UUID)]          = physical_type::INT128;
-            t[uint8_t(logical_type::FLOAT)]         = physical_type::FLOAT;
-            t[uint8_t(logical_type::DOUBLE)]        = physical_type::DOUBLE;
-            t[uint8_t(logical_type::STRING_LITERAL)]= physical_type::STRING;
-            t[uint8_t(logical_type::VALIDITY)]      = physical_type::BIT;
-            t[uint8_t(logical_type::ARRAY)]         = physical_type::ARRAY;
-            t[uint8_t(logical_type::STRUCT)]        = physical_type::STRUCT;
-            t[uint8_t(logical_type::UNION)]         = physical_type::STRUCT;
-            t[uint8_t(logical_type::VARIANT)]       = physical_type::STRUCT;
-            t[uint8_t(logical_type::LIST)]          = physical_type::LIST;
+            t[uint8_t(logical_type::TIMESTAMP_MS)] = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_US)] = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_NS)] = physical_type::INT64;
+            t[uint8_t(logical_type::DECIMAL)] = physical_type::INT64;
+            t[uint8_t(logical_type::UBIGINT)] = physical_type::UINT64;
+            t[uint8_t(logical_type::UHUGEINT)] = physical_type::UINT128;
+            t[uint8_t(logical_type::HUGEINT)] = physical_type::INT128;
+            t[uint8_t(logical_type::UUID)] = physical_type::INT128;
+            t[uint8_t(logical_type::FLOAT)] = physical_type::FLOAT;
+            t[uint8_t(logical_type::DOUBLE)] = physical_type::DOUBLE;
+            t[uint8_t(logical_type::STRING_LITERAL)] = physical_type::STRING;
+            t[uint8_t(logical_type::VALIDITY)] = physical_type::BIT;
+            t[uint8_t(logical_type::ARRAY)] = physical_type::ARRAY;
+            t[uint8_t(logical_type::STRUCT)] = physical_type::STRUCT;
+            t[uint8_t(logical_type::UNION)] = physical_type::STRUCT;
+            t[uint8_t(logical_type::VARIANT)] = physical_type::STRUCT;
+            t[uint8_t(logical_type::LIST)] = physical_type::LIST;
             return t;
         }
 
         const auto physical_type_table = make_physical_type_table();
     } // anonymous namespace
 
-    physical_type to_physical_type(logical_type type) {
-        return physical_type_table[static_cast<uint8_t>(type)];
-    }
+    physical_type to_physical_type(logical_type type) { return physical_type_table[static_cast<uint8_t>(type)]; }
 
     static const complex_logical_type INVALID_TYPE = complex_logical_type{logical_type::INVALID};
 
@@ -347,6 +345,48 @@ namespace components::types {
     }
 
     logical_type_extension* complex_logical_type::extension() const { return extension_.get(); }
+
+    bool complex_logical_type::is_convertable_to(const complex_logical_type& other) const {
+        if (*this == other) {
+            return true;
+        }
+
+        if (is_numeric(type_) && (is_numeric(other.type_) || other.type_ == logical_type::STRING_LITERAL)) {
+            return true;
+        }
+        if (is_duration(type_) && is_duration(other.type_)) {
+            return true;
+        }
+        if (type_ == logical_type::LIST && other.type_ == logical_type::LIST) {
+            const auto* list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
+            const auto* other_list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
+
+            return list_ext->node().is_convertable_to(other_list_ext->node());
+        }
+        if (type_ == logical_type::ARRAY && other.type_ == logical_type::ARRAY) {
+            const auto* arr_ext = static_cast<const array_logical_type_extension*>(extension_.get());
+            const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(extension_.get());
+
+            return arr_ext->size() == other_arr_ext->size() &&
+                   arr_ext->internal_type().is_convertable_to(other_arr_ext->internal_type());
+        }
+        if (type_ == logical_type::STRUCT && other.type_ == logical_type::STRUCT) {
+            const auto* struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
+            const auto* other_struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
+
+            if (struct_ext->child_types().size() != other_struct_ext->child_types().size()) {
+                return false;
+            }
+            for (size_t i = 0; i < struct_ext->child_types().size(); i++) {
+                if (!struct_ext->child_types()[i].is_convertable_to(other_struct_ext->child_types()[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
 
     bool complex_logical_type::type_is_constant_size(logical_type type) {
         return (type >= logical_type::BOOLEAN && type <= logical_type::DOUBLE) ||

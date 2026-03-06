@@ -182,8 +182,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) "
                                                "VALUES ('ghost', NULL);");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -443,8 +442,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
             auto cur = dispatcher->execute_sql(
                 session,
                 "INSERT INTO TestDatabase.TestCollection (name, status) VALUES (NULL, 'test');");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -465,8 +463,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
             auto cur = dispatcher->execute_sql(
                 session,
                 "INSERT INTO TestDatabase.TestCollection (name, status) VALUES (NULL, 'test');");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         // Valid insert still works
@@ -922,8 +919,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             auto cur = dispatcher->execute_sql(
                 session,
                 "INSERT INTO TestDatabase.TestCollection (name, status) VALUES (NULL, 'test');");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 0);
+            REQUIRE(cur->is_error());
         }
 
         // Partial INSERT: only (name) — status gets DEFAULT 'pending'

@@ -39,13 +39,13 @@ namespace components::operators {
 
     class operator_group_t final : public read_write_operator_t {
     public:
-        operator_group_t(std::pmr::memory_resource* resource, log_t log,
+        operator_group_t(std::pmr::memory_resource* resource,
+                         log_t log,
                          expressions::expression_ptr having = nullptr,
                          size_t internal_aggregate_count = 0);
 
         void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
-        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
-                     std::pmr::vector<size_t> col_path);
+        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter, std::pmr::vector<size_t> col_path);
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);

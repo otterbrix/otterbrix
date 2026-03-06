@@ -8,6 +8,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
         test_index.cpp
+        test_insert.cpp
         test_disk_index.cpp
         test_wal_pool.cpp
         test_persistence.cpp

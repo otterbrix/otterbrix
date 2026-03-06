@@ -3,4 +3,8 @@
 #include <components/vector/data_chunk.hpp>
 
 components::vector::data_chunk_t gen_data_chunk(size_t size, std::pmr::memory_resource* resource);
-components::vector::data_chunk_t gen_data_chunk(size_t size, int num, std::pmr::memory_resource* resource);
+components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr::memory_resource* resource);
+components::vector::data_chunk_t gen_data_chunk(size_t size,
+                                                int start,
+                                                const std::pmr::vector<components::types::complex_logical_type>& types,
+                                                std::pmr::memory_resource* resource);

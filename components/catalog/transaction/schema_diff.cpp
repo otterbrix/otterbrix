@@ -11,18 +11,13 @@ namespace components::catalog {
         , resource_(resource) {}
 
     schema_diff::diff_info::diff_info(schema_diff::diff_info_type info_type,
-                                      types::field_description desc,
-                                      types::complex_logical_type type)
+                                      table::column_definition_t column,
+                                      types::field_description desc)
         : info(1ULL << info_type)
-        , entry{type, desc} {}
+        , entry{std::move(column), std::move(desc)} {}
 
-    void schema_diff::add_column(const std::string& name,
-                                 const types::complex_logical_type& type,
-                                 bool required,
-                                 const std::pmr::string& doc) {
-        types::complex_logical_type named = type;
-        named.set_alias(name);
-        added_columns_.emplace_back(struct_entry{std::move(named), field_description(0, required, doc.c_str())});
+    void schema_diff::add_column(const table::column_definition_t& column, bool required, const std::pmr::string& doc) {
+        added_columns_.emplace_back(struct_entry{column, field_description(0, required, doc.c_str())});
     }
 
     void schema_diff::delete_column(const std::string& name) { deleted_columns_.emplace(name); }
@@ -30,26 +25,31 @@ namespace components::catalog {
     void schema_diff::rename_column(const std::string& name, const std::string& new_name) {
         if (auto it = updates_.find(name); it != updates_.end()) {
             it->second.info.set(diff_info_type::UPDATE_NAME);
-            it->second.entry.type.set_alias(new_name);
+            it->second.entry.column.set_name(new_name);
             return;
         }
 
         auto type = complex_logical_type();
         type.set_alias(new_name);
         renames_.emplace(name, new_name);
-        updates_.emplace(new_name, diff_info(diff_info_type::UPDATE_NAME, field_description(), std::move(type)));
+        updates_.emplace(new_name,
+                         diff_info(diff_info_type::UPDATE_NAME,
+                                   table::column_definition_t{new_name, std::move(type)},
+                                   field_description()));
     }
 
     void schema_diff::update_column_type(const std::string& name, const types::complex_logical_type& new_type) {
         if (auto it = updates_.find(name); it != updates_.end()) {
-            const auto& old_alias = it->second.entry.type.alias();
+            const auto& old_alias = it->second.entry.column.type().alias();
             it->second.info.set(diff_info_type::UPDATE_TYPE);
-            it->second.entry.type = new_type;
-            it->second.entry.type.set_alias(old_alias);
+            it->second.entry.column.type() = new_type;
+            it->second.entry.column.type().set_alias(old_alias);
             return;
         }
 
-        updates_.emplace(name, diff_info(diff_info_type::UPDATE_TYPE, field_description(), new_type));
+        updates_.emplace(
+            name,
+            diff_info(diff_info_type::UPDATE_TYPE, table::column_definition_t{name, new_type}, field_description()));
     }
 
     void schema_diff::update_column_doc(const std::string& name, const std::pmr::string& doc) {
@@ -59,7 +59,10 @@ namespace components::catalog {
             return;
         }
 
-        updates_.emplace(name, diff_info(diff_info_type::UPDATE_DOC, field_description(0, false, doc.c_str())));
+        updates_.emplace(name,
+                         diff_info(diff_info_type::UPDATE_DOC,
+                                   table::column_definition_t{name, complex_logical_type{}},
+                                   field_description(0, false, doc.c_str())));
     }
 
     void schema_diff::make_optional(const std::string& name) {
@@ -69,7 +72,10 @@ namespace components::catalog {
             return;
         }
 
-        updates_.emplace(name, diff_info(diff_info_type::UPDATE_OPTIONAL, field_description(0, false)));
+        updates_.emplace(name,
+                         diff_info(diff_info_type::UPDATE_OPTIONAL,
+                                   table::column_definition_t{name, complex_logical_type{}},
+                                   field_description(0, false)));
     }
 
     void schema_diff::make_required(const std::string& name) {
@@ -79,7 +85,10 @@ namespace components::catalog {
             return;
         }
 
-        updates_.emplace(name, diff_info(diff_info_type::UPDATE_OPTIONAL, field_description(0, true)));
+        updates_.emplace(name,
+                         diff_info(diff_info_type::UPDATE_OPTIONAL,
+                                   table::column_definition_t{name, complex_logical_type{}},
+                                   field_description(0, true)));
     }
 
     void schema_diff::update_primary_key(const std::pmr::vector<field_id_t>& primary_key) {
@@ -93,7 +102,7 @@ namespace components::catalog {
     schema schema_diff::apply(const schema& base_schema) const {
         size_t sz = base_schema.columns().size();
 
-        std::vector<types::complex_logical_type> new_columns;
+        std::vector<components::table::column_definition_t> new_columns;
         std::vector<types::field_description> new_desc;
         new_columns.reserve(sz + added_columns_.size());
         new_desc.reserve(sz + added_columns_.size());
@@ -101,31 +110,29 @@ namespace components::catalog {
         for (size_t i = 0; i < sz; ++i) {
             const auto& column = base_schema.columns()[i];
             const auto& desc = base_schema.descriptions()[i];
-            if (deleted_columns_.find(column.alias()) != deleted_columns_.end()) {
+            if (deleted_columns_.find(column.name()) != deleted_columns_.end()) {
                 continue;
             }
 
             new_columns.push_back(column);
             new_desc.push_back(desc);
 
-            if (!do_update(new_columns, new_desc, column.alias())) {
-                if (const auto& rename = renames_.find(column.alias()); rename != renames_.end()) {
+            if (!do_update(new_columns, new_desc, column.name())) {
+                if (const auto& rename = renames_.find(column.name()); rename != renames_.end()) {
                     do_update(new_columns, new_desc, rename->second);
                 }
             }
         }
 
         for (const auto& entry : added_columns_) {
-            new_columns.push_back(entry.type);
+            new_columns.push_back(entry.column);
             new_desc.push_back(entry.desc);
         }
 
-        return schema(resource_,
-                      create_struct("schema", new_columns, new_desc),
-                      new_primary_key_.value_or(base_schema.primary_key()));
+        return schema(resource_, new_columns, new_desc, new_primary_key_.value_or(base_schema.primary_key()));
     }
 
-    bool schema_diff::do_update(std::vector<types::complex_logical_type>& new_columns,
+    bool schema_diff::do_update(std::vector<components::table::column_definition_t>& new_columns,
                                 std::vector<types::field_description>& new_desc,
                                 const std::string& name) const {
         if (const auto& it = updates_.find(name); it != updates_.end()) {
@@ -139,12 +146,12 @@ namespace components::catalog {
 
                 switch (diff_type) {
                     case diff_info_type::UPDATE_TYPE:
-                        new_columns.back() = info.entry.type;
+                        new_columns.back() = info.entry.column;
                         break;
                     case diff_info_type::UPDATE_NAME: {
                         // if type is being updated - do nothing, correct alias is already set
                         if (!info.info.test(UPDATE_TYPE)) {
-                            new_columns.back().set_alias(info.entry.type.alias());
+                            new_columns.back().set_name(info.entry.column.name());
                         }
                         break;
                     }

@@ -10,14 +10,14 @@ namespace components::logical_plan {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
 
-        std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation();
-        const std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>& key_translation() const;
+        std::pmr::vector<expressions::key_t>& key_translation();
+        const std::pmr::vector<expressions::key_t>& key_translation() const;
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>> key_translation_;
+        std::pmr::vector<expressions::key_t> key_translation_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;
@@ -32,10 +32,9 @@ namespace components::logical_plan {
                                      const collection_full_name_t& collection,
                                      components::vector::data_chunk_t&& chunk);
 
-    node_insert_ptr
-    make_node_insert(std::pmr::memory_resource* resource,
-                     const collection_full_name_t& collection,
-                     components::vector::data_chunk_t&& chunk,
-                     std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>&& key_translation);
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     components::vector::data_chunk_t&& chunk,
+                                     std::pmr::vector<expressions::key_t>&& key_translation);
 
 } // namespace components::logical_plan

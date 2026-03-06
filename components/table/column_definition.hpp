@@ -4,6 +4,8 @@
 
 #include "storage/file_buffer.hpp"
 
+#include <optional>
+
 namespace components::table {
 
     class column_definition_t {
@@ -11,18 +13,20 @@ namespace components::table {
         column_definition_t(std::string name, types::complex_logical_type type);
         column_definition_t(std::string name,
                             types::complex_logical_type type,
-                            std::unique_ptr<types::logical_value_t> default_value);
+                            std::optional<types::logical_value_t> default_value);
         column_definition_t(std::string name, types::complex_logical_type type, bool not_null);
         column_definition_t(std::string name,
                             types::complex_logical_type type,
                             bool not_null,
-                            std::unique_ptr<types::logical_value_t> default_value);
+                            std::optional<types::logical_value_t> default_value);
+        column_definition_t(const column_definition_t&) = default;
+        column_definition_t& operator=(const column_definition_t&) = default;
         column_definition_t(column_definition_t&&) = default;
         column_definition_t& operator=(column_definition_t&&) = default;
 
         const types::logical_value_t& default_value() const;
         bool has_default_value() const;
-        void set_default_value(std::unique_ptr<types::logical_value_t> default_value);
+        void set_default_value(std::optional<types::logical_value_t> default_value);
 
         bool is_not_null() const;
         void set_not_null(bool v);
@@ -42,15 +46,13 @@ namespace components::table {
         uint64_t oid() const;
         void set_oid(uint64_t oid);
 
-        column_definition_t copy() const;
-
     private:
         std::string name_;
         types::complex_logical_type type_;
         uint64_t storage_oid_ = storage::INVALID_INDEX;
         uint64_t oid_ = storage::INVALID_INDEX;
         bool not_null_{false};
-        std::unique_ptr<types::logical_value_t> default_value_;
+        std::optional<types::logical_value_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;
     };
 

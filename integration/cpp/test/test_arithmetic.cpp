@@ -22,6 +22,11 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -30,7 +35,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -222,8 +227,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 
     INFO("A7. constants only") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 5);
@@ -239,8 +243,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i],
-                                    static_cast<double>(i + 1) * 1.5));
+            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], static_cast<double>(i + 1) * 1.5));
         }
     }
 
@@ -483,10 +486,11 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 
     INFO("E4. GROUP BY + post-aggregate arithmetic") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count_bool, SUM(count) AS total, SUM(count) * 2 AS doubled_total )_"
-                                           R"_(FROM TestDatabase.TestCollection )_"
-                                           R"_(GROUP BY count_bool;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT count_bool, SUM(count) AS total, SUM(count) * 2 AS doubled_total )_"
+                                    R"_(FROM TestDatabase.TestCollection )_"
+                                    R"_(GROUP BY count_bool;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t i = 0; i < cur->size(); i++) {
@@ -599,7 +603,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
             bool found_even = false;
             for (size_t i = 0; i < cur->size(); i++) {
                 auto v = cur->chunk_data().data[0].data<int64_t>()[i];
-                if (v == 2) found_even = true;
+                if (v == 2)
+                    found_even = true;
             }
             REQUIRE(found_even);
         }
@@ -682,6 +687,11 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -690,12 +700,11 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    R"_(CREATE TABLE TestDatabase.TestCollection2();)_");
+            dispatcher->execute_sql(session, R"_(CREATE TABLE TestDatabase.TestCollection2();)_");
         }
     }
 
@@ -704,7 +713,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
             auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {database_name, collection_name}, std::move(chunk));
+                                                      {database_name, collection_name},
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
@@ -717,7 +727,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
             query << "INSERT INTO TestDatabase.TestCollection2 (price, quantity) VALUES ";
             for (int i = 1; i <= 10; i++) {
                 query << "(" << i * 10 << ", " << i << ")";
-                if (i < 10) query << ", ";
+                if (i < 10)
+                    query << ", ";
             }
             query << ";";
             auto cur = dispatcher->execute_sql(session, query.str());
@@ -728,11 +739,12 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
 
     INFO("J1. JOIN with arithmetic in ON") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT * FROM TestDatabase.TestCollection )_"
-                                           R"_(JOIN TestDatabase.TestCollection2 )_"
-                                           R"_(ON TestCollection.count = TestCollection2.price * TestCollection2.quantity )_"
-                                           R"_(ORDER BY count ASC;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT * FROM TestDatabase.TestCollection )_"
+                                    R"_(JOIN TestDatabase.TestCollection2 )_"
+                                    R"_(ON TestCollection.count = TestCollection2.price * TestCollection2.quantity )_"
+                                    R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         // price * quantity = 10*1=10, 20*2=40, 30*3=90, 40*4=160, ...
         // only 10, 40, 90 are in range 1..100 (160 > 100)
@@ -767,6 +779,11 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -775,7 +792,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -829,6 +846,11 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -837,7 +859,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -853,11 +875,12 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 
     INFO("L1. CASE in SELECT with arithmetic in THEN") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count, )_"
-                                           R"_(  CASE WHEN count > 50 THEN count * 0.9 ELSE count * 1.0 END AS adjusted )_"
-                                           R"_(FROM TestDatabase.TestCollection )_"
-                                           R"_(ORDER BY count ASC;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT count, )_"
+                                    R"_(  CASE WHEN count > 50 THEN count * 0.9 ELSE count * 1.0 END AS adjusted )_"
+                                    R"_(FROM TestDatabase.TestCollection )_"
+                                    R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
@@ -926,6 +949,11 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -934,7 +962,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 

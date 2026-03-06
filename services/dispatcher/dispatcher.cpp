@@ -505,11 +505,8 @@ namespace services::dispatcher {
                                                            logic_plan->collection_full_name());
                         co_await std::move(csf);
                     } else {
-                        std::vector<components::table::column_definition_t> storage_columns;
-                        storage_columns.reserve(create_collection->column_definitions().size());
-                        for (const auto& cd : create_collection->column_definitions()) {
-                            storage_columns.push_back(cd.copy());
-                        }
+                        std::vector<components::table::column_definition_t> storage_columns =
+                            create_collection->column_definitions();
                         // Resolve UDT references (UNKNOWN types) in storage columns
                         for (auto& col : storage_columns) {
                             auto& col_type = col.type();
@@ -796,7 +793,8 @@ namespace services::dispatcher {
         for (const auto& [db, coll] : ids) {
             table_id id(resource(), {db, coll});
             if (catalog_.table_exists(id)) {
-                schemas.push_back(catalog_.get_table_schema(id).schema_struct());
+                const auto& schema = catalog_.get_table_schema(id);
+                schemas.push_back(create_struct("schema", schema.types(), schema.descriptions()));
                 continue;
             }
             if (catalog_.table_computes(id)) {
@@ -941,10 +939,7 @@ namespace services::dispatcher {
                     for (size_t i = 0; i < types.size(); desc.push_back(field_description(i++))) {
                     }
 
-                    auto sch = schema(resource(),
-                                      create_struct("schema",
-                                                    std::vector<complex_logical_type>(types.begin(), types.end()),
-                                                    std::move(desc)));
+                    auto sch = schema(resource(), node_info->column_definitions(), std::move(desc));
                     auto err = catalog_.create_table(id, table_metadata(resource(), std::move(sch)));
                     assert(!err);
                 }
@@ -963,15 +958,18 @@ namespace services::dispatcher {
                     for (const auto& child : node->children()) {
                         if (child->type() == node_type::data_t) {
                             auto* data_node = static_cast<const node_data_t*>(child.get());
-                            auto types = data_node->data_chunk().types();
+                            std::vector<components::table::column_definition_t> columns;
                             std::vector<field_description> desc;
-                            desc.reserve(types.size());
-                            for (size_t i = 0; i < types.size(); desc.push_back(field_description(i++))) {
+                            columns.reserve(data_node->data_chunk().column_count());
+                            desc.reserve(data_node->data_chunk().column_count());
+                            for (size_t i = 0; i < data_node->data_chunk().column_count(); desc.emplace_back(i++)) {
+                                const auto& type = data_node->data_chunk().data[i].type();
+                                // TODO: figure out behaviour for unnamed type
+                                assert(type.has_alias());
+                                columns.emplace_back(type.alias(), type);
                             }
                             catalog_.drop_computing_table(id);
-                            auto sch = schema(
-                                resource(),
-                                create_struct("schema", std::vector(types.begin(), types.end()), std::move(desc)));
+                            auto sch = schema(resource(), std::move(columns), std::move(desc));
                             auto err = catalog_.create_table(id, table_metadata(resource(), std::move(sch)));
                             assert(!err);
                         }

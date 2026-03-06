@@ -671,9 +671,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     INFO("order by nested udt field") {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "SELECT * FROM TestDatabase.TestCollection ORDER BY (custom_type).f1 DESC;");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT * FROM TestDatabase.TestCollection ORDER BY (custom_type).f1 DESC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {
@@ -683,9 +683,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session,
-                "SELECT * FROM TestDatabase.TestCollection ORDER BY (custom_type).f1 ASC;");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT * FROM TestDatabase.TestCollection ORDER BY (custom_type).f1 ASC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {

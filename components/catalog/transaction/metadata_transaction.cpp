@@ -27,12 +27,11 @@ namespace components::catalog {
         return true;
     }
 
-    metadata_transaction& metadata_transaction::add_column(const std::string& name,
-                                                           const components::types::complex_logical_type& type,
+    metadata_transaction& metadata_transaction::add_column(const table::column_definition_t& column,
                                                            bool required,
                                                            const std::pmr::string& doc) {
         if (ensure_active()) {
-            schema_diff_.add_column(name, type, required, doc);
+            schema_diff_.add_column(column, required, doc);
         }
         return *this;
     }

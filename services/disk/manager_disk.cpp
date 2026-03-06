@@ -986,7 +986,7 @@ namespace services::disk {
         std::vector<components::table::column_definition_t> result;
         result.reserve(cols.size());
         for (const auto& col : cols) {
-            result.emplace_back(col.copy());
+            result.emplace_back(col);
         }
         co_return std::move(result);
     }

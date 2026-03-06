@@ -35,14 +35,14 @@ TEST_CASE("components::catalog::schema_test") {
     SECTION("more_fields_and_tables") {
         collection_full_name_t full{"db", "fields"};
 
-        std::vector<complex_logical_type> fields;
-        fields.emplace_back(logical_type::BOOLEAN, "flag");
-        fields.emplace_back(logical_type::INTEGER, "number");
-        fields.emplace_back(logical_type::STRING_LITERAL, "name");
-        fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
+        std::vector<components::table::column_definition_t> columns;
+        columns.emplace_back("flag", logical_type::BOOLEAN);
+        columns.emplace_back("number", logical_type::INTEGER);
+        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        columns.emplace_back("array", complex_logical_type::create_list(logical_type::USMALLINT));
 
         std::vector<field_description> desc{{1}};
-        auto sch = schema(&mr, create_struct("schema", fields, n_field_descriptions<4>()));
+        auto sch = schema(&mr, std::move(columns), n_field_descriptions<4>());
 
         {
             auto err = cat.create_table({&mr, full}, {&mr, sch});

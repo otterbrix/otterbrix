@@ -296,19 +296,18 @@ namespace otterbrix {
                               info.columns.size());
                         using namespace components::types;
                         using namespace components::catalog;
-                        std::vector<complex_logical_type> schema_cols;
+                        std::vector<components::table::column_definition_t> schema_cols;
                         std::vector<field_description> descs;
                         schema_cols.reserve(info.columns.size());
                         descs.reserve(info.columns.size());
                         for (size_t i = 0; i < info.columns.size(); ++i) {
-                            auto col_type = info.columns[i].full_type;
-                            if (!col_type.has_alias()) {
-                                col_type.set_alias(info.columns[i].name);
-                            }
-                            schema_cols.push_back(std::move(col_type));
-                            descs.push_back(field_description(static_cast<field_id_t>(i)));
+                            // TODO: add info.columns[i].default_value
+                            schema_cols.emplace_back(info.columns[i].name,
+                                                     info.columns[i].full_type,
+                                                     info.columns[i].not_null);
+                            descs.emplace_back(static_cast<field_id_t>(i));
                         }
-                        auto sch = schema(&resource, create_struct("schema", schema_cols, std::move(descs)));
+                        auto sch = schema(&resource, std::move(schema_cols), std::move(descs));
                         auto err = catalog.create_table(table_id, table_metadata(&resource, std::move(sch)));
                         if (err) {
                             warn(log_,
@@ -327,19 +326,18 @@ namespace otterbrix {
                     // Build schema from catalog columns
                     using namespace components::types;
                     using namespace components::catalog;
-                    std::vector<complex_logical_type> schema_cols;
+                    std::vector<components::table::column_definition_t> schema_cols;
                     std::vector<field_description> descs;
                     schema_cols.reserve(info.columns.size());
                     descs.reserve(info.columns.size());
                     for (size_t i = 0; i < info.columns.size(); ++i) {
-                        auto col_type = info.columns[i].full_type;
-                        if (!col_type.has_alias()) {
-                            col_type.set_alias(info.columns[i].name);
-                        }
-                        schema_cols.push_back(std::move(col_type));
-                        descs.push_back(field_description(static_cast<field_id_t>(i)));
+                        // TODO: add info.columns[i].default_value
+                        schema_cols.emplace_back(info.columns[i].name,
+                                                 info.columns[i].full_type,
+                                                 info.columns[i].not_null);
+                        descs.emplace_back(static_cast<field_id_t>(i));
                     }
-                    auto sch = schema(&resource, create_struct("schema", schema_cols, std::move(descs)));
+                    auto sch = schema(&resource, std::move(schema_cols), std::move(descs));
                     auto err = catalog.create_table(table_id, table_metadata(&resource, std::move(sch)));
                     if (err) {
                         warn(log_,

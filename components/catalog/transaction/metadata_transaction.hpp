@@ -18,8 +18,7 @@ namespace components::catalog {
             ABORTED
         };
 
-        metadata_transaction& add_column(const std::string& name,
-                                         const components::types::complex_logical_type& type,
+        metadata_transaction& add_column(const components::table::column_definition_t& column,
                                          bool required = false,
                                          const std::pmr::string& doc = "");
         metadata_transaction& delete_column(const std::string& name);

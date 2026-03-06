@@ -87,11 +87,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             auto session = otterbrix::session_id_t();
             dispatcher->create_database(session, table_database_name);
         }
-        { create_collection(table_collection_name_simple, columns_simple); }
-        { create_collection(table_collection_name_not_null, columns_not_null); }
-        { create_collection(table_collection_name_null_defaults, columns_null_defaults); }
-        { create_collection(table_collection_name_value_defaults, columns_value_defaults); }
-        { create_collection(table_collection_name_value_defaults_not_null, columns_value_defaults_not_null); }
+        create_collection(table_collection_name_simple, columns_simple);
+        create_collection(table_collection_name_not_null, columns_not_null);
+        create_collection(table_collection_name_null_defaults, columns_null_defaults);
+        create_collection(table_collection_name_value_defaults, columns_value_defaults);
+        create_collection(table_collection_name_value_defaults_not_null, columns_value_defaults_not_null);
     }
 
     INFO("full insert") {
@@ -184,89 +184,242 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
         };
 
-        {{auto cur = partial_insert(table_collection_name_simple);
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
-        // column[1] will be filled with 100 nulls
-    }
-    {
-        auto cur = select_all(table_collection_name_simple);
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts * 4);
-        for (size_t i = 0; i < kNumInserts * 3; i++) {
-            REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+        INFO("table_collection_name_simple") {
+            {
+                auto cur = partial_insert(table_collection_name_simple);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_simple);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 4);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
         }
-        for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-            REQUIRE(cur->chunk_data().data[1].is_null(i));
+        INFO("table_collection_name_not_null") {
+            {
+                auto cur = partial_insert(table_collection_name_not_null);
+                REQUIRE(cur->is_error());
+                // column[1] can not be filled with nulls, total count will be kNumInserts * 3
+            }
+            {
+                auto cur = select_all(table_collection_name_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 3);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_null_defaults") {
+            {
+                auto cur = partial_insert(table_collection_name_null_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_null_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 4);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_value_defaults") {
+            {
+                auto cur = partial_insert(table_collection_name_value_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_value_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 4);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_value_defaults_not_null") {
+            {
+                auto cur = partial_insert(table_collection_name_value_defaults_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_value_defaults_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 4);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                }
+            }
         }
     }
-}
-{{auto cur = partial_insert(table_collection_name_not_null);
-REQUIRE(cur->is_error());
-// column[1] can not be filled with nulls, total count will be kNumInserts * 3
-}
-{
-    auto cur = select_all(table_collection_name_not_null);
-    REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == kNumInserts * 3);
-    for (size_t i = 0; i < kNumInserts * 3; i++) {
-        REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
-    }
-}
-}
-{{auto cur = partial_insert(table_collection_name_null_defaults);
-REQUIRE(cur->is_success());
-REQUIRE(cur->size() == kNumInserts);
-// column[1] will be filled with 100 nulls
-}
-{
-    auto cur = select_all(table_collection_name_null_defaults);
-    REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == kNumInserts * 4);
-    for (size_t i = 0; i < kNumInserts * 3; i++) {
-        REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
-    }
-    for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-        REQUIRE(cur->chunk_data().data[1].is_null(i));
-    }
-}
-}
-{{auto cur = partial_insert(table_collection_name_value_defaults);
-REQUIRE(cur->is_success());
-REQUIRE(cur->size() == kNumInserts);
-// column[1] will be filled with 100 nulls
-}
-{
-    auto cur = select_all(table_collection_name_value_defaults);
-    REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == kNumInserts * 4);
-    for (size_t i = 0; i < kNumInserts * 3; i++) {
-        REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
-    }
-    for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-        REQUIRE(cur->chunk_data().data[1].is_null(i));
-    }
-}
-}
-{
-    {
-        auto cur = partial_insert(table_collection_name_value_defaults_not_null);
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
-        // column[1] will be filled with 100 nulls
-    }
-    {
-        auto cur = select_all(table_collection_name_value_defaults_not_null);
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts * 4);
-        for (size_t i = 0; i < kNumInserts * 3; i++) {
-            REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+
+    INFO("partial insert in reverse order") {
+        // is the same for all
+        auto reversed_partial_types = types;
+        reversed_partial_types.erase(reversed_partial_types.begin() + 1);
+        std::reverse(reversed_partial_types.begin(), reversed_partial_types.end());
+        std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
+        fields.reserve(reversed_partial_types.size());
+        for (const auto& type : reversed_partial_types) {
+            fields.emplace_back(dispatcher->resource(), type.alias());
         }
-        auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
-        for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-            REQUIRE(cur->chunk_data().value(1, i) == val);
+
+        auto reversed_partial_insert = [&](const collection_name_t& collection) {
+            auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
+                                                      {table_database_name, collection},
+                                                      std::move(chunk),
+                                                      std::pmr::vector<expressions::key_t>{fields});
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_plan(session, ins);
+        };
+        auto select_all = [&](const collection_name_t& collection) {
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
+        };
+
+        INFO("table_collection_name_simple") {
+            {
+                auto cur = reversed_partial_insert(table_collection_name_simple);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_simple);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 5);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_not_null") {
+            {
+                auto cur = reversed_partial_insert(table_collection_name_not_null);
+                REQUIRE(cur->is_error());
+                // column[1] can not be filled with nulls, total count will be kNumInserts * 3
+            }
+            {
+                auto cur = select_all(table_collection_name_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 3);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_null_defaults") {
+            {
+                auto cur = reversed_partial_insert(table_collection_name_null_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_null_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 5);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_value_defaults") {
+            {
+                auto cur = reversed_partial_insert(table_collection_name_value_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_value_defaults);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 5);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
+                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                }
+            }
+        }
+        INFO("table_collection_name_value_defaults_not_null") {
+            {
+                auto cur = reversed_partial_insert(table_collection_name_value_defaults_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts);
+                // column[1] will be filled with 100 nulls
+            }
+            {
+                auto cur = select_all(table_collection_name_value_defaults_not_null);
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == kNumInserts * 5);
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                }
+            }
         }
     }
-}
-}
+
+    INFO("invalid key in insert") {
+        // is the same for all
+        std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
+        fields.reserve(types.size());
+        for (const auto& type : types) {
+            fields.emplace_back(dispatcher->resource(), "invalid_key_" + type.alias());
+        }
+
+        auto invalid_keys_insert = [&](const collection_name_t& collection) {
+            auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
+            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
+                                                      {table_database_name, collection},
+                                                      std::move(chunk),
+                                                      std::pmr::vector<expressions::key_t>{fields});
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_plan(session, ins);
+            REQUIRE(cur->is_error());
+        };
+
+        invalid_keys_insert(table_collection_name_simple);
+        invalid_keys_insert(table_collection_name_not_null);
+        invalid_keys_insert(table_collection_name_null_defaults);
+        invalid_keys_insert(table_collection_name_value_defaults);
+        invalid_keys_insert(table_collection_name_value_defaults_not_null);
+    }
 }

@@ -27,7 +27,7 @@ namespace components::operators {
             sorter_.set_chunk(chunk);
             std::sort(indexing.data(), indexing.data() + num_rows, std::ref(sorter_));
 
-            // 4. Create result via copy with indexing (no transpose needed)
+            // 4. Create result via copy with indexing
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);
             chunk.copy(result, indexing, num_rows, 0);
 

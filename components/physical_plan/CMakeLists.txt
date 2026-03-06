@@ -10,11 +10,7 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp
-
-        operators/get/operator_get.cpp
-        operators/get/simple_value.cpp
-        operators/get/coalesce_value.cpp
-        operators/get/case_when_value.cpp
+        operators/aggregate/grouped_aggregate.cpp
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
@@ -28,7 +24,6 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/sort/sort.cpp
 
-        operators/aggregation.cpp
         operators/operator_insert.cpp
         operators/operator_delete.cpp
         operators/operator_update.cpp
@@ -39,7 +34,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_join.cpp
 
         operators/arithmetic_eval.cpp
-        operators/transformation.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

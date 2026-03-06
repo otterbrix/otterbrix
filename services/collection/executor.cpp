@@ -21,10 +21,12 @@ namespace services::collection::executor {
 
     plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                    components::logical_plan::storage_parameters parameters,
-                   services::context_storage_t&& context_storage)
+                   services::context_storage_t&& context_storage,
+                   components::logical_plan::limit_t limit)
         : sub_plans(std::move(sub_plans))
         , parameters(parameters)
-        , context_storage_(context_storage) {}
+        , context_storage_(context_storage)
+        , limit(limit) {}
 
     executor_t::executor_t(std::pmr::memory_resource* resource,
                            actor_zeta::address_t parent_address,
@@ -192,6 +194,7 @@ namespace services::collection::executor {
         plan->set_as_root();
 
         auto plan_data = traverse_plan_(std::move(plan), std::move(parameters), std::move(context_storage));
+        plan_data.limit = limit;
 
         // Step 2: Execute physical plan
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
@@ -475,26 +478,35 @@ namespace services::collection::executor {
                     break;
                 }
 
-                case components::operators::operator_type::raw_data:
-                case components::operators::operator_type::join:
-                case components::operators::operator_type::aggregate: {
-                    if (plan->type() == components::operators::operator_type::aggregate) {
-                        trace(log_,
-                              "executor::execute_plan : operators::operator_type::aggregate, session: {}",
-                              session.data());
-                    } else if (plan->type() == components::operators::operator_type::join) {
-                        trace(log_,
-                              "executor::execute_plan : operators::operator_type::join, session: {}",
-                              session.data());
-                    } else {
-                        trace(log_,
-                              "executor::execute_plan : operators::operator_type::raw_data, session: {}",
-                              session.data());
-                    }
+                default: {
+                    trace(log_,
+                          "executor::execute_plan : operator_type={}, session: {}",
+                          static_cast<int>(plan->type()),
+                          session.data());
 
                     if (plan->is_root()) {
                         if (plan->output()) {
-                            cursor = make_cursor(resource(), std::move(plan->output()->data_chunk()));
+                            auto& chunk = plan->output()->data_chunk();
+                            // Apply post-sort limit
+                            if (plan_data.limit.limit() > 0 &&
+                                static_cast<int>(chunk.size()) > plan_data.limit.limit()) {
+                                chunk.set_cardinality(
+                                    static_cast<uint64_t>(plan_data.limit.limit()));
+                            }
+                            // Strip internal columns (__agg_, __sort_expr_) and
+                            // rename __case_ → "case" before returning to user
+                            for (auto it = chunk.data.begin(); it != chunk.data.end();) {
+                                auto alias = it->type().alias();
+                                if (alias.find("__agg_") == 0 || alias.find("__sort_expr_") == 0) {
+                                    it = chunk.data.erase(it);
+                                } else {
+                                    if (alias.find("__case_") == 0) {
+                                        it->set_type_alias("case");
+                                    }
+                                    ++it;
+                                }
+                            }
+                            cursor = make_cursor(resource(), std::move(chunk));
                         } else {
                             cursor = make_cursor(resource(), operation_status_t::success);
                         }
@@ -503,10 +515,6 @@ namespace services::collection::executor {
                     }
                     break;
                 }
-
-                default:
-                    cursor = make_cursor(resource(), operation_status_t::success);
-                    break;
             }
 
             if (cursor->is_error()) {

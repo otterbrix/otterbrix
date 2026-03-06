@@ -7,15 +7,50 @@
 #include <unordered_map>
 
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
-#include <components/physical_plan/operators/get/operator_get.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
 namespace components::operators {
 
     struct group_key_t {
+        explicit group_key_t(std::pmr::memory_resource* r)
+            : name(r)
+            , full_path(r)
+            , coalesce_entries(r)
+            , case_clauses(r)
+            , else_constant(r, nullptr) {}
+
         std::pmr::string name;
-        get::operator_get_ptr getter;
-        std::pmr::vector<size_t> col_path; // resolved column path from validation
+        enum class kind { column, coalesce, case_when } type = kind::column;
+        size_t col_index = 0;   // for column
+        std::pmr::vector<size_t> full_path;  // for nested struct extraction
+
+        // for coalesce: ordered list of sources (col index or constant)
+        struct coalesce_entry {
+            explicit coalesce_entry(std::pmr::memory_resource* r)
+                : constant(r, nullptr) {}
+            enum class source { column, constant } type = source::column;
+            size_t col_index = 0;
+            types::logical_value_t constant;
+        };
+        std::pmr::vector<coalesce_entry> coalesce_entries;
+
+        // for case_when: list of when-clauses
+        struct case_clause {
+            explicit case_clause(std::pmr::memory_resource* r)
+                : condition_value(r, nullptr), res_constant(r, nullptr) {}
+            size_t condition_col = 0;
+            expressions::compare_type cmp = expressions::compare_type::eq;
+            types::logical_value_t condition_value;
+            enum class result_source { column, constant } res_type = result_source::column;
+            size_t res_col = 0;
+            types::logical_value_t res_constant;
+        };
+        std::pmr::vector<case_clause> case_clauses;
+
+        // else result for case_when
+        enum class else_source { column, constant, null_value } else_type = else_source::null_value;
+        size_t else_col = 0;
+        types::logical_value_t else_constant;
     };
 
     struct group_value_t {
@@ -43,12 +78,12 @@ namespace components::operators {
                          expressions::expression_ptr having = nullptr,
                          size_t internal_aggregate_count = 0);
 
-        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter);
-        void add_key(const std::pmr::string& name, get::operator_get_ptr&& getter,
-                     std::pmr::vector<size_t> col_path);
+        void add_key(group_key_t&& key);
+        void add_key(const std::pmr::string& name);
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);
+        void set_select_order(std::pmr::vector<size_t>&& order);
 
     private:
         std::pmr::vector<group_key_t> keys_;
@@ -57,6 +92,7 @@ namespace components::operators {
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
+        std::pmr::vector<size_t> select_order_;
 
         std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
@@ -66,6 +102,10 @@ namespace components::operators {
 
         void create_list_rows();
         vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
+        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context);
+        vector::data_chunk_t build_result_chunk(
+            size_t num_groups, size_t key_count,
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results);
         void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
         void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };

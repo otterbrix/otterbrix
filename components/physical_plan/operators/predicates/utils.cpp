@@ -63,15 +63,12 @@ namespace components::operators::predicates::impl {
             } else {
                 const auto& sub_expr_ptr = std::get<expressions::expression_ptr>(arg);
                 if (sub_expr_ptr->group() == expressions::expression_group::scalar) {
-                    const auto& scalar_expr =
-                        reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr_ptr);
+                    const auto& scalar_expr = reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr_ptr);
                     args_getters.emplace_back(
                         create_arithmetic_value_getter(resource, function_registry, scalar_expr, parameters));
                 } else {
-                    const auto& func_expr =
-                        reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr_ptr);
-                    args_getters.emplace_back(
-                        create_value_getter(resource, function_registry, func_expr, parameters));
+                    const auto& func_expr = reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr_ptr);
+                    args_getters.emplace_back(create_value_getter(resource, function_registry, func_expr, parameters));
                 }
             }
         }
@@ -143,12 +140,10 @@ namespace components::operators::predicates::impl {
         } else {
             const auto& sub_expr = std::get<expressions::expression_ptr>(var);
             if (sub_expr->group() == expressions::expression_group::scalar) {
-                const auto& scalar_expr =
-                    reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr);
+                const auto& scalar_expr = reinterpret_cast<const expressions::scalar_expression_ptr&>(sub_expr);
                 return create_arithmetic_value_getter(resource, function_registry, scalar_expr, parameters);
             } else {
-                const auto& func_expr =
-                    reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr);
+                const auto& func_expr = reinterpret_cast<const expressions::function_expression_ptr&>(sub_expr);
                 return create_value_getter(resource, function_registry, func_expr, parameters);
             }
         }

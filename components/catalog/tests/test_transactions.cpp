@@ -28,7 +28,8 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
 
     {
         auto scope = cat.begin_transaction({&mr, full});
-        scope.transaction().add_column("new_col", complex_logical_type(logical_type::HUGEINT));
+        components::table::column_definition_t column{"new_col", complex_logical_type(logical_type::HUGEINT)};
+        scope.transaction().add_column(column);
         scope.commit();
         scope.commit();
         REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::TRANSACTION_FINALIZED);
@@ -70,9 +71,11 @@ TEST_CASE("components::catalog::transactions::changes") {
 
     collection_full_name_t full{"db", "name"};
     {
-        auto column = complex_logical_type(logical_type::BIGINT);
-        column.set_alias("col");
-        schema sch(&mr, create_struct("schema", {column}, {field_description(1, false, "test")}), {1});
+        auto type = complex_logical_type(logical_type::BIGINT);
+        type.set_alias("col");
+        schema sch(&mr,
+                   {components::table::column_definition_t{type.alias(), type}},
+                   {field_description(1, false, "test")});
         auto err = cat.create_table({&mr, full}, {&mr, sch});
         REQUIRE(!err);
     }
@@ -80,7 +83,10 @@ TEST_CASE("components::catalog::transactions::changes") {
     {
         auto scope = cat.begin_transaction({&mr, full});
         scope.transaction()
-            .add_column("new_col", complex_logical_type(logical_type::STRING_LITERAL), false, "test1")
+            .add_column(
+                components::table::column_definition_t{"new_col", complex_logical_type(logical_type::STRING_LITERAL)},
+                false,
+                "test1")
             .rename_column("col", "new_old_col")
             .make_optional("new_old_col")
             .update_column_type("new_old_col", logical_type::HUGEINT);
@@ -113,7 +119,10 @@ TEST_CASE("components::catalog::transactions::savepoints") {
         auto scope = cat.begin_transaction({&mr, full});
         scope.transaction()
             .savepoint("nothing")
-            .add_column("new_col", complex_logical_type(logical_type::STRING_LITERAL), false, "test1")
+            .add_column(
+                components::table::column_definition_t{"new_col", complex_logical_type(logical_type::STRING_LITERAL)},
+                false,
+                "test1")
             .rename_column("name", "new_old_col")
             .rollback_to_savepoint("nothing");
 
@@ -124,7 +133,10 @@ TEST_CASE("components::catalog::transactions::savepoints") {
     {
         auto scope = cat.begin_transaction({&mr, full});
         scope.transaction()
-            .add_column("new_col", complex_logical_type(logical_type::STRING_LITERAL), false, "test1")
+            .add_column(
+                components::table::column_definition_t{"new_col", complex_logical_type(logical_type::STRING_LITERAL)},
+                false,
+                "test1")
             .savepoint("new_column")
             .rename_column("name", "new_old_col")
             .savepoint("rename")

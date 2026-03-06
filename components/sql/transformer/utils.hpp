@@ -153,11 +153,16 @@ namespace components::sql::transform {
     }
 
     inline expressions::scalar_type get_arithmetic_scalar_type(std::string_view op) {
-        if (op == "+") return expressions::scalar_type::add;
-        if (op == "-") return expressions::scalar_type::subtract;
-        if (op == "*") return expressions::scalar_type::multiply;
-        if (op == "/") return expressions::scalar_type::divide;
-        if (op == "%") return expressions::scalar_type::mod;
+        if (op == "+")
+            return expressions::scalar_type::add;
+        if (op == "-")
+            return expressions::scalar_type::subtract;
+        if (op == "*")
+            return expressions::scalar_type::multiply;
+        if (op == "/")
+            return expressions::scalar_type::divide;
+        if (op == "%")
+            return expressions::scalar_type::mod;
         throw parser_exception_t{"Unknown arithmetic operator: " + std::string(op), ""};
     }
 

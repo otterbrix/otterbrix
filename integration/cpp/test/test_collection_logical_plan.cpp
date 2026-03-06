@@ -52,6 +52,22 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     types_right.emplace_back(types::logical_type::BIGINT, "value");
     types_right.emplace_back(types::logical_type::BIGINT, "key");
 
+    std::vector<components::table::column_definition_t> columns;
+    std::vector<components::table::column_definition_t> columns_left;
+    std::vector<components::table::column_definition_t> columns_right;
+    columns.reserve(types.size());
+    columns_left.reserve(types_left.size());
+    columns_right.reserve(types_right.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
+    for (const auto& type : types_left) {
+        columns_left.emplace_back(type.alias(), type);
+    }
+    for (const auto& type : types_right) {
+        columns_right.emplace_back(type.alias(), type);
+    }
+
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
@@ -59,19 +75,19 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_name, types);
+            dispatcher->create_collection(session, table_database_name, table_collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_other_collection_name, types);
+            dispatcher->create_collection(session, table_database_name, table_other_collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_left, types_left);
+            dispatcher->create_collection(session, table_database_name, table_collection_left, columns_left);
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, table_collection_right, types_right);
+            dispatcher->create_collection(session, table_database_name, table_collection_right, columns_right);
         }
     }
 

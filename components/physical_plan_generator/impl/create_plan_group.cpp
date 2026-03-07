@@ -23,35 +23,8 @@ namespace services::planner::impl {
                    t == scalar_type::unary_minus;
         }
 
-        // Check if any operand (recursively) references an aggregate result
-        bool has_aggregate_operand(const std::pmr::vector<components::expressions::param_storage>& operands,
-                                   const std::vector<std::string>& aggregate_aliases) {
-            for (const auto& op : operands) {
-                if (std::holds_alternative<components::expressions::key_t>(op)) {
-                    auto& key = std::get<components::expressions::key_t>(op);
-                    for (const auto& alias : aggregate_aliases) {
-                        if (!key.storage().empty() &&
-                            std::string_view(key.storage().back()) == std::string_view(alias)) {
-                            return true;
-                        }
-                    }
-                } else if (std::holds_alternative<components::expressions::expression_ptr>(op)) {
-                    auto& sub_expr = std::get<components::expressions::expression_ptr>(op);
-                    if (sub_expr->group() == expression_group::scalar) {
-                        auto* sub_scalar =
-                            static_cast<const components::expressions::scalar_expression_t*>(sub_expr.get());
-                        if (has_aggregate_operand(sub_scalar->params(), aggregate_aliases)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            return false;
-        }
-
         void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr,
-                              const std::vector<std::string>& aggregate_aliases,
                               std::pmr::memory_resource* resource,
                               const components::logical_plan::storage_parameters* storage_params) {
             switch (expr->type()) {
@@ -176,8 +149,8 @@ namespace services::planner::impl {
                                                    expr->key().as_string());
                         }
                         auto alias = std::pmr::string(expr->key().storage().back(), resource);
-                        if (has_aggregate_operand(expr->params(), aggregate_aliases)) {
-                            // Post-aggregate arithmetic
+                        if (!expr->key().path().empty() && expr->key().path()[0] == SIZE_MAX) {
+                            // Post-aggregate arithmetic (marked by validator)
                             components::operators::post_aggregate_column_t post{
                                 alias,
                                 expr->type(),
@@ -190,7 +163,6 @@ namespace services::planner::impl {
                                 expr->type(),
                                 expr->params()};
                             group->add_computed_column(std::move(comp));
-                            // Also add as key for output projection
                             group->add_key(
                                 std::pmr::string(expr->key().as_string(), resource));
                         }
@@ -238,17 +210,7 @@ namespace services::planner::impl {
             group = new components::operators::operator_group_t(node->resource(), log_t{}, std::move(having), internal_aggregate_count);
         }
 
-        // First pass: collect aggregate aliases
-        std::vector<std::string> aggregate_aliases;
-        for (const auto& expr : node->expressions()) {
-            if (expr->group() == expression_group::aggregate) {
-                auto* agg_expr =
-                    static_cast<const components::expressions::aggregate_expression_t*>(expr.get());
-                aggregate_aliases.push_back(agg_expr->key().as_string());
-            }
-        }
-
-        // Second pass: create operators and track SELECT column order
+        // Create operators and track SELECT column order
         auto plan_resource = known ? context.resource : node->resource();
         size_t select_end = node->expressions().size() - internal_aggregate_count;
 
@@ -278,7 +240,7 @@ namespace services::planner::impl {
                         break;
                     default:
                         if (is_arithmetic_scalar_type(scalar_expr->type())) {
-                            if (has_aggregate_operand(scalar_expr->params(), aggregate_aliases)) {
+                            if (!scalar_expr->key().path().empty() && scalar_expr->key().path()[0] == SIZE_MAX) {
                                 adds_post_agg = true;
                             } else {
                                 adds_key = true;
@@ -287,7 +249,7 @@ namespace services::planner::impl {
                         break;
                 }
 
-                add_group_scalar(group, scalar_expr, aggregate_aliases, plan_resource, params);
+                add_group_scalar(group, scalar_expr, plan_resource, params);
 
                 if (is_select) {
                     if (adds_key) {

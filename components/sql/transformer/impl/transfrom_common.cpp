@@ -463,7 +463,7 @@ namespace components::sql::transform {
     void transformer::transform_select_case_expr(
         CaseExpr* node, const char* alias, const name_collection_t& names,
         logical_plan::parameter_node_t* params, logical_plan::node_ptr& group) {
-        std::string expr_name = alias ? alias : "__case_" + std::to_string(aggregate_counter_++);
+        std::string expr_name = alias ? alias : "case_" + std::to_string(aggregate_counter_++);
         auto expr = make_scalar_expression(
             resource_, scalar_type::case_expr, expressions::key_t{resource_, std::move(expr_name)});
 

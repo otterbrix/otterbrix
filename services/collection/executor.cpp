@@ -493,19 +493,6 @@ namespace services::collection::executor {
                                 chunk.set_cardinality(
                                     static_cast<uint64_t>(plan_data.limit.limit()));
                             }
-                            // Strip internal columns (__agg_, __sort_expr_) and
-                            // rename __case_ → "case" before returning to user
-                            for (auto it = chunk.data.begin(); it != chunk.data.end();) {
-                                auto alias = it->type().alias();
-                                if (alias.find("__agg_") == 0 || alias.find("__sort_expr_") == 0) {
-                                    it = chunk.data.erase(it);
-                                } else {
-                                    if (alias.find("__case_") == 0) {
-                                        it->set_type_alias("case");
-                                    }
-                                    ++it;
-                                }
-                            }
                             cursor = make_cursor(resource(), std::move(chunk));
                         } else {
                             cursor = make_cursor(resource(), operation_status_t::success);

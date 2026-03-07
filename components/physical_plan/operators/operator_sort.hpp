@@ -14,8 +14,11 @@ namespace components::operators {
         void add(size_t index, order order_ = order::ascending);
         void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
 
+        void set_expected_output_count(size_t n) { expected_output_count_ = n; }
+
     private:
         sort::columnar_sorter_t sorter_;
+        size_t expected_output_count_{0};
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };

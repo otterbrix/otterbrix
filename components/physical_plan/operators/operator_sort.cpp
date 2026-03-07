@@ -31,6 +31,12 @@ namespace components::operators {
             vector::data_chunk_t result(resource_, chunk.types(), num_rows);
             chunk.copy(result, indexing, num_rows, 0);
 
+            // Truncate extra columns (sort_expr, internal) after sorting
+            if (expected_output_count_ > 0 && result.data.size() > expected_output_count_) {
+                result.data.erase(result.data.begin() + static_cast<ptrdiff_t>(expected_output_count_),
+                                  result.data.end());
+            }
+
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
         }
     }

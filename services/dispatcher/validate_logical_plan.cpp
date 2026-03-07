@@ -925,7 +925,10 @@ namespace services::dispatcher {
                             // and before erase (which invalidates the reference)
                             components::expressions::key_t k_copy(k_ref);
                             auto field = impl::find_types(resource, k_copy, incoming_schema);
-                            if (field.is_error() || field.value().size() <= 1) { ei++; continue; }
+                            if (field.is_error()) {
+                                return schema_result<named_schema>(resource, field.error());
+                            }
+                            if (field.value().empty()) { ei++; continue; }
 
                             auto& tps = field.value();
                             exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(ei));

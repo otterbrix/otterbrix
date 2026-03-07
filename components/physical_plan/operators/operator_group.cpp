@@ -1,8 +1,8 @@
 #include "operator_group.hpp"
 
 #include <cassert>
-#include <cstring>
 #include <type_traits>
+#include <core/operations_helper.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/compute/function.hpp>
@@ -19,7 +19,7 @@ namespace components::operators {
             if constexpr (std::is_floating_point_v<T>) {
                 T a = vec.data<T>()[row];
                 T b = val.value<T>();
-                return std::memcmp(&a, &b, sizeof(T)) == 0;
+                return core::is_equals(a, b);
             } else {
                 return vec.data<T>()[row] == val.value<T>();
             }
@@ -45,8 +45,19 @@ namespace components::operators {
                 case types::physical_type::DOUBLE:  return equals_typed<double>(vec, row, val);
                 case types::physical_type::STRING:
                     return vec.data<std::string_view>()[row] == val.value<std::string_view>();
+                case types::physical_type::STRUCT: {
+                    // Compare child entries at row index without creating logical_value_t
+                    auto& vec_children = vec.entries();
+                    auto& val_children = val.children();
+                    if (vec_children.size() != val_children.size()) return false;
+                    for (size_t c = 0; c < vec_children.size(); c++) {
+                        auto child_val = vec_children[c]->value(row);
+                        if (!(child_val == val_children[c])) return false;
+                    }
+                    return true;
+                }
                 default:
-                    return vec.value(row) == val; // fallback for STRUCT/LIST
+                    return vec.value(row) == val; // fallback for LIST/ARRAY
             }
         }
 
@@ -215,11 +226,8 @@ namespace components::operators {
             if (!computed_columns_.empty()) {
                 size_t base = chunk.column_count() - computed_columns_.size();
                 for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
-                    for (auto& key : keys_) {
-                        if (key.type == group_key_t::kind::column && key.col_index == 0 && key.name == computed_columns_[ci].alias) {
-                            key.col_index = base + ci;
-                            break;
-                        }
+                    if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
+                        keys_[computed_columns_[ci].resolved_key_index].col_index = base + ci;
                     }
                 }
             }
@@ -407,6 +415,7 @@ namespace components::operators {
             aggregate::builtin_agg kind;
             size_t col_idx; // column in chunk (or SIZE_MAX for COUNT(*))
             types::logical_type col_type;
+            bool is_count_star = false;
         };
         std::pmr::vector<agg_info_t> agg_infos(resource_);
 
@@ -427,7 +436,8 @@ namespace components::operators {
                 size_t col_idx = SIZE_MAX;
                 types::logical_type col_type = types::logical_type::NA;
 
-                if (kind == aggregate::builtin_agg::COUNT && func_op->args().empty()) {
+                bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
+                if (count_star) {
                     // COUNT(*) — no column needed, but we need a dummy column for null-check
                     col_idx = 0;
                     col_type = types::logical_type::UBIGINT;
@@ -450,7 +460,7 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
-                agg_infos.push_back({kind, col_idx, col_type});
+                agg_infos.push_back({kind, col_idx, col_type, count_star});
             }
         }
 
@@ -473,8 +483,7 @@ namespace components::operators {
                 states.resize(num_groups);
 
                 auto& info = agg_infos[a];
-                if (info.kind == aggregate::builtin_agg::COUNT &&
-                    dynamic_cast<aggregate::operator_func_t*>(values_[a].aggregator.get())->args().empty()) {
+                if (info.is_count_star) {
                     // COUNT(*): count all rows per group (including nulls)
                     for (uint64_t i = 0; i < num_rows; i++) {
                         if (group_ids[i] != UINT32_MAX) {
@@ -511,8 +520,8 @@ namespace components::operators {
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
         // Build gather order: all row_ids concatenated by group
-        std::pmr::vector<size_t> gather_order(resource_);
-        std::pmr::vector<size_t> group_offsets(resource_);
+        std::pmr::vector<uint64_t> gather_order(resource_);
+        std::pmr::vector<uint64_t> group_offsets(resource_);
         gather_order.reserve(chunk.size());
         group_offsets.reserve(num_groups + 1);
 
@@ -546,8 +555,8 @@ namespace components::operators {
             results.reserve(num_groups);
 
             for (size_t i = 0; i < num_groups; i++) {
-                auto off = static_cast<uint64_t>(group_offsets[i]);
-                auto cnt = static_cast<uint64_t>(group_offsets[i + 1] - group_offsets[i]);
+                auto off = group_offsets[i];
+                auto cnt = group_offsets[i + 1] - group_offsets[i];
                 auto sub_chunk = gathered.slice_contiguous(resource_, off, cnt);
                 aggregator->execute_on(
                     operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),

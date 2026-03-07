@@ -382,6 +382,9 @@ namespace components::vector {
         return result;
     }
 
+    // Returns a lightweight view into this chunk: each column vector in the result
+    // shares the underlying buffer with the original and points at [offset, offset+count).
+    // No data is copied — the result is valid only while the source chunk is alive.
     data_chunk_t data_chunk_t::slice_contiguous(
         std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
         assert(offset + count <= size());

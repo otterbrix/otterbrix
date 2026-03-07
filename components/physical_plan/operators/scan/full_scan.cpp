@@ -12,6 +12,7 @@ namespace components::operators {
             return nullptr;
         }
         if (expression->type() == expressions::compare_type::all_false) {
+            assert(false && "all_false should be short-circuited in await_async_and_resume");
             return nullptr;
         }
         switch (expression->type()) {
@@ -30,6 +31,8 @@ namespace components::operators {
                     return nullptr;
                 }
                 if (filter->child_filters.size() == 1) {
+                    // Single child remaining after null-filter removal — unwrap the
+                    // conjunction wrapper (same as PostgreSQL eval_const_expressions).
                     return std::move(filter->child_filters[0]);
                 }
                 return filter;
@@ -49,6 +52,8 @@ namespace components::operators {
                     return nullptr;
                 }
                 if (filter->child_filters.size() == 1) {
+                    // Single child remaining after null-filter removal — unwrap the
+                    // conjunction wrapper (same as PostgreSQL eval_const_expressions).
                     return std::move(filter->child_filters[0]);
                 }
                 return filter;

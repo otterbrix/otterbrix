@@ -63,6 +63,7 @@ namespace components::operators {
         std::pmr::string alias;
         expressions::scalar_type op;
         std::pmr::vector<expressions::param_storage> operands;
+        size_t resolved_key_index = SIZE_MAX; // index into keys_ for this computed column
     };
 
     // Post-aggregate computed column (arithmetic on aggregate results)

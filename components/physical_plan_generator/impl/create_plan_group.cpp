@@ -26,7 +26,7 @@ namespace services::planner::impl {
         void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr,
                               std::pmr::memory_resource* resource,
-                              const components::logical_plan::storage_parameters* storage_params) {
+                              const components::logical_plan::storage_parameters* storage_params,size_t key_idx = SIZE_MAX) {
             switch (expr->type()) {
                 case scalar_type::group_field:
                     break;
@@ -39,7 +39,7 @@ namespace services::planner::impl {
                     key.name = std::pmr::string(expr->key().storage().back(), resource);
                     key.type = components::operators::group_key_t::kind::column;
                     key.col_index = path.empty() ? 0 : path[0];
-                    key.full_path.assign(path.begin(), path.end());
+                    key.full_path = path;
                     group->add_key(std::move(key));
                     break;
                 }
@@ -161,7 +161,8 @@ namespace services::planner::impl {
                             components::operators::computed_column_t comp{
                                 alias,
                                 expr->type(),
-                                expr->params()};
+                                expr->params(),
+                                key_idx};
                             group->add_computed_column(std::move(comp));
                             group->add_key(
                                 std::pmr::string(expr->key().as_string(), resource));
@@ -249,7 +250,7 @@ namespace services::planner::impl {
                         break;
                 }
 
-                add_group_scalar(group, scalar_expr, plan_resource, params);
+                add_group_scalar(group, scalar_expr, plan_resource, params, key_idx);
 
                 if (is_select) {
                     if (adds_key) {

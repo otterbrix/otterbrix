@@ -3,13 +3,10 @@
 namespace components::types {
 
     template<typename T>
-    int UnsignedLength(T value);
-
-    template<typename T>
-    int DecimalLength(T value, uint8_t width, uint8_t scale);
+    int unsigned_length(T value);
 
     template<>
-    int UnsignedLength(uint8_t value) {
+    int unsigned_length(uint8_t value) {
         int length = 1;
         length += value >= 10;
         length += value >= 100;
@@ -17,7 +14,7 @@ namespace components::types {
     }
 
     template<>
-    int UnsignedLength(uint16_t value) {
+    int unsigned_length(uint16_t value) {
         int length = 1;
         length += value >= 10;
         length += value >= 100;
@@ -27,7 +24,7 @@ namespace components::types {
     }
 
     template<>
-    int UnsignedLength(uint32_t value) {
+    int unsigned_length(uint32_t value) {
         if (value >= 10000) {
             int length = 5;
             length += value >= 100000;
@@ -46,7 +43,7 @@ namespace components::types {
     }
 
     template<>
-    int UnsignedLength(uint64_t value) {
+    int unsigned_length(uint64_t value) {
         if (value >= 10000000000ULL) {
             if (value >= 1000000000000000ULL) {
                 int length = 16;
@@ -83,9 +80,9 @@ namespace components::types {
     }
 
     template<>
-    int UnsignedLength(int128_t value) {
+    int unsigned_length(int128_t value) {
         if (absl::Int128High64(value) == 0) {
-            return UnsignedLength<uint64_t>(absl::Int128Low64(value));
+            return unsigned_length<uint64_t>(absl::Int128Low64(value));
         }
         // binary search over POWERS_OF_TEN
         // desired length is between 17 and 38
@@ -147,7 +144,7 @@ namespace components::types {
         }
     }
 
-    int DecimalLength(int128_t value, uint8_t width, uint8_t scale) {
+    int decimal_length(int128_t value, uint8_t width, uint8_t scale) {
         int negative;
 
         if (value < 0) {
@@ -158,14 +155,14 @@ namespace components::types {
         }
         if (scale == 0) {
             // scale is 0: regular number
-            return UnsignedLength(value) + negative;
+            return unsigned_length(value) + negative;
         }
         auto extra_numbers = width > scale ? 2 : 1;
-        return std::max(scale + extra_numbers, UnsignedLength(value) + 1) + negative;
+        return std::max(scale + extra_numbers, unsigned_length(value) + 1) + negative;
     }
 
     template<typename T>
-    char* FormatUnsigned(T value, char* ptr) {
+    char* format_unsigned(T value, char* ptr) {
         while (value >= 10) {
             auto index = static_cast<size_t>(value % 10);
             value /= 10;
@@ -176,7 +173,7 @@ namespace components::types {
     }
 
     template<>
-    char* FormatUnsigned(int128_t value, char* ptr) {
+    char* format_unsigned(int128_t value, char* ptr) {
         while (absl::Int128High64(value) > 0) {
             static constexpr uint64_t divisor = 100000000000000000ULL;
             int128_t divided = value / divisor;
@@ -186,7 +183,7 @@ namespace components::types {
             auto start_ptr = ptr;
             // now we format the remainder: note that we need to pad with zero's in case
             // the remainder is small (i.e. less than 10000000000000000)
-            ptr = FormatUnsigned<uint64_t>(remainder, ptr);
+            ptr = format_unsigned<uint64_t>(remainder, ptr);
 
             int format_length = static_cast<int>(start_ptr - ptr);
             // pad with zero
@@ -194,7 +191,7 @@ namespace components::types {
                 *--ptr = '0';
             }
         }
-        return FormatUnsigned<uint64_t>(absl::Int128Low64(value), ptr);
+        return format_unsigned<uint64_t>(absl::Int128Low64(value), ptr);
     }
 
     inline void format_decimal(char* data_ptr, char* end_ptr, int128_t value, uint8_t width, uint8_t scale) {
@@ -205,26 +202,26 @@ namespace components::types {
         }
         if (scale == 0) {
             // with scale=0 we format the number as a regular number
-            FormatUnsigned(value, end_ptr);
+            format_unsigned(value, end_ptr);
             return;
         }
 
         int128_t major = value / POWERS_OF_TEN[scale];
         int128_t minor = value - major * POWERS_OF_TEN[scale];
 
-        data_ptr = FormatUnsigned(minor, end_ptr);
+        data_ptr = format_unsigned(minor, end_ptr);
         // pad with zeros and add the decimal point
         while (data_ptr > end_ptr - scale) {
             *--data_ptr = '0';
         }
         *--data_ptr = '.';
         if (width > scale) {
-            FormatUnsigned(major, data_ptr);
+            format_unsigned(major, data_ptr);
         }
     }
 
     std::pmr::string format_decimal(std::pmr::memory_resource* resource, int128_t value, uint8_t width, uint8_t scale) {
-        int length = DecimalLength(value, width, scale);
+        int length = decimal_length(value, width, scale);
         std::pmr::string result(resource);
         result.resize(static_cast<size_t>(length));
         format_decimal(result.data(), result.data() + length, value, width, scale);
@@ -232,7 +229,7 @@ namespace components::types {
     }
 
     std::string format_decimal(int128_t value, uint8_t width, uint8_t scale) {
-        int length = DecimalLength(value, width, scale);
+        int length = decimal_length(value, width, scale);
         std::string result;
         result.resize(static_cast<size_t>(length));
         format_decimal(result.data(), result.data() + length, value, width, scale);

@@ -403,6 +403,60 @@ namespace components::types {
                 default:
                     assert(false && "incorrect type for conversion to decimal");
             }
+        } else if (type_.type() == logical_type::DECIMAL && is_numeric(type.type())) {
+            const auto* decimal_extension = reinterpret_cast<const decimal_logical_type_extension*>(type.extension());
+            auto create_numeric_inner = [&]<typename From, typename To>() {
+                if constexpr (std::is_floating_point_v<To>) {
+                    return logical_value_t{resource_,
+                                           decimal_to_floating<From, To>(value<From>(), decimal_extension->scale())};
+                } else {
+                    auto val = decimal_to_numeric<From, To>(value<From>(), decimal_extension->scale());
+                    if (val.has_value()) {
+                        return logical_value_t{resource_, val.value()};
+                    } else {
+                        return logical_value_t{resource_, logical_type::NA};
+                    }
+                }
+            };
+            auto create_numeric = [&]<typename To>() {
+                switch (type_.to_physical_type()) {
+                    case physical_type::INT16:
+                        return create_numeric_inner.operator()<int16_t, To>();
+                    case physical_type::INT32:
+                        return create_numeric_inner.operator()<int32_t, To>();
+                    case physical_type::INT64:
+                        return create_numeric_inner.operator()<int64_t, To>();
+                    case physical_type::INT128:
+                        return create_numeric_inner.operator()<int128_t, To>();
+                    default:
+                        assert(false && "incorrect type for conversion to decimal");
+                        return logical_value_t{resource_, logical_type::NA};
+                }
+            };
+            switch (type.type()) {
+                case logical_type::USMALLINT:
+                    return create_numeric.operator()<uint16_t>();
+                case logical_type::UINTEGER:
+                    return create_numeric.operator()<uint32_t>();
+                case logical_type::UBIGINT:
+                    return create_numeric.operator()<uint64_t>();
+                case logical_type::UHUGEINT:
+                    return create_numeric.operator()<uint128_t>();
+                case logical_type::SMALLINT:
+                    return create_numeric.operator()<int16_t>();
+                case logical_type::INTEGER:
+                    return create_numeric.operator()<int32_t>();
+                case logical_type::BIGINT:
+                    return create_numeric.operator()<int64_t>();
+                case logical_type::HUGEINT:
+                    return create_numeric.operator()<int128_t>();
+                case logical_type::FLOAT:
+                    return create_numeric.operator()<float>();
+                case logical_type::DOUBLE:
+                    return create_numeric.operator()<double>();
+                default:
+                    assert(false && "incorrect type for conversion to decimal");
+            }
         } else if (is_duration(type_.type()) && is_duration(type.type())) {
             switch (type.type()) {
                 case logical_type::TIMESTAMP_SEC:

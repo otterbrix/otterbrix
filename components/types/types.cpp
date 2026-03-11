@@ -366,6 +366,9 @@ namespace components::types {
                                   other.type_ == logical_type::DECIMAL)) {
             return true;
         }
+        if (type_ == logical_type::DECIMAL && is_numeric(other.type_)) {
+            return true;
+        }
         if (is_duration(type_) && is_duration(other.type_)) {
             return true;
         }

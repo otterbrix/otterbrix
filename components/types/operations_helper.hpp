@@ -1,8 +1,10 @@
 #pragma once
 
 #include "types.hpp"
+
 #include <boost/math/special_functions/factorials.hpp>
 #include <core/operations_helper.hpp>
+#include <optional>
 
 namespace components::types {
 
@@ -389,6 +391,56 @@ namespace components::types {
         } else {
             return format_decimal(decimal_storage, width, scale);
         }
+    }
+
+    // +/- inf and nan and overflows can not be converted to a meaningful numeric value
+    template<class From, class To>
+    requires(sizeof(From) > sizeof(int32_t)) std::optional<To> decimal_to_numeric(From input, uint8_t scale) {
+        // can not convert nan and inf to numeric
+        if (input <= decimal_limits::nan<From>() || input == decimal_limits::pos_inf<From>()) {
+            return std::nullopt;
+        }
+
+        auto power = POWERS_OF_TEN[scale];
+        From scaled_value;
+        if constexpr (std::is_same_v<From, int128_t>) {
+            auto rounding = ((input < 0) ? -power : power) / 2;
+            scaled_value = (input + rounding) / power;
+        } else {
+            auto fNegate = int64_t(input < 0);
+            auto rounding = ((power ^ -fNegate) + fNegate) / 2;
+            scaled_value = static_cast<From>((input + rounding) / power);
+        }
+        if constexpr (sizeof(To) < sizeof(int32_t)) {
+            if (sizeof(From) > sizeof(To) && (scaled_value > From(static_cast<int>(std::numeric_limits<To>::max())) ||
+                                              scaled_value < From(static_cast<int>(std::numeric_limits<To>::min())))) {
+                // outside desired range
+                return std::nullopt;
+            }
+        } else {
+            if (sizeof(From) > sizeof(To) && (scaled_value > From(std::numeric_limits<To>::max()) ||
+                                              scaled_value < From(std::numeric_limits<To>::min()))) {
+                // outside desired range
+                return std::nullopt;
+            }
+        }
+        return static_cast<To>(scaled_value);
+    }
+
+    // +/- inf and nan and overflows can not be converted to a meaningful numeric value
+    template<class From, class To>
+    requires(sizeof(From) <= sizeof(int32_t)) std::optional<To> decimal_to_numeric(From input, uint8_t scale) {
+        return decimal_to_numeric<int64_t, To>(static_cast<int64_t>(input), scale);
+    }
+
+    template<class From, class To>
+    requires(std::is_floating_point_v<To>) To decimal_to_floating(From input, uint8_t scale) {
+        auto power_of_ten = static_cast<From>(POWERS_OF_TEN[scale]);
+
+        From div = input / power_of_ten;
+        From mod = static_cast<From>(input - div * power_of_ten);
+
+        return static_cast<To>(div) + static_cast<To>(mod) / static_cast<To>(DOUBLE_POWERS_OF_TEN[scale]);
     }
 
 } // namespace components::types

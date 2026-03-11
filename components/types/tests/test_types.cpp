@@ -1,8 +1,7 @@
-#include "core/operations_helper.hpp"
-
+#include "operations_helper.hpp"
 #include <catch2/catch.hpp>
-
 #include <components/types/physical_value.hpp>
+#include <core/operations_helper.hpp>
 
 using namespace components::types;
 
@@ -68,5 +67,173 @@ TEST_CASE("components::types::physical_value") {
         REQUIRE(values[13].type() == physical_type::STRING);
         REQUIRE(values[13].value<physical_type::STRING>() == str1);
         REQUIRE(values[14].type() == physical_type::NA);
+    }
+}
+
+TEST_CASE("components::types::operations_helper::powers_of_ten") {
+    for (size_t i = 1; i < sizeof(POWERS_OF_TEN) / sizeof(int128_t); i++) {
+        REQUIRE(POWERS_OF_TEN[i - 1] * 10 == POWERS_OF_TEN[i]);
+    }
+}
+
+TEST_CASE("components::types::decimal") {
+    auto check_conversion =
+        []<typename Storage, typename Source>(Source val, uint8_t width, uint8_t scale, const std::string& result) {
+            Storage decimal_value = components::types::to_decimal<Storage, Source>(val, width, scale);
+            REQUIRE(decimal_to_string(decimal_value, width, scale) == result);
+        };
+    auto check_arithmetics =
+        []<typename Storage, typename Source>(Source val, uint8_t width, uint8_t scale, const std::string& result) {
+            Storage decimal_value = components::types::to_decimal<Storage, Source>(val, width, scale);
+            decimal_value /= 10;
+            REQUIRE(decimal_to_string(decimal_value, width, scale) == result);
+        };
+
+    SECTION("int16_t") {
+        static constexpr uint8_t width = 3;
+        static constexpr uint8_t scale = 1;
+        // verify storage size
+        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT16);
+
+        SECTION("convert") {
+            // round up
+            check_conversion.operator()<int16_t, double>(1.27, width, scale, "1.3");
+            // round down
+            check_conversion.operator()<int16_t, double>(1.21, width, scale, "1.2");
+            // from int
+            check_conversion.operator()<int16_t, int64_t>(1, width, scale, "1.0");
+            // round up
+            check_conversion.operator()<int16_t, double>(-1.27, width, scale, "-1.3");
+            // round down
+            check_conversion.operator()<int16_t, double>(-1.21, width, scale, "-1.2");
+            // from int
+            check_conversion.operator()<int16_t, int64_t>(-1, width, scale, "-1.0");
+            // special_values
+            check_conversion.operator()<int16_t, double>(10000000, width, scale, "Infinity");
+            check_conversion.operator()<int16_t, double>(-10000000, width, scale, "-Infinity");
+            check_conversion.operator()<int16_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
+            check_conversion.operator()<int16_t, int64_t>(10000000, width, scale, "Infinity");
+            check_conversion.operator()<int16_t, int64_t>(-10000000, width, scale, "-Infinity");
+        }
+        SECTION("convert an divide by 10") {
+            // round up
+            check_arithmetics.operator()<int16_t, double>(1.27, width, scale, "0.1");
+            check_arithmetics.operator()<int16_t, double>(1.21, width, scale, "0.1");
+            check_arithmetics.operator()<int16_t, int64_t>(1, width, scale, "0.1");
+            check_arithmetics.operator()<int16_t, double>(-1.27, width, scale, "-0.1");
+            check_arithmetics.operator()<int16_t, double>(-1.21, width, scale, "-0.1");
+            check_arithmetics.operator()<int16_t, int64_t>(-1, width, scale, "-0.1");
+        }
+    }
+
+    SECTION("int32_t") {
+        static constexpr uint8_t width = 8;
+        static constexpr uint8_t scale = 2;
+        // verify storage size
+        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT32);
+
+        SECTION("convert") {
+            // round up
+            check_conversion.operator()<int32_t, double>(502.215, width, scale, "502.22");
+            // round down
+            check_conversion.operator()<int32_t, double>(502.214, width, scale, "502.21");
+            // from int
+            check_conversion.operator()<int32_t, int64_t>(502, width, scale, "502.00");
+            // round up
+            check_conversion.operator()<int32_t, double>(-502.215, width, scale, "-502.22");
+            // round down
+            check_conversion.operator()<int32_t, double>(-502.214, width, scale, "-502.21");
+            // from int
+            check_conversion.operator()<int32_t, int64_t>(-502, width, scale, "-502.00");
+            // special_values
+            check_conversion.operator()<int32_t, double>(10000000000, width, scale, "Infinity");
+            check_conversion.operator()<int32_t, double>(-10000000000, width, scale, "-Infinity");
+            check_conversion.operator()<int32_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
+            check_conversion.operator()<int32_t, int64_t>(10000000000, width, scale, "Infinity");
+            check_conversion.operator()<int32_t, int64_t>(-10000000000, width, scale, "-Infinity");
+        }
+        SECTION("convert an divide by 10") {
+            check_arithmetics.operator()<int32_t, double>(502.215, width, scale, "50.22");
+            check_arithmetics.operator()<int32_t, double>(502.214, width, scale, "50.22");
+            check_arithmetics.operator()<int32_t, int64_t>(502, width, scale, "50.20");
+            check_arithmetics.operator()<int32_t, double>(-502.215, width, scale, "-50.22");
+            check_arithmetics.operator()<int32_t, double>(-502.214, width, scale, "-50.22");
+            check_arithmetics.operator()<int32_t, int64_t>(-502, width, scale, "-50.20");
+        }
+    }
+
+    SECTION("int64_t") {
+        static constexpr uint8_t width = 12;
+        static constexpr uint8_t scale = 3;
+        // verify storage size
+        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT64);
+
+        SECTION("convert") {
+            // round up
+            check_conversion.operator()<int64_t, double>(502.2157, width, scale, "502.216");
+            // round down
+            check_conversion.operator()<int64_t, double>(502.2151, width, scale, "502.215");
+            // from int
+            check_conversion.operator()<int64_t, int64_t>(502, width, scale, "502.000");
+            // round up
+            check_conversion.operator()<int64_t, double>(-502.2157, width, scale, "-502.216");
+            // round down
+            check_conversion.operator()<int64_t, double>(-502.2151, width, scale, "-502.215");
+            // from int
+            check_conversion.operator()<int64_t, int64_t>(-502, width, scale, "-502.000");
+            // special_values
+            check_conversion.operator()<int64_t, double>(10000000000000, width, scale, "Infinity");
+            check_conversion.operator()<int64_t, double>(-10000000000000, width, scale, "-Infinity");
+            check_conversion.operator()<int64_t, double>(std::numeric_limits<double>::quiet_NaN(), width, scale, "NaN");
+            check_conversion.operator()<int64_t, int64_t>(10000000000000, width, scale, "Infinity");
+            check_conversion.operator()<int64_t, int64_t>(-10000000000000, width, scale, "-Infinity");
+        }
+        SECTION("convert an divide by 10") {
+            check_arithmetics.operator()<int64_t, double>(502.2157, width, scale, "50.221");
+            check_arithmetics.operator()<int64_t, double>(502.2151, width, scale, "50.221");
+            check_arithmetics.operator()<int64_t, int64_t>(502, width, scale, "50.200");
+            check_arithmetics.operator()<int64_t, double>(-502.2157, width, scale, "-50.221");
+            check_arithmetics.operator()<int64_t, double>(-502.2151, width, scale, "-50.221");
+            check_arithmetics.operator()<int64_t, int64_t>(-502, width, scale, "-50.200");
+        }
+    }
+
+    INFO("int128_t") {
+        static constexpr uint8_t width = 20;
+        static constexpr uint8_t scale = 4;
+        // verify storage size
+        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT128);
+
+        SECTION("convert") {
+            // round up
+            check_conversion.operator()<int128_t, double>(502.21575, width, scale, "502.2158");
+            // round down
+            check_conversion.operator()<int128_t, double>(502.21572, width, scale, "502.2157");
+            // from int
+            check_conversion.operator()<int128_t, int64_t>(502, width, scale, "502.0000");
+            // round up
+            check_conversion.operator()<int128_t, double>(-502.21575, width, scale, "-502.2158");
+            // round down
+            check_conversion.operator()<int128_t, double>(-502.21572, width, scale, "-502.2157");
+            // from int
+            check_conversion.operator()<int128_t, int64_t>(-502, width, scale, "-502.0000");
+            // special_values
+            check_conversion.operator()<int128_t, double>(1e30, width, scale, "Infinity");
+            check_conversion.operator()<int128_t, double>(-1e30, width, scale, "-Infinity");
+            check_conversion.operator()<int128_t, double>(std::numeric_limits<double>::quiet_NaN(),
+                                                          width,
+                                                          scale,
+                                                          "NaN");
+            check_conversion.operator()<int128_t, int128_t>(absl::MakeInt128(10000000, 0), width, scale, "Infinity");
+            check_conversion.operator()<int128_t, int128_t>(absl::MakeInt128(-10000000, 0), width, scale, "-Infinity");
+        }
+        SECTION("convert an divide by 10") {
+            check_arithmetics.operator()<int128_t, double>(502.21575, width, scale, "50.2215");
+            check_arithmetics.operator()<int128_t, double>(502.21572, width, scale, "50.2215");
+            check_arithmetics.operator()<int128_t, int64_t>(502, width, scale, "50.2000");
+            check_arithmetics.operator()<int128_t, double>(-502.21575, width, scale, "-50.2215");
+            check_arithmetics.operator()<int128_t, double>(-502.21572, width, scale, "-50.2215");
+            check_arithmetics.operator()<int128_t, int64_t>(-502, width, scale, "-50.2000");
+        }
     }
 }

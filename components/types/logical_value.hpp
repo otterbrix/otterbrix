@@ -59,7 +59,9 @@ namespace components::types {
         static logical_value_t
         create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, int32_t value);
         static logical_value_t
-        create_decimal(std::pmr::memory_resource* r, int64_t value, uint8_t width, uint8_t scale);
+        create_decimal(std::pmr::memory_resource* r, const complex_logical_type& decimal_type, int64_t value);
+        static logical_value_t
+        create_decimal(std::pmr::memory_resource* r, const complex_logical_type& decimal_type, int128_t value);
         static logical_value_t create_map(std::pmr::memory_resource* r,
                                           const complex_logical_type& key_type,
                                           const complex_logical_type& value_type,

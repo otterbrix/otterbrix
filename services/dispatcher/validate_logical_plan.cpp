@@ -1000,6 +1000,7 @@ namespace services::dispatcher {
                                         return complex_logical_type(promote_type(lt.type(), rt.type()));
                                     }
                                 }
+                                assert(false);
                                 return complex_logical_type(logical_type::BIGINT);
                             }
                         };
@@ -1097,13 +1098,14 @@ namespace services::dispatcher {
                                             if (std::holds_alternative<components::expressions::key_t>(p)) {
                                                 auto& k = std::get<components::expressions::key_t>(p);
                                                 auto f = impl::find_types(resource, k, incoming_schema);
-                                                if (!f.is_error() && !f.value().empty()) {
+                                                if (!f.is_error()) {
                                                     return f.value().front().type;
                                                 }
                                                 if (f.is_error()) {
                                                     resolve_error = f.error();
                                                 }
-                                                return complex_logical_type(logical_type::BIGINT);
+                                                assert(false);
+                                                return complex_logical_type(logical_type::INVALID);
                                             } else if (std::holds_alternative<core::parameter_id_t>(p)) {
                                                 return parameters.parameters.at(std::get<core::parameter_id_t>(p))
                                                     .type();
@@ -1117,7 +1119,8 @@ namespace services::dispatcher {
                                                         return complex_logical_type(promote_type(lt.type(), rt.type()));
                                                     }
                                                 }
-                                                return complex_logical_type(logical_type::BIGINT);
+                                                assert(false);
+                                                return complex_logical_type(logical_type::INVALID);
                                             }
                                         };
                                         if (sub_scalar->params().size() >= 2) {
@@ -1128,12 +1131,16 @@ namespace services::dispatcher {
                                             }
                                             function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
                                         } else {
-                                            // Single-operand scalar: default to BIGINT
-                                            function_input_types.emplace_back(logical_type::BIGINT);
+                                            return schema_result<named_schema>{
+                                                resource,
+                                                components::cursor::error_t{error_code_t::invalid_parameter,
+                                                                            "single-operand scalar is not supported"}};
                                         }
                                     } else {
-                                        // Non-scalar expression param: default to BIGINT
-                                        function_input_types.emplace_back(logical_type::BIGINT);
+                                        return schema_result<named_schema>{
+                                            resource,
+                                            components::cursor::error_t{error_code_t::invalid_parameter,
+                                                                        "non-scalar expression param is not supported"}};
                                     }
                                 }
                             }

@@ -76,6 +76,8 @@ uint64_t value_get_uint(value_ptr ptr);
 double value_get_double(value_ptr ptr);
 char* value_get_string(value_ptr ptr);
 
+void otterbrix_free_string(char* str);
+
 #ifdef __cplusplus
 }
 #endif

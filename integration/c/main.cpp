@@ -298,3 +298,7 @@ extern "C" char* value_get_string(value_ptr ptr) {
     str_ptr[sv.size()] = '\0';
     return str_ptr;
 }
+
+extern "C" void otterbrix_free_string(char* str) {
+    delete[] str;
+}

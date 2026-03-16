@@ -142,7 +142,7 @@ TEST_CASE("components::sql::table") {
         });
 
     TEST_TRANSFORMER_EXPECT_SCHEMA(
-        "CREATE TABLE table_name(t1 decimal(51, 3)[10], t2 int[100], t3 boolean[8])",
+        "CREATE TABLE table_name(t1 decimal(21, 3)[10], t2 int[100], t3 boolean[8])",
         [](const std::pmr::vector<complex_logical_type>& sch) {
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)
@@ -151,7 +151,7 @@ TEST_CASE("components::sql::table") {
                 if (array->internal_type() != logical_type::DECIMAL)
                     return false;
                 auto decimal = static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
-                return type.alias() == "t1" && decimal->width() == 51 && decimal->scale() == 3 && array->size() == 10;
+                return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 && array->size() == 10;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)

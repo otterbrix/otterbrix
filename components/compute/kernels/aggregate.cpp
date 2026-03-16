@@ -135,15 +135,36 @@ namespace {
             case logical_type::TIMESTAMP_NS:
                 return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
-                // stored as int64_t, but this won't result in a proper type
+                // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
-                auto int_sum = op.template operator()<int64_t>(v, count);
-                int_sum = logical_value_t::create_decimal(
-                    v.resource(),
-                    int_sum.template value<int64_t>(),
-                    static_cast<decimal_logical_type_extension*>(v.type().extension())->width(),
-                    static_cast<decimal_logical_type_extension*>(v.type().extension())->scale());
-                return int_sum;
+                switch (v.type().to_physical_type()) {
+                    case physical_type::INT16: {
+                        auto int_sum = op.template operator()<int16_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int16_t>());
+                    }
+                    case physical_type::INT32: {
+                        auto int_sum = op.template operator()<int32_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int32_t>());
+                    }
+                    case physical_type::INT64: {
+                        auto int_sum = op.template operator()<int64_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int64_t>());
+                    }
+                    case physical_type::INT128: {
+                        auto int_sum = op.template operator()<int128_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int128_t>());
+                    }
+                    default:
+                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                }
             }
             case logical_type::FLOAT:
                 return op.template operator()<float>(v, count);
@@ -190,15 +211,36 @@ namespace {
             case logical_type::TIMESTAMP_NS:
                 return op.template operator()<std::chrono::nanoseconds, int64_t>(v1, v2);
             case logical_type::DECIMAL: {
-                // stored as int64_t, but this won't result in a proper type
+                // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
-                auto int_sum = op.template operator()<int64_t>(v1, v2);
-                int_sum = logical_value_t::create_decimal(
-                    v1.resource(),
-                    int_sum.template value<int64_t>(),
-                    static_cast<decimal_logical_type_extension*>(v1.type().extension())->width(),
-                    static_cast<decimal_logical_type_extension*>(v1.type().extension())->scale());
-                return int_sum;
+                switch (v1.type().to_physical_type()) {
+                    case physical_type::INT16: {
+                        auto int_sum = op.template operator()<int16_t>(v1, v2);
+                        return logical_value_t::create_decimal(v1.resource(),
+                                                               v1.type(),
+                                                               int_sum.template value<int16_t>());
+                    }
+                    case physical_type::INT32: {
+                        auto int_sum = op.template operator()<int32_t>(v1, v2);
+                        return logical_value_t::create_decimal(v1.resource(),
+                                                               v1.type(),
+                                                               int_sum.template value<int32_t>());
+                    }
+                    case physical_type::INT64: {
+                        auto int_sum = op.template operator()<int64_t>(v1, v2);
+                        return logical_value_t::create_decimal(v1.resource(),
+                                                               v1.type(),
+                                                               int_sum.template value<int64_t>());
+                    }
+                    case physical_type::INT128: {
+                        auto int_sum = op.template operator()<int128_t>(v1, v2);
+                        return logical_value_t::create_decimal(v1.resource(),
+                                                               v1.type(),
+                                                               int_sum.template value<int128_t>());
+                    }
+                    default:
+                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                }
             }
             case logical_type::FLOAT:
                 return op.template operator()<float>(v1, v2);
@@ -245,15 +287,36 @@ namespace {
             case logical_type::TIMESTAMP_NS:
                 return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
-                // stored as int64_t, but this won't result in a proper type
+                // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
-                auto int_sum = op.template operator()<int64_t>(v, count);
-                int_sum = logical_value_t::create_decimal(
-                    v.resource(),
-                    int_sum.template value<int64_t>(),
-                    static_cast<decimal_logical_type_extension*>(v.type().extension())->width(),
-                    static_cast<decimal_logical_type_extension*>(v.type().extension())->scale());
-                return int_sum;
+                switch (v.type().to_physical_type()) {
+                    case physical_type::INT16: {
+                        auto int_sum = op.template operator()<int16_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int16_t>());
+                    }
+                    case physical_type::INT32: {
+                        auto int_sum = op.template operator()<int32_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int32_t>());
+                    }
+                    case physical_type::INT64: {
+                        auto int_sum = op.template operator()<int64_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int64_t>());
+                    }
+                    case physical_type::INT128: {
+                        auto int_sum = op.template operator()<int128_t>(v, count);
+                        return logical_value_t::create_decimal(v.resource(),
+                                                               v.type(),
+                                                               int_sum.template value<int128_t>());
+                    }
+                    default:
+                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                }
             }
             case logical_type::FLOAT:
                 return op.template operator()<float>(v, count);

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "types/operations_helper.hpp"
 
 #include <catch2/catch.hpp>
 
@@ -773,6 +774,55 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value = 0;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
+    auto config = test_create_config("/tmp/test_sql_features/decimal_type");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection (num_value numeric(10,2), value bigint);");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (num_value, value) VALUES "
+                                               "(500.195, 10), (500.204, 20), (500.2, 30), (500, 40);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("scan") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+
+            auto dec_type = cur->chunk_data().data[0].type();
+            const auto* ext =
+                reinterpret_cast<const components::types::decimal_logical_type_extension*>(dec_type.extension());
+            // decimal(10,2) should fall into int64_t range
+            REQUIRE(dec_type.to_physical_type() == components::types::physical_type::INT64);
+            for (size_t i = 0; i < 4; i++) {
+                REQUIRE(components::types::decimal_to_string(*(cur->chunk_data().data[0].data<int64_t>()),
+                                                             ext->width(),
+                                                             ext->scale()) == "500.20");
+            }
         }
     }
 }

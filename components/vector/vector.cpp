@@ -642,15 +642,31 @@ namespace components::vector {
                 return types::logical_value_t(vector->resource(),
                                               reinterpret_cast<types::uint128_t*>(vector->data_)[index]);
             case types::logical_type::DECIMAL: {
-                assert(vector->type_.extension()->type() == types::logical_type_extension::extension_type::DECIMAL);
-                auto width =
-                    static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->width();
-                auto scale =
-                    static_cast<const types::decimal_logical_type_extension*>(vector->type_.extension())->scale();
-                return types::logical_value_t::create_decimal(vector->resource(),
-                                                              reinterpret_cast<int64_t*>(vector->data_)[index],
-                                                              width,
-                                                              scale);
+                const auto* ext =
+                    reinterpret_cast<const types::decimal_logical_type_extension*>(vector->type_.extension());
+                assert(ext->type() == types::logical_type_extension::extension_type::DECIMAL);
+                switch (ext->stored_as()) {
+                    case types::physical_type::INT16:
+                        return types::logical_value_t::create_decimal(vector->resource(),
+                                                                      vector->type_,
+                                                                      reinterpret_cast<int16_t*>(vector->data_)[index]);
+                    case types::physical_type::INT32:
+                        return types::logical_value_t::create_decimal(vector->resource(),
+                                                                      vector->type_,
+                                                                      reinterpret_cast<int32_t*>(vector->data_)[index]);
+                    case types::physical_type::INT64:
+                        return types::logical_value_t::create_decimal(vector->resource(),
+                                                                      vector->type_,
+                                                                      reinterpret_cast<int64_t*>(vector->data_)[index]);
+                    case types::physical_type::INT128:
+                        return types::logical_value_t::create_decimal(
+                            vector->resource(),
+                            vector->type_,
+                            reinterpret_cast<types::int128_t*>(vector->data_)[index]);
+                    default:
+                        throw std::runtime_error(
+                            "incorrect decimal storage type encountered in vector_t::value_internal");
+                }
             }
             case types::logical_type::POINTER:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<void*>((vector->data_)[index]));

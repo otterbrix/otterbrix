@@ -42,6 +42,25 @@ namespace components::types {
         }
 
         const auto physical_type_table = make_physical_type_table();
+
+        physical_type decimal_storage_type(uint8_t width) {
+            static constexpr uint8_t max_width_16 = 4;
+            static constexpr uint8_t max_width_32 = 9;
+            static constexpr uint8_t max_width_64 = 18;
+            static constexpr uint8_t max_width_128 = 38;
+            if (width <= max_width_16) {
+                return physical_type::INT16;
+            } else if (width <= max_width_32) {
+                return physical_type::INT32;
+            } else if (width <= max_width_64) {
+                return physical_type::INT64;
+            } else if (width <= max_width_128) {
+                return physical_type::INT128;
+            } else {
+                throw std::runtime_error("can not create decimal with width bigger than: " +
+                                         std::to_string(static_cast<int>(max_width_128)));
+            }
+        }
     } // anonymous namespace
 
     physical_type to_physical_type(logical_type type) { return physical_type_table[static_cast<uint8_t>(type)]; }
@@ -173,48 +192,39 @@ namespace components::types {
     bool complex_logical_type::operator!=(const complex_logical_type& rhs) const { return !(*this == rhs); }
 
     size_t complex_logical_type::size() const noexcept {
-        switch (type_) {
-            case logical_type::NA:
+        switch (to_physical_type()) {
+            case physical_type::NA:
                 return 1;
-            case logical_type::BIT:
-            case logical_type::VALIDITY:
-            case logical_type::BOOLEAN:
+            case physical_type::BIT:
+            case physical_type::BOOL:
                 return sizeof(bool);
-            case logical_type::TINYINT:
+            case physical_type::INT8:
                 return sizeof(int8_t);
-            case logical_type::SMALLINT:
+            case physical_type::INT16:
                 return sizeof(int16_t);
-            case logical_type::ENUM:
-            case logical_type::INTEGER:
+            case physical_type::INT32:
                 return sizeof(int32_t);
-            case logical_type::BIGINT:
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
+            case physical_type::INT64:
                 return sizeof(int64_t);
-            case logical_type::FLOAT:
+            case physical_type::FLOAT:
                 return sizeof(float);
-            case logical_type::DOUBLE:
+            case physical_type::DOUBLE:
                 return sizeof(double);
-            case logical_type::UTINYINT:
+            case physical_type::UINT8:
                 return sizeof(uint8_t);
-            case logical_type::USMALLINT:
+            case physical_type::UINT16:
                 return sizeof(uint16_t);
-            case logical_type::UINTEGER:
+            case physical_type::UINT32:
                 return sizeof(uint32_t);
-            case logical_type::UBIGINT:
+            case physical_type::UINT64:
                 return sizeof(uint64_t);
-            case logical_type::STRING_LITERAL:
+            case physical_type::STRING:
                 return sizeof(std::string_view);
-            case logical_type::POINTER:
-                return sizeof(void*);
-            case logical_type::LIST:
+            case physical_type::LIST:
                 return sizeof(list_entry_t);
-            case logical_type::ARRAY:
-            case logical_type::STRUCT:
-            case logical_type::UNION:
-            case logical_type::VARIANT:
+            case physical_type::ARRAY:
+            case physical_type::STRUCT:
+            case physical_type::UNION:
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
@@ -223,45 +233,39 @@ namespace components::types {
     }
 
     size_t complex_logical_type::align() const noexcept {
-        switch (type_) {
-            case logical_type::NA:
+        switch (to_physical_type()) {
+            case physical_type::NA:
                 return 1;
-            case logical_type::BOOLEAN:
+            case physical_type::BIT:
+            case physical_type::BOOL:
                 return alignof(bool);
-            case logical_type::TINYINT:
+            case physical_type::INT8:
                 return alignof(int8_t);
-            case logical_type::SMALLINT:
+            case physical_type::INT16:
                 return alignof(int16_t);
-            case logical_type::ENUM:
-            case logical_type::INTEGER:
+            case physical_type::INT32:
                 return alignof(int32_t);
-            case logical_type::BIGINT:
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
+            case physical_type::INT64:
                 return alignof(int64_t);
-            case logical_type::FLOAT:
+            case physical_type::FLOAT:
                 return alignof(float);
-            case logical_type::DOUBLE:
+            case physical_type::DOUBLE:
                 return alignof(double);
-            case logical_type::UTINYINT:
+            case physical_type::UINT8:
                 return alignof(uint8_t);
-            case logical_type::USMALLINT:
+            case physical_type::UINT16:
                 return alignof(uint16_t);
-            case logical_type::UINTEGER:
+            case physical_type::UINT32:
                 return alignof(uint32_t);
-            case logical_type::UBIGINT:
-            case logical_type::VALIDITY:
+            case physical_type::UINT64:
                 return alignof(uint64_t);
-            case logical_type::STRING_LITERAL:
+            case physical_type::STRING:
                 return alignof(std::string_view);
-            case logical_type::POINTER:
-                return alignof(void*);
-            case logical_type::LIST:
+            case physical_type::LIST:
                 return alignof(list_entry_t);
-            case logical_type::ARRAY:
-            case logical_type::STRUCT:
+            case physical_type::ARRAY:
+            case physical_type::STRUCT:
+            case physical_type::UNION:
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
@@ -269,7 +273,14 @@ namespace components::types {
         }
     }
 
-    physical_type complex_logical_type::to_physical_type() const { return types::to_physical_type(type_); }
+    physical_type complex_logical_type::to_physical_type() const {
+        // decimal physical type depends on the width
+        if (type_ == logical_type::DECIMAL) {
+            return reinterpret_cast<const decimal_logical_type_extension*>(extension_.get())->stored_as();
+        } else {
+            return types::to_physical_type(type_);
+        }
+    }
 
     void complex_logical_type::set_alias(const std::string& alias) {
         if (extension_) {
@@ -351,7 +362,11 @@ namespace components::types {
             return true;
         }
 
-        if (is_numeric(type_) && (is_numeric(other.type_) || other.type_ == logical_type::STRING_LITERAL)) {
+        if (is_numeric(type_) && (is_numeric(other.type_) || other.type_ == logical_type::STRING_LITERAL ||
+                                  other.type_ == logical_type::DECIMAL)) {
+            return true;
+        }
+        if (type_ == logical_type::DECIMAL && is_numeric(other.type_)) {
             return true;
         }
         if (is_duration(type_) && is_duration(other.type_)) {
@@ -755,6 +770,7 @@ namespace components::types {
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
         : logical_type_extension(extension_type::DECIMAL)
+        , stored_as_(decimal_storage_type(width))
         , width_(width)
         , scale_(scale) {}
 
@@ -762,6 +778,8 @@ namespace components::types {
         serializer->start_array(4);
         serializer->append_enum(type_);
         serializer->append(alias_);
+        // stored_as will be recalculated in deserialization
+        //serializer->append_enum(stored_as_);
         serializer->append(static_cast<uint64_t>(width_));
         serializer->append(static_cast<uint64_t>(scale_));
         serializer->end_array();

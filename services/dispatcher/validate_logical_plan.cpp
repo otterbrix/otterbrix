@@ -1353,8 +1353,8 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
                     }
-                    if (table_schema.empty() && is_computed) {
-                        // Computing table — accept any INSERT
+                    if (is_computed) {
+                        // Computing table — accept any INSERT (new fields expand schema dynamically)
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return schema_result<named_schema>{
                             resource,

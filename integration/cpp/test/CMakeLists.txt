@@ -18,6 +18,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_connections.cpp
         test_udfs.cpp
         test_arithmetic.cpp
+        test_jsonbench.cpp
+        test_computed_schema.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

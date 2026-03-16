@@ -1143,6 +1143,11 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -1151,7 +1156,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 

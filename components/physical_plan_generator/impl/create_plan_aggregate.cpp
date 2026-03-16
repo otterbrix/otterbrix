@@ -67,11 +67,9 @@ namespace services::planner::impl {
                 executor = std::move(match_op);
             }
         } else {
-            executor = match_op
-                           ? std::move(match_op)
-                           : static_cast<components::operators::operator_ptr>(
-                                 boost::intrusive_ptr(new components::operators::transfer_scan(
-                                     plan_resource, coll_name, scan_limit)));
+            executor = match_op ? std::move(match_op)
+                                : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
+                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));
@@ -83,7 +81,8 @@ namespace services::planner::impl {
                 if (child->type() == node_type::group_t) {
                     if (auto* gn = dynamic_cast<const components::logical_plan::node_group_t*>(child.get())) {
                         if (gn->visible_select_count > 0) {
-                            static_cast<components::operators::operator_sort_t*>(sort_op.get())->set_expected_output_count(gn->visible_select_count);
+                            static_cast<components::operators::operator_sort_t*>(sort_op.get())
+                                ->set_expected_output_count(gn->visible_select_count);
                         }
                     }
                     break;

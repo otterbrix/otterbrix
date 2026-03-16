@@ -7,71 +7,141 @@
 namespace components::operators::aggregate {
 
     builtin_agg classify(const std::string& func_name) {
-        if (func_name == "sum") return builtin_agg::SUM;
-        if (func_name == "min") return builtin_agg::MIN;
-        if (func_name == "max") return builtin_agg::MAX;
-        if (func_name == "count") return builtin_agg::COUNT;
-        if (func_name == "avg") return builtin_agg::AVG;
+        if (func_name == "sum")
+            return builtin_agg::SUM;
+        if (func_name == "min")
+            return builtin_agg::MIN;
+        if (func_name == "max")
+            return builtin_agg::MAX;
+        if (func_name == "count")
+            return builtin_agg::COUNT;
+        if (func_name == "avg")
+            return builtin_agg::AVG;
         return builtin_agg::UNKNOWN;
     }
 
     // --- raw_agg_state_t update methods ---
 
     void raw_agg_state_t::update_sum(int64_t v) {
-        if (!initialized) { i64 = v; initialized = true; } else { i64 += v; }
+        if (!initialized) {
+            i64 = v;
+            initialized = true;
+        } else {
+            i64 += v;
+        }
         count++;
     }
     void raw_agg_state_t::update_sum(uint64_t v) {
-        if (!initialized) { u64 = v; initialized = true; } else { u64 += v; }
+        if (!initialized) {
+            u64 = v;
+            initialized = true;
+        } else {
+            u64 += v;
+        }
         count++;
     }
     void raw_agg_state_t::update_sum(double v) {
-        if (!initialized) { f64 = v; initialized = true; } else { f64 += v; }
+        if (!initialized) {
+            f64 = v;
+            initialized = true;
+        } else {
+            f64 += v;
+        }
         count++;
     }
 
     void raw_agg_state_t::update_min(int64_t v) {
-        if (!initialized) { i64 = v; initialized = true; } else { i64 = std::min(i64, v); }
+        if (!initialized) {
+            i64 = v;
+            initialized = true;
+        } else {
+            i64 = std::min(i64, v);
+        }
         count++;
     }
     void raw_agg_state_t::update_min(uint64_t v) {
-        if (!initialized) { u64 = v; initialized = true; } else { u64 = std::min(u64, v); }
+        if (!initialized) {
+            u64 = v;
+            initialized = true;
+        } else {
+            u64 = std::min(u64, v);
+        }
         count++;
     }
     void raw_agg_state_t::update_min(double v) {
-        if (!initialized) { f64 = v; initialized = true; } else { f64 = std::min(f64, v); }
+        if (!initialized) {
+            f64 = v;
+            initialized = true;
+        } else {
+            f64 = std::min(f64, v);
+        }
         count++;
     }
 
     void raw_agg_state_t::update_max(int64_t v) {
-        if (!initialized) { i64 = v; initialized = true; } else { i64 = std::max(i64, v); }
+        if (!initialized) {
+            i64 = v;
+            initialized = true;
+        } else {
+            i64 = std::max(i64, v);
+        }
         count++;
     }
     void raw_agg_state_t::update_max(uint64_t v) {
-        if (!initialized) { u64 = v; initialized = true; } else { u64 = std::max(u64, v); }
+        if (!initialized) {
+            u64 = v;
+            initialized = true;
+        } else {
+            u64 = std::max(u64, v);
+        }
         count++;
     }
     void raw_agg_state_t::update_max(double v) {
-        if (!initialized) { f64 = v; initialized = true; } else { f64 = std::max(f64, v); }
+        if (!initialized) {
+            f64 = v;
+            initialized = true;
+        } else {
+            f64 = std::max(f64, v);
+        }
         count++;
     }
 
     void raw_agg_state_t::update_count() {
-        if (!initialized) { u64 = 1; initialized = true; } else { u64++; }
+        if (!initialized) {
+            u64 = 1;
+            initialized = true;
+        } else {
+            u64++;
+        }
         count++;
     }
 
     void raw_agg_state_t::update_avg(int64_t v) {
         // Accumulate sum as double for avg
-        if (!initialized) { f64 = static_cast<double>(v); initialized = true; } else { f64 += static_cast<double>(v); }
+        if (!initialized) {
+            f64 = static_cast<double>(v);
+            initialized = true;
+        } else {
+            f64 += static_cast<double>(v);
+        }
         count++;
     }
     void raw_agg_state_t::update_avg(uint64_t v) {
-        if (!initialized) { f64 = static_cast<double>(v); initialized = true; } else { f64 += static_cast<double>(v); }
+        if (!initialized) {
+            f64 = static_cast<double>(v);
+            initialized = true;
+        } else {
+            f64 += static_cast<double>(v);
+        }
         count++;
     }
     void raw_agg_state_t::update_avg(double v) {
-        if (!initialized) { f64 = v; initialized = true; } else { f64 += v; }
+        if (!initialized) {
+            f64 = v;
+            initialized = true;
+        } else {
+            f64 += v;
+        }
         count++;
     }
 
@@ -99,15 +169,25 @@ namespace components::operators::aggregate {
                          uint64_t count,
                          std::pmr::vector<raw_agg_state_t>& states) {
             for (uint64_t i = 0; i < count; i++) {
-                if (vec.is_null(i)) continue;
+                if (vec.is_null(i))
+                    continue;
                 auto& st = states[group_ids[i]];
                 auto v = promote(data[i]);
                 switch (agg) {
-                    case builtin_agg::SUM: st.update_sum(v); break;
-                    case builtin_agg::MIN: st.update_min(v); break;
-                    case builtin_agg::MAX: st.update_max(v); break;
-                    case builtin_agg::AVG: st.update_avg(v); break;
-                    default: break;
+                    case builtin_agg::SUM:
+                        st.update_sum(v);
+                        break;
+                    case builtin_agg::MIN:
+                        st.update_min(v);
+                        break;
+                    case builtin_agg::MAX:
+                        st.update_max(v);
+                        break;
+                    case builtin_agg::AVG:
+                        st.update_avg(v);
+                        break;
+                    default:
+                        break;
                 }
             }
         }

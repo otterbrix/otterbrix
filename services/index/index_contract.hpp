@@ -94,7 +94,7 @@ namespace services::index {
         unique_future<void> flush_all_indexes(session_id_t session);
 
         unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
-            get_indexed_keys(session_id_t session, collection_full_name_t name);
+        get_indexed_keys(session_id_t session, collection_full_name_t name);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&index_contract::register_collection,
                                                             &index_contract::unregister_collection,

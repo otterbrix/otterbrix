@@ -490,8 +490,7 @@ namespace services::collection::executor {
                             // Apply post-sort limit
                             if (plan_data.limit.limit() > 0 &&
                                 static_cast<int>(chunk.size()) > plan_data.limit.limit()) {
-                                chunk.set_cardinality(
-                                    static_cast<uint64_t>(plan_data.limit.limit()));
+                                chunk.set_cardinality(static_cast<uint64_t>(plan_data.limit.limit()));
                             }
                             cursor = make_cursor(resource(), std::move(chunk));
                         } else {

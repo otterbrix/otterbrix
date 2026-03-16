@@ -11,11 +11,9 @@ namespace components::vector {
         template<typename L, typename R>
         constexpr bool is_int128_float_mix_v =
             ((std::is_same_v<std::decay_t<L>, types::int128_t> ||
-              std::is_same_v<std::decay_t<L>, types::uint128_t>) &&
-             std::is_floating_point_v<R>) ||
+              std::is_same_v<std::decay_t<L>, types::uint128_t>) &&std::is_floating_point_v<R>) ||
             (std::is_floating_point_v<L> &&
-             (std::is_same_v<std::decay_t<R>, types::int128_t> ||
-              std::is_same_v<std::decay_t<R>, types::uint128_t>));
+             (std::is_same_v<std::decay_t<R>, types::int128_t> || std::is_same_v<std::decay_t<R>, types::uint128_t>) );
 
         // Binary vector-vector
         template<template<typename...> class Op>
@@ -23,20 +21,17 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename L, typename R>
-                void operator()(const vector_t& left, const vector_t& right,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>)
-                {
+                void operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
+                    requires(types::is_numeric_type_v<L>&& types::is_numeric_type_v<R>) {
                     auto* lhs = left.data<L>();
                     auto* rhs = right.data<R>();
-                    if constexpr (is_int128_float_mix_v<L, R> ||
-                                  std::is_floating_point_v<L> || std::is_floating_point_v<R>) {
+                    if constexpr (is_int128_float_mix_v<L, R> || std::is_floating_point_v<L> ||
+                                  std::is_floating_point_v<R>) {
                         // All floating-point arithmetic uses double for precision
                         auto* out = output.data<double>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            out[i] = op(static_cast<double>(lhs[i]),
-                                        static_cast<double>(rhs[i]));
+                            out[i] = op(static_cast<double>(lhs[i]), static_cast<double>(rhs[i]));
                         }
                     } else {
                         Op<void> op{};
@@ -49,8 +44,7 @@ namespace components::vector {
                 }
                 template<typename L, typename R>
                 void operator()(const vector_t&, const vector_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>))
-                {
+                    requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -62,14 +56,12 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename L, typename R>
-                void operator()(const vector_t& left, const vector_t& right,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>)
-                {
+                void operator()(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) const
+                    requires(types::is_numeric_type_v<L>&& types::is_numeric_type_v<R>) {
                     auto* lhs = left.data<L>();
                     auto* rhs = right.data<R>();
-                    if constexpr (is_int128_float_mix_v<L, R> ||
-                                  std::is_floating_point_v<L> || std::is_floating_point_v<R>) {
+                    if constexpr (is_int128_float_mix_v<L, R> || std::is_floating_point_v<L> ||
+                                  std::is_floating_point_v<R>) {
                         auto* out = output.data<double>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
@@ -77,8 +69,7 @@ namespace components::vector {
                                 output.validity().set_invalid(i);
                                 out[i] = std::numeric_limits<double>::quiet_NaN();
                             } else {
-                                out[i] = op(static_cast<double>(lhs[i]),
-                                            static_cast<double>(rhs[i]));
+                                out[i] = op(static_cast<double>(lhs[i]), static_cast<double>(rhs[i]));
                             }
                         }
                     } else {
@@ -96,8 +87,7 @@ namespace components::vector {
                 }
                 template<typename L, typename R>
                 void operator()(const vector_t&, const vector_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>))
-                {
+                    requires(!(types::is_numeric_type_v<L> && types::is_numeric_type_v<R>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -109,14 +99,15 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t& vec, const types::logical_value_t& scalar_val,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>)
-                {
+                void operator()(const vector_t& vec,
+                                const types::logical_value_t& scalar_val,
+                                vector_t& output,
+                                uint64_t count) const
+                    requires(types::is_numeric_type_v<VecT>&& types::is_numeric_type_v<ScalarT>) {
                     ScalarT cval = scalar_val.value<ScalarT>();
                     auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> ||
-                                  std::is_floating_point_v<VecT> || std::is_floating_point_v<ScalarT>) {
+                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
+                                  std::is_floating_point_v<ScalarT>) {
                         auto dcval = static_cast<double>(cval);
                         auto* out = output.data<double>();
                         Op<void> op{};
@@ -134,8 +125,7 @@ namespace components::vector {
                 }
                 template<typename VecT, typename ScalarT>
                 void operator()(const vector_t&, const types::logical_value_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>))
-                {
+                    requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -147,14 +137,15 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename VecT, typename ScalarT>
-                void operator()(const vector_t& vec, const types::logical_value_t& scalar_val,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>)
-                {
+                void operator()(const vector_t& vec,
+                                const types::logical_value_t& scalar_val,
+                                vector_t& output,
+                                uint64_t count) const
+                    requires(types::is_numeric_type_v<VecT>&& types::is_numeric_type_v<ScalarT>) {
                     ScalarT cval = scalar_val.value<ScalarT>();
                     if (detail::is_zero(cval)) {
-                        if constexpr (is_int128_float_mix_v<VecT, ScalarT> ||
-                                      std::is_floating_point_v<VecT> || std::is_floating_point_v<ScalarT>) {
+                        if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
+                                      std::is_floating_point_v<ScalarT>) {
                             auto* out = output.data<double>();
                             for (uint64_t i = 0; i < count; i++) {
                                 output.validity().set_invalid(i);
@@ -168,8 +159,8 @@ namespace components::vector {
                         return;
                     }
                     auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> ||
-                                  std::is_floating_point_v<VecT> || std::is_floating_point_v<ScalarT>) {
+                    if constexpr (is_int128_float_mix_v<VecT, ScalarT> || std::is_floating_point_v<VecT> ||
+                                  std::is_floating_point_v<ScalarT>) {
                         auto dcval = static_cast<double>(cval);
                         auto* out = output.data<double>();
                         Op<void> op{};
@@ -187,8 +178,7 @@ namespace components::vector {
                 }
                 template<typename VecT, typename ScalarT>
                 void operator()(const vector_t&, const types::logical_value_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>))
-                {
+                    requires(!(types::is_numeric_type_v<VecT> && types::is_numeric_type_v<ScalarT>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -200,14 +190,15 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t& scalar_val, const vector_t& vec,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>)
-                {
+                void operator()(const types::logical_value_t& scalar_val,
+                                const vector_t& vec,
+                                vector_t& output,
+                                uint64_t count) const
+                    requires(types::is_numeric_type_v<ScalarT>&& types::is_numeric_type_v<VecT>) {
                     ScalarT cval = scalar_val.value<ScalarT>();
                     auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> ||
-                                  std::is_floating_point_v<ScalarT> || std::is_floating_point_v<VecT>) {
+                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> || std::is_floating_point_v<ScalarT> ||
+                                  std::is_floating_point_v<VecT>) {
                         auto dcval = static_cast<double>(cval);
                         auto* out = output.data<double>();
                         Op<void> op{};
@@ -225,8 +216,7 @@ namespace components::vector {
                 }
                 template<typename ScalarT, typename VecT>
                 void operator()(const types::logical_value_t&, const vector_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>))
-                {
+                    requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -238,14 +228,15 @@ namespace components::vector {
             template<typename...>
             struct callback {
                 template<typename ScalarT, typename VecT>
-                void operator()(const types::logical_value_t& scalar_val, const vector_t& vec,
-                                vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>)
-                {
+                void operator()(const types::logical_value_t& scalar_val,
+                                const vector_t& vec,
+                                vector_t& output,
+                                uint64_t count) const
+                    requires(types::is_numeric_type_v<ScalarT>&& types::is_numeric_type_v<VecT>) {
                     ScalarT cval = scalar_val.value<ScalarT>();
                     auto* src = vec.data<VecT>();
-                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> ||
-                                  std::is_floating_point_v<ScalarT> || std::is_floating_point_v<VecT>) {
+                    if constexpr (is_int128_float_mix_v<ScalarT, VecT> || std::is_floating_point_v<ScalarT> ||
+                                  std::is_floating_point_v<VecT>) {
                         auto dcval = static_cast<double>(cval);
                         auto* out = output.data<double>();
                         Op<void> op{};
@@ -272,8 +263,7 @@ namespace components::vector {
                 }
                 template<typename ScalarT, typename VecT>
                 void operator()(const types::logical_value_t&, const vector_t&, vector_t&, uint64_t) const
-                    requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>))
-                {
+                    requires(!(types::is_numeric_type_v<ScalarT> && types::is_numeric_type_v<VecT>) ) {
                     throw std::logic_error("Arithmetic not supported for non-numeric types");
                 }
             };
@@ -285,8 +275,7 @@ namespace components::vector {
             struct callback {
                 template<typename T>
                 void operator()(const vector_t& vec, vector_t& output, uint64_t count) const
-                    requires(types::is_numeric_type_v<T>)
-                {
+                    requires(types::is_numeric_type_v<T>) {
                     auto* src = vec.data<T>();
                     auto* out = output.data<T>();
                     for (uint64_t i = 0; i < count; i++) {
@@ -294,9 +283,7 @@ namespace components::vector {
                     }
                 }
                 template<typename T>
-                void operator()(const vector_t&, vector_t&, uint64_t) const
-                    requires(!types::is_numeric_type_v<T>)
-                {
+                void operator()(const vector_t&, vector_t&, uint64_t) const requires(!types::is_numeric_type_v<T>) {
                     throw std::logic_error("Negation not supported for non-numeric types");
                 }
             };
@@ -305,47 +292,79 @@ namespace components::vector {
         template<template<typename...> class Op>
         void dispatch_binary(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
             types::double_simple_physical_type_switch<binary_op_wrapper<Op>::template callback>(
-                left.type().to_physical_type(), right.type().to_physical_type(),
-                left, right, output, count);
+                left.type().to_physical_type(),
+                right.type().to_physical_type(),
+                left,
+                right,
+                output,
+                count);
         }
 
         template<template<typename...> class Op>
         void dispatch_binary_div(const vector_t& left, const vector_t& right, vector_t& output, uint64_t count) {
             types::double_simple_physical_type_switch<binary_div_wrapper<Op>::template callback>(
-                left.type().to_physical_type(), right.type().to_physical_type(),
-                left, right, output, count);
+                left.type().to_physical_type(),
+                right.type().to_physical_type(),
+                left,
+                right,
+                output,
+                count);
         }
 
         template<template<typename...> class Op>
-        void dispatch_vec_scalar(const vector_t& vec, const types::logical_value_t& scalar,
-                                 vector_t& output, uint64_t count) {
+        void dispatch_vec_scalar(const vector_t& vec,
+                                 const types::logical_value_t& scalar,
+                                 vector_t& output,
+                                 uint64_t count) {
             types::double_simple_physical_type_switch<vec_scalar_op_wrapper<Op>::template callback>(
-                vec.type().to_physical_type(), scalar.type().to_physical_type(),
-                vec, scalar, output, count);
+                vec.type().to_physical_type(),
+                scalar.type().to_physical_type(),
+                vec,
+                scalar,
+                output,
+                count);
         }
 
         template<template<typename...> class Op>
-        void dispatch_vec_scalar_div(const vector_t& vec, const types::logical_value_t& scalar,
-                                     vector_t& output, uint64_t count) {
+        void dispatch_vec_scalar_div(const vector_t& vec,
+                                     const types::logical_value_t& scalar,
+                                     vector_t& output,
+                                     uint64_t count) {
             types::double_simple_physical_type_switch<vec_scalar_div_wrapper<Op>::template callback>(
-                vec.type().to_physical_type(), scalar.type().to_physical_type(),
-                vec, scalar, output, count);
+                vec.type().to_physical_type(),
+                scalar.type().to_physical_type(),
+                vec,
+                scalar,
+                output,
+                count);
         }
 
         template<template<typename...> class Op>
-        void dispatch_scalar_vec(const types::logical_value_t& scalar, const vector_t& vec,
-                                 vector_t& output, uint64_t count) {
+        void dispatch_scalar_vec(const types::logical_value_t& scalar,
+                                 const vector_t& vec,
+                                 vector_t& output,
+                                 uint64_t count) {
             types::double_simple_physical_type_switch<scalar_vec_op_wrapper<Op>::template callback>(
-                scalar.type().to_physical_type(), vec.type().to_physical_type(),
-                scalar, vec, output, count);
+                scalar.type().to_physical_type(),
+                vec.type().to_physical_type(),
+                scalar,
+                vec,
+                output,
+                count);
         }
 
         template<template<typename...> class Op>
-        void dispatch_scalar_vec_div(const types::logical_value_t& scalar, const vector_t& vec,
-                                     vector_t& output, uint64_t count) {
+        void dispatch_scalar_vec_div(const types::logical_value_t& scalar,
+                                     const vector_t& vec,
+                                     vector_t& output,
+                                     uint64_t count) {
             types::double_simple_physical_type_switch<scalar_vec_div_wrapper<Op>::template callback>(
-                scalar.type().to_physical_type(), vec.type().to_physical_type(),
-                scalar, vec, output, count);
+                scalar.type().to_physical_type(),
+                vec.type().to_physical_type(),
+                scalar,
+                vec,
+                output,
+                count);
         }
 
     } // anonymous namespace
@@ -447,12 +466,12 @@ namespace components::vector {
         return output;
     }
 
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource,
-                               const vector_t& vec,
-                               uint64_t count) {
+    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
         vector_t output(resource, vec.type(), count);
-        types::simple_physical_type_switch<unary_neg_wrapper::callback>(
-            vec.type().to_physical_type(), vec, output, count);
+        types::simple_physical_type_switch<unary_neg_wrapper::callback>(vec.type().to_physical_type(),
+                                                                        vec,
+                                                                        output,
+                                                                        count);
         return output;
     }
 

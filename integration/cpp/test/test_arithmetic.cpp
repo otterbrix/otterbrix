@@ -222,8 +222,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 
     INFO("A7. constants only") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 5);
@@ -239,8 +238,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i],
-                                    static_cast<double>(i + 1) * 1.5));
+            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], static_cast<double>(i + 1) * 1.5));
         }
     }
 
@@ -483,10 +481,11 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 
     INFO("E4. GROUP BY + post-aggregate arithmetic") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count_bool, SUM(count) AS total, SUM(count) * 2 AS doubled_total )_"
-                                           R"_(FROM TestDatabase.TestCollection )_"
-                                           R"_(GROUP BY count_bool;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT count_bool, SUM(count) AS total, SUM(count) * 2 AS doubled_total )_"
+                                    R"_(FROM TestDatabase.TestCollection )_"
+                                    R"_(GROUP BY count_bool;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t i = 0; i < cur->size(); i++) {
@@ -506,15 +505,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->chunk_data().column_count() == 3);
-        // Post-aggregate columns may be placed after plain aggregates,
-        // so detect which column is COUNT (==50) and which is doubled SUM
         for (size_t i = 0; i < cur->size(); i++) {
-            auto v1 = cur->chunk_data().data[1].data<int64_t>()[i];
-            auto v2 = cur->chunk_data().data[2].data<int64_t>()[i];
-            auto cnt = (v1 == 50) ? v1 : v2;
-            auto doubled = (v1 == 50) ? v2 : v1;
-            REQUIRE(cnt == 50);
-            REQUIRE((doubled == 5000 || doubled == 5100));
+            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>((50 + i) * 100));
+            REQUIRE(cur->chunk_data().data[2].data<int64_t>()[i] == 50);
         }
     }
 
@@ -621,7 +614,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
             bool found_even = false;
             for (size_t i = 0; i < cur->size(); i++) {
                 auto v = cur->chunk_data().data[0].data<int64_t>()[i];
-                if (v == 2) found_even = true;
+                if (v == 2)
+                    found_even = true;
             }
             REQUIRE(found_even);
         }
@@ -716,8 +710,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    R"_(CREATE TABLE TestDatabase.TestCollection2();)_");
+            dispatcher->execute_sql(session, R"_(CREATE TABLE TestDatabase.TestCollection2();)_");
         }
     }
 
@@ -726,7 +719,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
             auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {database_name, collection_name}, std::move(chunk));
+                                                      {database_name, collection_name},
+                                                      std::move(chunk));
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(session, ins);
             REQUIRE(cur->is_success());
@@ -739,7 +733,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
             query << "INSERT INTO TestDatabase.TestCollection2 (price, quantity) VALUES ";
             for (int i = 1; i <= 10; i++) {
                 query << "(" << i * 10 << ", " << i << ")";
-                if (i < 10) query << ", ";
+                if (i < 10)
+                    query << ", ";
             }
             query << ";";
             auto cur = dispatcher->execute_sql(session, query.str());
@@ -750,11 +745,12 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
 
     INFO("J1. JOIN with arithmetic in ON") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT * FROM TestDatabase.TestCollection )_"
-                                           R"_(JOIN TestDatabase.TestCollection2 )_"
-                                           R"_(ON TestCollection.count = TestCollection2.price * TestCollection2.quantity )_"
-                                           R"_(ORDER BY count ASC;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT * FROM TestDatabase.TestCollection )_"
+                                    R"_(JOIN TestDatabase.TestCollection2 )_"
+                                    R"_(ON TestCollection.count = TestCollection2.price * TestCollection2.quantity )_"
+                                    R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         // price * quantity = 10*1=10, 20*2=40, 30*3=90, 40*4=160, ...
         // only 10, 40, 90 are in range 1..100 (160 > 100)
@@ -875,11 +871,12 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 
     INFO("L1. CASE in SELECT with arithmetic in THEN") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count, )_"
-                                           R"_(  CASE WHEN count > 50 THEN count * 0.9 ELSE count * 1.0 END AS adjusted )_"
-                                           R"_(FROM TestDatabase.TestCollection )_"
-                                           R"_(ORDER BY count ASC;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT count, )_"
+                                    R"_(  CASE WHEN count > 50 THEN count * 0.9 ELSE count * 1.0 END AS adjusted )_"
+                                    R"_(FROM TestDatabase.TestCollection )_"
+                                    R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
@@ -1021,17 +1018,17 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session,
-                                    R"_(CREATE TABLE TestDatabase.TestCollection3();)_");
+            dispatcher->execute_sql(session, R"_(CREATE TABLE TestDatabase.TestCollection3();)_");
         }
     }
 
     INFO("insert test data") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            R"_(INSERT INTO TestDatabase.TestCollection3 (region, category, amount) VALUES )_"
-            R"_(('east','A',10), ('east','A',20), ('east','B',30), )_"
-            R"_(('west','A',40), ('west','B',50), ('west','B',60);)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(INSERT INTO TestDatabase.TestCollection3 (region, category, amount) VALUES )_"
+                                    R"_(('east','A',10), ('east','A',20), ('east','B',30), )_"
+                                    R"_(('west','A',40), ('west','B',50), ('west','B',60);)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 6);
     }
@@ -1042,9 +1039,9 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     INFO("E6a. SELECT region, SUM(amount)*2, category, COUNT(*)") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
-            R"_(SELECT region, SUM(amount) * 2 AS doubled, category, COUNT(*) AS cnt )_"
-            R"_(FROM TestDatabase.TestCollection3 )_"
-            R"_(GROUP BY region, category;)_");
+                                           R"_(SELECT region, SUM(amount) * 2 AS doubled, category, COUNT(*) AS cnt )_"
+                                           R"_(FROM TestDatabase.TestCollection3 )_"
+                                           R"_(GROUP BY region, category;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         REQUIRE(cur->chunk_data().column_count() == 4);
@@ -1078,10 +1075,11 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     // ================================================================
     INFO("E6b. SELECT region, COUNT(*), SUM(amount)+100, category") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-            R"_(SELECT region, COUNT(*) AS cnt, SUM(amount) + 100 AS shifted, category )_"
-            R"_(FROM TestDatabase.TestCollection3 )_"
-            R"_(GROUP BY region, category;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT region, COUNT(*) AS cnt, SUM(amount) + 100 AS shifted, category )_"
+                                    R"_(FROM TestDatabase.TestCollection3 )_"
+                                    R"_(GROUP BY region, category;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         REQUIRE(cur->chunk_data().column_count() == 4);
@@ -1147,8 +1145,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I1. WHERE with constant true: 5 = 5") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 5;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 5;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1158,8 +1155,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I2. WHERE with constant false: 5 = 7") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 7;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 7;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -1169,16 +1165,16 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I3a. sanity: WHERE count > 5 (no arithmetic)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 5;)_");
+        auto cur =
+            dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 5;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 95);
     }
 
     INFO("I3. WHERE count > 2 + 3") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 2 + 3;)_");
+        auto cur =
+            dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 2 + 3;)_");
         REQUIRE(cur->is_success());
         // count > 5 means count 6..100 = 95 rows
         REQUIRE(cur->size() == 95);
@@ -1189,8 +1185,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I4. WHERE count < 5 * 2") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count < 5 * 2;)_");
+        auto cur =
+            dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count < 5 * 2;)_");
         REQUIRE(cur->is_success());
         // count < 10 means count 1..9 = 9 rows
         REQUIRE(cur->size() == 9);
@@ -1201,8 +1197,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I5. WHERE 10 > 5 (constant true)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 10 > 5;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 10 > 5;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1212,8 +1207,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I6. WHERE 3 > 10 (constant false)") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE 3 > 10;)_");
+        auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 3 > 10;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -1289,8 +1283,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I12. WHERE count > 99.5") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 99.5;)_");
+        auto cur =
+            dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 99.5;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 100);
@@ -1313,8 +1307,9 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     INFO("I14. WHERE count = 103 % 10") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 103 % 10;)_");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 103 % 10;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 3);

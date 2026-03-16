@@ -28,9 +28,9 @@ namespace components::vector {
         void set_capacity(const data_chunk_t& other) { set_capacity(other.capacity_); }
 
         types::logical_value_t value(uint64_t col_idx, uint64_t index) const;
-        types::logical_value_t value(const std::pmr::vector<size_t>& col_indices, uint64_t index) const;
+        types::logical_value_t value(const std::pmr::vector<size_t>& col_path, uint64_t index) const;
         void set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val);
-        void set_value(const std::pmr::vector<size_t>& col_indices, uint64_t index, const types::logical_value_t& val);
+        void set_value(const std::pmr::vector<size_t>& col_path, uint64_t index, const types::logical_value_t& val);
 
         vector_t* at(const std::pmr::vector<size_t>& col_indices);
         const vector_t* at(const std::pmr::vector<size_t>& col_indices) const;
@@ -69,11 +69,7 @@ namespace components::vector {
 
         void slice(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count);
 
-        data_chunk_t slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const;
-
-        data_chunk_t slice_contiguous(std::pmr::memory_resource* resource,
-                                       uint64_t offset, uint64_t count) const;
-
+        data_chunk_t slice_contiguous(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const;
 
         void reset();
 

@@ -13,7 +13,6 @@ namespace components::operators {
         }
         if (expression->type() == expressions::compare_type::all_false) {
             assert(false && "all_false should be short-circuited in await_async_and_resume");
-            return nullptr;
         }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
@@ -27,13 +26,8 @@ namespace components::operators {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
                 }
-                if (filter->child_filters.empty()) {
-                    return nullptr;
-                }
-                if (filter->child_filters.size() == 1) {
-                    // Single child remaining after null-filter removal — unwrap the
-                    // conjunction wrapper (same as PostgreSQL eval_const_expressions).
-                    return std::move(filter->child_filters[0]);
+                if (filter->child_filters.size() < 2) {
+                    throw std::runtime_error("incomplete AND filter — expression construction error");
                 }
                 return filter;
             }
@@ -48,13 +42,8 @@ namespace components::operators {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
                 }
-                if (filter->child_filters.empty()) {
-                    return nullptr;
-                }
-                if (filter->child_filters.size() == 1) {
-                    // Single child remaining after null-filter removal — unwrap the
-                    // conjunction wrapper (same as PostgreSQL eval_const_expressions).
-                    return std::move(filter->child_filters[0]);
+                if (filter->child_filters.size() < 2) {
+                    throw std::runtime_error("incomplete OR filter — expression construction error");
                 }
                 return filter;
             }
@@ -79,34 +68,19 @@ namespace components::operators {
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
-                // Handle expression_ptr that the optimizer didn't promote
-                if (!std::holds_alternative<expressions::key_t>(expression->left())) {
-                    return nullptr;
-                }
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));
             }
             default: {
-                // Handle expression_ptr that the optimizer didn't promote
-                if (std::holds_alternative<expressions::expression_ptr>(expression->left()) ||
-                    std::holds_alternative<expressions::expression_ptr>(expression->right())) {
-                    return nullptr;
-                }
-                if (!std::holds_alternative<expressions::key_t>(expression->left()) ||
-                    !std::holds_alternative<core::parameter_id_t>(expression->right())) {
-                    return nullptr;
-                }
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 auto id = std::get<core::parameter_id_t>(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 auto it = parameters->parameters.find(id);
                 if (it == parameters->parameters.end()) {
-                    return nullptr;
+                    throw std::runtime_error("parameter not found in expression to filter conversion");
                 }
-                return std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                  it->second,
-                                                                  std::move(indices));
+                return std::make_unique<table::constant_filter_t>(expression->type(), it->second, std::move(indices));
             }
         }
     }

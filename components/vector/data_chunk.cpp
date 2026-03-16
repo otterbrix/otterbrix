@@ -44,10 +44,11 @@ namespace components::vector {
         assert(index < size());
         return data[col_idx].value(index);
     }
-    types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_indices, uint64_t index) const {
-        const vector_t* sub_column = &data[col_indices.front()];
-        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
-            if (std::next(it) == col_indices.end()) {
+
+    types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
+        const vector_t* sub_column = &data[col_path.front()];
+        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
+            if (std::next(it) == col_path.end()) {
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
                     auto stride =
                         static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
@@ -66,12 +67,12 @@ namespace components::vector {
         data[col_idx].set_value(index, val);
     }
 
-    void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_indices,
+    void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_path,
                                  uint64_t index,
                                  const types::logical_value_t& val) {
-        vector_t* sub_column = &data[col_indices.front()];
-        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
-            if (std::next(it) == col_indices.end()) {
+        vector_t* sub_column = &data[col_path.front()];
+        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
+            if (std::next(it) == col_path.end()) {
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
                     auto stride =
                         static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
@@ -86,17 +87,17 @@ namespace components::vector {
         return sub_column->set_value(index, val);
     }
 
-    vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_indices) {
-        vector_t* sub_column = &data[col_indices.front()];
-        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+    vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
+        vector_t* sub_column = &data[col_path.front()];
+        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             sub_column = sub_column->entries()[*it].get();
         }
         return sub_column;
     }
 
-    const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_indices) const {
-        const vector_t* sub_column = &data[col_indices.front()];
-        for (auto it = std::next(col_indices.begin()); it != col_indices.end(); ++it) {
+    const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
+        const vector_t* sub_column = &data[col_path.front()];
+        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             sub_column = sub_column->entries()[*it].get();
         }
         return sub_column;
@@ -366,30 +367,9 @@ namespace components::vector {
     }
 
     data_chunk_t
-    data_chunk_t::slice(std::pmr::memory_resource* resource, const std::pmr::vector<size_t>& row_ids) const {
-        auto result_types = types();
-        auto count = static_cast<uint64_t>(row_ids.size());
-        uint64_t cap = count > 0 ? count : 1;
-        data_chunk_t result(resource, result_types, cap);
-        if (row_ids.empty()) {
-            return result;
-        }
-        indexing_vector_t indexing(resource, count);
-        for (uint64_t i = 0; i < count; i++) {
-            indexing.set_index(i, row_ids[i]);
-        }
-        copy(result, indexing, count, 0);
-        return result;
-    }
-
-    // Returns a lightweight view into this chunk: each column vector in the result
-    // shares the underlying buffer with the original and points at [offset, offset+count).
-    // No data is copied — the result is valid only while the source chunk is alive.
-    data_chunk_t data_chunk_t::slice_contiguous(
-        std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
+    data_chunk_t::slice_contiguous(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
         assert(offset + count <= size());
-        std::pmr::vector<types::complex_logical_type> empty_types(resource);
-        data_chunk_t result(resource, empty_types, 0);
+        data_chunk_t result(resource, std::pmr::vector<types::complex_logical_type>{resource}, 0);
         result.capacity_ = count;
         result.count_ = count;
         result.data.reserve(column_count());
@@ -398,7 +378,6 @@ namespace components::vector {
         }
         return result;
     }
-
 
     std::vector<unified_vector_format> data_chunk_t::to_unified_format(std::pmr::memory_resource* resource) {
         std::vector<unified_vector_format> unified_data;

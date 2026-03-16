@@ -40,7 +40,9 @@ TEST_CASE("optimizer::scalar_fold_add") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
@@ -66,7 +68,9 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -90,7 +94,9 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -114,7 +120,9 @@ TEST_CASE("optimizer::scalar_fold_divide") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -138,7 +146,9 @@ TEST_CASE("optimizer::scalar_fold_mod") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -378,8 +388,7 @@ TEST_CASE("optimizer::no_fold_key_param") {
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
 
-    auto comp = make_compare_expression(&resource, compare_type::eq,
-                                        key(&resource, "field", side_t::left), id0);
+    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left), id0);
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
 
@@ -393,15 +402,18 @@ TEST_CASE("optimizer::no_fold_key_param") {
 TEST_CASE("optimizer::no_fold_null_param") {
     auto resource = std::pmr::synchronized_pool_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(
-        components::types::logical_value_t{&resource, components::types::complex_logical_type{components::types::logical_type::NA}});
+    auto id0 = params->add_parameter(components::types::logical_value_t{
+        &resource,
+        components::types::complex_logical_type{components::types::logical_type::NA}});
     auto id1 = params->add_parameter(int64_t(3));
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -447,7 +459,9 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -476,7 +490,9 @@ TEST_CASE("optimizer::div_by_zero_skip") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -499,8 +515,7 @@ TEST_CASE("optimizer::union_and_fold") {
     auto id2 = params->add_parameter(int64_t(10));
 
     auto child1 = make_compare_expression(&resource, compare_type::eq, id0, id1);
-    auto child2 = make_compare_expression(&resource, compare_type::gt,
-                                          key(&resource, "field", side_t::left), id2);
+    auto child2 = make_compare_expression(&resource, compare_type::gt, key(&resource, "field", side_t::left), id2);
 
     auto union_and = make_compare_union_expression(&resource, compare_type::union_and);
     union_and->append_child(child1);
@@ -562,7 +577,9 @@ TEST_CASE("optimizer::deep_nested_scalar") {
     outer->append_param(expression_ptr(inner));
     outer->append_param(id2);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(outer));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -597,7 +614,9 @@ TEST_CASE("optimizer::triple_nested_scalar") {
     add_outer->append_param(expression_ptr(mul_mid));
     add_outer->append_param(id3);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(add_outer));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -621,7 +640,9 @@ TEST_CASE("optimizer::scalar_fold_double") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());
@@ -645,7 +666,9 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
     scalar->append_param(id0);
     scalar->append_param(id1);
 
-    auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left),
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
     components::planner::optimize(&resource, node, nullptr, params.get());

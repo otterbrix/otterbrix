@@ -20,15 +20,23 @@ namespace components::operators {
             , else_constant(r, nullptr) {}
 
         std::pmr::string name;
-        enum class kind { column, coalesce, case_when } type = kind::column;
-        size_t col_index = 0;   // for column
-        std::pmr::vector<size_t> full_path;  // for nested struct extraction
+        enum class kind
+        {
+            column,
+            coalesce,
+            case_when
+        } type = kind::column;
+        std::pmr::vector<size_t> full_path;
 
         // for coalesce: ordered list of sources (col index or constant)
         struct coalesce_entry {
             explicit coalesce_entry(std::pmr::memory_resource* r)
                 : constant(r, nullptr) {}
-            enum class source { column, constant } type = source::column;
+            enum class source
+            {
+                column,
+                constant
+            } type = source::column;
             size_t col_index = 0;
             types::logical_value_t constant;
         };
@@ -37,18 +45,28 @@ namespace components::operators {
         // for case_when: list of when-clauses
         struct case_clause {
             explicit case_clause(std::pmr::memory_resource* r)
-                : condition_value(r, nullptr), res_constant(r, nullptr) {}
+                : condition_value(r, nullptr)
+                , res_constant(r, nullptr) {}
             size_t condition_col = 0;
             expressions::compare_type cmp = expressions::compare_type::eq;
             types::logical_value_t condition_value;
-            enum class result_source { column, constant } res_type = result_source::column;
+            enum class result_source
+            {
+                column,
+                constant
+            } res_type = result_source::column;
             size_t res_col = 0;
             types::logical_value_t res_constant;
         };
         std::pmr::vector<case_clause> case_clauses;
 
         // else result for case_when
-        enum class else_source { column, constant, null_value } else_type = else_source::null_value;
+        enum class else_source
+        {
+            column,
+            constant,
+            null_value
+        } else_type = else_source::null_value;
         size_t else_col = 0;
         types::logical_value_t else_constant;
     };
@@ -75,7 +93,8 @@ namespace components::operators {
 
     class operator_group_t final : public read_write_operator_t {
     public:
-        operator_group_t(std::pmr::memory_resource* resource, log_t log,
+        operator_group_t(std::pmr::memory_resource* resource,
+                         log_t log,
                          expressions::expression_ptr having = nullptr,
                          size_t internal_aggregate_count = 0);
 
@@ -104,9 +123,10 @@ namespace components::operators {
         void create_list_rows();
         vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
         vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context);
-        vector::data_chunk_t build_result_chunk(
-            size_t num_groups, size_t key_count,
-            std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results);
+        vector::data_chunk_t
+        build_result_chunk(size_t num_groups,
+                           size_t key_count,
+                           std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results);
         void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
         void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };

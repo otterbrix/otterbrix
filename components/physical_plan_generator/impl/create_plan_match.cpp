@@ -17,9 +17,8 @@ namespace services::planner::impl {
         namespace expr = components::expressions;
 
         // Check if this compare expression can use an index scan
-        [[maybe_unused]] bool can_use_index(const context_storage_t& context,
-                           const expr::compare_expression_t& comp,
-                           bool& key_on_left) {
+        [[maybe_unused]] bool
+        can_use_index(const context_storage_t& context, const expr::compare_expression_t& comp, bool& key_on_left) {
             // Skip union conditions
             if (expr::is_union_compare_condition(comp.type())) {
                 return false;

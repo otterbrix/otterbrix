@@ -1,21 +1,20 @@
 #include "operator_group.hpp"
 
+#include "arithmetic_eval.hpp"
 #include <cassert>
-#include <type_traits>
-#include <core/operations_helper.hpp>
+#include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/compute/function.hpp>
 #include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
-#include "arithmetic_eval.hpp"
+#include <core/operations_helper.hpp>
+#include <type_traits>
 
 namespace components::operators {
 
     namespace {
         template<typename T>
-        bool equals_typed(const vector::vector_t& vec, size_t row,
-                          const types::logical_value_t& val) {
+        bool equals_typed(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
             if constexpr (std::is_floating_point_v<T>) {
                 T a = vec.data<T>()[row];
                 T b = val.value<T>();
@@ -25,39 +24,81 @@ namespace components::operators {
             }
         }
 
-        bool value_equals_raw(const vector::vector_t& vec, size_t row,
-                              const types::logical_value_t& val) {
-            if (vec.is_null(row)) return val.is_null();
-            if (val.is_null()) return false;
+        bool value_equals_raw(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
+            if (vec.is_null(row))
+                return val.is_null();
+            if (val.is_null())
+                return false;
             switch (vec.type().to_physical_type()) {
                 case types::physical_type::BOOL:
-                case types::physical_type::INT8:    return equals_typed<int8_t>(vec, row, val);
-                case types::physical_type::INT16:   return equals_typed<int16_t>(vec, row, val);
-                case types::physical_type::INT32:   return equals_typed<int32_t>(vec, row, val);
-                case types::physical_type::INT64:   return equals_typed<int64_t>(vec, row, val);
-                case types::physical_type::UINT8:   return equals_typed<uint8_t>(vec, row, val);
-                case types::physical_type::UINT16:  return equals_typed<uint16_t>(vec, row, val);
-                case types::physical_type::UINT32:  return equals_typed<uint32_t>(vec, row, val);
-                case types::physical_type::UINT64:  return equals_typed<uint64_t>(vec, row, val);
-                case types::physical_type::INT128:  return equals_typed<types::int128_t>(vec, row, val);
-                case types::physical_type::UINT128: return equals_typed<types::uint128_t>(vec, row, val);
-                case types::physical_type::FLOAT:   return equals_typed<float>(vec, row, val);
-                case types::physical_type::DOUBLE:  return equals_typed<double>(vec, row, val);
+                case types::physical_type::INT8:
+                    return equals_typed<int8_t>(vec, row, val);
+                case types::physical_type::INT16:
+                    return equals_typed<int16_t>(vec, row, val);
+                case types::physical_type::INT32:
+                    return equals_typed<int32_t>(vec, row, val);
+                case types::physical_type::INT64:
+                    return equals_typed<int64_t>(vec, row, val);
+                case types::physical_type::UINT8:
+                    return equals_typed<uint8_t>(vec, row, val);
+                case types::physical_type::UINT16:
+                    return equals_typed<uint16_t>(vec, row, val);
+                case types::physical_type::UINT32:
+                    return equals_typed<uint32_t>(vec, row, val);
+                case types::physical_type::UINT64:
+                    return equals_typed<uint64_t>(vec, row, val);
+                case types::physical_type::INT128:
+                    return equals_typed<types::int128_t>(vec, row, val);
+                case types::physical_type::UINT128:
+                    return equals_typed<types::uint128_t>(vec, row, val);
+                case types::physical_type::FLOAT:
+                    return equals_typed<float>(vec, row, val);
+                case types::physical_type::DOUBLE:
+                    return equals_typed<double>(vec, row, val);
                 case types::physical_type::STRING:
                     return vec.data<std::string_view>()[row] == val.value<std::string_view>();
                 case types::physical_type::STRUCT: {
-                    // Compare child entries at row index without creating logical_value_t
                     auto& vec_children = vec.entries();
                     auto& val_children = val.children();
-                    if (vec_children.size() != val_children.size()) return false;
-                    for (size_t c = 0; c < vec_children.size(); c++) {
-                        auto child_val = vec_children[c]->value(row);
-                        if (!(child_val == val_children[c])) return false;
+                    assert(vec_children.size() == val_children.size());
+                    for (size_t field = 0; field < vec_children.size(); field++) {
+                        if (!value_equals_raw(*vec_children[field], row, val_children[field])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::ARRAY: {
+                    assert(static_cast<const types::array_logical_type_extension*>(vec.type().extension())->size() ==
+                           static_cast<const types::array_logical_type_extension*>(val.type().extension())->size());
+                    auto& flat_array = vec.entry();
+                    auto& val_children = val.children();
+                    for (size_t i = 0; i < val_children.size(); i++) {
+                        if (!value_equals_raw(flat_array, row * val_children.size() + i, val_children[i])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::LIST: {
+                    const auto& val_children = val.children();
+                    const auto& list_entry = *(vec.data<types::list_entry_t>() + row);
+                    const auto& flat_list = vec.entry();
+                    assert(flat_list.type().size() != 0);
+                    auto entry_size = flat_list.type().size();
+                    if (list_entry.length / entry_size != val_children.size()) {
+                        return false;
+                    }
+                    for (size_t i = 0; i < val_children.size(); i++) {
+                        if (!value_equals_raw(flat_list, list_entry.offset / entry_size + i, val_children[i])) {
+                            return false;
+                        }
                     }
                     return true;
                 }
                 default:
-                    return vec.value(row) == val; // fallback for LIST/ARRAY
+                    assert(false && "unhandled type in value_equals_raw");
+                    return false;
             }
         }
 
@@ -73,16 +114,13 @@ namespace components::operators {
         }
 
         // Extract a key value from chunk for a given group_key_t definition
-        types::logical_value_t extract_key_value(
-            std::pmr::memory_resource* resource,
-            const group_key_t& key,
-            const vector::data_chunk_t& chunk,
-            size_t row_idx) {
+        types::logical_value_t extract_key_value(std::pmr::memory_resource* resource,
+                                                 const group_key_t& key,
+                                                 const vector::data_chunk_t& chunk,
+                                                 size_t row_idx) {
             switch (key.type) {
                 case group_key_t::kind::column: {
-                    types::logical_value_t val = key.full_path.size() > 1
-                        ? chunk.value(key.full_path, row_idx)
-                        : chunk.value(key.col_index, row_idx);
+                    types::logical_value_t val = chunk.value(key.full_path, row_idx);
                     val.set_alias(std::string{key.name});
                     return val;
                 }
@@ -104,7 +142,8 @@ namespace components::operators {
                         }
                     }
                     // all NULL
-                    auto null_val = types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    auto null_val =
+                        types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     null_val.set_alias(std::string{key.name});
                     return null_val;
                 }
@@ -137,9 +176,10 @@ namespace components::operators {
                                 break;
                         }
                         if (matches) {
-                            types::logical_value_t result_val = (clause.res_type == group_key_t::case_clause::result_source::constant)
-                                ? clause.res_constant
-                                : chunk.value(clause.res_col, row_idx);
+                            types::logical_value_t result_val =
+                                (clause.res_type == group_key_t::case_clause::result_source::constant)
+                                    ? clause.res_constant
+                                    : chunk.value(clause.res_col, row_idx);
                             result_val.set_alias(std::string{key.name});
                             return result_val;
                         }
@@ -153,7 +193,8 @@ namespace components::operators {
                                 return key.else_constant;
                             case group_key_t::else_source::null_value:
                             default:
-                                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                                return types::logical_value_t(resource,
+                                                              types::complex_logical_type{types::logical_type::NA});
                         }
                     }();
                     else_val.set_alias(std::string{key.name});
@@ -164,7 +205,8 @@ namespace components::operators {
         }
     } // anonymous namespace
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log,
+    operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
+                                       log_t log,
                                        expressions::expression_ptr having,
                                        size_t internal_aggregate_count)
         : read_write_operator_t(resource, log, operator_type::aggregate)
@@ -179,9 +221,7 @@ namespace components::operators {
         , group_keys_(resource_)
         , group_index_(resource_) {}
 
-    void operator_group_t::add_key(group_key_t&& key) {
-        keys_.push_back(std::move(key));
-    }
+    void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
     void operator_group_t::add_key(const std::pmr::string& name) {
         group_key_t key(resource_);
@@ -202,9 +242,7 @@ namespace components::operators {
         post_aggregates_.emplace_back(std::move(col));
     }
 
-    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) {
-        select_order_ = std::move(order);
-    }
+    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) { select_order_ = std::move(order); }
 
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
@@ -212,8 +250,8 @@ namespace components::operators {
 
             // Phase 1: Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto [result_vec, arith_error] =
+                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
@@ -227,7 +265,7 @@ namespace components::operators {
                 size_t base = chunk.column_count() - computed_columns_.size();
                 for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
                     if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
-                        keys_[computed_columns_[ci].resolved_key_index].col_index = base + ci;
+                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(base + ci);
                     }
                 }
             }
@@ -279,8 +317,8 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] = evaluate_arithmetic(
-                    resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
+                auto [result_vec, arith_error] =
+                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
@@ -309,7 +347,7 @@ namespace components::operators {
                 use_fast_path = false;
                 break;
             }
-            key_col_indices.push_back(key.col_index);
+            key_col_indices.push_back(key.full_path.front());
         }
 
         if (use_fast_path && !key_col_indices.empty()) {
@@ -413,7 +451,7 @@ namespace components::operators {
         bool can_vectorize = num_groups > 0 && num_rows > 0;
         struct agg_info_t {
             aggregate::builtin_agg kind;
-            size_t col_idx; // column in chunk (or SIZE_MAX for COUNT(*))
+            std::pmr::vector<size_t> full_path;
             types::logical_type col_type;
             bool is_count_star = false;
         };
@@ -433,21 +471,20 @@ namespace components::operators {
                     break;
                 }
 
-                size_t col_idx = SIZE_MAX;
+                std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
                 types::logical_type col_type = types::logical_type::NA;
 
                 bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
                 if (count_star) {
-                    // COUNT(*) — no column needed, but we need a dummy column for null-check
-                    col_idx = 0;
+                    // COUNT(*) — no column needed
                     col_type = types::logical_type::UBIGINT;
                 } else if (func_op->args().size() == 1 &&
                            std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
                     auto& key = std::get<expressions::key_t>(func_op->args()[0]);
                     assert(!key.path().empty());
-                    col_idx = key.path()[0];
-                    col_type = chunk.data[col_idx].type().type();
-                    if (col_idx == SIZE_MAX) {
+                    col_path = key.path();
+                    col_type = chunk.at(col_path)->type().type();
+                    if (col_path.empty() || col_path.front() == SIZE_MAX) {
                         can_vectorize = false;
                         break;
                     }
@@ -460,7 +497,7 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
-                agg_infos.push_back({kind, col_idx, col_type, count_star});
+                agg_infos.push_back({kind, col_path, col_type, count_star});
             }
         }
 
@@ -491,8 +528,7 @@ namespace components::operators {
                         }
                     }
                 } else {
-                    aggregate::update_all(info.kind, chunk.data[info.col_idx],
-                                          group_ids.data(), num_rows, states);
+                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
                 }
 
                 // Finalize states to logical_value_t
@@ -535,10 +571,7 @@ namespace components::operators {
 
         // ONE copy: gather all rows in group order
         auto total = static_cast<uint64_t>(gather_order.size());
-        vector::indexing_vector_t gather_indexing(resource_, total);
-        for (uint64_t i = 0; i < total; i++) {
-            gather_indexing.set_index(i, gather_order[i]);
-        }
+        vector::indexing_vector_t gather_indexing(resource_, gather_order.data());
 
         auto result_types = chunk.types();
         uint64_t gathered_cap = total > 0 ? total : 1;
@@ -558,9 +591,8 @@ namespace components::operators {
                 auto off = group_offsets[i];
                 auto cnt = group_offsets[i + 1] - group_offsets[i];
                 auto sub_chunk = gathered.slice_contiguous(resource_, off, cnt);
-                aggregator->execute_on(
-                    operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),
-                    pipeline_context);
+                aggregator->execute_on(operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),
+                                       pipeline_context);
                 auto agg_val = aggregator->value();
                 agg_val.set_alias(std::string(value.name));
                 results.push_back(std::move(agg_val));
@@ -571,10 +603,10 @@ namespace components::operators {
         return build_result_chunk(num_groups, key_count, agg_results);
     }
 
-    vector::data_chunk_t operator_group_t::build_result_chunk(
-        size_t num_groups,
-        size_t key_count,
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results) {
+    vector::data_chunk_t
+    operator_group_t::build_result_chunk(size_t num_groups,
+                                         size_t key_count,
+                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results) {
         // Build result types: key types + aggregate types
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
@@ -610,8 +642,7 @@ namespace components::operators {
         return result;
     }
 
-    void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context,
-                                                 vector::data_chunk_t& result) {
+    void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         auto num_groups = result.size();
         result.data.reserve(result.data.size() + post_aggregates_.size());
 
@@ -619,9 +650,8 @@ namespace components::operators {
             // Determine result type from first row computation
             types::complex_logical_type col_type{types::logical_type::NA};
 
-            auto resolve = [&](const expressions::param_storage& param,
-                               size_t row_idx,
-                               auto& self) -> types::logical_value_t {
+            auto resolve =
+                [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
                 if (std::holds_alternative<expressions::key_t>(param)) {
                     auto& key = std::get<expressions::key_t>(param);
                     assert(!key.path().empty());
@@ -632,13 +662,12 @@ namespace components::operators {
                 } else {
                     auto& sub_expr = std::get<expressions::expression_ptr>(param);
                     if (sub_expr->group() == expressions::expression_group::scalar) {
-                        auto* sub_scalar =
-                            static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
+                        auto* sub_scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
                         if (sub_scalar->type() == expressions::scalar_type::unary_minus &&
                             !sub_scalar->params().empty()) {
                             auto inner = self(sub_scalar->params()[0], row_idx, self);
-                            return types::logical_value_t::subtract(
-                                types::logical_value_t(resource_, int64_t(0)), inner);
+                            return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)),
+                                                                    inner);
                         }
                         if (sub_scalar->params().size() >= 2) {
                             auto left_val = self(sub_scalar->params()[0], row_idx, self);
@@ -666,12 +695,13 @@ namespace components::operators {
 
             // Compute result for each group and collect into a new vector
             if (post.op == expressions::scalar_type::unary_minus) {
-                if (post.operands.empty()) continue;
+                if (post.operands.empty())
+                    continue;
                 std::pmr::vector<types::logical_value_t> col_values(resource_);
                 for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                     auto inner = resolve(post.operands[0], group_idx, resolve);
-                    auto result_val = types::logical_value_t::subtract(
-                        types::logical_value_t(resource_, int64_t(0)), inner);
+                    auto result_val =
+                        types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
                     result_val.set_alias(std::string(post.alias));
                     if (group_idx == 0) {
                         col_type = result_val.type();
@@ -686,7 +716,8 @@ namespace components::operators {
                 result.data.emplace_back(std::move(new_col));
                 continue;
             }
-            if (post.operands.size() < 2) continue;
+            if (post.operands.size() < 2)
+                continue;
             std::pmr::vector<types::logical_value_t> col_values(resource_);
             for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
                 auto left_val = resolve(post.operands[0], group_idx, resolve);
@@ -728,16 +759,14 @@ namespace components::operators {
         }
     }
 
-    void operator_group_t::filter_having(pipeline::context_t* pipeline_context,
-                                          vector::data_chunk_t& result) {
+    void operator_group_t::filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         if (!having_ || having_->group() != expressions::expression_group::compare) {
             return;
         }
         auto* cmp = static_cast<const expressions::compare_expression_t*>(having_.get());
 
-        auto resolve = [&](const expressions::param_storage& param,
-                           size_t row_idx,
-                           auto& self) -> types::logical_value_t {
+        auto resolve =
+            [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
                 assert(!key.path().empty());
@@ -749,11 +778,9 @@ namespace components::operators {
                 auto& sub_expr = std::get<expressions::expression_ptr>(param);
                 if (sub_expr->group() == expressions::expression_group::scalar) {
                     auto* scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
-                    if (scalar->type() == expressions::scalar_type::unary_minus &&
-                        !scalar->params().empty()) {
+                    if (scalar->type() == expressions::scalar_type::unary_minus && !scalar->params().empty()) {
                         auto inner = self(scalar->params()[0], row_idx, self);
-                        return types::logical_value_t::subtract(
-                            types::logical_value_t(resource_, int64_t(0)), inner);
+                        return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
                     }
                     if (scalar->params().size() >= 2) {
                         auto left_val = self(scalar->params()[0], row_idx, self);

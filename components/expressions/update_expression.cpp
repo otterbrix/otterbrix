@@ -182,41 +182,54 @@ namespace components::expressions {
                                                       const types::logical_value_t& left,
                                                       const types::logical_value_t& right) {
             switch (type) {
-                case update_expr_type::add:     return types::logical_value_t::sum(left, right);
-                case update_expr_type::sub:     return types::logical_value_t::subtract(left, right);
-                case update_expr_type::mult:    return types::logical_value_t::mult(left, right);
-                case update_expr_type::div:     return types::logical_value_t::divide(left, right);
-                case update_expr_type::mod:     return types::logical_value_t::modulus(left, right);
-                case update_expr_type::exp:     return types::logical_value_t::exponent(left, right);
-                case update_expr_type::AND:     return types::logical_value_t::bit_and(left, right);
-                case update_expr_type::OR:      return types::logical_value_t::bit_or(left, right);
-                case update_expr_type::XOR:     return types::logical_value_t::bit_xor(left, right);
-                case update_expr_type::shift_left:  return types::logical_value_t::bit_shift_l(left, right);
-                case update_expr_type::shift_right: return types::logical_value_t::bit_shift_r(left, right);
+                case update_expr_type::add:
+                    return types::logical_value_t::sum(left, right);
+                case update_expr_type::sub:
+                    return types::logical_value_t::subtract(left, right);
+                case update_expr_type::mult:
+                    return types::logical_value_t::mult(left, right);
+                case update_expr_type::div:
+                    return types::logical_value_t::divide(left, right);
+                case update_expr_type::mod:
+                    return types::logical_value_t::modulus(left, right);
+                case update_expr_type::exp:
+                    return types::logical_value_t::exponent(left, right);
+                case update_expr_type::AND:
+                    return types::logical_value_t::bit_and(left, right);
+                case update_expr_type::OR:
+                    return types::logical_value_t::bit_or(left, right);
+                case update_expr_type::XOR:
+                    return types::logical_value_t::bit_xor(left, right);
+                case update_expr_type::shift_left:
+                    return types::logical_value_t::bit_shift_l(left, right);
+                case update_expr_type::shift_right:
+                    return types::logical_value_t::bit_shift_r(left, right);
                 default:
                     throw std::logic_error("apply_binary_update_op: unsupported update_expr_type");
             }
         }
 
         // Unary ops dispatch for update expressions.
-        types::logical_value_t apply_unary_update_op(update_expr_type type,
-                                                     const types::logical_value_t& operand) {
+        types::logical_value_t apply_unary_update_op(update_expr_type type, const types::logical_value_t& operand) {
             switch (type) {
-                case update_expr_type::sqr_root:  return types::logical_value_t::sqr_root(operand);
-                case update_expr_type::cube_root: return types::logical_value_t::cube_root(operand);
-                case update_expr_type::factorial:  return types::logical_value_t::factorial(operand);
-                case update_expr_type::abs:        return types::logical_value_t::absolute(operand);
-                case update_expr_type::NOT:        return types::logical_value_t::bit_not(operand);
+                case update_expr_type::sqr_root:
+                    return types::logical_value_t::sqr_root(operand);
+                case update_expr_type::cube_root:
+                    return types::logical_value_t::cube_root(operand);
+                case update_expr_type::factorial:
+                    return types::logical_value_t::factorial(operand);
+                case update_expr_type::abs:
+                    return types::logical_value_t::absolute(operand);
+                case update_expr_type::NOT:
+                    return types::logical_value_t::bit_not(operand);
                 default:
                     throw std::logic_error("apply_unary_update_op: unsupported update_expr_type");
             }
         }
 
         bool is_unary_update_op(update_expr_type type) {
-            return type == update_expr_type::sqr_root ||
-                   type == update_expr_type::cube_root ||
-                   type == update_expr_type::factorial ||
-                   type == update_expr_type::abs ||
+            return type == update_expr_type::sqr_root || type == update_expr_type::cube_root ||
+                   type == update_expr_type::factorial || type == update_expr_type::abs ||
                    type == update_expr_type::NOT;
         }
     } // anonymous namespace

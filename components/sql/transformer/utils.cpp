@@ -370,11 +370,16 @@ namespace components::sql::transform {
         auto left = node->lexpr ? resolve(node->lexpr) : types::logical_value_t(resource, int64_t(0));
         auto right = resolve(node->rexpr);
 
-        if (op_str == "+") return types::logical_value_t::sum(left, right);
-        if (op_str == "-") return types::logical_value_t::subtract(left, right);
-        if (op_str == "*") return types::logical_value_t::mult(left, right);
-        if (op_str == "/") return types::logical_value_t::divide(left, right);
-        if (op_str == "%") return types::logical_value_t::modulus(left, right);
+        if (op_str == "+")
+            return types::logical_value_t::sum(left, right);
+        if (op_str == "-")
+            return types::logical_value_t::subtract(left, right);
+        if (op_str == "*")
+            return types::logical_value_t::mult(left, right);
+        if (op_str == "/")
+            return types::logical_value_t::divide(left, right);
+        if (op_str == "%")
+            return types::logical_value_t::modulus(left, right);
         throw parser_exception_t{"Unknown arithmetic operator in constant expression: " + std::string(op_str), ""};
     }
 

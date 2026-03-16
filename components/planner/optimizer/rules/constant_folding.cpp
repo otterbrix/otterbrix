@@ -50,9 +50,8 @@ namespace components::planner::optimizer {
         // Try to fold a scalar arithmetic expression with constant params.
         // On success, replaces the expression's params with a single parameter_id_t
         // that holds the computed result (reusing left_id slot).
-        bool try_fold_scalar(std::pmr::memory_resource* resource,
-                             scalar_expression_t& expr,
-                             parameter_node_t* parameters) {
+        bool
+        try_fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t& expr, parameter_node_t* parameters) {
             arithmetic_op op;
             if (!to_arithmetic_op(expr.type(), op)) {
                 return false;
@@ -90,9 +89,8 @@ namespace components::planner::optimizer {
         }
 
         // Evaluate a constant comparison. Returns {true, result} on success.
-        std::pair<bool, bool> eval_compare(compare_type ct,
-                                           const expr_value_t& left_val,
-                                           const expr_value_t& right_val) {
+        std::pair<bool, bool>
+        eval_compare(compare_type ct, const expr_value_t& left_val, const expr_value_t& right_val) {
             if (left_val.is_null() || right_val.is_null()) {
                 return {false, false};
             }
@@ -192,20 +190,17 @@ namespace components::planner::optimizer {
                 return;
             }
             auto* ns = static_cast<scalar_expression_t*>(nested.get());
-            if (ns->params().size() == 1 &&
-                std::holds_alternative<core::parameter_id_t>(ns->params()[0])) {
+            if (ns->params().size() == 1 && std::holds_alternative<core::parameter_id_t>(ns->params()[0])) {
                 auto id = std::get<core::parameter_id_t>(ns->params()[0]);
                 slot = id;
             }
         }
 
-        void fold_expression(std::pmr::memory_resource* resource,
-                             const expression_ptr& expr,
-                             parameter_node_t* parameters);
+        void
+        fold_expression(std::pmr::memory_resource* resource, const expression_ptr& expr, parameter_node_t* parameters);
 
-        void fold_scalar(std::pmr::memory_resource* resource,
-                         scalar_expression_t* scalar,
-                         parameter_node_t* parameters) {
+        void
+        fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t* scalar, parameter_node_t* parameters) {
             for (auto& param : scalar->params()) {
                 if (!std::holds_alternative<expression_ptr>(param)) {
                     continue;
@@ -216,9 +211,8 @@ namespace components::planner::optimizer {
             try_fold_scalar(resource, *scalar, parameters);
         }
 
-        void fold_compare(std::pmr::memory_resource* resource,
-                          compare_expression_t* comp,
-                          parameter_node_t* parameters) {
+        void
+        fold_compare(std::pmr::memory_resource* resource, compare_expression_t* comp, parameter_node_t* parameters) {
             for (const auto& child : comp->children()) {
                 fold_expression(resource, child, parameters);
             }
@@ -234,9 +228,8 @@ namespace components::planner::optimizer {
             simplify_union(comp);
         }
 
-        void fold_expression(std::pmr::memory_resource* resource,
-                             const expression_ptr& expr,
-                             parameter_node_t* parameters) {
+        void
+        fold_expression(std::pmr::memory_resource* resource, const expression_ptr& expr, parameter_node_t* parameters) {
             if (!expr) {
                 return;
             }

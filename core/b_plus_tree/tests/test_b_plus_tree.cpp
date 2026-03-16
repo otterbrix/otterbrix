@@ -489,8 +489,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             REQUIRE(tree.unique_indices_count() == 500 - i);
             REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.remove_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
-            REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == 500 - i - 1);
             REQUIRE(tree.unique_indices_count() == 500 - i - 1);
         }
@@ -588,8 +587,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 0);
 
         for (uint64_t i = 0; i < 500; i++) {
-            REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == i);
             REQUIRE(tree.unique_indices_count() == i);
             REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
@@ -618,8 +616,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
             REQUIRE(tree.unique_indices_count() == 500 - i);
             REQUIRE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.remove_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
-            REQUIRE_FALSE(
-                tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
+            REQUIRE_FALSE(tree.contains_index(segment_tree_t::index_t(read_unaligned<uint64_t>(test_data[i].buffer))));
             REQUIRE(tree.count() == 500 - i - 1);
             REQUIRE(tree.unique_indices_count() == 500 - i - 1);
         }

@@ -13,20 +13,20 @@ namespace services::planner::impl {
 
     namespace {
 
-        using components::expressions::scalar_type;
         using components::expressions::expression_group;
+        using components::expressions::scalar_type;
 
         bool is_arithmetic_scalar_type(scalar_type t) {
-            return t == scalar_type::add || t == scalar_type::subtract ||
-                   t == scalar_type::multiply || t == scalar_type::divide ||
-                   t == scalar_type::mod || t == scalar_type::case_expr ||
+            return t == scalar_type::add || t == scalar_type::subtract || t == scalar_type::multiply ||
+                   t == scalar_type::divide || t == scalar_type::mod || t == scalar_type::case_expr ||
                    t == scalar_type::unary_minus;
         }
 
         void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr,
                               std::pmr::memory_resource* resource,
-                              const components::logical_plan::storage_parameters* storage_params,size_t key_idx = SIZE_MAX) {
+                              const components::logical_plan::storage_parameters* storage_params,
+                              size_t key_idx = SIZE_MAX) {
             switch (expr->type()) {
                 case scalar_type::group_field:
                     break;
@@ -38,7 +38,6 @@ namespace services::planner::impl {
                     components::operators::group_key_t key(resource);
                     key.name = std::pmr::string(expr->key().storage().back(), resource);
                     key.type = components::operators::group_key_t::kind::column;
-                    key.col_index = path.empty() ? 0 : path[0];
                     key.full_path = path;
                     group->add_key(std::move(key));
                     break;
@@ -47,14 +46,17 @@ namespace services::planner::impl {
                     components::operators::group_key_t key(resource);
                     key.name = std::pmr::string(expr->key().storage().back(), resource);
                     key.type = components::operators::group_key_t::kind::coalesce;
-                    key.coalesce_entries = std::pmr::vector<components::operators::group_key_t::coalesce_entry>(resource);
+                    key.coalesce_entries =
+                        std::pmr::vector<components::operators::group_key_t::coalesce_entry>(resource);
                     for (const auto& param : expr->params()) {
                         components::operators::group_key_t::coalesce_entry entry(resource);
                         if (std::holds_alternative<components::expressions::key_t>(param)) {
                             auto& k = std::get<components::expressions::key_t>(param);
                             entry.type = components::operators::group_key_t::coalesce_entry::source::column;
                             entry.col_index = k.path().empty() ? 0 : k.path()[0];
-                            entry.constant = components::types::logical_value_t(resource, components::types::complex_logical_type{components::types::logical_type::NA});
+                            entry.constant = components::types::logical_value_t(
+                                resource,
+                                components::types::complex_logical_type{components::types::logical_type::NA});
                         } else if (std::holds_alternative<core::parameter_id_t>(param) && storage_params) {
                             auto id = std::get<core::parameter_id_t>(param);
                             entry.type = components::operators::group_key_t::coalesce_entry::source::constant;
@@ -63,7 +65,9 @@ namespace services::planner::impl {
                         } else {
                             entry.type = components::operators::group_key_t::coalesce_entry::source::constant;
                             entry.col_index = 0;
-                            entry.constant = components::types::logical_value_t(resource, components::types::complex_logical_type{components::types::logical_type::NA});
+                            entry.constant = components::types::logical_value_t(
+                                resource,
+                                components::types::complex_logical_type{components::types::logical_type::NA});
                         }
                         key.coalesce_entries.push_back(std::move(entry));
                     }
@@ -91,7 +95,8 @@ namespace services::planner::impl {
                         if (std::holds_alternative<components::expressions::expression_ptr>(params[i + 1])) {
                             auto& cmp_expr = std::get<components::expressions::expression_ptr>(params[i + 1]);
                             if (cmp_expr->group() == expression_group::compare) {
-                                auto* cmp = static_cast<const components::expressions::compare_expression_t*>(cmp_expr.get());
+                                auto* cmp =
+                                    static_cast<const components::expressions::compare_expression_t*>(cmp_expr.get());
                                 clause.cmp = cmp->type();
                             } else {
                                 clause.cmp = components::expressions::compare_type::eq;
@@ -104,14 +109,18 @@ namespace services::planner::impl {
                             auto id = std::get<core::parameter_id_t>(params[i + 2]);
                             clause.condition_value = storage_params->parameters.at(id);
                         } else {
-                            clause.condition_value = components::types::logical_value_t(resource, components::types::complex_logical_type{components::types::logical_type::NA});
+                            clause.condition_value = components::types::logical_value_t(
+                                resource,
+                                components::types::complex_logical_type{components::types::logical_type::NA});
                         }
                         // result
                         if (std::holds_alternative<components::expressions::key_t>(params[i + 3])) {
                             auto& k = std::get<components::expressions::key_t>(params[i + 3]);
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::column;
                             clause.res_col = k.path().empty() ? 0 : k.path()[0];
-                            clause.res_constant = components::types::logical_value_t(resource, components::types::complex_logical_type{components::types::logical_type::NA});
+                            clause.res_constant = components::types::logical_value_t(
+                                resource,
+                                components::types::complex_logical_type{components::types::logical_type::NA});
                         } else if (std::holds_alternative<core::parameter_id_t>(params[i + 3]) && storage_params) {
                             auto id = std::get<core::parameter_id_t>(params[i + 3]);
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::constant;
@@ -120,7 +129,9 @@ namespace services::planner::impl {
                         } else {
                             clause.res_type = components::operators::group_key_t::case_clause::result_source::constant;
                             clause.res_col = 0;
-                            clause.res_constant = components::types::logical_value_t(resource, components::types::complex_logical_type{components::types::logical_type::NA});
+                            clause.res_constant = components::types::logical_value_t(
+                                resource,
+                                components::types::complex_logical_type{components::types::logical_type::NA});
                         }
                         key.case_clauses.push_back(std::move(clause));
                         i += 4;
@@ -145,27 +156,20 @@ namespace services::planner::impl {
                 default: {
                     if (is_arithmetic_scalar_type(expr->type())) {
                         if (expr->key().storage().empty()) {
-                            throw std::logic_error("create_plan_group: arithmetic expression has empty storage for key: " +
-                                                   expr->key().as_string());
+                            throw std::logic_error(
+                                "create_plan_group: arithmetic expression has empty storage for key: " +
+                                expr->key().as_string());
                         }
                         auto alias = std::pmr::string(expr->key().storage().back(), resource);
                         if (!expr->key().path().empty() && expr->key().path()[0] == SIZE_MAX) {
                             // Post-aggregate arithmetic (marked by validator)
-                            components::operators::post_aggregate_column_t post{
-                                alias,
-                                expr->type(),
-                                expr->params()};
+                            components::operators::post_aggregate_column_t post{alias, expr->type(), expr->params()};
                             group->add_post_aggregate(std::move(post));
                         } else {
                             // Pre-group computed column
-                            components::operators::computed_column_t comp{
-                                alias,
-                                expr->type(),
-                                expr->params(),
-                                key_idx};
+                            components::operators::computed_column_t comp{alias, expr->type(), expr->params(), key_idx};
                             group->add_computed_column(std::move(comp));
-                            group->add_key(
-                                std::pmr::string(expr->key().as_string(), resource));
+                            group->add_key(std::pmr::string(expr->key().as_string(), resource));
                         }
                     }
                     break;
@@ -206,16 +210,27 @@ namespace services::planner::impl {
         }
 
         if (known) {
-            group = new components::operators::operator_group_t(context.resource, context.log.clone(), std::move(having), internal_aggregate_count);
+            group = new components::operators::operator_group_t(context.resource,
+                                                                context.log.clone(),
+                                                                std::move(having),
+                                                                internal_aggregate_count);
         } else {
-            group = new components::operators::operator_group_t(node->resource(), log_t{}, std::move(having), internal_aggregate_count);
+            group = new components::operators::operator_group_t(node->resource(),
+                                                                log_t{},
+                                                                std::move(having),
+                                                                internal_aggregate_count);
         }
 
         // Create operators and track SELECT column order
         auto plan_resource = known ? context.resource : node->resource();
         size_t select_end = node->expressions().size() - internal_aggregate_count;
 
-        enum col_kind_t { KEY, AGG, POST_AGG };
+        enum col_kind_t
+        {
+            KEY,
+            AGG,
+            POST_AGG
+        };
         std::vector<std::pair<col_kind_t, size_t>> select_infos;
         size_t key_idx = 0, visible_agg_idx = 0, post_agg_idx = 0;
 
@@ -224,8 +239,7 @@ namespace services::planner::impl {
             bool is_select = i < select_end;
 
             if (expr->group() == expression_group::scalar) {
-                auto* scalar_expr =
-                    static_cast<const components::expressions::scalar_expression_t*>(expr.get());
+                auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
 
                 // Determine what add_group_scalar will produce
                 bool adds_key = false;
@@ -259,16 +273,17 @@ namespace services::planner::impl {
                         select_infos.push_back({POST_AGG, post_agg_idx});
                     }
                 }
-                if (adds_key) key_idx++;
-                if (adds_post_agg) post_agg_idx++;
+                if (adds_key)
+                    key_idx++;
+                if (adds_post_agg)
+                    post_agg_idx++;
 
             } else if (expr->group() == expression_group::aggregate) {
-                add_group_aggregate(
-                    plan_resource,
-                    known ? context.log.clone() : log_t{},
-                    function_registry,
-                    group,
-                    static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
+                add_group_aggregate(plan_resource,
+                                    known ? context.log.clone() : log_t{},
+                                    function_registry,
+                                    group,
+                                    static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
 
                 if (is_select) {
                     select_infos.push_back({AGG, visible_agg_idx});
@@ -287,11 +302,18 @@ namespace services::planner::impl {
         for (size_t s = 0; s < select_infos.size(); s++) {
             size_t col = 0;
             switch (select_infos[s].first) {
-                case KEY:      col = select_infos[s].second; break;
-                case AGG:      col = total_keys + select_infos[s].second; break;
-                case POST_AGG: col = total_keys + total_visible_aggs + select_infos[s].second; break;
+                case KEY:
+                    col = select_infos[s].second;
+                    break;
+                case AGG:
+                    col = total_keys + select_infos[s].second;
+                    break;
+                case POST_AGG:
+                    col = total_keys + total_visible_aggs + select_infos[s].second;
+                    break;
             }
-            if (col != s) is_identity = false;
+            if (col != s)
+                is_identity = false;
             select_order.push_back(col);
         }
         if (!is_identity) {

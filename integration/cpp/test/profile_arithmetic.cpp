@@ -36,8 +36,8 @@ int main() {
     constexpr int kRows = 1000;
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
-        auto ins = logical_plan::make_node_insert(
-            dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins =
+            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(s, ins);
         if (!cur->is_success()) {
@@ -56,12 +56,14 @@ int main() {
         "SELECT count, count % 7 AS modulo FROM TestDatabase.TestCollection ORDER BY count ASC;",
         "SELECT count, count * 2 + 10 AS expr FROM TestDatabase.TestCollection ORDER BY count ASC;",
         "SELECT count, (count + 5) * (count - 1) AS expr FROM TestDatabase.TestCollection ORDER BY count ASC;",
-        "SELECT count, count * 0.15 AS tax, count - count * 0.15 AS net FROM TestDatabase.TestCollection ORDER BY count ASC;",
+        "SELECT count, count * 0.15 AS tax, count - count * 0.15 AS net FROM TestDatabase.TestCollection ORDER BY "
+        "count ASC;",
         // GROUP BY queries — 2 groups (count_bool = true/false)
         "SELECT count_bool, SUM(count) AS total FROM TestDatabase.TestCollection GROUP BY count_bool;",
         "SELECT count_bool, AVG(count_double) AS avg_d FROM TestDatabase.TestCollection GROUP BY count_bool;",
         "SELECT count_bool, COUNT(*) AS cnt FROM TestDatabase.TestCollection GROUP BY count_bool;",
-        "SELECT count_bool, SUM(count) AS total, AVG(count_double) AS avg_d FROM TestDatabase.TestCollection GROUP BY count_bool;",
+        "SELECT count_bool, SUM(count) AS total, AVG(count_double) AS avg_d FROM TestDatabase.TestCollection GROUP BY "
+        "count_bool;",
         // GROUP BY queries — 1000 groups (count is unique → worst case for linear scan)
         "SELECT count, COUNT(*) AS cnt FROM TestDatabase.TestCollection GROUP BY count;",
         "SELECT count, SUM(count_double) AS sd FROM TestDatabase.TestCollection GROUP BY count;",

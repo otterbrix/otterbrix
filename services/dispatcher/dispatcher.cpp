@@ -876,10 +876,8 @@ namespace services::dispatcher {
         if (index_address_ != actor_zeta::address_t::empty_address()) {
             auto coll = logical_plan->collection_full_name();
             if (!coll.empty()) {
-                auto [_ik, ikf] = actor_zeta::send(index_address_,
-                                                   &index::manager_index_t::get_indexed_keys,
-                                                   session,
-                                                   coll);
+                auto [_ik, ikf] =
+                    actor_zeta::send(index_address_, &index::manager_index_t::get_indexed_keys, session, coll);
                 collections_context_storage.indexed_keys = co_await std::move(ikf);
             }
         }

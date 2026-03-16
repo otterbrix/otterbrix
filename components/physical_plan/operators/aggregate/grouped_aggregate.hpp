@@ -5,7 +5,8 @@
 
 namespace components::operators::aggregate {
 
-    enum class builtin_agg {
+    enum class builtin_agg
+    {
         SUM,
         MIN,
         MAX,

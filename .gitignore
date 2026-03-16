@@ -414,6 +414,7 @@ luac.out
 
 .idea
 cmake-build-*
+**/target/
 venv/
 conan_paths.cmake
 conanbuildinfo.cmake

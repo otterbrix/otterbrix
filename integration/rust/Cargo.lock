@@ -129,6 +129,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "otterbrix"
+version = "0.1.0"
+dependencies = [
+ "otterbrix-sys",
+]
+
+[[package]]
 name = "otterbrix-sys"
 version = "0.1.0"
 dependencies = [

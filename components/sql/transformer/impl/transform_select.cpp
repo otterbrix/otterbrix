@@ -201,19 +201,20 @@ namespace components::sql::transform {
                     case T_TypeCast: {
                         auto cast = pg_ptr_cast<TypeCast>(res->val);
                         if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
-                            // col::TYPE — disambiguate a multi-type computed_schema field
+                            // col::TYPE — pass cast type hint via key_t::cast_type_ so the
+                            // validator can resolve the physical column without path mangling.
                             auto target_type = get_type(cast->typeName);
                             auto col_ref =
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
-                            auto phys_name = field_name + "__" +
-                                             std::string(magic_enum::enum_name(target_type.type()));
+                            auto type_name = std::string(magic_enum::enum_name(target_type.type()));
+                            col_ref.field.set_cast_type(type_name);
                             std::string alias = res->name ? res->name : field_name;
                             group->append_expression(
                                 make_scalar_expression(resource_,
                                                        scalar_type::get_field,
                                                        expressions::key_t{resource_, alias},
-                                                       expressions::key_t{resource_, phys_name}));
+                                                       std::move(col_ref.field)));
                             break;
                         }
                         [[fallthrough]];

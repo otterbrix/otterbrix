@@ -3,6 +3,7 @@
 #include "forward.hpp"
 #include <boost/container_hash/hash.hpp>
 #include <core/pmr.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,7 +19,8 @@ namespace components::expressions {
         key_t(key_t&& key) noexcept
             : side_{key.side_}
             , storage_{std::move(key.storage_)}
-            , path_{std::move(key.path_)} {}
+            , path_{std::move(key.path_)}
+            , cast_type_{std::move(key.cast_type_)} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
@@ -95,6 +97,12 @@ namespace components::expressions {
 
         void set_path(std::pmr::vector<size_t> path) { path_ = std::move(path); }
 
+        bool has_cast_type() const { return cast_type_.has_value(); }
+
+        const std::string& cast_type() const { return *cast_type_; }
+
+        void set_cast_type(std::string_view type_name) { cast_type_ = std::string(type_name); }
+
         auto is_null() const -> bool { return storage_.empty(); }
 
         auto side() const -> side_t { return side_; }
@@ -127,6 +135,7 @@ namespace components::expressions {
         side_t side_;
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
+        std::optional<std::string> cast_type_;
     };
 
     template<class OStream>

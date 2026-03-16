@@ -182,6 +182,20 @@ namespace services::dispatcher {
                 }
             }
 
+            // col::TYPE cast — key carries cast_type_ hint; resolve to physical column "col__TYPE".
+            if (result.empty() && truncated_key.has_cast_type()) {
+                std::pmr::string phys(resource);
+                phys += truncated_key.storage().back();
+                phys += "__";
+                phys += truncated_key.cast_type();
+                for (size_t i = 0; i < schema.size(); i++) {
+                    if (core::pmr::operator==(schema[i].type.alias(), phys)) {
+                        result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
+                        break;
+                    }
+                }
+            }
+
             if (result.empty()) {
                 return schema_result<type_paths>(
                     resource,

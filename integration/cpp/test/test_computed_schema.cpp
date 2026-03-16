@@ -16,7 +16,6 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // Create database and an empty-schema (computed) table
     {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
@@ -115,8 +114,8 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
     }
 }
 
-TEST_CASE("integration::cpp::test_computed_schema::delete_reduces_refcount") {
-    auto config = test_create_config("/tmp/test_computed_schema/delete_refcount");
+TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
+    auto config = test_create_config("/tmp/test_computed_schema/delete");
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
@@ -133,7 +132,6 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_reduces_refcount") {
         REQUIRE(cur->is_success());
     }
 
-    // Insert 5 rows
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
@@ -143,18 +141,68 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_reduces_refcount") {
         REQUIRE(cur->size() == 5);
     }
 
-    // Delete 2 rows
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM cs_testdb.t3 WHERE id <= 2;");
         REQUIRE(cur->is_success());
     }
 
-    // 3 rows remain
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
+    auto config = test_create_config("/tmp/test_computed_schema/multi_type");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE TABLE cs_testdb.t4 ();");
+        REQUIRE(cur->is_success());
+    }
+
+    // Insert 'id' as bigint
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id) VALUES (1), (2);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // Insert 'id' as string — creates a second physical column id__STRING_LITERAL
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id) VALUES ('hello');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    // SELECT * returns all 3 rows across both physical id columns
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t4;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // Disambiguate via cast: select only bigint ids
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "SELECT id::bigint FROM cs_testdb.t4 WHERE id::bigint > 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
     }
 }

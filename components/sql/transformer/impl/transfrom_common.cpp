@@ -5,6 +5,8 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
+#include <magic_enum.hpp>
+
 using namespace components::expressions;
 
 namespace components::sql::transform {
@@ -108,9 +110,24 @@ namespace components::sql::transform {
                 key.deduce_side(names);
                 return key.field;
             }
+            case T_TypeCast: {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                    // col::TYPE — disambiguate a multi-type computed_schema field
+                    auto target_type = get_type(cast->typeName);
+                    auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                    col_ref.deduce_side(names);
+                    auto field_name = std::string(col_ref.field.storage().back());
+                    auto phys_name = field_name + "__" +
+                                     std::string(magic_enum::enum_name(target_type.type()));
+                    col_ref.field.storage().back() =
+                        std::pmr::string(phys_name.c_str(), col_ref.field.storage().get_allocator());
+                    return col_ref.field;
+                }
+                return add_param_value(node, params);
+            }
             case T_ParamRef:
             case T_A_Const:
-            case T_TypeCast:
                 return add_param_value(node, params);
             case T_A_Expr: {
                 auto sub_expr = pg_ptr_cast<A_Expr>(node);
@@ -311,9 +328,24 @@ namespace components::sql::transform {
                             key.deduce_side(names);
                             return key.field;
                         }
+                        case T_TypeCast: {
+                            auto cast = pg_ptr_cast<TypeCast>(node);
+                            if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                                auto target_type = get_type(cast->typeName);
+                                auto col_ref =
+                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                col_ref.deduce_side(names);
+                                auto field_name = std::string(col_ref.field.storage().back());
+                                auto phys_name = field_name + "__" +
+                                                 std::string(magic_enum::enum_name(target_type.type()));
+                                col_ref.field.storage().back() = std::pmr::string(
+                                    phys_name.c_str(), col_ref.field.storage().get_allocator());
+                                return col_ref.field;
+                            }
+                            return add_param_value(node, params);
+                        }
                         case T_ParamRef:
                         case T_A_Const:
-                        case T_TypeCast:
                         case T_RowExpr:
                         case T_A_ArrayExpr:
                             return add_param_value(node, params);

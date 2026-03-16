@@ -1139,8 +1139,9 @@ namespace services::dispatcher {
                                     } else {
                                         return schema_result<named_schema>{
                                             resource,
-                                            components::cursor::error_t{error_code_t::invalid_parameter,
-                                                                        "non-scalar expression param is not supported"}};
+                                            components::cursor::error_t{
+                                                error_code_t::invalid_parameter,
+                                                "non-scalar expression param is not supported"}};
                                     }
                                 }
                             }

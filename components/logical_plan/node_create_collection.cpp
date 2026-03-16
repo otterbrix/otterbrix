@@ -12,19 +12,6 @@ namespace components::logical_plan {
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
-                                                       std::pmr::vector<types::complex_logical_type> schema,
-                                                       bool disk_storage)
-        : node_t(resource, node_type::create_collection_t, collection)
-        , disk_storage_(disk_storage) {
-        column_definitions_.reserve(schema.size());
-        for (auto& type : schema) {
-            std::string name = type.alias();
-            column_definitions_.emplace_back(std::move(name), std::move(type));
-        }
-    }
-
-    node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
-                                                       const collection_full_name_t& collection,
                                                        std::vector<table::column_definition_t> column_definitions,
                                                        std::vector<table::table_constraint_t> constraints,
                                                        bool disk_storage)
@@ -63,12 +50,6 @@ namespace components::logical_plan {
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
                                                            const collection_full_name_t& collection) {
         return {new node_create_collection_t{resource, collection}};
-    }
-
-    node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
-                                                           const collection_full_name_t& collection,
-                                                           std::pmr::vector<types::complex_logical_type> schema) {
-        return {new node_create_collection_t{resource, collection, std::move(schema)}};
     }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,

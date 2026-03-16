@@ -24,9 +24,9 @@ namespace components::table {
         : resource_(parent.resource_)
         , is_root_(true) {
         for (auto& column_def : parent.column_definitions_) {
-            column_definitions_.emplace_back(column_def.copy());
+            column_definitions_.emplace_back(column_def);
         }
-        column_definitions_.emplace_back(new_column.copy());
+        column_definitions_.emplace_back(new_column);
 
         std::lock_guard parent_lock(parent.append_lock_);
 
@@ -41,7 +41,7 @@ namespace components::table {
         std::lock_guard parent_lock(parent.append_lock_);
 
         for (auto& column_def : parent.column_definitions_) {
-            column_definitions_.emplace_back(column_def.copy());
+            column_definitions_.emplace_back(column_def);
         }
 
         assert(removed_column < column_definitions_.size());
@@ -67,7 +67,7 @@ namespace components::table {
         , is_root_(true) {
         std::lock_guard lock(append_lock_);
         for (auto& column_def : parent.column_definitions_) {
-            column_definitions_.emplace_back(column_def.copy());
+            column_definitions_.emplace_back(column_def);
         }
 
         column_definitions_[changed_idx].type() = target_type;

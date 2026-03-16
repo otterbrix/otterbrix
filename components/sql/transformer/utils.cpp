@@ -395,7 +395,7 @@ namespace components::sql::transform {
             auto type = get_type(coldef->typeName);
             type.set_alias(coldef->colname);
             bool not_null = coldef->is_not_null;
-            std::unique_ptr<types::logical_value_t> default_val;
+            std::optional<types::logical_value_t> default_val;
 
             if (coldef->constraints) {
                 for (auto cdata : coldef->constraints->lst) {
@@ -407,7 +407,7 @@ namespace components::sql::transform {
                         case CONSTR_DEFAULT:
                             if (constraint->raw_expr) {
                                 auto val = get_value(resource, constraint->raw_expr);
-                                default_val = std::make_unique<types::logical_value_t>(std::move(val));
+                                default_val = std::move(val);
                             }
                             break;
                         case CONSTR_PRIMARY:
@@ -421,7 +421,7 @@ namespace components::sql::transform {
 
             if (coldef->raw_default && !default_val) {
                 auto val = get_value(resource, coldef->raw_default);
-                default_val = std::make_unique<types::logical_value_t>(std::move(val));
+                default_val = std::move(val);
             }
 
             out.emplace_back(coldef->colname, std::move(type), not_null, std::move(default_val));

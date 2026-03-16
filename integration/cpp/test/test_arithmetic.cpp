@@ -22,6 +22,11 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -30,7 +35,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -698,6 +703,11 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -706,7 +716,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -785,6 +795,11 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -793,7 +808,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -847,6 +862,11 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -855,7 +875,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 
@@ -945,6 +965,11 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     INFO("initialization") {
         {
@@ -953,7 +978,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, types);
+            dispatcher->create_collection(session, database_name, collection_name, columns);
         }
     }
 

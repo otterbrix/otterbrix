@@ -23,6 +23,7 @@ namespace services::disk {
         std::string name;
         components::types::complex_logical_type full_type;
         bool not_null{false};
+        // TODO: save the default value
         bool has_default{false};
     };
 

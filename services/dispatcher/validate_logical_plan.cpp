@@ -3,6 +3,7 @@
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
+#include "logical_plan/node_insert.hpp"
 #include "logical_plan/node_update.hpp"
 
 #include <components/catalog/table_id.hpp>
@@ -637,7 +638,7 @@ namespace services::dispatcher {
                 if (catalog.table_exists(id)) {
                     named_schema result(resource);
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
-                        result.emplace_back(type_from_t{node->collection_name(), column});
+                        result.emplace_back(type_from_t{node->collection_name(), column.type()});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 }
@@ -747,8 +748,8 @@ namespace services::dispatcher {
                 table_id id(resource, node->collection_full_name());
                 if (auto res = check_collection_exists(resource, catalog, id); !res) {
                     if (!catalog.table_computes(id)) {
-                        for (const auto& type : catalog.get_table_schema(id).columns()) {
-                            encountered_types.emplace_back(type);
+                        for (const auto& column : catalog.get_table_schema(id).columns()) {
+                            encountered_types.emplace_back(column.type());
                         }
                     }
                 } else {
@@ -877,7 +878,7 @@ namespace services::dispatcher {
                     table_id id(resource, node->collection_full_name());
                     if (catalog.table_exists(id)) {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
                         }
                     } else if (catalog.table_computes(id)) {
                         auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
@@ -1127,9 +1128,11 @@ namespace services::dispatcher {
                                             }
                                             function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
                                         } else {
+                                            // Single-operand scalar: default to BIGINT
                                             function_input_types.emplace_back(logical_type::BIGINT);
                                         }
                                     } else {
+                                        // Non-scalar expression param: default to BIGINT
                                         function_input_types.emplace_back(logical_type::BIGINT);
                                     }
                                 }
@@ -1332,6 +1335,7 @@ namespace services::dispatcher {
             }
             // For now next 3 nodes do not support returning clause:
             case node_type::insert_t: {
+                auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 table_id id(resource, node->collection_full_name());
                 if (auto err = check_collection_exists(resource, catalog, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
@@ -1347,7 +1351,7 @@ namespace services::dispatcher {
                         for (const auto& column : catalog.get_table_schema(id).columns()) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
                                                                                                : node->result_alias(),
-                                                                  column});
+                                                                  column.type()});
                         }
                     } else {
                         is_computed = true;
@@ -1363,33 +1367,57 @@ namespace services::dispatcher {
                             resource,
                             components::cursor::error_t{error_code_t::schema_error,
                                                         "insert_node: too many columns in INSERT"}};
-                        // TODO: validate that missing columns in INSERT have DEFAULT or are nullable
-                    } else if (incoming_schema.value().size() == table_schema.size()) {
-                        for (size_t i = 0; i < table_schema.size(); i++) {
-                            // TODO: key translation and type compare, instead of names:
-                            if (table_schema[i].type.alias() != incoming_schema.value()[i].type.alias()) {
-                                return schema_result<named_schema>{
-                                    resource,
-                                    components::cursor::error_t{error_code_t::schema_error,
-                                                                "insert_node: field name mismatch"}};
-                            }
-                        }
                     } else {
-                        // Partial INSERT: each incoming column must exist in table schema
-                        for (size_t i = 0; i < incoming_schema.value().size(); i++) {
-                            bool found = false;
-                            for (size_t j = 0; j < table_schema.size(); j++) {
-                                // TODO: key translation and type compare, instead of names:
-                                if (table_schema[j].type.alias() == incoming_schema.value()[i].type.alias()) {
-                                    found = true;
-                                    break;
+                        if (insert_node->key_translation().size() != incoming_schema.value().size() &&
+                            table_schema.size() != incoming_schema.value().size()) {
+                            return schema_result<named_schema>{
+                                resource,
+                                components::cursor::error_t{error_code_t::schema_error,
+                                                            "insert_node: number of columns do not match"}};
+                        } else {
+                            // validate key
+                            for (auto& key : insert_node->key_translation()) {
+                                auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
+                                if (key_res.is_error()) {
+                                    return schema_result<named_schema>{resource, key_res.error()};
                                 }
                             }
-                            if (!found) {
-                                return schema_result<named_schema>{
-                                    resource,
-                                    components::cursor::error_t{error_code_t::schema_error,
-                                                                "insert_node: field not found in table schema"}};
+                            // validate corresponding types
+                            std::pmr::unordered_set<size_t> unchecked_columns(resource);
+                            for (size_t i = 0; i < table_schema.size(); i++) {
+                                unchecked_columns.emplace(i);
+                            }
+
+                            for (size_t i = 0; i < incoming_schema.value().size(); i++) {
+                                // TODO: support partial inserts into complex types
+                                // for now only first order is checked
+                                size_t index = insert_node->key_translation().empty()
+                                                   ? i
+                                                   : insert_node->key_translation()[i].path().front();
+                                const auto& corresponding_table_type = table_schema[index].type;
+                                unchecked_columns.erase(index);
+                                if (!incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
+                                    return schema_result<named_schema>{
+                                        resource,
+                                        components::cursor::error_t{error_code_t::schema_error,
+                                                                    "insert_node: can not convert data column[" +
+                                                                        std::to_string(i) + "] type to table type"}};
+                                }
+                            }
+
+                            if (!unchecked_columns.empty()) {
+                                const auto& catalog_schema = catalog.get_table_schema(id).columns();
+                                for (auto index : unchecked_columns) {
+                                    if (!catalog_schema[index].has_default_value() &&
+                                        catalog_schema[index].is_not_null()) {
+                                        return schema_result<named_schema>{
+                                            resource,
+                                            components::cursor::error_t{
+                                                error_code_t::schema_error,
+                                                "insert_node: can not fill column \'" + catalog_schema[index].name() +
+                                                    "\', because it lacks a default value and do not except null"}};
+                                    }
+                                }
                             }
                         }
                     }
@@ -1416,7 +1444,7 @@ namespace services::dispatcher {
                     for (const auto& column : catalog.get_table_schema(id).columns()) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
-                                        column});
+                                        column.type()});
                     }
                 } else if (catalog.table_computes(id)) {
                     auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
@@ -1501,7 +1529,7 @@ namespace services::dispatcher {
                 } else {
                     const auto& sch = catalog.get_table_schema(id).columns();
                     for (const auto& column : sch) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
                     }
                 }
                 auto& keys = reinterpret_cast<node_create_index_t*>(node)->keys();

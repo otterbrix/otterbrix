@@ -211,11 +211,6 @@ namespace components::types {
             case logical_type::HUGEINT:
             case logical_type::FLOAT:
             case logical_type::DOUBLE:
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
-            case logical_type::DECIMAL:
                 return true;
             default:
                 return false;
@@ -430,6 +425,8 @@ namespace components::types {
         const std::vector<complex_logical_type>& child_types() const;
         logical_type_extension* extension() const;
 
+        bool is_convertable_to(const complex_logical_type& other) const;
+
         template<typename T>
         static bool contains(const complex_logical_type& type, T&& predicate);
 
@@ -619,12 +616,14 @@ namespace components::types {
 
         uint8_t width() const noexcept { return width_; }
         uint8_t scale() const noexcept { return scale_; }
+        physical_type stored_as() const noexcept { return stored_as_; }
 
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
     private:
+        physical_type stored_as_;
         uint8_t width_;
         uint8_t scale_;
     };

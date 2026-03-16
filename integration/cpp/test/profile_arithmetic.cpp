@@ -21,6 +21,11 @@ int main() {
     auto* dispatcher = space.dispatcher();
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
+    std::vector<components::table::column_definition_t> columns;
+    columns.reserve(types.size());
+    for (const auto& type : types) {
+        columns.emplace_back(type.alias(), type);
+    }
 
     // Setup
     {
@@ -29,7 +34,7 @@ int main() {
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_collection(s, database_name, collection_name, types);
+        dispatcher->create_collection(s, database_name, collection_name, columns);
     }
 
     // Insert 1000 rows

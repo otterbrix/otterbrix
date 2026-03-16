@@ -986,7 +986,7 @@ namespace services::disk {
         std::vector<components::table::column_definition_t> result;
         result.reserve(cols.size());
         for (const auto& col : cols) {
-            result.emplace_back(col.copy());
+            result.emplace_back(col);
         }
         co_return std::move(result);
     }
@@ -1187,10 +1187,9 @@ namespace services::disk {
             using components::types::is_numeric;
             using components::types::logical_type;
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
-                auto src_type = data->data[i].type().type();
-                auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
-                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                auto src_type = data->data[i].type();
+                auto tgt_type = table_columns[i].type();
+                if (src_type != tgt_type && src_type.is_convertable_to(tgt_type)) {
                     auto& src_vec = data->data[i];
                     auto target_type = table_columns[i].type();
                     if (src_vec.type().has_alias()) {
@@ -1761,10 +1760,9 @@ namespace services::disk {
             using components::types::is_numeric;
             using components::types::logical_type;
             for (size_t i = 0; i < table_columns.size() && i < data->column_count(); i++) {
-                auto src_type = data->data[i].type().type();
-                auto tgt_type = table_columns[i].type().type();
-                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
-                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                auto src_type = data->data[i].type();
+                auto tgt_type = table_columns[i].type();
+                if (src_type != tgt_type && src_type.is_convertable_to(tgt_type)) {
                     auto& src_vec = data->data[i];
                     auto target_type = table_columns[i].type();
                     if (src_vec.type().has_alias()) {

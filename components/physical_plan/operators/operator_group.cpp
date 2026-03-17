@@ -1,23 +1,207 @@
 #include "operator_group.hpp"
 
 #include "arithmetic_eval.hpp"
+#include <cassert>
+#include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/physical_plan/operators/operator_empty.hpp>
+#include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
+#include <components/physical_plan/operators/aggregate/operator_func.hpp>
+#include <core/operations_helper.hpp>
+#include <type_traits>
 
 namespace components::operators {
 
     namespace {
+        template<typename T>
+        bool equals_typed(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
+            if constexpr (std::is_floating_point_v<T>) {
+                T a = vec.data<T>()[row];
+                T b = val.value<T>();
+                return core::is_equals(a, b);
+            } else {
+                return vec.data<T>()[row] == val.value<T>();
+            }
+        }
+
+        bool value_equals_raw(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
+            if (vec.is_null(row))
+                return val.is_null();
+            if (val.is_null())
+                return false;
+            switch (vec.type().to_physical_type()) {
+                case types::physical_type::BOOL:
+                case types::physical_type::INT8:
+                    return equals_typed<int8_t>(vec, row, val);
+                case types::physical_type::INT16:
+                    return equals_typed<int16_t>(vec, row, val);
+                case types::physical_type::INT32:
+                    return equals_typed<int32_t>(vec, row, val);
+                case types::physical_type::INT64:
+                    return equals_typed<int64_t>(vec, row, val);
+                case types::physical_type::UINT8:
+                    return equals_typed<uint8_t>(vec, row, val);
+                case types::physical_type::UINT16:
+                    return equals_typed<uint16_t>(vec, row, val);
+                case types::physical_type::UINT32:
+                    return equals_typed<uint32_t>(vec, row, val);
+                case types::physical_type::UINT64:
+                    return equals_typed<uint64_t>(vec, row, val);
+                case types::physical_type::INT128:
+                    return equals_typed<types::int128_t>(vec, row, val);
+                case types::physical_type::UINT128:
+                    return equals_typed<types::uint128_t>(vec, row, val);
+                case types::physical_type::FLOAT:
+                    return equals_typed<float>(vec, row, val);
+                case types::physical_type::DOUBLE:
+                    return equals_typed<double>(vec, row, val);
+                case types::physical_type::STRING:
+                    return vec.data<std::string_view>()[row] == val.value<std::string_view>();
+                case types::physical_type::STRUCT: {
+                    auto& vec_children = vec.entries();
+                    auto& val_children = val.children();
+                    assert(vec_children.size() == val_children.size());
+                    for (size_t field = 0; field < vec_children.size(); field++) {
+                        if (!value_equals_raw(*vec_children[field], row, val_children[field])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::ARRAY: {
+                    assert(static_cast<const types::array_logical_type_extension*>(vec.type().extension())->size() ==
+                           static_cast<const types::array_logical_type_extension*>(val.type().extension())->size());
+                    auto& flat_array = vec.entry();
+                    auto& val_children = val.children();
+                    for (size_t i = 0; i < val_children.size(); i++) {
+                        if (!value_equals_raw(flat_array, row * val_children.size() + i, val_children[i])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                case types::physical_type::LIST: {
+                    const auto& val_children = val.children();
+                    const auto& list_entry = *(vec.data<types::list_entry_t>() + row);
+                    const auto& flat_list = vec.entry();
+                    assert(flat_list.type().size() != 0);
+                    auto entry_size = flat_list.type().size();
+                    if (list_entry.length / entry_size != val_children.size()) {
+                        return false;
+                    }
+                    for (size_t i = 0; i < val_children.size(); i++) {
+                        if (!value_equals_raw(flat_list, list_entry.offset / entry_size + i, val_children[i])) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                default:
+                    assert(false && "unhandled type in value_equals_raw");
+                    return false;
+            }
+        }
+
         bool keys_match(const vector::data_chunk_t& chunk,
                         const std::pmr::vector<size_t>& col_indices,
                         size_t row_idx,
                         const std::pmr::vector<types::logical_value_t>& group_key) {
             for (size_t k = 0; k < col_indices.size(); k++) {
-                if (chunk.value(col_indices[k], row_idx) != group_key[k]) {
+                if (!value_equals_raw(chunk.data[col_indices[k]], row_idx, group_key[k]))
                     return false;
-                }
             }
             return true;
+        }
+
+        // Extract a key value from chunk for a given group_key_t definition
+        types::logical_value_t extract_key_value(std::pmr::memory_resource* resource,
+                                                 const group_key_t& key,
+                                                 const vector::data_chunk_t& chunk,
+                                                 size_t row_idx) {
+            switch (key.type) {
+                case group_key_t::kind::column: {
+                    types::logical_value_t val = chunk.value(key.full_path, row_idx);
+                    val.set_alias(std::string{key.name});
+                    return val;
+                }
+                case group_key_t::kind::coalesce: {
+                    for (const auto& entry : key.coalesce_entries) {
+                        if (entry.type == group_key_t::coalesce_entry::source::constant) {
+                            if (!entry.constant.is_null()) {
+                                auto val = entry.constant;
+                                val.set_alias(std::string{key.name});
+                                return val;
+                            }
+                        } else {
+                            // column source
+                            if (!chunk.data[entry.col_index].is_null(row_idx)) {
+                                auto val = chunk.value(entry.col_index, row_idx);
+                                val.set_alias(std::string{key.name});
+                                return val;
+                            }
+                        }
+                    }
+                    // all NULL
+                    auto null_val =
+                        types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    null_val.set_alias(std::string{key.name});
+                    return null_val;
+                }
+                case group_key_t::kind::case_when: {
+                    for (const auto& clause : key.case_clauses) {
+                        auto cond_val = chunk.value(clause.condition_col, row_idx);
+                        auto cmp_result = cond_val.compare(clause.condition_value);
+                        bool matches = false;
+                        switch (clause.cmp) {
+                            case expressions::compare_type::eq:
+                                matches = cmp_result == types::compare_t::equals;
+                                break;
+                            case expressions::compare_type::ne:
+                                matches = cmp_result != types::compare_t::equals;
+                                break;
+                            case expressions::compare_type::gt:
+                                matches = cmp_result == types::compare_t::more;
+                                break;
+                            case expressions::compare_type::gte:
+                                matches = cmp_result >= types::compare_t::equals;
+                                break;
+                            case expressions::compare_type::lt:
+                                matches = cmp_result == types::compare_t::less;
+                                break;
+                            case expressions::compare_type::lte:
+                                matches = cmp_result <= types::compare_t::equals;
+                                break;
+                            default:
+                                matches = true;
+                                break;
+                        }
+                        if (matches) {
+                            types::logical_value_t result_val =
+                                (clause.res_type == group_key_t::case_clause::result_source::constant)
+                                    ? clause.res_constant
+                                    : chunk.value(clause.res_col, row_idx);
+                            result_val.set_alias(std::string{key.name});
+                            return result_val;
+                        }
+                    }
+                    // else branch
+                    types::logical_value_t else_val = [&]() -> types::logical_value_t {
+                        switch (key.else_type) {
+                            case group_key_t::else_source::column:
+                                return chunk.value(key.else_col, row_idx);
+                            case group_key_t::else_source::constant:
+                                return key.else_constant;
+                            case group_key_t::else_source::null_value:
+                            default:
+                                return types::logical_value_t(resource,
+                                                              types::complex_logical_type{types::logical_type::NA});
+                        }
+                    }();
+                    else_val.set_alias(std::string{key.name});
+                    return else_val;
+                }
+            }
+            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
     } // anonymous namespace
 
@@ -32,18 +216,18 @@ namespace components::operators {
         , post_aggregates_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
+        , select_order_(resource_)
         , row_ids_per_group_(resource_)
         , group_keys_(resource_)
         , group_index_(resource_) {}
 
-    void operator_group_t::add_key(const std::pmr::string& name, get::operator_get_ptr&& getter) {
-        keys_.push_back({name, std::move(getter), std::pmr::vector<size_t>(resource_)});
-    }
+    void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
-    void operator_group_t::add_key(const std::pmr::string& name,
-                                   get::operator_get_ptr&& getter,
-                                   std::pmr::vector<size_t> col_path) {
-        keys_.push_back({name, std::move(getter), std::move(col_path)});
+    void operator_group_t::add_key(const std::pmr::string& name) {
+        group_key_t key(resource_);
+        key.name = name;
+        key.type = group_key_t::kind::column;
+        keys_.push_back(std::move(key));
     }
 
     void operator_group_t::add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator) {
@@ -57,6 +241,8 @@ namespace components::operators {
     void operator_group_t::add_post_aggregate(post_aggregate_column_t&& col) {
         post_aggregates_.emplace_back(std::move(col));
     }
+
+    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) { select_order_ = std::move(order); }
 
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
@@ -74,15 +260,12 @@ namespace components::operators {
                 chunk.data.emplace_back(std::move(result_vec));
             }
 
-            // Resolve col_path for computed-column keys (they were appended at known positions)
+            // Resolve col_index for computed-column keys (they were appended at known positions)
             if (!computed_columns_.empty()) {
                 size_t base = chunk.column_count() - computed_columns_.size();
                 for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
-                    for (auto& key : keys_) {
-                        if (key.col_path.empty() && key.name == computed_columns_[ci].alias) {
-                            key.col_path.push_back(base + ci);
-                            break;
-                        }
+                    if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
+                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(base + ci);
                     }
                 }
             }
@@ -109,7 +292,18 @@ namespace components::operators {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Output — already a data_chunk_t, no transpose needed
+            // Phase 7: Reorder columns to match SELECT clause order
+            if (!select_order_.empty()) {
+                std::vector<vector::vector_t> reordered;
+                reordered.reserve(select_order_.size());
+                for (size_t idx : select_order_) {
+                    reordered.emplace_back(std::move(result.data[idx]));
+                }
+                result.data.assign(std::make_move_iterator(reordered.begin()),
+                                   std::make_move_iterator(reordered.end()));
+            }
+
+            // Phase 8: Output
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
 
             // Clear temporary grouping state
@@ -145,22 +339,15 @@ namespace components::operators {
             return;
         }
 
-        // Try fast path: resolve all keys to simple top-level column indices
+        // Try fast path: all keys are simple column type with resolved col_index
         bool use_fast_path = true;
         std::pmr::vector<size_t> key_col_indices(resource_);
         for (const auto& key : keys_) {
-            if (std::string_view(key.name) == "*") {
+            if (key.type != group_key_t::kind::column || key.full_path.size() > 1) {
                 use_fast_path = false;
                 break;
             }
-            // Use pre-resolved col_path when available
-            if (!key.col_path.empty() && key.col_path.size() == 1) {
-                key_col_indices.push_back(key.col_path[0]);
-                continue;
-            }
-            // No resolved path — fall through to slow (getter-based) path
-            use_fast_path = false;
-            break;
+            key_col_indices.push_back(key.full_path.front());
         }
 
         if (use_fast_path && !key_col_indices.empty()) {
@@ -212,44 +399,20 @@ namespace components::operators {
                 }
             }
         } else {
-            // Slow path: getter-based key extraction (handles wildcards, nested paths, etc.)
+            // Slow path: handles coalesce, case_when, wildcards, nested paths
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
                 std::pmr::vector<types::logical_value_t> key_vals(resource_);
                 bool is_valid = true;
 
-                if (use_fast_path) {
-                    // Fast path without batch hash (empty key_col_indices case)
-                    size_t key_i = 0;
-                    for (size_t col_idx : key_col_indices) {
-                        auto val = chunk.value(col_idx, row_idx);
-                        if (val.is_null()) {
-                            is_valid = false;
-                            break;
-                        }
-                        val.set_alias(std::string{keys_[key_i].name});
-                        key_vals.push_back(std::move(val));
-                        key_i++;
+                for (const auto& key : keys_) {
+                    auto val = extract_key_value(resource_, key, chunk, row_idx);
+                    if (val.is_null() && key.type == group_key_t::kind::column) {
+                        is_valid = false;
+                        break;
                     }
-                } else {
-                    std::pmr::vector<types::logical_value_t> row(resource_);
-                    row.reserve(chunk.column_count());
-                    for (size_t col_idx = 0; col_idx < chunk.column_count(); col_idx++) {
-                        row.push_back(chunk.value(col_idx, row_idx));
-                    }
-                    for (const auto& key : keys_) {
-                        auto values = key.getter->values(row);
-                        if (values.empty()) {
-                            is_valid = false;
-                            break;
-                        }
-                        for (auto& val : values) {
-                            if (std::string_view(key.name) != "*") {
-                                val.set_alias(std::string{key.name});
-                            }
-                            key_vals.push_back(std::move(val));
-                        }
-                    }
+                    key_vals.push_back(std::move(val));
                 }
+
                 if (!is_valid) {
                     continue;
                 }
@@ -282,6 +445,138 @@ namespace components::operators {
         auto& chunk = left_->output()->data_chunk();
         size_t num_groups = group_keys_.size();
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
+        auto num_rows = chunk.size();
+
+        // Try vectorized path: check if all aggregators are builtin with simple column args
+        bool can_vectorize = num_groups > 0 && num_rows > 0;
+        struct agg_info_t {
+            aggregate::builtin_agg kind;
+            std::pmr::vector<size_t> full_path;
+            types::logical_type col_type;
+            bool is_count_star = false;
+        };
+        std::pmr::vector<agg_info_t> agg_infos(resource_);
+
+        if (can_vectorize) {
+            agg_infos.reserve(values_.size());
+            for (const auto& value : values_) {
+                auto* func_op = dynamic_cast<aggregate::operator_func_t*>(value.aggregator.get());
+                if (!func_op || !func_op->func()) {
+                    can_vectorize = false;
+                    break;
+                }
+                auto kind = aggregate::classify(func_op->func()->name());
+                if (kind == aggregate::builtin_agg::UNKNOWN) {
+                    can_vectorize = false;
+                    break;
+                }
+
+                std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
+                types::logical_type col_type = types::logical_type::NA;
+
+                bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
+                if (count_star) {
+                    // COUNT(*) — no column needed
+                    col_type = types::logical_type::UBIGINT;
+                } else if (func_op->args().size() == 1 &&
+                           std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
+                    auto& key = std::get<expressions::key_t>(func_op->args()[0]);
+                    assert(!key.path().empty());
+                    col_path = key.path();
+                    col_type = chunk.at(col_path)->type().type();
+                    if (col_path.empty() || col_path.front() == SIZE_MAX) {
+                        can_vectorize = false;
+                        break;
+                    }
+                    // Only vectorize numeric types
+                    if (!types::is_numeric(col_type)) {
+                        can_vectorize = false;
+                        break;
+                    }
+                } else {
+                    can_vectorize = false;
+                    break;
+                }
+                agg_infos.push_back({kind, col_path, col_type, count_star});
+            }
+        }
+
+        if (can_vectorize) {
+            // Build group_ids: for each row, which group does it belong to?
+            std::pmr::vector<uint32_t> group_ids(resource_);
+            group_ids.resize(num_rows, UINT32_MAX);
+            for (size_t g = 0; g < num_groups; g++) {
+                for (size_t row_id : row_ids_per_group_[g]) {
+                    group_ids[row_id] = static_cast<uint32_t>(g);
+                }
+            }
+
+            // For each aggregate, run vectorized update
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+            agg_results.reserve(values_.size());
+
+            for (size_t a = 0; a < values_.size(); a++) {
+                std::pmr::vector<aggregate::raw_agg_state_t> states(resource_);
+                states.resize(num_groups);
+
+                auto& info = agg_infos[a];
+                if (info.is_count_star) {
+                    // COUNT(*): count all rows per group (including nulls)
+                    for (uint64_t i = 0; i < num_rows; i++) {
+                        if (group_ids[i] != UINT32_MAX) {
+                            states[group_ids[i]].update_count();
+                        }
+                    }
+                } else {
+                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                }
+
+                // Finalize states to logical_value_t
+                std::pmr::vector<types::logical_value_t> results(resource_);
+                results.reserve(num_groups);
+                for (size_t g = 0; g < num_groups; g++) {
+                    auto val = aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
+                    val.set_alias(std::string(values_[a].name));
+                    results.push_back(std::move(val));
+                }
+                agg_results.push_back(std::move(results));
+            }
+
+            // Build result chunk
+            return build_result_chunk(num_groups, key_count, agg_results);
+        }
+
+        // Fallback: gather + slice_contiguous per group
+        return calc_aggregate_values_fallback(pipeline_context);
+    }
+
+    vector::data_chunk_t operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context) {
+        auto& chunk = left_->output()->data_chunk();
+        size_t num_groups = group_keys_.size();
+        size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
+
+        // Build gather order: all row_ids concatenated by group
+        std::pmr::vector<uint64_t> gather_order(resource_);
+        std::pmr::vector<uint64_t> group_offsets(resource_);
+        gather_order.reserve(chunk.size());
+        group_offsets.reserve(num_groups + 1);
+
+        for (size_t i = 0; i < num_groups; i++) {
+            group_offsets.push_back(gather_order.size());
+            for (size_t row_id : row_ids_per_group_[i]) {
+                gather_order.push_back(row_id);
+            }
+        }
+        group_offsets.push_back(gather_order.size());
+
+        // ONE copy: gather all rows in group order
+        auto total = static_cast<uint64_t>(gather_order.size());
+        vector::indexing_vector_t gather_indexing(resource_, gather_order.data());
+
+        auto result_types = chunk.types();
+        uint64_t gathered_cap = total > 0 ? total : 1;
+        vector::data_chunk_t gathered(resource_, result_types, gathered_cap);
+        chunk.copy(gathered, gather_indexing, total, 0);
 
         // Compute aggregate results: agg_results[agg_idx][group_idx]
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
@@ -293,21 +588,11 @@ namespace components::operators {
             results.reserve(num_groups);
 
             for (size_t i = 0; i < num_groups; i++) {
-                auto& row_ids = row_ids_per_group_[i];
-                auto idx_count = static_cast<uint64_t>(row_ids.size());
-                auto sub_types = chunk.types();
-                uint64_t sub_cap = idx_count > 0 ? idx_count : 1;
-                vector::data_chunk_t sub_chunk(resource_, sub_types, sub_cap);
-                if (idx_count > 0) {
-                    static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
-                    vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(row_ids.data()));
-                    chunk.copy(sub_chunk, idx, idx_count, 0);
-                }
-                aggregator->clear();
-                aggregator->set_children(boost::intrusive_ptr(new operator_empty_t(
-                    resource_,
-                    operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)))));
-                aggregator->on_execute(pipeline_context);
+                auto off = group_offsets[i];
+                auto cnt = group_offsets[i + 1] - group_offsets[i];
+                auto sub_chunk = gathered.slice_contiguous(resource_, off, cnt);
+                aggregator->execute_on(operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),
+                                       pipeline_context);
                 auto agg_val = aggregator->value();
                 agg_val.set_alias(std::string(value.name));
                 results.push_back(std::move(agg_val));
@@ -315,22 +600,29 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
+        return build_result_chunk(num_groups, key_count, agg_results);
+    }
+
+    vector::data_chunk_t
+    operator_group_t::build_result_chunk(size_t num_groups,
+                                         size_t key_count,
+                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results) {
         // Build result types: key types + aggregate types
-        std::pmr::vector<types::complex_logical_type> result_types(resource_);
+        std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
-            for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
-                result_types.push_back(group_keys_[0][key_idx].type());
+            for (size_t k = 0; k < key_count; k++) {
+                out_types.push_back(group_keys_[0][k].type());
             }
         }
-        for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {
-            if (!agg_results[agg_idx].empty()) {
-                result_types.push_back(agg_results[agg_idx][0].type());
+        for (size_t a = 0; a < values_.size(); a++) {
+            if (!agg_results[a].empty()) {
+                out_types.push_back(agg_results[a][0].type());
             }
         }
 
         // Create result chunk
         uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
-        vector::data_chunk_t result(resource_, result_types, cap);
+        vector::data_chunk_t result(resource_, out_types, cap);
         result.set_cardinality(static_cast<uint64_t>(num_groups));
 
         // Fill key columns
@@ -350,11 +642,10 @@ namespace components::operators {
         return result;
     }
 
-    // TODO: post-aggregate keys use string matching (alias) because columns are synthetic;
-    //       consider path-based resolution when aggregate output schema is formalized
     void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         auto num_groups = result.size();
         result.data.reserve(result.data.size() + post_aggregates_.size());
+
         for (auto& post : post_aggregates_) {
             // Determine result type from first row computation
             types::complex_logical_type col_type{types::logical_type::NA};
@@ -363,12 +654,8 @@ namespace components::operators {
                 [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
                 if (std::holds_alternative<expressions::key_t>(param)) {
                     auto& key = std::get<expressions::key_t>(param);
-                    for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
-                        if (result.data[col_idx].type().alias() == key.as_string()) {
-                            return result.value(col_idx, row_idx);
-                        }
-                    }
-                    throw std::logic_error("Post-aggregate: column not found: " + key.as_string());
+                    assert(!key.path().empty());
+                    return result.value(key.path()[0], row_idx);
                 } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                     auto id = std::get<core::parameter_id_t>(param);
                     return pipeline_context->parameters.parameters.at(id);
@@ -401,7 +688,8 @@ namespace components::operators {
                             }
                         }
                     }
-                    throw std::logic_error("Post-aggregate: unsupported sub-expression");
+                    assert(false && "Post-aggregate: unsupported sub-expression");
+                    return types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA});
                 }
             };
 
@@ -481,13 +769,8 @@ namespace components::operators {
             [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
-                for (size_t col_idx = 0; col_idx < result.column_count(); col_idx++) {
-                    if (result.data[col_idx].type().has_alias() &&
-                        result.data[col_idx].type().alias() == key.as_string()) {
-                        return result.value(col_idx, row_idx);
-                    }
-                }
-                return types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA});
+                assert(!key.path().empty());
+                return result.value(key.path()[0], row_idx);
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 return pipeline_context->parameters.parameters.at(id);

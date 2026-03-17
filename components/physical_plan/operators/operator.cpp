@@ -113,11 +113,12 @@ namespace components::operators {
         right_ = std::move(right);
     }
 
+    void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
+
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
     void operator_t::set_error(std::string msg) { error_message_ = std::move(msg); }
     bool operator_t::has_error() const noexcept { return !error_message_.empty(); }
     const std::string& operator_t::error_message() const noexcept { return error_message_; }
-    void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
     void operator_t::mark_executed() { state_ = operator_state::executed; }
 
     void operator_t::clear() {

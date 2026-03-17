@@ -8,6 +8,7 @@ namespace components::operators::aggregate {
     public:
         void set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view key) const;
         types::logical_value_t value() const;
+        void execute_on(operator_data_ptr data, pipeline::context_t* pipeline_context);
 
     protected:
         operator_aggregate_t(std::pmr::memory_resource* resource, log_t log);

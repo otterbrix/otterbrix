@@ -13,6 +13,7 @@ namespace components::logical_plan {
         const expression_ptr& having() const { return having_; }
 
         size_t internal_aggregate_count{0};
+        size_t visible_select_count{0};
 
     private:
         expression_ptr having_;

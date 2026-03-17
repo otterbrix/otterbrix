@@ -500,30 +500,6 @@ namespace components::types {
                     boost::hash_combine(h, std::hash<std::string>{}(*str_ptr()));
                 }
                 break;
-            case logical_type::FLOAT: {
-                float v;
-                std::memcpy(&v, &data_, sizeof(float));
-                if (std::isnan(v))
-                    v = std::numeric_limits<float>::quiet_NaN();
-                else if (std::fpclassify(v) == FP_ZERO)
-                    v = 0.0f;
-                uint32_t bits;
-                std::memcpy(&bits, &v, sizeof(bits));
-                boost::hash_combine(h, bits);
-                break;
-            }
-            case logical_type::DOUBLE: {
-                double v;
-                std::memcpy(&v, &data_, sizeof(double));
-                if (std::isnan(v))
-                    v = std::numeric_limits<double>::quiet_NaN();
-                else if (std::fpclassify(v) == FP_ZERO)
-                    v = 0.0;
-                uint64_t bits;
-                std::memcpy(&bits, &v, sizeof(bits));
-                boost::hash_combine(h, bits);
-                break;
-            }
             case logical_type::HUGEINT:
                 boost::hash_combine(h, static_cast<uint64_t>(data128_));
                 boost::hash_combine(h, static_cast<uint64_t>(data128_ >> 64));

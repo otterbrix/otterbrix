@@ -299,6 +299,11 @@ namespace components::sql::transform {
             }
         }
 
+        // Record visible SELECT column count before adding group_field/internal aggs
+        if (auto* group_node = dynamic_cast<logical_plan::node_group_t*>(group.get())) {
+            group_node->visible_select_count = group->expressions().size();
+        }
+
         // where
         if (node.whereClause) {
             expression_ptr expr;
@@ -351,8 +356,9 @@ namespace components::sql::transform {
                                                                  agg->collection_full_name(),
                                                                  group->expressions(),
                                                                  std::move(having_expr));
-                final_group->internal_aggregate_count =
-                    dynamic_cast<logical_plan::node_group_t*>(group.get())->internal_aggregate_count;
+                auto* src_group = dynamic_cast<logical_plan::node_group_t*>(group.get());
+                final_group->internal_aggregate_count = src_group->internal_aggregate_count;
+                final_group->visible_select_count = src_group->visible_select_count;
                 agg->append_child(final_group);
             } else {
                 agg->append_child(group);

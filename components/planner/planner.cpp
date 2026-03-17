@@ -2,7 +2,9 @@
 
 namespace components::planner {
 
-    auto planner_t::create_plan(std::pmr::memory_resource*, logical_plan::node_ptr node) -> logical_plan::node_ptr {
+    auto planner_t::create_plan(std::pmr::memory_resource*,
+                                logical_plan::node_ptr node,
+                                const catalog::catalog* /*catalog*/) -> logical_plan::node_ptr {
         return node;
     }
 

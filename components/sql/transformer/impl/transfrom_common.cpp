@@ -116,8 +116,7 @@ namespace components::sql::transform {
                     auto target_type = get_type(cast->typeName);
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
-                    auto type_name = std::string(magic_enum::enum_name(target_type.type()));
-                    col_ref.field.set_cast_type(type_name);
+                    col_ref.field.set_cast_type(target_type.type());
                     return col_ref.field;
                 }
                 return add_param_value(node, params);
@@ -331,8 +330,7 @@ namespace components::sql::transform {
                                 auto col_ref =
                                     columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
-                                auto type_name = std::string(magic_enum::enum_name(target_type.type()));
-                                col_ref.field.set_cast_type(type_name);
+                                col_ref.field.set_cast_type(target_type.type());
                                 return col_ref.field;
                             }
                             return add_param_value(node, params);

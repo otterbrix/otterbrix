@@ -2,6 +2,7 @@
 
 #include "forward.hpp"
 #include <boost/container_hash/hash.hpp>
+#include <components/types/types.hpp>
 #include <core/pmr.hpp>
 #include <optional>
 #include <string>
@@ -99,9 +100,9 @@ namespace components::expressions {
 
         bool has_cast_type() const { return cast_type_.has_value(); }
 
-        const std::string& cast_type() const { return *cast_type_; }
+        types::logical_type cast_type() const { return *cast_type_; }
 
-        void set_cast_type(std::string_view type_name) { cast_type_ = std::string(type_name); }
+        void set_cast_type(types::logical_type type) { cast_type_ = type; }
 
         auto is_null() const -> bool { return storage_.empty(); }
 
@@ -135,7 +136,7 @@ namespace components::expressions {
         side_t side_;
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
-        std::optional<std::string> cast_type_;
+        std::optional<types::logical_type> cast_type_;
     };
 
     template<class OStream>

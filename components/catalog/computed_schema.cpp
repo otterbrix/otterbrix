@@ -72,7 +72,7 @@ namespace components::catalog {
 
     std::string computed_schema::storage_column_name(const std::string& field_name,
                                                       const types::complex_logical_type& type) {
-        return field_name + "__" + std::string(magic_enum::enum_name(type.type()));
+        return "__" + field_name + "__" + std::string(magic_enum::enum_name(type.type()));
     }
 
     bool computed_schema::has_type(const std::pmr::string& field_name,

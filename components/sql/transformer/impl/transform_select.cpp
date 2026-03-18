@@ -207,8 +207,7 @@ namespace components::sql::transform {
                             auto col_ref =
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
-                            auto type_name = std::string(magic_enum::enum_name(target_type.type()));
-                            col_ref.field.set_cast_type(type_name);
+                            col_ref.field.set_cast_type(target_type.type());
                             std::string alias = res->name ? res->name : field_name;
                             group->append_expression(
                                 make_scalar_expression(resource_,

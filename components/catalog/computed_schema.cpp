@@ -57,12 +57,7 @@ namespace components::catalog {
                 continue;
             }
             auto t = type;
-            // When a field has multiple types, expose the physical column name so
-            // the user must disambiguate via cast (e.g. id::bigint).
-            // When there is exactly one type, expose the logical field name.
-            auto it = fields_.find(name);
-            bool multi = it != fields_.end() && it->second.size() > 1;
-            t.set_alias(multi ? storage_column_name(std::string(name), type).c_str() : name.c_str());
+            t.set_alias(name.c_str());
             retval.push_back(std::move(t));
         }
         return types::complex_logical_type::create_struct("latest_types", std::move(retval));

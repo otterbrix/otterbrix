@@ -137,14 +137,28 @@ namespace services::dispatcher {
                 matches.erase(it);
             }
 
-            // if result contains multiple types, then we have an ambiguous key, which is an error
+            // if result contains multiple types, try to disambiguate via cast_type_ hint
             if (result.size() > 1) {
-                return schema_result<type_paths>(
-                    resource,
-                    components::cursor::error_t(error_code_t::ambiguous_name,
-                                                "path: \'" + truncated_key.as_string() +
-                                                    "\' is ambiguous. Use aliases or full path"));
-            } else {
+                if (truncated_key.has_cast_type()) {
+                    auto cast_lt = truncated_key.cast_type().type();
+                    type_paths filtered{resource};
+                    for (auto& tp : result) {
+                        if (tp.type.type() == cast_lt) {
+                            filtered.emplace_back(std::move(tp));
+                            break;
+                        }
+                    }
+                    result = std::move(filtered);
+                }
+                if (result.size() > 1) {
+                    return schema_result<type_paths>(
+                        resource,
+                        components::cursor::error_t(error_code_t::ambiguous_name,
+                                                    "path: \'" + truncated_key.as_string() +
+                                                        "\' is ambiguous. Use aliases or full path"));
+                }
+            }
+            if (!result.empty()) {
                 if (key.storage().back() == "*") {
                     if (!result.front().type.is_nested()) {
                         return schema_result<type_paths>(
@@ -179,21 +193,6 @@ namespace services::dispatcher {
                             path.emplace_back(i);
                             result.emplace_back(type_path_t{std::move(path), arr_type_ext->internal_type()});
                         }
-                    }
-                }
-            }
-
-            // col::TYPE cast — key carries cast_type_ hint; resolve to physical column "__col__TYPE".
-            if (result.empty() && truncated_key.has_cast_type()) {
-                std::pmr::string phys(resource);
-                phys += "__";
-                phys += truncated_key.storage().back();
-                phys += "__";
-                phys += std::to_string(static_cast<unsigned>(truncated_key.cast_type().type()));
-                for (size_t i = 0; i < schema.size(); i++) {
-                    if (core::pmr::operator==(schema[i].type.alias(), phys)) {
-                        result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
-                        break;
                     }
                 }
             }

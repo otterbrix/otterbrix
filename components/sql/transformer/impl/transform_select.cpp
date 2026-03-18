@@ -12,7 +12,6 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-#include <magic_enum.hpp>
 
 using namespace components::expressions;
 
@@ -207,7 +206,7 @@ namespace components::sql::transform {
                             auto col_ref =
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
-                            col_ref.field.set_cast_type(target_type.type());
+                            col_ref.field.set_cast_type(target_type);
                             std::string alias = res->name ? res->name : field_name;
                             group->append_expression(
                                 make_scalar_expression(resource_,

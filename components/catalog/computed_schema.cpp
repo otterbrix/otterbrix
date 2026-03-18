@@ -1,7 +1,5 @@
 #include "computed_schema.hpp"
 
-#include <magic_enum.hpp>
-
 namespace components::catalog {
     computed_schema::computed_schema(std::pmr::memory_resource* resource)
         : fields_(resource)
@@ -72,7 +70,7 @@ namespace components::catalog {
 
     std::string computed_schema::storage_column_name(const std::string& field_name,
                                                       const types::complex_logical_type& type) {
-        return "__" + field_name + "__" + std::string(magic_enum::enum_name(type.type()));
+        return "__" + field_name + "__" + std::to_string(static_cast<unsigned>(type.type()));
     }
 
     bool computed_schema::has_type(const std::pmr::string& field_name,

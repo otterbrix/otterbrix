@@ -1,6 +1,5 @@
 #include "validate_logical_plan.hpp"
 
-#include <magic_enum.hpp>
 
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
@@ -186,12 +185,11 @@ namespace services::dispatcher {
 
             // col::TYPE cast — key carries cast_type_ hint; resolve to physical column "__col__TYPE".
             if (result.empty() && truncated_key.has_cast_type()) {
-                auto type_name = magic_enum::enum_name(truncated_key.cast_type());
                 std::pmr::string phys(resource);
                 phys += "__";
                 phys += truncated_key.storage().back();
                 phys += "__";
-                phys += type_name;
+                phys += std::to_string(static_cast<unsigned>(truncated_key.cast_type().type()));
                 for (size_t i = 0; i < schema.size(); i++) {
                     if (core::pmr::operator==(schema[i].type.alias(), phys)) {
                         result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});

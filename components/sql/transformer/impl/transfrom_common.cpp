@@ -5,7 +5,6 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-#include <magic_enum.hpp>
 
 using namespace components::expressions;
 
@@ -116,7 +115,7 @@ namespace components::sql::transform {
                     auto target_type = get_type(cast->typeName);
                     auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                     col_ref.deduce_side(names);
-                    col_ref.field.set_cast_type(target_type.type());
+                    col_ref.field.set_cast_type(target_type);
                     return col_ref.field;
                 }
                 return add_param_value(node, params);
@@ -330,7 +329,7 @@ namespace components::sql::transform {
                                 auto col_ref =
                                     columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                                 col_ref.deduce_side(names);
-                                col_ref.field.set_cast_type(target_type.type());
+                                col_ref.field.set_cast_type(target_type);
                                 return col_ref.field;
                             }
                             return add_param_value(node, params);

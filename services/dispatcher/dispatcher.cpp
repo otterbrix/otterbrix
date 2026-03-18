@@ -465,6 +465,11 @@ namespace services::dispatcher {
                                 co_await std::move(acf);
                             }
 
+                            // Append to schema in INSERT column order so that column_order_ matches
+                            // physical storage column order. append() deduplicates, so repeated calls
+                            // for the same (field, type) are no-ops that preserve the original ordering.
+                            schema.append(pmr_field, bare_type);
+
                             // Rename alias to physical column name so storage_append can match by name
                             std::string phys_name =
                                 computed_schema::storage_column_name(field_name, bare_type);
@@ -1008,18 +1013,8 @@ namespace services::dispatcher {
                     catalog_.drop_computing_table(id);
                 }
                 break;
-            case node_type::insert_t: {
-                // computed_schema tables: update refcounts for inserted (field_name, type) pairs.
-                // Column addition and data_chunk restructuring happened in pre-execution.
-                if (catalog_.table_computes(id)) {
-                    auto& sch = catalog_.get_computing_table_schema(id);
-                    for (const auto& [name_type, refcount] : update_result_) {
-                        sch.append_n(std::pmr::string(name_type.first, resource()), name_type.second, refcount);
-                    }
-                    update_result_.clear();
-                }
+            case node_type::insert_t:
                 break;
-            }
             case node_type::delete_t: {
                 if (catalog_.table_computes(id)) {
                     auto& sch = catalog_.get_computing_table_schema(id);

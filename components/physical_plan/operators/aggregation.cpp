@@ -33,8 +33,8 @@ namespace components::operators {
 
     void aggregation::on_prepare_impl() {
         operator_ptr executor = nullptr;
-        // When sort is present, scan all rows — limit is applied after sort in on_execute_impl
-        auto scan_limit = sort_ ? logical_plan::limit_t::unlimit() : limit_;
+        // When sort or group is present, scan all rows — limit is applied after in on_execute_impl
+        auto scan_limit = (sort_ || group_) ? logical_plan::limit_t::unlimit() : limit_;
         if (left_) {
             executor = std::move(left_);
             if (match_) {

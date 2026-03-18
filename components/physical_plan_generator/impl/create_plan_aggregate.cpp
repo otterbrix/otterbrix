@@ -32,15 +32,27 @@ namespace services::planner::impl {
                       new components::operators::aggregation(context.resource, context.log.clone(), coll_name))
                 : boost::intrusive_ptr(new components::operators::aggregation(node->resource(), log_t{}, coll_name));
         op->set_limit(limit);
+
+        // When GROUP BY is present, LIMIT must not be applied to the scan/match —
+        // it must apply only to the final grouped (and possibly sorted) result.
+        bool has_group = false;
+        for (const components::logical_plan::node_ptr& child : node->children()) {
+            if (child->type() == node_type::group_t) {
+                has_group = true;
+                break;
+            }
+        }
+        auto scan_limit = has_group ? components::logical_plan::limit_t::unlimit() : limit;
+
         for (const components::logical_plan::node_ptr& child : node->children()) {
             switch (child->type()) {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    op->set_match(create_plan(context, function_registry, child, limit, params));
+                    op->set_match(create_plan(context, function_registry, child, scan_limit, params));
                     break;
                 case node_type::group_t:
-                    op->set_group(create_plan(context, function_registry, child, limit, params));
+                    op->set_group(create_plan(context, function_registry, child, scan_limit, params));
                     break;
                 case node_type::sort_t:
                     op->set_sort(create_plan(context, function_registry, child, limit, params));

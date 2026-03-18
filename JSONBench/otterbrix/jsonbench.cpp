@@ -9,6 +9,11 @@
 #include <integration/cpp/base_spaces.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
+#include <components/logical_plan/node_insert.hpp>
+#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/data_chunk.hpp>
+
 // Thin subclass to expose the protected constructor
 class bench_spaces final : public otterbrix::base_otterbrix_t {
 public:
@@ -21,11 +26,11 @@ public:
 #endif
 
 // Number of rows to load from the dataset
-static constexpr int N_ROWS = 10'000;
+static constexpr size_t N_ROWS = 10'000;
 
 static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";
-static constexpr int INSERT_BATCH = 500;
+static constexpr size_t INSERT_BATCH = 500;
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -105,19 +110,6 @@ static Record parse_line(const std::string& line) {
     r.collection = extract_nested_str(line, "commit", "collection");
     r.operation  = extract_nested_str(line, "commit", "operation");
     return r;
-}
-
-// Escape a SQL string literal.
-static std::string sql_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\'')
-            out += "''";
-        else
-            out += c;
-    }
-    return out;
 }
 
 // Read RSS from /proc/self/status (Linux only).
@@ -210,6 +202,13 @@ static void run_query(otterbrix::base_otterbrix_t* space,
     std::cout << "  Time: " << ms << " ms\n";
 }
 
+// Column indices in the chunk
+static constexpr size_t COL_DID        = 0;
+static constexpr size_t COL_TIME_US    = 1;
+static constexpr size_t COL_KIND       = 2;
+static constexpr size_t COL_COLLECTION = 3;
+static constexpr size_t COL_OPERATION  = 4;
+
 // ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
@@ -222,20 +221,21 @@ int main() {
     auto cfg      = configuration::config::create_config("/tmp/jsonbench_otterbrix");
     cfg.disk.on   = false;
     cfg.wal.on    = false;
-    cfg.log.level = log_t::level::warn; // suppress trace/info noise
+    cfg.log.level = log_t::level::warn;
 
     bench_spaces space(cfg);
     auto* dispatcher = space.dispatcher();
+    auto* resource   = dispatcher->resource();
 
     // ---- Create DB and table ------------------------------------------------
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + DB_NAME + ";");
+        dispatcher->create_database(session, DB_NAME);
     }
     {
+        // Empty column list → dynamic (computed) schema
         auto session = otterbrix::session_id_t();
-        std::string full = std::string(DB_NAME) + "." + TABLE_NAME;
-        dispatcher->execute_sql(session, "CREATE TABLE " + full + " ();");
+        dispatcher->create_collection(session, DB_NAME, TABLE_NAME);
     }
 
     // ---- Parse data ---------------------------------------------------------
@@ -249,36 +249,51 @@ int main() {
             return 1;
         }
         std::string line;
-        while (static_cast<int>(records.size()) < N_ROWS && std::getline(f, line)) {
+        while (records.size() < N_ROWS && std::getline(f, line)) {
             if (line.empty()) continue;
             records.push_back(parse_line(line));
         }
     }
     std::cout << "Parsed " << records.size() << " records.\n";
 
+    // ---- Column types (fixed for all batches) --------------------------------
+    using CT = components::types::complex_logical_type;
+    using LT = components::types::logical_type;
+    using LV = components::types::logical_value_t;
+
+    std::pmr::vector<CT> types(resource);
+    types.emplace_back(LT::STRING_LITERAL, "did");
+    types.emplace_back(LT::BIGINT,         "time_us");
+    types.emplace_back(LT::STRING_LITERAL, "kind");
+    types.emplace_back(LT::STRING_LITERAL, "collection");
+    types.emplace_back(LT::STRING_LITERAL, "operation");
+
+    collection_full_name_t full_name{DB_NAME, TABLE_NAME};
+
     // ---- Insert in batches --------------------------------------------------
     std::cout << "\n=== Inserting " << records.size() << " rows (batch=" << INSERT_BATCH << ") ===\n";
     size_t rss_before = rss_kb();
     auto t_insert = Clock::now();
 
-    std::string full_table = std::string(DB_NAME) + "." + TABLE_NAME;
     for (size_t start = 0; start < records.size(); start += INSERT_BATCH) {
-        size_t end = std::min(start + INSERT_BATCH, records.size());
-        std::ostringstream sql;
-        sql << "INSERT INTO " << full_table
-            << " (did, time_us, kind, collection, operation) VALUES ";
-        for (size_t i = start; i < end; ++i) {
-            if (i != start) sql << ", ";
-            const auto& r = records[i];
-            sql << "('"  << sql_escape(r.did)        << "', "
-                <<          r.time_us                 << ", '"
-                <<          sql_escape(r.kind)        << "', '"
-                <<          sql_escape(r.collection)  << "', '"
-                <<          sql_escape(r.operation)   << "')";
+        size_t end   = std::min(start + INSERT_BATCH, records.size());
+        size_t batch = end - start;
+
+        components::vector::data_chunk_t chunk(resource, types, batch);
+        chunk.set_cardinality(batch);
+
+        for (size_t i = 0; i < batch; ++i) {
+            const auto& r = records[start + i];
+            chunk.set_value(COL_DID,        i, LV{resource, r.did});
+            chunk.set_value(COL_TIME_US,    i, LV{resource, r.time_us});
+            chunk.set_value(COL_KIND,       i, LV{resource, r.kind});
+            chunk.set_value(COL_COLLECTION, i, LV{resource, r.collection});
+            chunk.set_value(COL_OPERATION,  i, LV{resource, r.operation});
         }
-        sql << ";";
+
+        auto ins = components::logical_plan::make_node_insert(resource, full_name, std::move(chunk));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, sql.str());
+        auto cur = dispatcher->execute_plan(session, ins);
         if (cur->is_error()) {
             std::cerr << "Insert error: " << cur->get_error().what << "\n";
             return 1;

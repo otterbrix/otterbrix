@@ -128,6 +128,9 @@ namespace services::dispatcher {
 
         components::table::transaction_manager_t txn_manager_;
         recomputed_types update_result_;
+        // New (field, type) pairs in chunk column order — must match data_table column order.
+        std::pmr::vector<std::pair<std::pmr::string, components::types::complex_logical_type>>
+            new_columns_order_;
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
         void update_catalog(components::logical_plan::node_ptr node);

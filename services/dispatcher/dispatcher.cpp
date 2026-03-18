@@ -52,6 +52,7 @@ namespace services::dispatcher {
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , update_result_(resource_ptr)
+        , new_columns_order_(resource_ptr)
         , pending_void_(resource_ptr)
         , pending_cursor_(resource_ptr)
         , pending_size_(resource_ptr)
@@ -438,6 +439,7 @@ namespace services::dispatcher {
                         auto& schema = catalog_.get_computing_table_schema(id);
                         uint64_t row_count = chunk.size();
                         update_result_.clear();
+                        new_columns_order_.clear();
 
                         for (auto& col : chunk.data) {
                             auto field_name = col.type().alias();
@@ -447,6 +449,9 @@ namespace services::dispatcher {
 
                             std::pmr::string pmr_field(field_name.c_str(), resource());
                             if (!schema.has_type(pmr_field, bare_type)) {
+                                // Track new column in chunk order (must match data_table column order)
+                                new_columns_order_.emplace_back(
+                                    std::pmr::string(pmr_field, resource()), bare_type);
                                 // New (field_name, type) pair — add physical column to storage
                                 std::string phys_name =
                                     computed_schema::storage_column_name(field_name, bare_type);
@@ -1009,10 +1014,17 @@ namespace services::dispatcher {
                 }
                 break;
             case node_type::insert_t: {
-                // computed_schema tables: update refcounts for inserted (field_name, type) pairs.
+                // computed_schema tables: update schema for inserted (field_name, type) pairs.
                 // Column addition and data_chunk restructuring happened in pre-execution.
                 if (catalog_.table_computes(id)) {
                     auto& sch = catalog_.get_computing_table_schema(id);
+                    // Append new columns first, in chunk column order so that
+                    // column_order_ indices match data_table column positions.
+                    for (auto& [name, type] : new_columns_order_) {
+                        sch.append(std::pmr::string(name, resource()), type);
+                    }
+                    new_columns_order_.clear();
+                    // append_n is now idempotent for column_order_ (pairs already inserted above)
                     for (const auto& [name_type, refcount] : update_result_) {
                         sch.append_n(std::pmr::string(name_type.first, resource()), name_type.second, refcount);
                     }

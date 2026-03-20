@@ -20,6 +20,7 @@
 #include <components/logical_plan/node_sort.hpp>
 #include <list>
 #include <queue>
+#include <unordered_set>
 
 namespace services::dispatcher {
 
@@ -934,6 +935,20 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
+                    // SELECT * — check for duplicate field names (multiple types for same field)
+                    {
+                        std::unordered_set<std::string> seen;
+                        for (const auto& col : incoming_schema) {
+                            if (!seen.insert(col.type.alias()).second) {
+                                return schema_result<named_schema>{
+                                    resource,
+                                    components::cursor::error_t{
+                                        error_code_t::schema_error,
+                                        "column '" + col.type.alias() +
+                                            "' has multiple types; use explicit column selection"}};
+                            }
+                        }
+                    }
                     if (node_sort) {
                         auto res = impl::validate_schema(resource, node_sort, incoming_schema);
                         if (res.is_error()) {

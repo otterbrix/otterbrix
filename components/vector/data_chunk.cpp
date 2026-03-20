@@ -114,11 +114,12 @@ namespace components::vector {
 
     void data_chunk_t::reference(data_chunk_t& chunk) {
         assert(chunk.column_count() <= column_count());
-        set_capacity(chunk);
-        set_cardinality(chunk);
+        set_capacity(chunk.capacity_);
+        set_cardinality(chunk.count_);
         for (uint64_t i = 0; i < chunk.column_count(); i++) {
             data[i].reference(chunk.data[i]);
         }
+        row_ids.reference(chunk.row_ids);
     }
 
     void data_chunk_t::copy(data_chunk_t& other, uint64_t offset) const {
@@ -129,6 +130,8 @@ namespace components::vector {
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
+        assert(other.row_ids.get_vector_type() == vector_type::FLAT);
+        vector_ops::copy(row_ids, other.row_ids, size(), offset, 0);
         other.set_cardinality(size() - offset);
     }
 
@@ -144,6 +147,8 @@ namespace components::vector {
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);
         }
+        assert(other.row_ids.get_vector_type() == vector_type::FLAT);
+        vector_ops::copy(row_ids, other.row_ids, indexing, source_count, offset, 0);
         other.set_cardinality(source_count - offset);
     }
 
@@ -158,8 +163,9 @@ namespace components::vector {
         for (uint64_t col_idx = split_idx; col_idx < num_cols; col_idx++) {
             data.pop_back();
         }
-        other.set_capacity(*this);
-        other.set_cardinality(*this);
+        vector_ops::copy(row_ids, other.row_ids, size(), 0, 0);
+        other.set_capacity(capacity_);
+        other.set_cardinality(count_);
     }
 
     void data_chunk_t::fuse(data_chunk_t&& other) {

@@ -36,8 +36,8 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id);
-        void mark_delete_row(const vector::data_chunk_t& chunk, size_t row, uint64_t txn_id);
+        void insert_row(const vector::data_chunk_t& chunk, size_t chunk_row, int64_t storage_row, uint64_t txn_id);
+        void mark_delete_row(const vector::data_chunk_t& chunk, size_t chunk_row, int64_t storage_row, uint64_t txn_id);
         void commit_insert(uint64_t txn_id, uint64_t commit_id);
         void commit_delete(uint64_t txn_id, uint64_t commit_id);
         void revert_insert(uint64_t txn_id);

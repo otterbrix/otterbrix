@@ -1,8 +1,12 @@
 import os
+import shutil
 import pytest
 from otterbrix import Client, Connection, Cursor
 
-client = Client(os.getcwd() + "/test_collection_connections")
+_path = os.getcwd() + "/test_collection_connections"
+if os.path.exists(_path):
+    shutil.rmtree(_path)
+client = Client(_path)
 client.execute("CREATE DATABASE schema;")
 client.execute("CREATE TABLE schema.table();")
 

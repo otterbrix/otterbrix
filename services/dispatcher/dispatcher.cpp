@@ -8,6 +8,8 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_insert.hpp>
+#include <components/table/column_definition.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_drop_macro.hpp>
 #include <components/logical_plan/node_drop_sequence.hpp>
@@ -428,6 +430,59 @@ namespace services::dispatcher {
                 exec_result = {make_cursor(resource(), operation_status_t::success), {}};
                 break;
             }
+            case node_type::insert_t: {
+                if (catalog_.table_computes(id)) {
+                    // Dynamic schema: expand schema and rename column aliases to physical names
+                    auto& children = logic_plan->children();
+                    if (!children.empty() && children.front()->type() == node_type::data_t) {
+                        auto data_node =
+                            boost::static_pointer_cast<node_data_t>(children.front());
+                        auto& chunk = data_node->data_chunk();
+                        auto& schema = catalog_.get_computing_table_schema(id);
+                        uint64_t row_count = chunk.size();
+                        update_result_.clear();
+
+                        for (auto& col : chunk.data) {
+                            auto field_name = col.type().alias();
+                            auto field_type = col.type();
+
+                            std::pmr::string pmr_field(field_name.c_str(), resource());
+                            if (!schema.has_type(pmr_field, field_type)) {
+                                // New (field_name, type) pair — add physical column to storage
+                                std::string phys_name =
+                                    computed_schema::storage_column_name(field_name, field_type);
+                                components::table::column_definition_t col_def(
+                                    phys_name,
+                                    field_type,
+                                    false,
+                                    std::nullopt);
+                                auto [_ac, acf] = actor_zeta::send(disk_address_,
+                                                                   &disk::manager_disk_t::storage_add_column,
+                                                                   session,
+                                                                   logic_plan->collection_full_name(),
+                                                                   col_def);
+                                co_await std::move(acf);
+                            }
+
+                            // Append to schema in INSERT column order so that column_order_ matches
+                            // physical storage column order. append() deduplicates, so repeated calls
+                            // for the same (field, type) are no-ops that preserve the original ordering.
+                            schema.append(pmr_field, field_type);
+
+                            // Rename alias to physical column name so storage_append can match by name
+                            std::string phys_name =
+                                computed_schema::storage_column_name(field_name, field_type);
+                            col.set_type_alias(phys_name);
+
+                            // Track for computed_schema refcount update after successful INSERT
+                            update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] +=
+                                row_count;
+                        }
+                    }
+                }
+                exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
+                break;
+            }
             default:
                 exec_result = co_await execute_plan_impl(session, logic_plan, params->take_parameters(), txn_data);
                 break;
@@ -436,7 +491,9 @@ namespace services::dispatcher {
         auto& result = exec_result.cursor;
         trace(log_, "manager_dispatcher_t::execute_plan: result received, success: {}", result->is_success());
 
-        if (!exec_result.updates.empty()) {
+        // For computed-schema INSERT, update_result_ was pre-populated in the insert_t case;
+        // don't overwrite it. For other DML (DELETE), exec_result.updates carries the data.
+        if (!exec_result.updates.empty() && logic_plan->type() != node_type::insert_t) {
             update_result_ = exec_result.updates;
         }
 
@@ -966,41 +1023,11 @@ namespace services::dispatcher {
                     catalog_.drop_computing_table(id);
                 }
                 break;
-            case node_type::insert_t: {
-                if (catalog_.table_computes(id)) {
-                    // try to replace computed_schema with a fixed one
-                    for (const auto& child : node->children()) {
-                        if (child->type() == node_type::data_t) {
-                            auto* data_node = static_cast<const node_data_t*>(child.get());
-                            std::vector<components::table::column_definition_t> columns;
-                            std::vector<field_description> desc;
-                            columns.reserve(data_node->data_chunk().column_count());
-                            desc.reserve(data_node->data_chunk().column_count());
-                            for (size_t i = 0; i < data_node->data_chunk().column_count(); desc.emplace_back(i++)) {
-                                const auto& type = data_node->data_chunk().data[i].type();
-                                // TODO: figure out behaviour for unnamed type
-                                assert(type.has_alias());
-                                columns.emplace_back(type.alias(), type);
-                            }
-                            catalog_.drop_computing_table(id);
-                            auto sch = schema(resource(), std::move(columns), std::move(desc));
-                            auto err = catalog_.create_table(id, table_metadata(resource(), std::move(sch)));
-                            assert(!err);
-                        }
-                    }
-                }
+            case node_type::insert_t:
                 break;
-            }
-            case node_type::delete_t: {
-                if (catalog_.table_computes(id)) {
-                    auto& sch = catalog_.get_computing_table_schema(id);
-                    for (const auto& [name_type, refcount] : update_result_) {
-                        sch.drop_n(std::pmr::string(name_type.first, resource()), name_type.second, refcount);
-                    }
-                    update_result_.clear();
-                }
+            case node_type::delete_t:
+                update_result_.clear();
                 break;
-            }
             default:
                 break;
         }

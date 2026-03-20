@@ -1,5 +1,6 @@
 #pragma once
 #include "column_data.hpp"
+#include <optional>
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
 
@@ -44,7 +45,7 @@ namespace components::table {
         // collection_scan_state &scan_state, vector::data_chunk_t &scan_chunk);
         std::unique_ptr<row_group_t> add_column(collection_t* collection,
                                                 column_definition_t& new_column,
-                                                const types::logical_value_t& default_value,
+                                                const std::optional<types::logical_value_t>& default_value,
                                                 vector::vector_t& intermediate);
         std::unique_ptr<row_group_t> remove_column(collection_t* collection, uint64_t removed_column);
 

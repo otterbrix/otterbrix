@@ -72,6 +72,9 @@ namespace services::disk {
                             collection_full_name_t name,
                             std::vector<components::table::column_definition_t> columns);
         actor_zeta::unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
+        actor_zeta::unique_future<void> storage_add_column(session_id_t session,
+                                                           collection_full_name_t name,
+                                                           components::table::column_definition_t new_column);
 
         // Storage queries
         actor_zeta::unique_future<std::pmr::vector<components::types::complex_logical_type>>
@@ -141,6 +144,7 @@ namespace services::disk {
                                                             &disk_contract::create_storage_with_columns,
                                                             &disk_contract::create_storage_disk,
                                                             &disk_contract::drop_storage,
+                                                            &disk_contract::storage_add_column,
                                                             // Storage queries
                                                             &disk_contract::storage_types,
                                                             &disk_contract::storage_total_rows,

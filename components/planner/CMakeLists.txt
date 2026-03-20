@@ -2,6 +2,8 @@ project(planner CXX)
 
 set(SOURCE_${PROJECT_NAME}
         planner.cpp
+        optimizer.cpp
+        optimizer/rules/constant_folding.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -17,6 +19,7 @@ target_link_libraries(
         otterbrix::types
         otterbrix::expressions
         otterbrix::logical_plan
+        otterbrix::vector
         absl::int128
         Boost::boost
         magic_enum::magic_enum

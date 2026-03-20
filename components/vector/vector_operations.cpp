@@ -739,6 +739,9 @@ namespace components::vector::vector_ops {
                 auto& target_children = target.entries();
                 assert(source_children.size() == target_children.size());
                 for (uint64_t i = 0; i < source_children.size(); i++) {
+                    // Struct children may themselves be DICTIONARY (from slice()),
+                    // so pass the original indexing — each child resolves its own
+                    // DICTIONARY in the recursive call's while-loop.
                     copy(*source_children[i],
                          *target_children[i],
                          indexing,

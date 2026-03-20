@@ -200,6 +200,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::get_indexed_keys>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::get_indexed_keys, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -758,6 +762,15 @@ namespace services::index {
             co_return result;
 
         co_return index->search(compare, value, start_time, txn_id);
+    }
+
+    manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
+    manager_index_t::get_indexed_keys(session_id_t /*session*/, collection_full_name_t name) {
+        auto it = engines_.find(name);
+        if (it == engines_.end()) {
+            co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
+        }
+        co_return it->second->all_indexed_keys();
     }
 
     // --- Index metafile persistence ---

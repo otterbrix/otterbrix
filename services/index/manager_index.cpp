@@ -69,7 +69,7 @@ namespace {
     using agent_batch_map_t = std::unordered_map<uintptr_t, disk_batch_t>;
     using agent_addr_map_t = std::unordered_map<uintptr_t, actor_zeta::address_t>;
 
-    void collect_disk_op(const components::index::index_engine_ptr& engine,
+    [[maybe_unused]] void collect_disk_op(const components::index::index_engine_ptr& engine,
                          const components::vector::data_chunk_t& chunk,
                          size_t row,
                          std::pmr::memory_resource* target_resource,

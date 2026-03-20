@@ -87,28 +87,25 @@ namespace services::planner::impl {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
                     auto comp_expr = reinterpret_cast<const expr::compare_expression_ptr&>(expr);
-
                     // Index selection: detect if an index is available for this predicate.
-                    // TODO: Enable index_scan when index save/load deduplication is fixed.
-                    // The can_use_index() check and mirror_compare() are ready; uncomment
-                    // the block below to route through index_scan instead of full_scan.
-                    //
-                    // if (!comp_expr->is_union()) {
-                    //     bool key_on_left = true;
-                    //     if (can_use_index(context, *comp_expr, key_on_left)) {
-                    //         auto& key = key_on_left
-                    //             ? std::get<expr::key_t>(comp_expr->left())
-                    //             : std::get<expr::key_t>(comp_expr->right());
-                    //         auto param_id = key_on_left
-                    //             ? std::get<core::parameter_id_t>(comp_expr->right())
-                    //             : std::get<core::parameter_id_t>(comp_expr->left());
-                    //         auto& value = logical_plan::get_parameter(context.parameters, param_id);
-                    //         auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
-                    //         return boost::intrusive_ptr(
-                    //             new operators::index_scan(context.resource, context.log.clone(),
-                    //                                       coll_name, key, value, ctype, limit));
-                    //     }
-                    // }
+                    if (!comp_expr->is_union()) {
+                        bool key_on_left = true;
+                        if (can_use_index(context, *comp_expr, key_on_left)) {
+                            auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
+                                                    : std::get<expr::key_t>(comp_expr->right());
+                            auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
+                                                        : std::get<core::parameter_id_t>(comp_expr->left());
+                            auto& value = get_parameter(context.parameters, param_id);
+                            auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
+                            return boost::intrusive_ptr(new components::operators::index_scan(context.resource,
+                                                                                              context.log.clone(),
+                                                                                              coll_name,
+                                                                                              key,
+                                                                                              value,
+                                                                                              ctype,
+                                                                                              limit));
+                        }
+                    }
 
                     return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                      context.log.clone(),

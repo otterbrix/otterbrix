@@ -23,9 +23,7 @@ namespace components::vector {
             assert(count <= capacity_);
             count_ = count;
         }
-        void set_cardinality(const data_chunk_t& other) { set_cardinality(other.size()); }
         void set_capacity(uint64_t capacity) { capacity_ = capacity; }
-        void set_capacity(const data_chunk_t& other) { set_capacity(other.capacity_); }
 
         types::logical_value_t value(uint64_t col_idx, uint64_t index) const;
         types::logical_value_t value(const std::pmr::vector<size_t>& col_path, uint64_t index) const;

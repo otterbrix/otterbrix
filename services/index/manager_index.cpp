@@ -132,6 +132,18 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::unregister_collection, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::create_index>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::create_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::drop_index>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::drop_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::has_index>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::has_index, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::insert_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::insert_rows, msg);
                 break;
@@ -142,34 +154,6 @@ namespace services::index {
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::update_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::update_rows, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::create_index>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::create_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::drop_index>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::drop_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::search, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::has_index>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::has_index, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::insert_rows_txn>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::insert_rows_txn, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::delete_rows_txn>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::delete_rows_txn, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::update_rows_txn>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::update_rows_txn, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::commit_insert>: {
@@ -192,8 +176,8 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::rebuild_indexes, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search_txn>: {
-                co_await actor_zeta::dispatch(this, &manager_index_t::search_txn, msg);
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::search>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::search, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
@@ -273,118 +257,6 @@ namespace services::index {
 
         engines_.erase(name);
         remove_all_indexes_for_collection(name.collection);
-        co_return;
-    }
-
-    // --- DML: bulk index operations ---
-
-    manager_index_t::unique_future<void>
-    manager_index_t::insert_rows(session_id_t session,
-                                 collection_full_name_t name,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
-                                 uint64_t start_row_id,
-                                 uint64_t count) {
-        if (!data || count == 0)
-            co_return;
-
-        auto it = engines_.find(name);
-        if (it == engines_.end())
-            co_return;
-
-        auto& engine = it->second;
-        agent_batch_map_t insert_batches;
-        agent_addr_map_t insert_addrs;
-        for (uint64_t i = 0; i < count; i++) {
-            size_t row = static_cast<size_t>(start_row_id + i);
-            engine->insert_row(*data, row, 0);
-            collect_disk_op(engine, *data, row, resource_, insert_batches, insert_addrs);
-        }
-        for (auto& [id, batch] : insert_batches) {
-            auto& addr = insert_addrs.at(id);
-            auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
-            schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
-        }
-
-        co_return;
-    }
-
-    manager_index_t::unique_future<void>
-    manager_index_t::delete_rows(session_id_t session,
-                                 collection_full_name_t name,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
-                                 std::pmr::vector<size_t> row_ids) {
-        if (!data || row_ids.empty())
-            co_return;
-
-        auto it = engines_.find(name);
-        if (it == engines_.end())
-            co_return;
-
-        auto& engine = it->second;
-        agent_batch_map_t remove_batches;
-        agent_addr_map_t remove_addrs;
-        for (auto row_id : row_ids) {
-            engine->mark_delete_row(*data, row_id, 0);
-            collect_disk_op(engine, *data, row_id, resource_, remove_batches, remove_addrs);
-        }
-        for (auto& [id, batch] : remove_batches) {
-            auto& addr = remove_addrs.at(id);
-            auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
-            schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
-        }
-
-        co_return;
-    }
-
-    manager_index_t::unique_future<void>
-    manager_index_t::update_rows(session_id_t session,
-                                 collection_full_name_t name,
-                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
-                                 std::pmr::vector<size_t> row_ids) {
-        if (!old_data || !new_data || row_ids.empty())
-            co_return;
-
-        auto it = engines_.find(name);
-        if (it == engines_.end())
-            co_return;
-
-        auto& engine = it->second;
-
-        // Delete old entries
-        agent_batch_map_t remove_batches;
-        agent_addr_map_t remove_addrs;
-        for (auto row_id : row_ids) {
-            engine->mark_delete_row(*old_data, row_id, 0);
-            collect_disk_op(engine, *old_data, row_id, resource_, remove_batches, remove_addrs);
-        }
-        for (auto& [id, batch] : remove_batches) {
-            auto& addr = remove_addrs.at(id);
-            auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::remove_many, session, std::move(batch));
-            schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
-        }
-
-        // Insert new entries
-        agent_batch_map_t insert_batches;
-        agent_addr_map_t insert_addrs;
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, row_ids[i], 0);
-            collect_disk_op(engine, *new_data, row_ids[i], resource_, insert_batches, insert_addrs);
-        }
-        for (auto& [id, batch] : insert_batches) {
-            auto& addr = insert_addrs.at(id);
-            auto [ns, f] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::insert_many, session, std::move(batch));
-            schedule_agent(addr, ns);
-            pending_void_.emplace_back(std::move(f));
-        }
-
         co_return;
     }
 
@@ -529,25 +401,6 @@ namespace services::index {
 
     // --- Query ---
 
-    manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search(session_id_t /*session*/,
-                            collection_full_name_t name,
-                            components::index::keys_base_storage_t keys,
-                            components::types::logical_value_t value,
-                            components::expressions::compare_type compare) {
-        std::pmr::vector<int64_t> result(resource_);
-
-        auto it = engines_.find(name);
-        if (it == engines_.end())
-            co_return result;
-
-        auto* index = components::index::search_index(it->second, keys);
-        if (!index)
-            co_return result;
-
-        co_return index->search(compare, value);
-    }
-
     manager_index_t::unique_future<bool>
     manager_index_t::has_index(session_id_t /*session*/, collection_full_name_t name, index_name_t index_name) {
         auto it = engines_.find(name);
@@ -560,10 +413,10 @@ namespace services::index {
     // --- Txn-aware DML ---
 
     manager_index_t::unique_future<void>
-    manager_index_t::insert_rows_txn(execution_context_t ctx,
-                                     std::unique_ptr<components::vector::data_chunk_t> data,
-                                     uint64_t start_row_id,
-                                     uint64_t count) {
+    manager_index_t::insert_rows(execution_context_t ctx,
+                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 uint64_t start_row_id,
+                                 uint64_t count) {
         if (!data || count == 0)
             co_return;
 
@@ -574,8 +427,7 @@ namespace services::index {
 
         auto& engine = it->second;
         for (uint64_t i = 0; i < count; i++) {
-            size_t row = static_cast<size_t>(start_row_id + i);
-            engine->insert_row(*data, row, txn_id);
+            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id);
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -583,9 +435,9 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void>
-    manager_index_t::delete_rows_txn(execution_context_t ctx,
-                                     std::unique_ptr<components::vector::data_chunk_t> data,
-                                     std::pmr::vector<size_t> row_ids) {
+    manager_index_t::delete_rows(execution_context_t ctx,
+                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::pmr::vector<int64_t> row_ids) {
         if (!data || row_ids.empty())
             co_return;
 
@@ -595,8 +447,8 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (auto row_id : row_ids) {
-            engine->mark_delete_row(*data, row_id, txn_id);
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->mark_delete_row(*data, i, row_ids[i], txn_id);
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -604,10 +456,11 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<void>
-    manager_index_t::update_rows_txn(execution_context_t ctx,
-                                     std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                     std::unique_ptr<components::vector::data_chunk_t> new_data,
-                                     std::pmr::vector<size_t> row_ids) {
+    manager_index_t::update_rows(execution_context_t ctx,
+                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
+                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                 std::pmr::vector<int64_t> row_ids,
+                                 int64_t new_start_row_id) {
         if (!old_data || !new_data || row_ids.empty())
             co_return;
 
@@ -619,13 +472,13 @@ namespace services::index {
         auto& engine = it->second;
 
         // Mark old entries as deleted
-        for (auto row_id : row_ids) {
-            engine->mark_delete_row(*old_data, row_id, txn_id);
+        for (size_t i = 0; i < row_ids.size(); i++) {
+            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id);
         }
 
         // Insert new entries
         for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, row_ids[i], txn_id);
+            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id);
         }
 
         co_return;
@@ -744,13 +597,13 @@ namespace services::index {
     // --- Txn-aware Query ---
 
     manager_index_t::unique_future<std::pmr::vector<int64_t>>
-    manager_index_t::search_txn(session_id_t /*session*/,
-                                collection_full_name_t name,
-                                components::index::keys_base_storage_t keys,
-                                components::types::logical_value_t value,
-                                components::expressions::compare_type compare,
-                                uint64_t start_time,
-                                uint64_t txn_id) {
+    manager_index_t::search(session_id_t /*session*/,
+                            collection_full_name_t name,
+                            components::index::keys_base_storage_t keys,
+                            components::types::logical_value_t value,
+                            components::expressions::compare_type compare,
+                            uint64_t start_time,
+                            uint64_t txn_id) {
         std::pmr::vector<int64_t> result(resource_);
 
         auto it = engines_.find(name);

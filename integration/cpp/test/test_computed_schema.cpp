@@ -203,7 +203,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         REQUIRE(cur->get_error().what == "column 'val' has multiple types; use explicit column selection");
     }
 
-    // Select val as string
+    // Select val as string: rows 1-2 have NULL for val (no string was inserted), row 3 has "hello"
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
@@ -211,12 +211,12 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<const std::string&>() == "");
-        REQUIRE(cur->chunk_data().value(1, 1).value<const std::string&>() == "");
-        REQUIRE(cur->chunk_data().value(1, 2).value<const std::string&>() == "hello");
+        REQUIRE(cur->chunk_data().value(1, 0).is_null());
+        REQUIRE(cur->chunk_data().value(1, 1).is_null());
+        { auto v = cur->chunk_data().value(1, 2); REQUIRE(v.value<const std::string&>() == "hello"); }
     }
 
-    // Select val as bigint
+    // Select val as bigint: rows 1-2 have (1,2), row 3 has NULL for val::bigint (no bigint was inserted)
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         REQUIRE(cur->chunk_data().column_count() == 2);
         REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
         REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
-        REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 0); // default fill
+        REQUIRE(cur->chunk_data().value(1, 2).is_null());
     }
 
     // WHERE val::bigint

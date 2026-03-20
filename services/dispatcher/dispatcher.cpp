@@ -448,13 +448,11 @@ namespace services::dispatcher {
                                 // New (field_name, type) pair — add physical column to storage
                                 std::string phys_name =
                                     computed_schema::storage_column_name(field_name, field_type);
-                                // Provide a typed NULL as default so existing rows get NULL for this new column
                                 components::table::column_definition_t col_def(
                                     phys_name,
                                     field_type,
                                     false,
-                                    std::make_optional(
-                                        logical_value_t{resource(), field_type}));
+                                    std::nullopt);
                                 auto [_ac, acf] = actor_zeta::send(disk_address_,
                                                                    &disk::manager_disk_t::storage_add_column,
                                                                    session,

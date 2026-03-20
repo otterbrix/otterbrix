@@ -61,6 +61,7 @@ namespace components::operators {
         std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
         std::pmr::unordered_map<size_t, std::pmr::vector<size_t>> group_index_;
+        std::pmr::vector<types::complex_logical_type> key_col_types_; // source column types for key columns
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

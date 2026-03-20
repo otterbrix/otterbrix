@@ -13,6 +13,14 @@ namespace components::operators {
                         size_t row_idx,
                         const std::pmr::vector<types::logical_value_t>& group_key) {
             for (size_t k = 0; k < col_indices.size(); k++) {
+                bool row_null = chunk.data[col_indices[k]].is_null(row_idx);
+                bool key_null = group_key[k].is_null();
+                if (row_null && key_null) {
+                    continue; // NULL == NULL for grouping purposes
+                }
+                if (row_null != key_null) {
+                    return false;
+                }
                 if (chunk.value(col_indices[k], row_idx) != group_key[k]) {
                     return false;
                 }
@@ -163,6 +171,14 @@ namespace components::operators {
             break;
         }
 
+        // Store source column types for key columns (needed to build result chunk with correct types even when first group is null)
+        key_col_types_.clear();
+        if (use_fast_path) {
+            for (size_t col_idx : key_col_indices) {
+                key_col_types_.push_back(chunk.data[col_idx].type());
+            }
+        }
+
         if (use_fast_path && !key_col_indices.empty()) {
             // Batch hash all rows at once using type-dispatched vector_ops::hash
             vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, num_rows);
@@ -171,18 +187,6 @@ namespace components::operators {
             auto* hashes = hash_vec.data<uint64_t>();
 
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
-                // Check for NULL keys via validity mask (no logical_value_t creation)
-                bool is_valid = true;
-                for (size_t col_idx : key_col_indices) {
-                    if (chunk.data[col_idx].is_null(row_idx)) {
-                        is_valid = false;
-                        break;
-                    }
-                }
-                if (!is_valid) {
-                    continue;
-                }
-
                 auto hash_val = static_cast<size_t>(hashes[row_idx]);
                 auto it = group_index_.find(hash_val);
                 bool is_new = true;
@@ -222,10 +226,6 @@ namespace components::operators {
                     size_t key_i = 0;
                     for (size_t col_idx : key_col_indices) {
                         auto val = chunk.value(col_idx, row_idx);
-                        if (val.is_null()) {
-                            is_valid = false;
-                            break;
-                        }
                         val.set_alias(std::string{keys_[key_i].name});
                         key_vals.push_back(std::move(val));
                         key_i++;
@@ -319,7 +319,12 @@ namespace components::operators {
         std::pmr::vector<types::complex_logical_type> result_types(resource_);
         if (num_groups > 0) {
             for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
-                result_types.push_back(group_keys_[0][key_idx].type());
+                // Use the source column type if available (handles null groups where first group may have NA type)
+                if (key_idx < key_col_types_.size()) {
+                    result_types.push_back(key_col_types_[key_idx]);
+                } else {
+                    result_types.push_back(group_keys_[0][key_idx].type());
+                }
             }
         }
         for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {

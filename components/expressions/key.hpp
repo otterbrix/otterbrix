@@ -100,9 +100,9 @@ namespace components::expressions {
 
         bool has_cast_type() const { return cast_type_.has_value(); }
 
-        types::logical_type cast_type() const { return *cast_type_; }
+        const types::complex_logical_type& cast_type() const { return *cast_type_; }
 
-        void set_cast_type(types::logical_type type) { cast_type_ = type; }
+        void set_cast_type(types::complex_logical_type type) { cast_type_ = std::move(type); }
 
         auto is_null() const -> bool { return storage_.empty(); }
 
@@ -136,7 +136,7 @@ namespace components::expressions {
         side_t side_;
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
-        std::optional<types::logical_type> cast_type_;
+        std::optional<types::complex_logical_type> cast_type_;
     };
 
     template<class OStream>

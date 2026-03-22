@@ -42,6 +42,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().column_count() == 2);
     }
 
     // Second INSERT: same schema
@@ -60,6 +61,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_count() == 2);
     }
 }
 
@@ -103,6 +105,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
+        REQUIRE(cur->chunk_data().column_count() == 2);
     }
 
     // WHERE on 'value' should find only row 4
@@ -111,6 +114,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t2 WHERE value = 100;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 2);
     }
 }
 
@@ -152,6 +156,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_count() == 2);
     }
 }
 
@@ -176,7 +181,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
     // Insert 'id' as bigint
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id) VALUES (1), (2);");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id, val) VALUES (1, 1), (2, 2);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
@@ -184,25 +189,55 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
     // Insert 'id' as string — creates a second physical column id__STRING_LITERAL
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id) VALUES ('hello');");
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t4 (id, val) VALUES (3, 'hello');");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
     }
 
-    // SELECT * returns all 3 rows across both physical id columns
+    // SELECT * must fail: 'id' has two physical types (bigint and string)
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t4;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE_FALSE(cur->is_success());
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().what == "column 'val' has multiple types; use explicit column selection");
     }
 
-    // Disambiguate via cast: select only bigint ids
+    // Select val as string: rows 1-2 have NULL for val (no string was inserted), row 3 has "hello"
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            session, "SELECT id::bigint FROM cs_testdb.t4 WHERE id::bigint > 0;");
+            session, "SELECT id, val::string FROM cs_testdb.t4 ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().value(1, 0).is_null());
+        REQUIRE(cur->chunk_data().value(1, 1).is_null());
+        { auto v = cur->chunk_data().value(1, 2); REQUIRE(v.value<const std::string&>() == "hello"); }
+    }
+
+    // Select val as bigint: rows 1-2 have (1,2), row 3 has NULL for val::bigint (no bigint was inserted)
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "SELECT id, val::bigint FROM cs_testdb.t4 ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
+        REQUIRE(cur->chunk_data().value(1, 2).is_null());
+    }
+
+    // WHERE val::bigint
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "SELECT id, val::bigint FROM cs_testdb.t4 WHERE val::bigint > 0 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
     }
 }

@@ -38,6 +38,11 @@ namespace impl {
                 return logical_value_t{resource, static_cast<uint128_t>(static_cast<int>(row) + start)};
             case logical_type::STRING_LITERAL:
                 return logical_value_t{resource, std::to_string(static_cast<int64_t>(row) + start)};
+            case logical_type::DECIMAL: {
+                return logical_value_t::create_decimal(resource,
+                                                       type,
+                                                       static_cast<int128_t>(static_cast<int>(row) + start));
+            }
             case logical_type::ARRAY: {
                 auto arr_extension = static_cast<const array_logical_type_extension*>(type.extension());
                 std::vector<logical_value_t> arr;
@@ -70,6 +75,7 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr
     types.emplace_back(logical_type::DOUBLE, "count_double");
     types.emplace_back(logical_type::BOOLEAN, "count_bool");
     types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "count_array"));
+    types.emplace_back(complex_logical_type::create_decimal(15, 7, "count_decimal"));
 
     return gen_data_chunk(size, start, types, resource);
 }

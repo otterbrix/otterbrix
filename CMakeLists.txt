@@ -55,8 +55,10 @@ elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -rdynamic")
 endif()
 
-# -Werror disabled on macOS (incomplete sanitizer support) and with ASAN (absl built locally has warnings)
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>>>")
+# We do not use -Werror flag with sanitizers for the following reasons:
+# 1) Sanitizers force us to build absl locally, which does contains warnings
+# 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(

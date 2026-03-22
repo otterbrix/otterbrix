@@ -12,7 +12,6 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-#include <magic_enum.hpp>
 
 using namespace components::expressions;
 
@@ -207,7 +206,7 @@ namespace components::sql::transform {
                             auto col_ref =
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
                             auto field_name = std::string(col_ref.field.storage().back());
-                            col_ref.field.set_cast_type(target_type.type());
+                            col_ref.field.set_cast_type(target_type);
                             std::string alias = res->name ? res->name : field_name;
                             group->append_expression(
                                 make_scalar_expression(resource_,
@@ -320,6 +319,11 @@ namespace components::sql::transform {
             }
         }
 
+        // Record visible SELECT column count before adding group_field/internal aggs
+        if (auto* group_node = dynamic_cast<logical_plan::node_group_t*>(group.get())) {
+            group_node->visible_select_count = group->expressions().size();
+        }
+
         // where
         if (node.whereClause) {
             expression_ptr expr;
@@ -372,8 +376,9 @@ namespace components::sql::transform {
                                                                  agg->collection_full_name(),
                                                                  group->expressions(),
                                                                  std::move(having_expr));
-                final_group->internal_aggregate_count =
-                    dynamic_cast<logical_plan::node_group_t*>(group.get())->internal_aggregate_count;
+                auto* src_group = dynamic_cast<logical_plan::node_group_t*>(group.get());
+                final_group->internal_aggregate_count = src_group->internal_aggregate_count;
+                final_group->visible_select_count = src_group->visible_select_count;
                 agg->append_child(final_group);
             } else {
                 agg->append_child(group);

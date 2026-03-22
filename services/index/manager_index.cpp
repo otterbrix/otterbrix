@@ -1,6 +1,7 @@
 #include "manager_index.hpp"
 
 #include <actor-zeta/spawn.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -285,6 +286,11 @@ namespace services::index {
             case components::logical_plan::index_type::single: {
                 id_index =
                     components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
+                break;
+            }
+            case components::logical_plan::index_type::hashed: {
+                id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                    engine, index_name, keys);
                 break;
             }
             default:

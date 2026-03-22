@@ -1,4 +1,5 @@
 #include "index_agent_disk.hpp"
+#include "btree_index_disk.hpp"
 
 namespace services::index {
 
@@ -9,9 +10,9 @@ namespace services::index {
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(std::make_unique<index_disk_t>(path_db / collection_name.database / collection_name.collection /
-                                                         index_name,
-                                                     this->resource()))
+        , index_disk_(std::make_unique<btree_index_disk_t>(path_db / collection_name.database /
+                                                                collection_name.collection / index_name,
+                                                            this->resource()))
         , collection_name_(std::move(collection_name)) {
         trace(log_, "index_agent_disk::create {}", index_name);
     }

@@ -30,6 +30,15 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         auto* plan_resource = context.has_collection(coll_name) ? context.resource : node->resource();
 
+        // First pass: detect whether a sort child is present so we can set limits correctly.
+        // When ORDER BY is present, LIMIT must only be applied after sorting —
+        // match, group, and scan must all use unlimit().
+        bool has_sort = false;
+        for (const components::logical_plan::node_ptr& child : node->children()) {
+            if (child->type() == node_type::sort_t) { has_sort = true; break; }
+        }
+        auto pre_sort_limit = has_sort ? components::logical_plan::limit_t::unlimit() : limit;
+
         // Build operator chain directly: scan/child → match → group → sort
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
@@ -41,23 +50,23 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    match_op = create_plan(context, function_registry, child, limit, params);
+                    match_op = create_plan(context, function_registry, child, pre_sort_limit, params);
                     break;
                 case node_type::group_t:
-                    group_op = create_plan(context, function_registry, child, limit, params);
+                    group_op = create_plan(context, function_registry, child, pre_sort_limit, params);
                     break;
                 case node_type::sort_t:
                     sort_op = create_plan(context, function_registry, child, limit, params);
                     break;
                 default:
-                    child_op = create_plan(context, function_registry, child, limit, params);
+                    child_op = create_plan(context, function_registry, child, pre_sort_limit, params);
                     break;
             }
         }
 
         // Build chain: base → match → group → sort
-        // When sort is present, scan all rows — limit is applied after sort
-        auto scan_limit = sort_op ? components::logical_plan::limit_t::unlimit() : limit;
+        // When sort is present, scan all rows — limit is applied by sort
+        auto scan_limit = pre_sort_limit;
 
         components::operators::operator_ptr executor;
         if (child_op) {

@@ -1040,6 +1040,7 @@ namespace services::disk {
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
         s->fetch(*result, row_ids, count);
+        std::memcpy(result->row_ids.data(), row_ids.data(), count * sizeof(int64_t));
         co_return std::move(result);
     }
 
@@ -1621,6 +1622,7 @@ namespace services::disk {
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->fetch(*result, row_ids, count);
+        std::memcpy(result->row_ids.data(), row_ids.data(), count * sizeof(int64_t));
         co_return std::move(result);
     }
 

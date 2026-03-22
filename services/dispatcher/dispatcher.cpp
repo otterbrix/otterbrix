@@ -406,8 +406,7 @@ namespace services::dispatcher {
                                 auto count = scan_data->size();
                                 auto [_ir, irf] = actor_zeta::send(index_address_,
                                                                    &index::manager_index_t::insert_rows,
-                                                                   session,
-                                                                   coll,
+                                                                   index::execution_context_t{session, txn_data, coll},
                                                                    std::move(scan_data),
                                                                    uint64_t{0},
                                                                    count);

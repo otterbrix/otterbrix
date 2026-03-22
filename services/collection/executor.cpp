@@ -132,8 +132,7 @@ namespace services::collection::executor {
                         auto count = scan_data->size();
                         auto [_ir, irf] = actor_zeta::send(index_address_,
                                                            &index::manager_index_t::insert_rows,
-                                                           session,
-                                                           coll_name,
+                                                           index::execution_context_t{session, txn, coll_name},
                                                            std::move(scan_data),
                                                            uint64_t{0},
                                                            count);
@@ -569,7 +568,7 @@ namespace services::collection::executor {
                     auto idx_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
                     out_chunk.copy(*idx_data, 0);
                     auto [_ix, ixf] = actor_zeta::send(index_address_,
-                                                       &index::manager_index_t::insert_rows_txn,
+                                                       &index::manager_index_t::insert_rows,
                                                        exec_ctx,
                                                        std::move(idx_data),
                                                        static_cast<uint64_t>(start_row),
@@ -619,13 +618,13 @@ namespace services::collection::executor {
                         auto& sc = scan_out->data_chunk();
                         auto idx_data = std::make_unique<data_chunk_t>(resource(), sc.types(), sc.size());
                         sc.copy(*idx_data, 0);
-                        auto idx_ids = std::pmr::vector<size_t>(resource());
+                        auto idx_ids = std::pmr::vector<int64_t>(resource());
                         idx_ids.reserve(modified_size);
                         for (size_t i = 0; i < modified_size; i++) {
-                            idx_ids.push_back(i);
+                            idx_ids.emplace_back(sc.row_ids.data<int64_t>()[i]);
                         }
                         auto [_ix, ixf] = actor_zeta::send(index_address_,
-                                                           &index::manager_index_t::delete_rows_txn,
+                                                           &index::manager_index_t::delete_rows,
                                                            exec_ctx,
                                                            std::move(idx_data),
                                                            std::move(idx_ids));
@@ -686,18 +685,18 @@ namespace services::collection::executor {
                         sc.copy(*old_data, 0);
                         auto new_data = std::make_unique<data_chunk_t>(resource(), out_chunk.types(), out_chunk.size());
                         out_chunk.copy(*new_data, 0);
-                        auto& mod_ids = waiting_op->modified()->ids();
-                        auto idx_ids = std::pmr::vector<size_t>(resource());
-                        idx_ids.reserve(mod_ids.size());
-                        for (size_t i = 0; i < mod_ids.size(); i++) {
-                            idx_ids.push_back(mod_ids[i]);
+                        auto idx_ids = std::pmr::vector<int64_t>(resource());
+                        idx_ids.reserve(out_chunk.size());
+                        for (size_t i = 0; i < out_chunk.size(); i++) {
+                            idx_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
                         }
                         auto [_ix, ixf] = actor_zeta::send(index_address_,
-                                                           &index::manager_index_t::update_rows_txn,
+                                                           &index::manager_index_t::update_rows,
                                                            exec_ctx,
                                                            std::move(old_data),
                                                            std::move(new_data),
-                                                           std::move(idx_ids));
+                                                           std::move(idx_ids),
+                                                           static_cast<int64_t>(upd_row_start));
                         co_await std::move(ixf);
                     }
                 }

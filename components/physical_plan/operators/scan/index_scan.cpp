@@ -47,27 +47,16 @@ namespace components::operators {
 
         // Search index for matching row IDs (txn-aware visibility)
         std::pmr::vector<int64_t> row_ids_vec(resource_);
-        if (ctx->txn.transaction_id != 0) {
-            auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                                             &services::index::manager_index_t::search_txn,
-                                             ctx->session,
-                                             name_,
-                                             index::keys_base_storage_t{{key_}},
-                                             types::logical_value_t{resource_, value_},
-                                             compare_type_,
-                                             ctx->txn.start_time,
-                                             ctx->txn.transaction_id);
-            row_ids_vec = co_await std::move(sf);
-        } else {
-            auto [_s, sf] = actor_zeta::send(ctx->index_address,
-                                             &services::index::manager_index_t::search,
-                                             ctx->session,
-                                             name_,
-                                             index::keys_base_storage_t{{key_}},
-                                             types::logical_value_t{resource_, value_},
-                                             compare_type_);
-            row_ids_vec = co_await std::move(sf);
-        }
+        auto [_s, sf] = actor_zeta::send(ctx->index_address,
+                                         &services::index::manager_index_t::search,
+                                         ctx->session,
+                                         name_,
+                                         index::keys_base_storage_t{{key_}},
+                                         types::logical_value_t{resource_, value_},
+                                         compare_type_,
+                                         ctx->txn.start_time,
+                                         ctx->txn.transaction_id);
+        row_ids_vec = co_await std::move(sf);
 
         // Apply limit
         size_t count = row_ids_vec.size();
@@ -79,9 +68,7 @@ namespace components::operators {
         if (count > 0) {
             // Build row_ids vector for fetch
             vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
-            for (size_t i = 0; i < count; i++) {
-                row_ids.set_value(i, types::logical_value_t{resource_, row_ids_vec[i]});
-            }
+            std::memcpy(row_ids.data(), row_ids_vec.data(), count * sizeof(int64_t));
 
             // Fetch from storage
             auto [_f, ff] = actor_zeta::send(ctx->disk_address,

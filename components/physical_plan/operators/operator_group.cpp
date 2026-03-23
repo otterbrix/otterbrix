@@ -3,6 +3,8 @@
 #include "arithmetic_eval.hpp"
 #include <cassert>
 #include <components/vector/vector_operations.hpp>
+#include <string_view>
+#include <unordered_set>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -459,8 +461,9 @@ namespace components::operators {
             aggregate::builtin_agg kind;
             std::pmr::vector<size_t> full_path;
             types::logical_type col_type;
-            bool is_count_star = false;  // COUNT(*) — all rows
-            bool is_count_col = false;   // COUNT(col) — non-null rows only
+            bool is_count_star = false;          // COUNT(*) — all rows
+            bool is_count_col = false;           // COUNT(col) — non-null rows only
+            bool is_count_distinct_col = false;  // COUNT(DISTINCT col) — unique non-null values per group
         };
         std::pmr::vector<agg_info_t> agg_infos(resource_);
 
@@ -485,11 +488,24 @@ namespace components::operators {
                 bool count_col = (kind == aggregate::builtin_agg::COUNT && !func_op->is_distinct() &&
                                   func_op->args().size() == 1 &&
                                   std::holds_alternative<expressions::key_t>(func_op->args()[0]));
+                bool count_distinct_col = (kind == aggregate::builtin_agg::COUNT && func_op->is_distinct() &&
+                                           func_op->args().size() == 1 &&
+                                           std::holds_alternative<expressions::key_t>(func_op->args()[0]));
                 if (count_star) {
                     // COUNT(*) — no column needed
                     col_type = types::logical_type::UBIGINT;
                 } else if (count_col) {
                     // COUNT(col) — only needs null check, works for any type
+                    auto& key = std::get<expressions::key_t>(func_op->args()[0]);
+                    assert(!key.path().empty());
+                    col_path = key.path();
+                    if (col_path.empty() || col_path.front() == SIZE_MAX) {
+                        can_vectorize = false;
+                        break;
+                    }
+                    col_type = types::logical_type::UBIGINT;
+                } else if (count_distinct_col) {
+                    // COUNT(DISTINCT col) — per-group unique value counting, works for any type
                     auto& key = std::get<expressions::key_t>(func_op->args()[0]);
                     assert(!key.path().empty());
                     col_path = key.path();
@@ -517,7 +533,7 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
-                agg_infos.push_back({kind, col_path, col_type, count_star, count_col});
+                agg_infos.push_back({kind, col_path, col_type, count_star, count_col, count_distinct_col});
             }
         }
 
@@ -560,6 +576,44 @@ namespace components::operators {
                     for (uint64_t i = 0; i < num_rows; i++) {
                         if (group_ids[i] != UINT32_MAX && !col.is_null(i)) {
                             states[group_ids[i]].update_count();
+                        }
+                    }
+                } else if (info.is_count_distinct_col) {
+                    // COUNT(DISTINCT col): per-group unique non-null value counting
+                    const auto& col = *chunk.at(info.full_path);
+                    if (col.type().to_physical_type() == types::physical_type::STRING) {
+                        // Fast path for strings: use string_view sets (no logical_value_t boxing)
+                        std::vector<std::unordered_set<std::string_view>> sets(num_groups);
+                        const auto* sv_data = col.data<std::string_view>();
+                        for (uint64_t i = 0; i < num_rows; i++) {
+                            auto g = group_ids[i];
+                            if (g != UINT32_MAX && !col.is_null(i)) {
+                                sets[g].insert(sv_data[i]);
+                            }
+                        }
+                        for (size_t g = 0; g < num_groups; g++) {
+                            states[g].u64 = static_cast<uint64_t>(sets[g].size());
+                            states[g].initialized = true;
+                        }
+                    } else {
+                        // Generic path for other types via logical_value_t
+                        struct lv_hash {
+                            size_t operator()(const types::logical_value_t& v) const noexcept { return v.hash(); }
+                        };
+                        struct lv_eq {
+                            bool operator()(const types::logical_value_t& a,
+                                            const types::logical_value_t& b) const { return a == b; }
+                        };
+                        std::vector<std::unordered_set<types::logical_value_t, lv_hash, lv_eq>> sets(num_groups);
+                        for (uint64_t i = 0; i < num_rows; i++) {
+                            auto g = group_ids[i];
+                            if (g != UINT32_MAX && !col.is_null(i)) {
+                                sets[g].insert(col.value(i));
+                            }
+                        }
+                        for (size_t g = 0; g < num_groups; g++) {
+                            states[g].u64 = static_cast<uint64_t>(sets[g].size());
+                            states[g].initialized = true;
                         }
                     }
                 } else {

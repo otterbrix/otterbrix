@@ -3,7 +3,7 @@ project(jsonbench_otterbrix)
 add_executable(jsonbench_otterbrix jsonbench.cpp)
 
 target_compile_definitions(jsonbench_otterbrix PRIVATE
-    JSONBENCH_DATA_FILE="${CMAKE_SOURCE_DIR}/JSONBench/file_0001_filtered.json"
+    JSONBENCH_DATA_FILE="${CMAKE_SOURCE_DIR}/JSONBench/file_0001.json"
 )
 
 target_link_libraries(jsonbench_otterbrix PRIVATE

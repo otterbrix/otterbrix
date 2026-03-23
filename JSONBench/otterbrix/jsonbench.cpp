@@ -1,7 +1,10 @@
+#include <boost/json/src.hpp>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -22,97 +25,100 @@ public:
 };
 
 #ifndef JSONBENCH_DATA_FILE
-#define JSONBENCH_DATA_FILE "file_0001_filtered.json"
+#define JSONBENCH_DATA_FILE "file_0001.json"
 #endif
 
-// Number of rows to load from the dataset
-static constexpr size_t N_ROWS = 1'000;
-
-static constexpr const char* DB_NAME = "bench";
+static constexpr size_t N_ROWS       = 100'000;
+static constexpr const char* DB_NAME    = "bench";
 static constexpr const char* TABLE_NAME = "events";
 static constexpr size_t INSERT_BATCH = 500;
+static constexpr size_t SCHEMA_SAMPLE = 2000;
+
+namespace bj = boost::json;
 
 // ----------------------------------------------------------------------------
-// Helpers
+// JSON flattening
 // ----------------------------------------------------------------------------
 
-struct Record {
-    std::string did;
-    int64_t     time_us{0};
-    std::string kind;
-    std::string collection;  // commit.collection
-    std::string operation;   // commit.operation
+// Recursively flatten a JSON object into { dot-path → string value }.
+// Arrays are serialized as JSON strings. Null values are omitted.
+static void flatten_object(const bj::object& obj,
+                           const std::string& prefix,
+                           std::map<std::string, std::string>& out) {
+    for (const auto& kv : obj) {
+        std::string path = prefix.empty()
+            ? std::string(kv.key())
+            : prefix + '.' + std::string(kv.key());
+        const auto& val = kv.value();
+        if (val.is_object()) {
+            flatten_object(val.as_object(), path, out);
+        } else if (val.is_array()) {
+            out[path] = bj::serialize(val);
+        } else if (val.is_string()) {
+            out[path] = std::string(val.as_string());
+        } else if (val.is_int64()) {
+            out[path] = std::to_string(val.as_int64());
+        } else if (val.is_uint64()) {
+            out[path] = std::to_string(val.as_uint64());
+        } else if (val.is_double()) {
+            out[path] = std::to_string(val.as_double());
+        } else if (val.is_bool()) {
+            out[path] = val.as_bool() ? "true" : "false";
+        }
+        // null → omit
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Schema discovery
+// ----------------------------------------------------------------------------
+
+struct ColDef {
+    std::string path;    // dot-separated JSON path (= column name), e.g. "commit.collection"
+    bool        is_int;  // BIGINT if all sampled values parse as int64, else STRING_LITERAL
 };
 
-// Extract the value of a top-level string field from a JSON line.
-static std::string extract_str(const std::string& json, const char* key) {
-    std::string needle = std::string("\"") + key + "\":\"";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos)
-        return {};
-    pos += needle.size();
-    std::string out;
-    for (; pos < json.size(); ++pos) {
-        char c = json[pos];
-        if (c == '"')
-            break;
-        if (c == '\\' && pos + 1 < json.size()) {
-            ++pos;
-            switch (json[pos]) {
-                case '"': out += '"'; break;
-                case '\\': out += '\\'; break;
-                case '/': out += '/'; break;
-                case 'n': out += '\n'; break;
-                case 't': out += '\t'; break;
-                default: out += json[pos]; break;
+static std::vector<ColDef> discover_schema(const char* filename, size_t sample) {
+    std::map<std::string, bool> path_non_int;
+
+    std::ifstream f(filename);
+    size_t count = 0;
+    std::string line;
+    while (count < sample && std::getline(f, line)) {
+        if (line.empty()) continue;
+        boost::system::error_code ec;
+        auto jv = bj::parse(line, ec);
+        if (ec || !jv.is_object()) continue;
+
+        std::map<std::string, std::string> flat;
+        flatten_object(jv.as_object(), {}, flat);
+        for (const auto& [path, val] : flat) {
+            if (!path_non_int.count(path)) path_non_int[path] = false;
+            if (!path_non_int[path]) {
+                try {
+                    size_t pos = 0;
+                    std::stoll(val, &pos);
+                    if (pos != val.size()) path_non_int[path] = true;
+                } catch (...) {
+                    path_non_int[path] = true;
+                }
             }
-        } else {
-            out += c;
         }
+        ++count;
     }
-    return out;
-}
 
-// Extract the value of a top-level integer field.
-static int64_t extract_int64(const std::string& json, const char* key) {
-    std::string needle = std::string("\"") + key + "\":";
-    auto pos = json.find(needle);
-    if (pos == std::string::npos)
-        return 0;
-    pos += needle.size();
-    auto end = json.find_first_of(",}", pos);
-    try {
-        return std::stoll(json.substr(pos, end - pos));
-    } catch (...) {
-        return 0;
+    std::vector<ColDef> cols;
+    cols.reserve(path_non_int.size());
+    for (const auto& [path, non_int] : path_non_int) {
+        cols.push_back({path, !non_int});
     }
+    return cols;
 }
 
-// Extract a string field from inside a JSON sub-object: "parent":{"key":"VALUE",...}
-static std::string extract_nested_str(const std::string& json,
-                                      const char* parent,
-                                      const char* key) {
-    std::string parent_needle = std::string("\"") + parent + "\":{";
-    auto ppos = json.find(parent_needle);
-    if (ppos == std::string::npos)
-        return {};
-    // Find the matching closing brace (simplified: first '}' after parent start)
-    auto end = json.find('}', ppos + parent_needle.size());
-    auto sub = json.substr(ppos, end - ppos + 1);
-    return extract_str(sub, key);
-}
+// ----------------------------------------------------------------------------
+// Misc helpers
+// ----------------------------------------------------------------------------
 
-static Record parse_line(const std::string& line) {
-    Record r;
-    r.did        = extract_str(line, "did");
-    r.time_us    = extract_int64(line, "time_us");
-    r.kind       = extract_str(line, "kind");
-    r.collection = extract_nested_str(line, "commit", "collection");
-    r.operation  = extract_nested_str(line, "commit", "operation");
-    return r;
-}
-
-// Read RSS from /proc/self/status (Linux only).
 static size_t rss_kb() {
     std::ifstream f("/proc/self/status");
     std::string line;
@@ -128,12 +134,10 @@ static size_t rss_kb() {
 }
 
 using Clock = std::chrono::steady_clock;
-
 static double ms_since(Clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 }
 
-// Print all rows from a cursor.
 static void print_cursor(components::cursor::cursor_t_ptr& cur) {
     if (cur->is_error()) {
         std::cout << "  ERROR: " << cur->get_error().what << "\n";
@@ -142,7 +146,6 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
     auto& chunk = cur->chunk_data();
     size_t ncols = chunk.column_count();
 
-    // Header: use type aliases as column names
     std::cout << "  ";
     for (size_t c = 0; c < ncols; ++c) {
         if (c) std::cout << " | ";
@@ -185,7 +188,6 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
     std::cout << "  (" << nrows << " rows)\n";
 }
 
-// Run a query, print results, timing.
 static void run_query(otterbrix::base_otterbrix_t* space,
                       const std::string& label,
                       const std::string& sql) {
@@ -193,28 +195,20 @@ static void run_query(otterbrix::base_otterbrix_t* space,
     std::cout << "  SQL: " << sql.substr(0, 120)
               << (sql.size() > 120 ? "..." : "") << "\n\n";
 
-    auto t0  = Clock::now();
+    auto t0      = Clock::now();
     auto session = otterbrix::session_id_t();
-    auto cur = space->dispatcher()->execute_sql(session, sql);
-    double ms = ms_since(t0);
+    auto cur     = space->dispatcher()->execute_sql(session, sql);
+    double ms    = ms_since(t0);
 
     print_cursor(cur);
     std::cout << "  Time: " << ms << " ms\n";
 }
-
-// Column indices in the chunk
-static constexpr size_t COL_DID        = 0;
-static constexpr size_t COL_TIME_US    = 1;
-static constexpr size_t COL_KIND       = 2;
-static constexpr size_t COL_COLLECTION = 3;
-static constexpr size_t COL_OPERATION  = 4;
 
 // ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
 
 int main() {
-    // ---- Setup space --------------------------------------------------------
     std::filesystem::remove_all("/tmp/jsonbench_otterbrix");
     std::filesystem::create_directories("/tmp/jsonbench_otterbrix");
 
@@ -227,56 +221,75 @@ int main() {
     auto* dispatcher = space.dispatcher();
     auto* resource   = dispatcher->resource();
 
-    // ---- Create DB and table ------------------------------------------------
+    // ---- Create DB and table (dynamic schema) --------------------------------
     {
         auto session = otterbrix::session_id_t();
         dispatcher->create_database(session, DB_NAME);
     }
     {
-        // Empty column list → dynamic (computed) schema
         auto session = otterbrix::session_id_t();
         dispatcher->create_collection(session, DB_NAME, TABLE_NAME);
     }
 
-    // ---- Parse data ---------------------------------------------------------
-    std::cout << "=== Parsing " << N_ROWS << " rows from " << JSONBENCH_DATA_FILE << " ===\n";
-    std::vector<Record> records;
-    records.reserve(N_ROWS);
-    {
-        std::ifstream f(JSONBENCH_DATA_FILE);
-        if (!f) {
-            std::cerr << "Cannot open " << JSONBENCH_DATA_FILE << "\n";
-            return 1;
-        }
-        std::string line;
-        while (records.size() < N_ROWS && std::getline(f, line)) {
-            if (line.empty()) continue;
-            records.push_back(parse_line(line));
-        }
+    // ---- Schema discovery ---------------------------------------------------
+    std::cout << "=== Discovering schema from " << JSONBENCH_DATA_FILE << " ===\n";
+    auto cols = discover_schema(JSONBENCH_DATA_FILE, SCHEMA_SAMPLE);
+    std::cout << "Discovered " << cols.size() << " columns.\n";
+
+    // Build path → column index map for fast lookup during insert
+    std::map<std::string, size_t> path_to_idx;
+    for (size_t i = 0; i < cols.size(); ++i) {
+        path_to_idx[cols[i].path] = i;
     }
-    std::cout << "Parsed " << records.size() << " records.\n";
 
-    // Sort records by (kind, operation, collection) so that inserted row groups
-    // are sorted → zone-map pruning becomes effective (like ClickHouse ORDER BY).
-    std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) {
-        if (a.kind != b.kind)           return a.kind < b.kind;
-        if (a.operation != b.operation) return a.operation < b.operation;
-        return a.collection < b.collection;
-    });
-
-    // ---- Column types (fixed for all batches) --------------------------------
+    // Build type vector  (column name = dot-path, e.g. "commit.collection")
     using CT = components::types::complex_logical_type;
     using LT = components::types::logical_type;
     using LV = components::types::logical_value_t;
 
     std::pmr::vector<CT> types(resource);
-    types.emplace_back(LT::STRING_LITERAL, "did");
-    types.emplace_back(LT::BIGINT,         "time_us");
-    types.emplace_back(LT::STRING_LITERAL, "kind");
-    types.emplace_back(LT::STRING_LITERAL, "collection");
-    types.emplace_back(LT::STRING_LITERAL, "operation");
+    for (const auto& col : cols) {
+        types.emplace_back(col.is_int ? LT::BIGINT : LT::STRING_LITERAL, col.path);
+    }
 
     collection_full_name_t full_name{DB_NAME, TABLE_NAME};
+
+    // ---- Read and sort records ----------------------------------------------
+    std::cout << "\n=== Reading up to " << N_ROWS << " rows ===\n";
+    std::vector<std::map<std::string, std::string>> records;
+    records.reserve(N_ROWS);
+    {
+        std::ifstream f(JSONBENCH_DATA_FILE);
+        std::string line;
+        while (records.size() < N_ROWS && std::getline(f, line)) {
+            if (line.empty()) continue;
+            boost::system::error_code ec;
+            auto jv = bj::parse(line, ec);
+            if (ec || !jv.is_object()) continue;
+            std::map<std::string, std::string> flat;
+            flatten_object(jv.as_object(), {}, flat);
+            records.push_back(std::move(flat));
+        }
+    }
+    std::cout << "Parsed " << records.size() << " records.\n";
+
+    // Sort by (kind, commit.operation, commit.collection) for zone-map pruning
+    std::sort(records.begin(), records.end(), [](const auto& a, const auto& b) {
+        auto get = [](const auto& m, const char* k) -> const std::string& {
+            static const std::string empty;
+            auto it = m.find(k);
+            return it != m.end() ? it->second : empty;
+        };
+        const auto& ka  = get(a, "kind");
+        const auto& kb  = get(b, "kind");
+        if (ka != kb) return ka < kb;
+        const auto& opa = get(a, "commit.operation");
+        const auto& opb = get(b, "commit.operation");
+        if (opa != opb) return opa < opb;
+        const auto& ca  = get(a, "commit.collection");
+        const auto& cb  = get(b, "commit.collection");
+        return ca < cb;
+    });
 
     // ---- Insert in batches --------------------------------------------------
     std::cout << "\n=== Inserting " << records.size() << " rows (batch=" << INSERT_BATCH << ") ===\n";
@@ -291,12 +304,21 @@ int main() {
         chunk.set_cardinality(batch);
 
         for (size_t i = 0; i < batch; ++i) {
-            const auto& r = records[start + i];
-            chunk.set_value(COL_DID,        i, LV{resource, r.did});
-            chunk.set_value(COL_TIME_US,    i, LV{resource, r.time_us});
-            chunk.set_value(COL_KIND,       i, LV{resource, r.kind});
-            chunk.set_value(COL_COLLECTION, i, LV{resource, r.collection});
-            chunk.set_value(COL_OPERATION,  i, LV{resource, r.operation});
+            const auto& flat = records[start + i];
+            for (const auto& [path, val] : flat) {
+                auto it = path_to_idx.find(path);
+                if (it == path_to_idx.end()) continue;
+                size_t col_idx = it->second;
+                if (cols[col_idx].is_int) {
+                    try {
+                        chunk.set_value(col_idx, i, LV{resource, std::stoll(val)});
+                    } catch (...) {
+                        chunk.set_value(col_idx, i, LV{resource, val});
+                    }
+                } else {
+                    chunk.set_value(col_idx, i, LV{resource, val});
+                }
+            }
         }
 
         auto ins = components::logical_plan::make_node_insert(resource, full_name, std::move(chunk));
@@ -310,40 +332,39 @@ int main() {
 
     double insert_ms = ms_since(t_insert);
     size_t rss_after = rss_kb();
-
     std::cout << "Insert time : " << insert_ms << " ms\n";
     std::cout << "Memory used : " << (rss_after - rss_before) << " KB"
               << "  (" << rss_after << " KB RSS total)\n";
 
-    // ---- Queries ------------------------------------------------------------
+    // ---- Queries (column names with dots require double-quote quoting) -------
 
     // Q1: Top event types by count
     run_query(&space,
               "Q1: Top event types",
-              "SELECT collection, COUNT(did) as count "
+              "SELECT \"commit.collection\", COUNT(did) as count "
               "FROM bench.events "
-              "GROUP BY collection "
+              "GROUP BY \"commit.collection\" "
               "ORDER BY count DESC;");
 
     // Q2: Unique users per event type (kind=commit, operation=create)
     run_query(&space,
               "Q2: Unique users per event type (kind=commit, op=create)",
-              "SELECT collection, COUNT(did) as count, COUNT(DISTINCT did) as users "
+              "SELECT \"commit.collection\", COUNT(did) as count, COUNT(DISTINCT did) as users "
               "FROM bench.events "
-              "WHERE kind = 'commit' AND operation = 'create' "
-              "GROUP BY collection "
+              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+              "GROUP BY \"commit.collection\" "
               "ORDER BY count DESC;");
 
-    // Q3: Post/repost/like counts (subset of event types)
+    // Q3: Post/repost/like counts
     run_query(&space,
               "Q3: Post / repost / like counts",
-              "SELECT collection, COUNT(did) as count "
+              "SELECT \"commit.collection\", COUNT(did) as count "
               "FROM bench.events "
-              "WHERE kind = 'commit' AND operation = 'create' "
-              "  AND (collection = 'app.bsky.feed.post' "
-              "       OR collection = 'app.bsky.feed.repost' "
-              "       OR collection = 'app.bsky.feed.like') "
-              "GROUP BY collection "
+              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+              "  AND (\"commit.collection\" = 'app.bsky.feed.post' "
+              "       OR \"commit.collection\" = 'app.bsky.feed.repost' "
+              "       OR \"commit.collection\" = 'app.bsky.feed.like') "
+              "GROUP BY \"commit.collection\" "
               "ORDER BY count DESC;");
 
     // Q4: First 3 users to post
@@ -351,19 +372,19 @@ int main() {
               "Q4: First 3 users to post",
               "SELECT did, MIN(time_us) as first_post "
               "FROM bench.events "
-              "WHERE kind = 'commit' AND operation = 'create' "
-              "  AND collection = 'app.bsky.feed.post' "
+              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+              "  AND \"commit.collection\" = 'app.bsky.feed.post' "
               "GROUP BY did "
               "ORDER BY first_post ASC "
               "LIMIT 3;");
 
-    // Q5: Top 3 users by activity span (latest - earliest post time)
+    // Q5: Top 3 users by activity span
     run_query(&space,
               "Q5: Top 3 users by activity span",
               "SELECT did, MIN(time_us) as first_ts, MAX(time_us) as last_ts "
               "FROM bench.events "
-              "WHERE kind = 'commit' AND operation = 'create' "
-              "  AND collection = 'app.bsky.feed.post' "
+              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+              "  AND \"commit.collection\" = 'app.bsky.feed.post' "
               "GROUP BY did "
               "ORDER BY last_ts DESC "
               "LIMIT 3;");

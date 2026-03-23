@@ -2,6 +2,7 @@
 
 #include "arithmetic_eval.hpp"
 #include <cassert>
+#include <components/vector/vector_operations.hpp>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -218,8 +219,12 @@ namespace components::operators {
         , internal_aggregate_count_(internal_aggregate_count)
         , select_order_(resource_)
         , row_ids_per_group_(resource_)
+        , fast_group_ids_(resource_)
+        , first_row_per_group_(resource_)
         , group_keys_(resource_)
-        , group_index_(resource_) {}
+        , group_index_(resource_)
+        , key_col_types_(resource_)
+        , key_col_indices_(resource_) {}
 
     void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
@@ -308,8 +313,12 @@ namespace components::operators {
 
             // Clear temporary grouping state
             row_ids_per_group_.clear();
+            fast_group_ids_.clear();
+            fast_group_ids_valid_ = false;
+            first_row_per_group_.clear();
             group_keys_.clear();
             group_index_.clear();
+            key_col_indices_.clear();
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
             std::pmr::vector<types::complex_logical_type> empty_types(resource_);
@@ -350,11 +359,13 @@ namespace components::operators {
             key_col_indices.push_back(key.full_path.front());
         }
 
-        // Store source column types for key columns (needed to build result chunk with correct types even when first group is null)
+        // Store source column types/indices for key columns (needed to build result chunk with correct types even when first group is null)
         key_col_types_.clear();
+        key_col_indices_.clear();
         if (use_fast_path) {
             for (size_t col_idx : key_col_indices) {
                 key_col_types_.push_back(chunk.data[col_idx].type());
+                key_col_indices_.push_back(col_idx);
             }
         }
 
@@ -365,6 +376,11 @@ namespace components::operators {
             chunk.hash(col_ids, hash_vec);
             auto* hashes = hash_vec.data<uint64_t>();
 
+            // Pre-allocate flat group_ids array — avoids conversion loop in calc_aggregate_values
+            fast_group_ids_.resize(fast_group_ids_.size() + num_rows, UINT32_MAX);
+            size_t row_offset = fast_group_ids_.size() - num_rows;
+            fast_group_ids_valid_ = true;
+
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
                 auto hash_val = static_cast<size_t>(hashes[row_idx]);
                 auto it = group_index_.find(hash_val);
@@ -373,6 +389,7 @@ namespace components::operators {
                     for (size_t idx : it->second) {
                         if (keys_match(chunk, key_col_indices, row_idx, group_keys_[idx])) {
                             row_ids_per_group_[idx].push_back(row_idx);
+                            fast_group_ids_[row_offset + row_idx] = static_cast<uint32_t>(idx);
                             is_new = false;
                             break;
                         }
@@ -389,9 +406,11 @@ namespace components::operators {
                     size_t idx = group_keys_.size();
                     group_index_[hash_val].push_back(idx);
                     group_keys_.push_back(std::move(key_vals));
+                    first_row_per_group_.push_back(static_cast<uint64_t>(row_idx));
                     std::pmr::vector<size_t> row_ids(resource_);
                     row_ids.push_back(row_idx);
                     row_ids_per_group_.push_back(std::move(row_ids));
+                    fast_group_ids_[row_offset + row_idx] = static_cast<uint32_t>(idx);
                 }
             }
         } else {
@@ -440,7 +459,8 @@ namespace components::operators {
             aggregate::builtin_agg kind;
             std::pmr::vector<size_t> full_path;
             types::logical_type col_type;
-            bool is_count_star = false;
+            bool is_count_star = false;  // COUNT(*) — all rows
+            bool is_count_col = false;   // COUNT(col) — non-null rows only
         };
         std::pmr::vector<agg_info_t> agg_infos(resource_);
 
@@ -462,8 +482,21 @@ namespace components::operators {
                 types::logical_type col_type = types::logical_type::NA;
 
                 bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
+                bool count_col = (kind == aggregate::builtin_agg::COUNT && !func_op->is_distinct() &&
+                                  func_op->args().size() == 1 &&
+                                  std::holds_alternative<expressions::key_t>(func_op->args()[0]));
                 if (count_star) {
                     // COUNT(*) — no column needed
+                    col_type = types::logical_type::UBIGINT;
+                } else if (count_col) {
+                    // COUNT(col) — only needs null check, works for any type
+                    auto& key = std::get<expressions::key_t>(func_op->args()[0]);
+                    assert(!key.path().empty());
+                    col_path = key.path();
+                    if (col_path.empty() || col_path.front() == SIZE_MAX) {
+                        can_vectorize = false;
+                        break;
+                    }
                     col_type = types::logical_type::UBIGINT;
                 } else if (func_op->args().size() == 1 &&
                            std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
@@ -484,19 +517,26 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
-                agg_infos.push_back({kind, col_path, col_type, count_star});
+                agg_infos.push_back({kind, col_path, col_type, count_star, count_col});
             }
         }
 
         if (can_vectorize) {
-            // Build group_ids: for each row, which group does it belong to?
-            std::pmr::vector<uint32_t> group_ids(resource_);
-            group_ids.resize(num_rows, UINT32_MAX);
-            for (size_t g = 0; g < num_groups; g++) {
-                for (size_t row_id : row_ids_per_group_[g]) {
-                    group_ids[row_id] = static_cast<uint32_t>(g);
+            // Use pre-built group_ids if available (fast path), otherwise build from row_ids_per_group_
+            const uint32_t* group_ids_ptr = nullptr;
+            std::pmr::vector<uint32_t> group_ids_fallback(resource_);
+            if (fast_group_ids_valid_ && fast_group_ids_.size() == num_rows) {
+                group_ids_ptr = fast_group_ids_.data();
+            } else {
+                group_ids_fallback.resize(num_rows, UINT32_MAX);
+                for (size_t g = 0; g < num_groups; g++) {
+                    for (size_t row_id : row_ids_per_group_[g]) {
+                        group_ids_fallback[row_id] = static_cast<uint32_t>(g);
+                    }
                 }
+                group_ids_ptr = group_ids_fallback.data();
             }
+            const auto& group_ids = group_ids_ptr; // alias for readability
 
             // For each aggregate, run vectorized update
             std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
@@ -514,8 +554,16 @@ namespace components::operators {
                             states[group_ids[i]].update_count();
                         }
                     }
+                } else if (info.is_count_col) {
+                    // COUNT(col): count non-null rows per group
+                    const auto& col = *chunk.at(info.full_path);
+                    for (uint64_t i = 0; i < num_rows; i++) {
+                        if (group_ids[i] != UINT32_MAX && !col.is_null(i)) {
+                            states[group_ids[i]].update_count();
+                        }
+                    }
                 } else {
-                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids, num_rows, states);
                 }
 
                 // Finalize states to logical_value_t
@@ -618,9 +666,21 @@ namespace components::operators {
         result.set_cardinality(static_cast<uint64_t>(num_groups));
 
         // Fill key columns
-        for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-            for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
-                result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
+        if (num_groups > 0 && key_count > 0 && first_row_per_group_.size() == num_groups &&
+            key_col_indices_.size() == key_count) {
+            // Fast path: gather key columns directly from source using representative rows — no set_value loop
+            auto& src_chunk = left_->output()->data_chunk();
+            vector::indexing_vector_t indexing(resource_, first_row_per_group_.data());
+            for (size_t k = 0; k < key_count; k++) {
+                vector::vector_ops::copy(src_chunk.data[key_col_indices_[k]], result.data[k], indexing, num_groups, 0,
+                                        0);
+                result.data[k].set_type_alias(std::string(keys_[k].name));
+            }
+        } else {
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
+                    result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
+                }
             }
         }
 

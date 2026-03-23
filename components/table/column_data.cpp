@@ -583,13 +583,6 @@ namespace components::table {
                                                static_cast<uint64_t>(state.row_index));
             uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
-                for (uint64_t i = 0; i < scan_count; i++) {
-                    column_fetch_state fetch_state;
-                    state.current->fetch_row(fetch_state,
-                                             state.row_index + static_cast<int64_t>(i),
-                                             result,
-                                             result_offset + i);
-                }
                 state.current->scan(state, scan_count, result, result_offset, scan_type);
 
                 state.row_index += static_cast<int64_t>(scan_count);

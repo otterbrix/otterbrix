@@ -115,9 +115,13 @@ namespace components::operators {
         std::pmr::vector<size_t> select_order_;
 
         std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
+        std::pmr::vector<uint32_t> fast_group_ids_;  // row → group_id, built in fast path
+        bool fast_group_ids_valid_ = false;
+        std::pmr::vector<uint64_t> first_row_per_group_;  // representative row index per group (fast path only)
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
         std::pmr::unordered_map<size_t, std::pmr::vector<size_t>> group_index_;
-        std::pmr::vector<types::complex_logical_type> key_col_types_; // source column types for key columns
+        std::pmr::vector<types::complex_logical_type> key_col_types_; // source column types for key columns (fast path)
+        std::pmr::vector<size_t> key_col_indices_;                    // source column indices for key columns (fast path)
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

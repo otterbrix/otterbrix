@@ -19,6 +19,7 @@ namespace components::operators::aggregate {
 
         const compute::function* func() const { return func_; }
         const std::pmr::vector<expressions::param_storage>& args() const { return args_; }
+        bool is_distinct() const { return distinct_; }
 
     private:
         std::pmr::vector<expressions::param_storage> args_;

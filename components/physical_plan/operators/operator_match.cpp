@@ -2,6 +2,7 @@
 
 #include "predicates/predicate.hpp"
 #include <components/expressions/function_expression.hpp>
+#include <components/vector/vector_operations.hpp>
 
 namespace components::operators {
 
@@ -14,9 +15,8 @@ namespace components::operators {
         , limit_(limit) {}
 
     void operator_match_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        size_t count = 0;
-        if (!limit_.check(static_cast<int>(count))) {
-            return; //limit = 0
+        if (!limit_.check(0)) {
+            return; // limit = 0
         }
         if (!left_) {
             return;
@@ -33,18 +33,24 @@ namespace components::operators {
                                                                         types,
                                                                         &pipeline_context->parameters)
                                          : predicates::create_all_true_predicate(left_->output()->resource());
+
+            // Collect matching row indices, then gather all columns at once (avoids per-value boxing/unboxing)
+            std::pmr::vector<uint64_t> matched(left_->output()->resource());
+            matched.reserve(chunk.size());
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (predicate->check(chunk, i)) {
-                    for (size_t j = 0; j < chunk.column_count(); j++) {
-                        out_chunk.set_value(j, count, chunk.data[j].value(i));
-                    }
-                    out_chunk.row_ids.data<int64_t>()[count] = chunk.row_ids.data<int64_t>()[i];
-                    ++count;
-                    if (!limit_.check(static_cast<int>(count))) {
-                        out_chunk.set_cardinality(count);
-                        return;
+                    matched.push_back(static_cast<uint64_t>(i));
+                    if (!limit_.check(static_cast<int>(matched.size()))) {
+                        break;
                     }
                 }
+            }
+
+            auto count = matched.size();
+            if (count > 0) {
+                vector::indexing_vector_t indexing(left_->output()->resource(), matched.data());
+                chunk.copy(out_chunk, indexing, static_cast<uint64_t>(count), 0);
+                vector::vector_ops::copy(chunk.row_ids, out_chunk.row_ids, indexing, count, 0, 0);
             }
             out_chunk.set_cardinality(count);
         }

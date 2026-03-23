@@ -432,7 +432,7 @@ TEST_CASE("components::table::data_table") {
             }
         }
     }
-    /*INFO("Scan with predicates") {
+    INFO("Scan with predicates") {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
         for (size_t i = 0; i < data_table->column_count(); i++) {
@@ -559,7 +559,7 @@ TEST_CASE("components::table::data_table") {
                 }
             }
         }
-    }*/
+    }
     INFO("Delete") {
         vector_t v(&resource, logical_type::BIGINT, test_size / 2);
         for (size_t i = 0; i < test_size; i += 2) {

@@ -13,6 +13,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <core/btree/btree.hpp>
 #include <filesystem>
@@ -34,6 +35,7 @@ namespace services::index {
                            const path_t& path_db,
                            collection_full_name_t collection_name,
                            const index_name_t& index_name,
+                           components::logical_plan::index_type type,
                            log_t& log);
         ~index_agent_disk_t();
 

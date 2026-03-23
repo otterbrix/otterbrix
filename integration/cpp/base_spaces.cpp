@@ -30,12 +30,18 @@ namespace otterbrix {
             std::vector<services::disk::catalog_column_entry_t> columns;
         };
 
-        bool is_index_valid(const std::filesystem::path& index_path) {
+        bool is_index_valid(const std::filesystem::path& index_path, components::logical_plan::index_type type) {
             if (!std::filesystem::exists(index_path) || !std::filesystem::is_directory(index_path)) {
                 return false;
             }
+
+            if (type == components::logical_plan::index_type::hashed) {
+                auto bitcask_data_path = index_path / "bitcask.data";
+                return std::filesystem::exists(bitcask_data_path) && std::filesystem::is_regular_file(bitcask_data_path);
+            }
+
             auto metadata_path = index_path / "metadata";
-            if (!std::filesystem::exists(metadata_path)) {
+            if (!std::filesystem::exists(metadata_path) || !std::filesystem::is_regular_file(metadata_path)) {
                 return false;
             }
             if (std::filesystem::file_size(metadata_path) == 0) {
@@ -90,7 +96,7 @@ namespace otterbrix {
 
                     auto index_path = disk_path / index_ptr->collection_full_name().database /
                                       index_ptr->collection_full_name().collection / index_ptr->name();
-                    if (is_index_valid(index_path)) {
+                    if (is_index_valid(index_path, index_ptr->type())) {
                         debug(log,
                               "read_index_definitions: found valid index: {} on {}",
                               index_ptr->name(),
@@ -463,9 +469,12 @@ namespace otterbrix {
             }
         }
 
-        if (!wal_records.empty()) {
-            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
-        } else if (!index_definitions.empty()) {
+        if (!index_definitions.empty()) {
+            if (!wal_records.empty()) {
+                trace(log_,
+                      "spaces::PHASE 3 - Recreating {} indexes after WAL replay",
+                      index_definitions.size());
+            }
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {

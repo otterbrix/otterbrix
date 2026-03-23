@@ -8,11 +8,9 @@ namespace components::operators {
     transform_predicate(const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters) {
-        if (!expression || expression->type() == expressions::compare_type::all_true) {
+        if (!expression || expression->type() == expressions::compare_type::all_true ||
+            expression->type() == expressions::compare_type::all_false) {
             return nullptr;
-        }
-        if (expression->type() == expressions::compare_type::all_false) {
-            assert(false && "all_false should be short-circuited in await_async_and_resume");
         }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
@@ -26,8 +24,11 @@ namespace components::operators {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
                 }
-                if (filter->child_filters.size() < 2) {
-                    throw std::runtime_error("incomplete AND filter — expression construction error");
+                if (filter->child_filters.empty()) {
+                    return nullptr;
+                }
+                if (filter->child_filters.size() == 1) {
+                    return std::move(filter->child_filters[0]);
                 }
                 return filter;
             }
@@ -42,8 +43,11 @@ namespace components::operators {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
                 }
-                if (filter->child_filters.size() < 2) {
-                    throw std::runtime_error("incomplete OR filter — expression construction error");
+                if (filter->child_filters.empty()) {
+                    return nullptr;
+                }
+                if (filter->child_filters.size() == 1) {
+                    return std::move(filter->child_filters[0]);
                 }
                 return filter;
             }

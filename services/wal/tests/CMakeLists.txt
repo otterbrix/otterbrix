@@ -14,7 +14,7 @@ target_link_libraries(
         otterbrix::log
         otterbrix::logical_plan
         otterbrix::session
-        otterbrix::wal
+        otterbrix::services
         otterbrix::test_generaty
 
         Catch2::Catch2

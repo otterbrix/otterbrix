@@ -11,10 +11,8 @@ add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         non_thread_scheduler
-        otterbrix::dispatcher
         otterbrix::sql
-        otterbrix::wal
-        otterbrix::disk
+        otterbrix::services
         otterbrix::test_generaty
 
         Catch2::Catch2

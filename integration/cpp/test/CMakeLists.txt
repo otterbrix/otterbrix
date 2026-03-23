@@ -29,12 +29,9 @@ target_link_libraries(
 
         otterbrix::test_generaty
         otterbrix::log
-        otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::dispatcher
-        otterbrix::wal
-        otterbrix::disk
+        otterbrix::services
         otterbrix::locks
 
         spdlog::spdlog
@@ -64,12 +61,9 @@ target_link_libraries(profile_arithmetic PRIVATE
         cpp_otterbrix
         otterbrix::test_generaty
         otterbrix::log
-        otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::dispatcher
-        otterbrix::wal
-        otterbrix::disk
+        otterbrix::services
         otterbrix::locks
         spdlog::spdlog
         msgpackc-cxx

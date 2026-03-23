@@ -87,6 +87,7 @@ namespace components::table {
         uint64_t calculate_size();
         void cleanup_versions(uint64_t lowest_active_start_time);
         void compact();
+        void compact_sorted(const std::vector<uint64_t>& sort_key_col_indices);
 
         std::shared_ptr<parallel_table_scan_state_t>
         create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,

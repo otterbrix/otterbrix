@@ -1,31 +1,36 @@
 #!/bin/bash
 
 # Quick test script using local test data for PostgreSQL JSONBench
-# Usage: ./test_local.sh <index|noindex> [num_records] [--no-cleanup]
+# Usage: ./test_local.sh <index|noindex> [num_records] [--single-thread] [--no-cleanup]
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <index|noindex> [num_records] [--no-cleanup]"
-    echo "  index      - create index on JSONB fields"
-    echo "  noindex    - no index (full table scan)"
-    echo "  --no-cleanup - keep database after test"
+    echo "Usage: $0 <index|noindex> [num_records] [--single-thread] [--no-cleanup]"
+    echo "  index           - create index on JSONB fields"
+    echo "  noindex         - no index (full table scan)"
+    echo "  --single-thread - disable parallel query execution"
+    echo "  --no-cleanup    - keep database after test"
     exit 1
 fi
 
 USE_INDEX="$1"
 if [[ "$USE_INDEX" != "index" && "$USE_INDEX" != "noindex" ]]; then
     echo "Error: First argument must be 'index' or 'noindex'"
-    echo "Usage: $0 <index|noindex> [num_records] [--no-cleanup]"
+    echo "Usage: $0 <index|noindex> [num_records] [--single-thread] [--no-cleanup]"
     exit 1
 fi
 
-NUM_RECORDS="${2:-20000}"
+NUM_RECORDS="20000"
+SINGLE_THREAD=false
 NO_CLEANUP=false
-if [[ "$3" == "--no-cleanup" || "$2" == "--no-cleanup" ]]; then
-    NO_CLEANUP=true
-    if [[ "$2" == "--no-cleanup" ]]; then
-        NUM_RECORDS="20000"
-    fi
-fi
+
+for arg in "${@:2}"; do
+    case "$arg" in
+        --single-thread) SINGLE_THREAD=true ;;
+        --no-cleanup)    NO_CLEANUP=true ;;
+        [0-9]*)          NUM_RECORDS="$arg" ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTTERBRIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TEST_FILE="$OTTERBRIX_ROOT/JSONBench/file_0001_filtered.json"
@@ -37,13 +42,12 @@ echo "Test file: $TEST_FILE"
 echo "Database: $DB_NAME"
 echo "Records: $NUM_RECORDS"
 echo "Index: $USE_INDEX"
+echo "Single thread: $SINGLE_THREAD"
 echo ""
 
 # Check if test file exists
 if [[ ! -f "$TEST_FILE" ]]; then
     echo "Error: Test file not found: $TEST_FILE"
-    echo "Available test files:"
-    ls -la "$OTTERBRIX_ROOT/integration/cpp/test/test_sample_"*.json 2>/dev/null
     exit 1
 fi
 
@@ -81,10 +85,10 @@ else
 fi
 
 # Load data - need to preprocess the file (remove null chars) and use COPY
-echo "=== Loading data ==="
+echo "=== Loading data (${NUM_RECORDS} records) ==="
 TEMP_FILE=$(mktemp)
-# Remove null characters and prepare for PostgreSQL COPY
-sed 's/\\u0000//g' "$TEST_FILE" > "$TEMP_FILE"
+# Remove null characters, limit to NUM_RECORDS rows, and prepare for PostgreSQL COPY
+sed 's/\\u0000//g' "$TEST_FILE" | head -n "$NUM_RECORDS" > "$TEMP_FILE"
 chmod 644 "$TEMP_FILE"
 
 sudo -u postgres psql -d $DB_NAME -c "\COPY $TABLE_NAME FROM '$TEMP_FILE' WITH (format csv, quote e'\x01', delimiter e'\x02', escape e'\x01');"
@@ -97,7 +101,7 @@ sudo -u postgres psql -d $DB_NAME -c "SELECT COUNT(*) FROM $TABLE_NAME;"
 
 # Run benchmark queries
 echo ""
-echo "=== Running Benchmark Queries (Index: $USE_INDEX) ==="
+echo "=== Running Benchmark Queries (Index: $USE_INDEX, Single thread: $SINGLE_THREAD) ==="
 
 TRIES=3
 
@@ -109,8 +113,22 @@ run_query() {
     echo "$query" | head -c 100
     echo "..."
 
+    local parallel_set=""
+    if [[ "$SINGLE_THREAD" == "true" ]]; then
+        parallel_set="-c \"SET max_parallel_workers_per_gather = 0;\""
+    fi
+
     for i in $(seq 1 $TRIES); do
-        sudo -u postgres psql -d $DB_NAME -c "\\timing on" -c "$query" 2>&1 | grep -E "Time:|rows\)"
+        if [[ "$SINGLE_THREAD" == "true" ]]; then
+            sudo -u postgres psql -d $DB_NAME \
+                -c "SET max_parallel_workers_per_gather = 0;" \
+                -c "\\timing on" \
+                -c "$query" 2>&1 | grep -E "Time:|rows\)"
+        else
+            sudo -u postgres psql -d $DB_NAME \
+                -c "\\timing on" \
+                -c "$query" 2>&1 | grep -E "Time:|rows\)"
+        fi
     done
 }
 

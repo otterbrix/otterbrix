@@ -71,7 +71,11 @@ namespace services::planner::impl {
                     return false;
                 }
             }
-
+            // Union operators (AND/OR/NOT) store null in left_/right_ — they have no
+            // scalar operands, only children which are already checked above.
+            if (is_union_compare_condition(comp_expr->type())) {
+                return true;
+            }
             if (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
                 std::holds_alternative<expression_ptr>(comp_expr->right())) {
                 return false;

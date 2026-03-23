@@ -54,6 +54,7 @@ namespace components::table {
         bool initialize_scan(collection_scan_state& state);
         bool initialize_scan_with_offset(collection_scan_state& state, uint64_t vector_offset);
         bool check_zonemap_segments(collection_scan_state& state);
+        filter_propagate_result_t check_zonemap_filter(const table_filter_t* f);
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 

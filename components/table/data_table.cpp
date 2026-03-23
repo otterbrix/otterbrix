@@ -1,5 +1,6 @@
 #include "data_table.hpp"
 
+#include <algorithm>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -171,6 +172,108 @@ namespace components::table {
         // scan state and buffer handles destroyed before swapping collection
 
         // Swap old collection with compacted one
+        row_groups_ = std::move(new_collection);
+    }
+
+    void data_table_t::compact_sorted(const std::vector<uint64_t>& sort_key_col_indices) {
+        auto total = row_groups_->total_rows();
+        if (total == 0 || sort_key_col_indices.empty()) {
+            return;
+        }
+
+        auto types = row_groups_->types();
+        auto scan_types = copy_types();
+
+        // Step 1: Scan all committed rows into a list of chunks
+        std::vector<vector::data_chunk_t> chunks;
+        {
+            std::vector<storage_index_t> column_ids;
+            column_ids.reserve(column_definitions_.size());
+            for (uint64_t i = 0; i < column_definitions_.size(); i++) {
+                column_ids.emplace_back(i);
+            }
+            table_scan_state state(resource_);
+            initialize_scan_with_offset(state, column_ids, 0, static_cast<int64_t>(total));
+            while (true) {
+                vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
+                state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
+                if (chunk.size() == 0) {
+                    break;
+                }
+                chunks.emplace_back(std::move(chunk));
+            }
+        }
+        if (chunks.empty()) {
+            return;
+        }
+
+        // Step 2: Build flat row reference array
+        struct row_ref_t {
+            uint32_t chunk_idx;
+            uint32_t row_idx;
+        };
+        uint64_t n_rows = 0;
+        for (const auto& c : chunks) {
+            n_rows += c.size();
+        }
+        std::vector<row_ref_t> order;
+        order.reserve(n_rows);
+        for (uint32_t ci = 0; ci < static_cast<uint32_t>(chunks.size()); ci++) {
+            for (uint32_t ri = 0; ri < static_cast<uint32_t>(chunks[ci].size()); ri++) {
+                order.push_back({ci, ri});
+            }
+        }
+
+        // Sort by key columns using logical_value_t comparison
+        std::sort(order.begin(), order.end(), [&](const row_ref_t& a, const row_ref_t& b) {
+            for (uint64_t key_col : sort_key_col_indices) {
+                if (key_col >= chunks[a.chunk_idx].column_count()) {
+                    continue;
+                }
+                auto va = chunks[a.chunk_idx].data[key_col].value(a.row_idx);
+                auto vb = chunks[b.chunk_idx].data[key_col].value(b.row_idx);
+                if (va < vb) {
+                    return true;
+                }
+                if (vb < va) {
+                    return false;
+                }
+            }
+            return false;
+        });
+
+        // Step 3: Re-insert in sorted order into a new collection
+        auto new_collection = std::make_shared<collection_t>(
+            resource_,
+            row_groups_->block_manager(),
+            std::pmr::vector<types::complex_logical_type>(types.begin(), types.end(), resource_),
+            0);
+        {
+            uint64_t n_cols = scan_types.size();
+            table_append_state append_state(resource_);
+            new_collection->initialize_append(append_state);
+
+            size_t pos = 0;
+            while (pos < order.size()) {
+                size_t batch = std::min(order.size() - pos, static_cast<size_t>(vector::DEFAULT_VECTOR_CAPACITY));
+                vector::data_chunk_t out(resource_, scan_types, batch);
+                out.set_cardinality(batch);
+
+                for (size_t i = 0; i < batch; i++) {
+                    const auto& ref = order[pos + i];
+                    const auto& src = chunks[ref.chunk_idx];
+                    for (uint64_t col = 0; col < n_cols; col++) {
+                        out.set_value(col, i, src.data[col].value(ref.row_idx));
+                    }
+                }
+
+                new_collection->append(out, append_state);
+                pos += batch;
+            }
+
+            new_collection->finalize_append(append_state, transaction_data{0, 0});
+        }
+
         row_groups_ = std::move(new_collection);
     }
 

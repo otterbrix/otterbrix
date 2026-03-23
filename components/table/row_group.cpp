@@ -233,28 +233,64 @@ namespace components::table {
         }
     }
 
+    // Returns ALWAYS_FALSE if the filter provably matches no rows in this row group.
+    // For AND: prune if any child is ALWAYS_FALSE.
+    // For OR:  prune only if ALL children are ALWAYS_FALSE.
+    filter_propagate_result_t row_group_t::check_zonemap_filter(const table_filter_t* f) {
+        if (!f) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        switch (f->filter_type) {
+            case expressions::compare_type::eq:
+            case expressions::compare_type::gt:
+            case expressions::compare_type::gte:
+            case expressions::compare_type::lt:
+            case expressions::compare_type::lte: {
+                const auto& cf = f->cast<constant_filter_t>();
+                if (!cf.table_indices.empty()) {
+                    auto col_idx = cf.table_indices.front();
+                    if (col_idx < get_column_count()) {
+                        auto& col = get_column(col_idx);
+                        column_scan_state dummy;
+                        return col.check_zonemap(dummy, const_cast<table_filter_t&>(*f));
+                    }
+                }
+                return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+            }
+            case expressions::compare_type::union_and: {
+                const auto& conj = f->cast<conjunction_and_filter_t>();
+                for (const auto& child : conj.child_filters) {
+                    if (check_zonemap_filter(child.get()) == filter_propagate_result_t::ALWAYS_FALSE) {
+                        return filter_propagate_result_t::ALWAYS_FALSE;
+                    }
+                }
+                return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+            }
+            case expressions::compare_type::union_or: {
+                const auto& conj = f->cast<conjunction_or_filter_t>();
+                bool all_false = !conj.child_filters.empty();
+                for (const auto& child : conj.child_filters) {
+                    if (check_zonemap_filter(child.get()) != filter_propagate_result_t::ALWAYS_FALSE) {
+                        all_false = false;
+                        break;
+                    }
+                }
+                return all_false ? filter_propagate_result_t::ALWAYS_FALSE
+                                 : filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+            }
+            default:
+                return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+    }
+
     bool row_group_t::check_zonemap_segments(collection_scan_state& state) {
         auto* f = state.filter();
         if (!f) {
             return true;
         }
-        // For constant comparison filters, check if any column's zonemap prunes this segment
-        if (f->filter_type == expressions::compare_type::eq || f->filter_type == expressions::compare_type::gt ||
-            f->filter_type == expressions::compare_type::gte || f->filter_type == expressions::compare_type::lt ||
-            f->filter_type == expressions::compare_type::lte) {
-            auto& cf = f->cast<constant_filter_t>();
-            if (!cf.table_indices.empty()) {
-                auto col_idx = cf.table_indices.front();
-                if (col_idx < get_column_count()) {
-                    auto& col = get_column(col_idx);
-                    column_scan_state dummy;
-                    auto result = col.check_zonemap(dummy, const_cast<table_filter_t&>(*f));
-                    if (result == filter_propagate_result_t::ALWAYS_FALSE) {
-                        next_vector(state);
-                        return false;
-                    }
-                }
-            }
+        if (check_zonemap_filter(f) == filter_propagate_result_t::ALWAYS_FALSE) {
+            next_vector(state);
+            return false;
         }
         return true;
     }

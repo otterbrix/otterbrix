@@ -256,6 +256,14 @@ int main() {
     }
     std::cout << "Parsed " << records.size() << " records.\n";
 
+    // Sort records by (kind, operation, collection) so that inserted row groups
+    // are sorted → zone-map pruning becomes effective (like ClickHouse ORDER BY).
+    std::sort(records.begin(), records.end(), [](const Record& a, const Record& b) {
+        if (a.kind != b.kind)           return a.kind < b.kind;
+        if (a.operation != b.operation) return a.operation < b.operation;
+        return a.collection < b.collection;
+    });
+
     // ---- Column types (fixed for all batches) --------------------------------
     using CT = components::types::complex_logical_type;
     using LT = components::types::logical_type;

@@ -17,7 +17,7 @@ namespace components::logical_plan {
     std::string node_join_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$join: {";
-        stream << "$type: " << magic_enum::enum_name(type_);
+        stream << "$type: " << logical_plan::to_string(type_);
         for (const auto& child : children_) {
             stream << ", " << child->to_string();
         }

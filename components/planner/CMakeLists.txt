@@ -20,9 +20,9 @@ target_link_libraries(
         otterbrix::expressions
         otterbrix::logical_plan
         otterbrix::vector
+
         absl::int128
         Boost::boost
-        magic_enum::magic_enum
         msgpackc-cxx
 )
 

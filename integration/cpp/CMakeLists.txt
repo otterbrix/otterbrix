@@ -18,15 +18,14 @@ set(otterbrix_LIBS
         otterbrix::b_plus_tree
         otterbrix_catalog
 
-        spdlog::spdlog
-        actor-zeta::actor-zeta
         absl::crc32c
         absl::int128
         absl::flat_hash_map
         absl::node_hash_map
+        actor-zeta::actor-zeta
         Boost::boost
         msgpackc-cxx
-        magic_enum::magic_enum
+        spdlog::spdlog
 )
 
 

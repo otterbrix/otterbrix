@@ -23,9 +23,9 @@ target_link_libraries(
         otterbrix::compute
         otterbrix::vector
         otterbrix::serialization
-        Boost::boost
+
         absl::int128
-        magic_enum::magic_enum
+        Boost::boost
         msgpackc-cxx
 )
 

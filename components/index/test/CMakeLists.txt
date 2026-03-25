@@ -16,11 +16,10 @@ target_link_libraries(
         otterbrix::services
         otterbrix::test_generaty
 
-        actor-zeta::actor-zeta
         absl::int128
+        actor-zeta::actor-zeta
         Boost::boost
         Catch2::Catch2
-        magic_enum::magic_enum
 )
 
 include(CTest)

@@ -15,11 +15,10 @@ target_link_libraries(
         otterbrix::services
         otterbrix::test_generaty
 
+        absl::int128
+        actor-zeta::actor-zeta
         Catch2::Catch2
         spdlog::spdlog
-        actor-zeta::actor-zeta
-        absl::int128
-        magic_enum::magic_enum
         msgpackc-cxx
 )
 

@@ -47,10 +47,10 @@ target_link_libraries(
         otterbrix::expressions
         otterbrix::serialization
         otterbrix::table
-        magic_enum::magic_enum
-        msgpackc-cxx
+
         absl::int128
         Boost::boost
+        msgpackc-cxx
 )
 
 target_include_directories(

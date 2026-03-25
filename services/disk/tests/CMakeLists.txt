@@ -20,7 +20,6 @@ target_link_libraries(
     actor-zeta::actor-zeta
     Boost::boost
     Catch2::Catch2
-    magic_enum::magic_enum
     msgpackc-cxx
     spdlog::spdlog
 )

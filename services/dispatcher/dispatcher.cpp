@@ -599,6 +599,43 @@ namespace services::dispatcher {
 
                                 // 6. Migrate just-promoted columns: sparse table → main table column
                                 if (!just_promoted.empty()) {
+                                    // Scan main table (no MVCC filter) to build _id → physical_position map.
+                                    // txn={0,0} returns all rows in physical order so scan_index == phys_pos.
+                                    auto [_sm, smf] =
+                                        actor_zeta::send(disk_address_,
+                                                         &disk::manager_disk_t::storage_scan,
+                                                         session,
+                                                         logic_plan->collection_full_name(),
+                                                         std::unique_ptr<
+                                                             components::table::table_filter_t>(nullptr),
+                                                         -1,
+                                                         components::table::transaction_data{0, 0});
+                                    auto main_scan = co_await std::move(smf);
+
+                                    std::unordered_map<int64_t, uint64_t> id_to_phys;
+                                    if (main_scan && main_scan->size() > 0) {
+                                        int main_id_col = -1;
+                                        for (uint64_t c = 0; c < main_scan->column_count(); c++) {
+                                            if (main_scan->data[c].type().has_alias() &&
+                                                main_scan->data[c].type().alias() == "_id") {
+                                                main_id_col = static_cast<int>(c);
+                                                break;
+                                            }
+                                        }
+                                        if (main_id_col >= 0) {
+                                            for (uint64_t r = 0; r < main_scan->size(); r++) {
+                                                if (main_scan->data[static_cast<size_t>(main_id_col)]
+                                                        .validity()
+                                                        .row_is_valid(r)) {
+                                                    auto id_val = main_scan->data[static_cast<size_t>(main_id_col)]
+                                                                      .value(r)
+                                                                      .value<int64_t>();
+                                                    id_to_phys[id_val] = r;
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // Get current main table columns to find each promoted column's index
                                     auto [_gc, gcf] =
                                         actor_zeta::send(disk_address_,
@@ -649,36 +686,58 @@ namespace services::dispatcher {
                                             continue;
                                         }
 
-                                        uint64_t mig_count = sp_mig->size();
-                                        // _id = physical row position (append-only table)
-                                        auto rid_type = complex_logical_type(logical_type::BIGINT);
-                                        components::vector::vector_t patch_ids(resource(),
-                                                                               rid_type,
-                                                                               mig_count);
+                                        // Join sparse rows to main table by _id → physical_position
                                         auto val_type = jp.col_type;
                                         val_type.set_alias(jp.phys_name);
                                         std::pmr::vector<complex_logical_type> val_types(resource());
                                         val_types.push_back(val_type);
-                                        auto patch_vals =
-                                            std::make_unique<components::vector::data_chunk_t>(
-                                                resource(), val_types, mig_count);
-                                        patch_vals->set_cardinality(mig_count);
 
-                                        for (uint64_t r = 0; r < mig_count; r++) {
-                                            patch_ids.set_value(r, sp_mig->data[0].value(r));
-                                            patch_vals->data[0].set_value(r, sp_mig->data[1].value(r));
+                                        std::vector<std::pair<uint64_t, logical_value_t>> patch_pairs;
+                                        for (uint64_t r = 0; r < sp_mig->size(); r++) {
+                                            if (!sp_mig->data[0].validity().row_is_valid(r))
+                                                continue;
+                                            if (!sp_mig->data[1].validity().row_is_valid(r))
+                                                continue;
+                                            int64_t sp_id =
+                                                sp_mig->data[0].value(r).value<int64_t>();
+                                            auto it = id_to_phys.find(sp_id);
+                                            if (it == id_to_phys.end())
+                                                continue; // row deleted from main table
+                                            patch_pairs.emplace_back(it->second,
+                                                                      sp_mig->data[1].value(r));
                                         }
 
-                                        // Patch the promoted column in the main table
-                                        auto [_pc, pcf] =
-                                            actor_zeta::send(disk_address_,
-                                                             &disk::manager_disk_t::storage_patch_column,
-                                                             session,
-                                                             logic_plan->collection_full_name(),
-                                                             std::move(patch_ids),
-                                                             col_idx,
-                                                             std::move(patch_vals));
-                                        co_await std::move(pcf);
+                                        if (!patch_pairs.empty()) {
+                                            uint64_t mig_count = patch_pairs.size();
+                                            auto rid_type = complex_logical_type(logical_type::BIGINT);
+                                            components::vector::vector_t patch_ids(resource(),
+                                                                                   rid_type,
+                                                                                   mig_count);
+                                            auto patch_vals =
+                                                std::make_unique<components::vector::data_chunk_t>(
+                                                    resource(), val_types, mig_count);
+                                            patch_vals->set_cardinality(mig_count);
+
+                                            for (uint64_t r = 0; r < mig_count; r++) {
+                                                auto phys_val = logical_value_t::create_numeric(
+                                                    resource(),
+                                                    complex_logical_type(logical_type::BIGINT),
+                                                    static_cast<int64_t>(patch_pairs[r].first));
+                                                patch_ids.set_value(r, phys_val);
+                                                patch_vals->data[0].set_value(r, patch_pairs[r].second);
+                                            }
+
+                                            // Patch the promoted column in the main table
+                                            auto [_pc, pcf] =
+                                                actor_zeta::send(disk_address_,
+                                                                 &disk::manager_disk_t::storage_patch_column,
+                                                                 session,
+                                                                 logic_plan->collection_full_name(),
+                                                                 std::move(patch_ids),
+                                                                 col_idx,
+                                                                 std::move(patch_vals));
+                                            co_await std::move(pcf);
+                                        }
 
                                         // Drop the now-migrated sparse table
                                         auto [_dsp, dspf] =

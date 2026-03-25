@@ -237,8 +237,13 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::manager_index start");
-        manager_index_ =
-            actor_zeta::spawn<services::index::manager_index_t>(&resource, scheduler_.get(), log_, config.disk.path);
+        manager_index_ = actor_zeta::spawn<services::index::manager_index_t>(&resource,
+                                                                              scheduler_.get(),
+                                                                              log_,
+                                                                              config.disk.path,
+                                                                              config.disk.bitcask_flush_threshold,
+                                                                              config.disk.bitcask_segment_record_limit,
+                                                                              config.disk.btree_flush_threshold);
         auto manager_index_address = manager_index_->address();
         trace(log_, "spaces::manager_index finish");
 

@@ -80,14 +80,15 @@ namespace services::index {
         }
 
         bool parse_segment_id(const std::filesystem::path& path, uint64_t& segment_id) {
-            const std::string_view filename = path.filename().string();
+            const auto filename = path.filename().string();
+            const std::string_view filename_sv{filename};
             constexpr std::string_view prefix = segment_prefix;
             constexpr std::string_view suffix = segment_suffix;
 
-            if (!filename.starts_with(prefix) || !filename.ends_with(suffix))
+            if (!filename_sv.starts_with(prefix) || !filename_sv.ends_with(suffix))
                 return false;
 
-            const std::string_view digits = filename.substr(prefix.size(), filename.size() - prefix.size() - suffix.size());
+            const std::string_view digits = filename_sv.substr(prefix.size(), filename_sv.size() - prefix.size() - suffix.size());
             if (digits.empty())
                 return false;
 

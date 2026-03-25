@@ -4,6 +4,23 @@
 
 namespace components::logical_plan {
 
+    std::string to_string(join_type type) {
+        switch (type) {
+            case join_type::inner:
+                return "inner";
+            case join_type::full:
+                return "full";
+            case join_type::left:
+                return "left";
+            case join_type::right:
+                return "right";
+            case join_type::cross:
+                return "cross";
+            default:
+                return "invalid";
+        }
+    }
+
     node_join_t::node_join_t(std::pmr::memory_resource* resource,
                              const collection_full_name_t& collection,
                              join_type type)

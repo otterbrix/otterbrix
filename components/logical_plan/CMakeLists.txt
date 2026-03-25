@@ -1,6 +1,7 @@
 project(logical_plan CXX)
 
 set(SOURCE_${PROJECT_NAME}
+        forward.cpp
         node.cpp
         node_aggregate.cpp
         node_checkpoint.cpp

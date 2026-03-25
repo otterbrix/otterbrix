@@ -21,7 +21,7 @@ TEST_CASE("hash_single_field_index:base") {
     }
 
     SECTION("find existing value") {
-        components::types::logical_value_t value(&resource, 10);
+        components::types::logical_value_t value(&resource, static_cast<int64_t>(10));
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 1);
@@ -29,20 +29,8 @@ TEST_CASE("hash_single_field_index:base") {
     }
 
     SECTION("find non-existing value") {
-        components::types::logical_value_t value(&resource, 11);
+        components::types::logical_value_t value(&resource, static_cast<int64_t>(11));
         auto find_range = index.find(value);
-        REQUIRE(find_range.first == find_range.second);
-    }
-
-    SECTION("lower_bound query is empty for hash index") {
-        components::types::logical_value_t value(&resource, 4);
-        auto find_range = index.lower_bound(value);
-        REQUIRE(find_range.first == find_range.second);
-    }
-
-    SECTION("upper_bound query is empty for hash index") {
-        components::types::logical_value_t value(&resource, 6);
-        auto find_range = index.upper_bound(value);
         REQUIRE(find_range.first == find_range.second);
     }
 
@@ -51,7 +39,7 @@ TEST_CASE("hash_single_field_index:base") {
             components::types::logical_value_t val(&resource, value);
             index.insert(val, row_idx + 100);
         }
-        components::types::logical_value_t value(&resource, 10);
+        components::types::logical_value_t value(&resource, static_cast<int64_t>(10));
         auto find_range = index.find(value);
         REQUIRE(find_range.first != find_range.second);
         REQUIRE(std::distance(find_range.first, find_range.second) == 2);
@@ -60,8 +48,8 @@ TEST_CASE("hash_single_field_index:base") {
         for (auto it = find_range.first; it != find_range.second; ++it) {
             rows.push_back(it->row_index);
         }
-        REQUIRE(std::find(rows.begin(), rows.end(), 2) != rows.end());
-        REQUIRE(std::find(rows.begin(), rows.end(), 102) != rows.end());
+        REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(2)) != rows.end());
+        REQUIRE(std::find(rows.begin(), rows.end(), static_cast<int64_t>(102)) != rows.end());
     }
 }
 

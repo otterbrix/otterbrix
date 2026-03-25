@@ -78,7 +78,7 @@ namespace components::catalog {
         return {};
     }
 
-    catalog_error catalog::create_computing_table(const table_id& id) {
+    catalog_error catalog::create_computing_table(const table_id& id, uint64_t sparse_threshold) {
         if (!namespace_exists(id.get_namespace())) {
             return {catalog_mistake_t::MISSING_NAMESPACE, "Namespace does not exist for table: " + id.to_string()};
         }
@@ -88,7 +88,7 @@ namespace components::catalog {
         }
 
         namespaces_.get_namespace_info(id.get_namespace())
-            .computing.emplace(id.table_name(), computed_schema(resource_));
+            .computing.emplace(id.table_name(), computed_schema(resource_, sparse_threshold));
         return {};
     }
 

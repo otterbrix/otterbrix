@@ -6,9 +6,11 @@ namespace components::logical_plan {
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
-                                                       bool disk_storage)
+                                                       bool disk_storage,
+                                                       uint64_t sparse_threshold)
         : node_t(resource, node_type::create_collection_t, collection)
-        , disk_storage_(disk_storage) {}
+        , disk_storage_(disk_storage)
+        , sparse_threshold_(sparse_threshold) {}
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
@@ -48,8 +50,9 @@ namespace components::logical_plan {
     const std::vector<table::table_constraint_t>& node_create_collection_t::constraints() const { return constraints_; }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
-                                                           const collection_full_name_t& collection) {
-        return {new node_create_collection_t{resource, collection}};
+                                                           const collection_full_name_t& collection,
+                                                           uint64_t sparse_threshold) {
+        return {new node_create_collection_t{resource, collection, false, sparse_threshold}};
     }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,

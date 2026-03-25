@@ -7,7 +7,7 @@
 namespace components::catalog {
     class computed_schema {
     public:
-        explicit computed_schema(std::pmr::memory_resource* resource);
+        explicit computed_schema(std::pmr::memory_resource* resource, uint64_t sparse_threshold = 0);
 
         // Add a (field_name, type) pair. No-op if already present.
         void append(std::pmr::string field_name, const types::complex_logical_type& type);
@@ -20,16 +20,52 @@ namespace components::catalog {
         [[nodiscard]] std::vector<types::complex_logical_type>
         find_field_versions(const std::pmr::string& field_name) const;
 
+        // Returns logical schema:
+        // - When sparse_threshold > 0: prepends _id (BIGINT), excludes still-sparse columns
+        // - Otherwise: all columns in insertion order
         [[nodiscard]] types::complex_logical_type latest_types_struct() const;
 
-        // Physical storage column name: "field_name__TYPENAME"
+        // Physical storage column name: "__field_name__TYPENUM"
         [[nodiscard]] static std::string storage_column_name(const std::string& field_name,
                                                              const types::complex_logical_type& type);
 
         [[nodiscard]] bool has_type(const std::pmr::string& field_name,
                                     const types::complex_logical_type& type) const;
 
+        // --- Sparse column tracking ---
+
+        [[nodiscard]] uint64_t sparse_threshold() const { return sparse_threshold_; }
+
+        // Returns true if the given physical column name is still in sparse storage.
+        [[nodiscard]] bool is_sparse(const std::pmr::string& phys_name) const;
+
+        // Increment non-null count for a sparse column. Returns true if the column was promoted.
+        bool increment_non_null(const std::pmr::string& phys_name, uint64_t count);
+
+        // Returns true if any column is still sparse.
+        [[nodiscard]] bool has_any_sparse() const;
+
+        // Non-null count for a sparse column.
+        [[nodiscard]] uint64_t get_non_null_count(const std::pmr::string& phys_name) const;
+
+        struct sparse_column_info {
+            std::string field_name;          // logical field name
+            types::complex_logical_type type; // column type
+            std::string phys_name;           // storage_column_name(field_name, type)
+        };
+
+        // Returns all (field_name, type, phys_name) pairs that are still sparse.
+        [[nodiscard]] std::vector<sparse_column_info> sparse_columns() const;
+
+        // Sparse physical table name for a given collection + field + type.
+        [[nodiscard]] static std::string sparse_table_name(const std::string& collection,
+                                                           const std::string& field_name,
+                                                           const types::complex_logical_type& type);
+
     private:
+        // Marks a physical column as promoted (no longer sparse).
+        void promote_to_regular(const std::pmr::string& phys_name);
+
         // field_name -> list of types currently present
         std::pmr::unordered_map<std::pmr::string,
                                 std::pmr::vector<types::complex_logical_type>>
@@ -37,5 +73,12 @@ namespace components::catalog {
 
         // Preserves insertion order of (field_name, type) pairs for physical column ordering.
         std::pmr::vector<std::pair<std::pmr::string, types::complex_logical_type>> column_order_;
+
+        // Sparse tracking (only used when sparse_threshold_ > 0)
+        uint64_t sparse_threshold_{0};
+        // physical_name -> non-null count
+        std::pmr::unordered_map<std::pmr::string, uint64_t> non_null_counts_;
+        // physical_name -> is_still_sparse
+        std::pmr::unordered_map<std::pmr::string, bool> sparse_flags_;
     };
 } // namespace components::catalog

@@ -1159,39 +1159,49 @@ namespace services::disk {
                 }
 
                 if (existing_id_col >= 0 && existing->size() > 0) {
-                    std::unordered_set<std::string> existing_ids;
-                    for (uint64_t i = 0; i < existing->size(); i++) {
-                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
-                        if (!val.is_null()) {
-                            existing_ids.emplace(val.value<std::string_view>());
-                        }
-                    }
-
-                    std::vector<uint64_t> keep_rows;
-                    keep_rows.reserve(data->size());
-                    for (uint64_t i = 0; i < data->size(); i++) {
-                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
-                        if (val.is_null() ||
-                            existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
-                            keep_rows.push_back(i);
-                        }
-                    }
-
-                    if (keep_rows.empty()) {
-                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
-                    }
-
-                    if (keep_rows.size() < data->size()) {
-                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                                           data->types(),
-                                                                                           keep_rows.size());
-                        for (uint64_t col = 0; col < data->column_count(); col++) {
-                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
-                                auto val = data->data[col].value(keep_rows[i]);
-                                filtered->data[col].set_value(i, val);
+                    // Only perform string-based dedup for VARCHAR/STRING_LITERAL _id columns.
+                    // Non-string _id (e.g., BIGINT auto-increment) has no duplicates by design.
+                    auto id_col_type =
+                        existing->data[static_cast<size_t>(existing_id_col)].type().type();
+                    bool id_is_string = (id_col_type == components::types::logical_type::STRING_LITERAL ||
+                                         id_col_type == components::types::logical_type::BLOB);
+                    if (id_is_string) {
+                        std::unordered_set<std::string> existing_ids;
+                        for (uint64_t i = 0; i < existing->size(); i++) {
+                            auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
+                            if (!val.is_null()) {
+                                existing_ids.emplace(val.value<std::string_view>());
                             }
                         }
-                        data = std::move(filtered);
+
+                        std::vector<uint64_t> keep_rows;
+                        keep_rows.reserve(data->size());
+                        for (uint64_t i = 0; i < data->size(); i++) {
+                            auto val = data->data[static_cast<size_t>(id_col)].value(i);
+                            if (val.is_null() ||
+                                existing_ids.find(std::string(val.value<std::string_view>())) ==
+                                    existing_ids.end()) {
+                                keep_rows.push_back(i);
+                            }
+                        }
+
+                        if (keep_rows.empty()) {
+                            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                        }
+
+                        if (keep_rows.size() < data->size()) {
+                            auto filtered =
+                                std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                   data->types(),
+                                                                                   keep_rows.size());
+                            for (uint64_t col = 0; col < data->column_count(); col++) {
+                                for (uint64_t i = 0; i < keep_rows.size(); i++) {
+                                    auto val = data->data[col].value(keep_rows[i]);
+                                    filtered->data[col].set_value(i, val);
+                                }
+                            }
+                            data = std::move(filtered);
+                        }
                     }
                 }
             }
@@ -1750,37 +1760,48 @@ namespace services::disk {
                     }
                 }
                 if (existing_id_col >= 0 && existing->size() > 0) {
-                    std::unordered_set<std::string> existing_ids;
-                    for (uint64_t i = 0; i < existing->size(); i++) {
-                        auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
-                        if (!val.is_null()) {
-                            existing_ids.emplace(val.value<std::string_view>());
-                        }
-                    }
-                    std::vector<uint64_t> keep_rows;
-                    keep_rows.reserve(data->size());
-                    for (uint64_t i = 0; i < data->size(); i++) {
-                        auto val = data->data[static_cast<size_t>(id_col)].value(i);
-                        if (val.is_null() ||
-                            existing_ids.find(std::string(val.value<std::string_view>())) == existing_ids.end()) {
-                            keep_rows.push_back(i);
-                        }
-                    }
-                    if (keep_rows.empty()) {
-                        co_return std::make_pair(uint64_t{0}, uint64_t{0});
-                    }
-                    if (keep_rows.size() < data->size()) {
-                        auto filtered = std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                                           data->types(),
-                                                                                           keep_rows.size());
-                        for (uint64_t col = 0; col < data->column_count(); col++) {
-                            for (uint64_t i = 0; i < keep_rows.size(); i++) {
-                                auto val = data->data[col].value(keep_rows[i]);
-                                filtered->data[col].set_value(i, val);
+                    // Only perform string-based dedup for VARCHAR/STRING_LITERAL _id columns.
+                    // Non-string _id (e.g., BIGINT auto-increment) has no duplicates by design.
+                    auto id_col_type =
+                        existing->data[static_cast<size_t>(existing_id_col)].type().type();
+                    bool id_is_string = (id_col_type == components::types::logical_type::STRING_LITERAL ||
+                                         id_col_type == components::types::logical_type::BLOB);
+                    if (id_is_string) {
+                        std::unordered_set<std::string> existing_ids;
+                        for (uint64_t i = 0; i < existing->size(); i++) {
+                            auto val = existing->data[static_cast<size_t>(existing_id_col)].value(i);
+                            if (!val.is_null()) {
+                                existing_ids.emplace(val.value<std::string_view>());
                             }
                         }
-                        data = std::move(filtered);
+                        std::vector<uint64_t> keep_rows;
+                        keep_rows.reserve(data->size());
+                        for (uint64_t i = 0; i < data->size(); i++) {
+                            auto val = data->data[static_cast<size_t>(id_col)].value(i);
+                            if (val.is_null() ||
+                                existing_ids.find(std::string(val.value<std::string_view>())) ==
+                                    existing_ids.end()) {
+                                keep_rows.push_back(i);
+                            }
+                        }
+                        if (keep_rows.empty()) {
+                            co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                        }
+                        if (keep_rows.size() < data->size()) {
+                            auto filtered =
+                                std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                   data->types(),
+                                                                                   keep_rows.size());
+                            for (uint64_t col = 0; col < data->column_count(); col++) {
+                                for (uint64_t i = 0; i < keep_rows.size(); i++) {
+                                    auto val = data->data[col].value(keep_rows[i]);
+                                    filtered->data[col].set_value(i, val);
+                                }
+                            }
+                            data = std::move(filtered);
+                        }
                     }
+                    // Non-string _id (BIGINT auto-increment): skip dedup
                 }
             }
         }

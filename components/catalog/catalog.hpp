@@ -29,7 +29,7 @@ namespace components::catalog {
         [[nodiscard]] const computed_schema& get_computing_table_schema(const table_id& id) const;
 
         [[nodiscard]] catalog_error create_table(const table_id& id, table_metadata meta);
-        [[nodiscard]] catalog_error create_computing_table(const table_id& id);
+        [[nodiscard]] catalog_error create_computing_table(const table_id& id, uint64_t sparse_threshold = 0);
 
         [[nodiscard]] catalog_error rename_table(const table_id& from, std::pmr::string to);
         [[nodiscard]] catalog_error rename_computing_table(const table_id& from, std::pmr::string to);

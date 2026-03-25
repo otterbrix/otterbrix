@@ -28,7 +28,27 @@ namespace components::sql::transform {
         fill_column_definitions(col_defs, resource_, *coldefs);
 
         if (col_defs.empty()) {
-            return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
+            uint64_t sparse_threshold = 0;
+            if (node.options) {
+                for (auto data : node.options->lst) {
+                    auto def = pg_ptr_cast<DefElem>(data.data);
+                    if (!def->defname)
+                        continue;
+                    std::string opt_name(def->defname);
+                    if (opt_name == "sparse_threshold" && def->arg) {
+                        if (nodeTag(def->arg) == T_Integer) {
+                            sparse_threshold = static_cast<uint64_t>(intVal(def->arg));
+                        } else if (nodeTag(def->arg) == T_String) {
+                            try {
+                                sparse_threshold = static_cast<uint64_t>(std::stoll(strVal(def->arg)));
+                            } catch (...) {}
+                        }
+                    }
+                }
+            }
+            return logical_plan::make_node_create_collection(resource_,
+                                                             rangevar_to_collection(node.relation),
+                                                             sparse_threshold);
         }
 
         auto constraints = extract_table_constraints(*coldefs);

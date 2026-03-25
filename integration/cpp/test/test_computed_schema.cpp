@@ -241,3 +241,150 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
     }
 }
+
+// ---- Sparse schema tests ----
+// Tables created with WITH (sparse_threshold=N): columns start in separate sparse tables.
+// SELECT returns main columns + sparse columns merged via _id lookup.
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_basic_insert_select") {
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_basic");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    // Create table with high threshold so all columns stay sparse
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "CREATE TABLE cs_testdb.sp1 () WITH (sparse_threshold=1000);");
+        REQUIRE(cur->is_success());
+    }
+
+    // INSERT 3 rows: each gets an auto-assigned _id
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "INSERT INTO cs_testdb.sp1 (name) VALUES ('Alice'), ('Bob'), ('Charlie');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // SELECT * returns _id (main) + name (sparse, post-processed)
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.sp1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // Result has _id column (from main table) + name (from sparse table)
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        // All name values are non-null
+        REQUIRE_FALSE(cur->chunk_data().value(1, 0).is_null());
+        REQUIRE_FALSE(cur->chunk_data().value(1, 1).is_null());
+        REQUIRE_FALSE(cur->chunk_data().value(1, 2).is_null());
+    }
+
+    // Second INSERT adds 2 more rows
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.sp1 (name) VALUES ('Dave'), ('Eve');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // SELECT * now returns 5 rows
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.sp1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_mixed_nulls") {
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_mixed");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "CREATE TABLE cs_testdb.sp2 () WITH (sparse_threshold=1000);");
+        REQUIRE(cur->is_success());
+    }
+
+    // INSERT rows: only first batch has 'score', second batch only has 'name'
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.sp2 (name, score) VALUES ('Alice', 95), ('Bob', 80);");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.sp2 (name) VALUES ('Charlie'), ('Dave');");
+    }
+
+    // SELECT * returns 4 rows; columns: _id, name, score
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.sp2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        // _id + name + score = 3 columns
+        REQUIRE(cur->chunk_data().column_count() == 3);
+
+        // Charlie and Dave (rows 2,3) have NULL score
+        REQUIRE(cur->chunk_data().value(2, 2).is_null());
+        REQUIRE(cur->chunk_data().value(2, 3).is_null());
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_zero_threshold_no_effect") {
+    // sparse_threshold=0 (default) means no sparse optimization — same as regular computed schema
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_zero");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE TABLE cs_testdb.sp3 ();");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.sp3 (id, name) VALUES (1, 'Alice'), (2, 'Bob');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.sp3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().column_count() == 2); // id + name (no _id auto-column)
+    }
+}

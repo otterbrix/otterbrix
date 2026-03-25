@@ -89,12 +89,9 @@ namespace services::index {
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         ordered_index_t index_;
         std::map<value_t, keydir_entry_t, std::less<>> keydir_;
-        bool dirty_{false};
-        uint64_t ops_since_flush_{0};
         uint64_t next_timestamp_{0};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
-        uint64_t flush_threshold_{default_flush_threshold_};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         mutable std::shared_mutex mutex_;
     };

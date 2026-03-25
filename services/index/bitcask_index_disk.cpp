@@ -122,14 +122,14 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit)
-        : path_(path)
+        : index_disk_t(flush_threshold)
+        , path_(path)
         , active_data_file_path_()
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , file_(nullptr)
         , index_()
         , keydir_()
-        , flush_threshold_(flush_threshold)
         , segment_record_limit_(segment_record_limit) {
         initialize_storage();
         load_from_disk();
@@ -448,8 +448,7 @@ namespace services::index {
 
         rows.emplace_back(value);
         append_snapshot(key, rows);
-        dirty_ = true;
-        ++ops_since_flush_;
+        mark_operation_dirty();
         flush_if_needed();
     }
 
@@ -460,8 +459,7 @@ namespace services::index {
         }
 
         append_tombstone(key);
-        dirty_ = true;
-        ++ops_since_flush_;
+        mark_operation_dirty();
         flush_if_needed();
     }
 
@@ -483,13 +481,12 @@ namespace services::index {
         } else {
             append_snapshot(key, rows);
         }
-        dirty_ = true;
-        ++ops_since_flush_;
+        mark_operation_dirty();
         flush_if_needed();
     }
 
     void bitcask_index_disk_t::flush_if_needed() {
-        if (ops_since_flush_ >= flush_threshold_) {
+        if (should_flush()) {
             force_flush_unlocked();
         }
     }
@@ -500,10 +497,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::force_flush_unlocked() {
-        if (dirty_ && file_) {
+        if (is_dirty() && file_) {
             file_->sync();
-            dirty_ = false;
-            ops_since_flush_ = 0;
+            reset_flush_state();
         }
     }
 
@@ -567,8 +563,7 @@ namespace services::index {
         file_.reset();
         index_.clear();
         keydir_.clear();
-        dirty_ = false;
-        ops_since_flush_ = 0;
+        reset_flush_state();
         next_timestamp_ = 0;
         active_segment_id_ = 0;
         active_segment_records_ = 0;

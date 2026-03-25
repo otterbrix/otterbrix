@@ -41,9 +41,6 @@ namespace services::index {
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
-        bool dirty_{false};
-        uint64_t ops_since_flush_{0};
-        uint64_t flush_threshold_{default_flush_threshold_};
     };
 
 } // namespace services::index

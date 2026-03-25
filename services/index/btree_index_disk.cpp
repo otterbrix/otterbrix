@@ -62,11 +62,11 @@ namespace services::index {
     btree_index_disk_t::btree_index_disk_t(const path_t& path,
                                            std::pmr::memory_resource* resource,
                                            uint64_t flush_threshold)
-        : path_(path)
+        : index_disk_t(flush_threshold)
+        , path_(path)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter))
-        , flush_threshold_(flush_threshold) {
+        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
         db_->load();
     }
 
@@ -82,16 +82,14 @@ namespace services::index {
             packer.pack(key);
             packer.pack(value);
             db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
-            dirty_ = true;
-            ++ops_since_flush_;
+            mark_operation_dirty();
             flush_if_needed();
         }
     }
 
     void btree_index_disk_t::remove(value_t key) {
         db_->remove_index(convert(key));
-        dirty_ = true;
-        ++ops_since_flush_;
+        mark_operation_dirty();
         flush_if_needed();
     }
 
@@ -105,23 +103,21 @@ namespace services::index {
             packer.pack(key);
             packer.pack(row_id);
             db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
-            dirty_ = true;
-            ++ops_since_flush_;
+            mark_operation_dirty();
             flush_if_needed();
         }
     }
 
     void btree_index_disk_t::flush_if_needed() {
-        if (ops_since_flush_ >= flush_threshold_) {
+        if (should_flush()) {
             force_flush();
         }
     }
 
     void btree_index_disk_t::force_flush() {
-        if (dirty_ && db_) {
+        if (is_dirty() && db_) {
             db_->flush();
-            dirty_ = false;
-            ops_since_flush_ = 0;
+            reset_flush_state();
         }
     }
 

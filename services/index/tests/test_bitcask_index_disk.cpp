@@ -214,3 +214,124 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         REQUIRE(index.find(logical_value_t(&resource, 70200l)).size() == 1);
     }
 }
+
+TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_remove_specific_row"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+
+        index.insert(logical_value_t(&resource, 42l), 100);
+        index.insert(logical_value_t(&resource, 42l), 101);
+        index.insert(logical_value_t(&resource, 42l), 102);
+        index.insert(logical_value_t(&resource, 43l), 200);
+
+        index.remove(logical_value_t(&resource, 42l), 101);
+        const auto after_first_remove = index.find(logical_value_t(&resource, 42l));
+        REQUIRE(after_first_remove.size() == 2);
+        REQUIRE(after_first_remove[0] == 100);
+        REQUIRE(after_first_remove[1] == 102);
+
+        index.remove(logical_value_t(&resource, 42l), 999); // no-op
+        const auto after_noop_remove = index.find(logical_value_t(&resource, 42l));
+        REQUIRE(after_noop_remove.size() == 2);
+        REQUIRE(after_noop_remove[0] == 100);
+        REQUIRE(after_noop_remove[1] == 102);
+
+        index.remove(logical_value_t(&resource, 42l), 100);
+        index.remove(logical_value_t(&resource, 42l), 102); // transitions to tombstone
+        REQUIRE(index.find(logical_value_t(&resource, 42l)).empty());
+
+        index.force_flush();
+    }
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        REQUIRE(index.find(logical_value_t(&resource, 42l)).empty());
+        REQUIRE(index.find(logical_value_t(&resource, 43l)).size() == 1);
+        REQUIRE(index.find(logical_value_t(&resource, 43l)).front() == 200);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_deduplicate_rows"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        index.insert(logical_value_t(&resource, 10l), 7);
+        index.insert(logical_value_t(&resource, 10l), 7); // duplicate must be ignored
+        index.insert(logical_value_t(&resource, 10l), 8);
+        index.force_flush();
+    }
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        const auto rows = index.find(logical_value_t(&resource, 10l));
+        REQUIRE(rows.size() == 2);
+        REQUIRE(rows[0] == 7);
+        REQUIRE(rows[1] == 8);
+    }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_state") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_load_entries"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    auto index = bitcask_index_disk_t(path, &resource);
+    index.insert(logical_value_t(&resource, 1l), 11);
+    index.insert(logical_value_t(&resource, 1l), 12);
+    index.insert(logical_value_t(&resource, 2l), 21);
+    index.insert(logical_value_t(&resource, 3l), 31);
+    index.remove(logical_value_t(&resource, 1l), 11);
+    index.remove(logical_value_t(&resource, 3l));
+
+    bitcask_index_disk_t::entries_t entries(&resource);
+    index.load_entries(entries);
+
+    REQUIRE(entries.size() == 2);
+    REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 12);
+    REQUIRE(index.find(logical_value_t(&resource, 2l)).size() == 1);
+    REQUIRE(index.find(logical_value_t(&resource, 2l)).front() == 21);
+    REQUIRE(index.find(logical_value_t(&resource, 3l)).empty());
+}
+
+TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreate_is_empty") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_drop_recreate"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = bitcask_index_disk_t(path, &resource);
+        index.insert(logical_value_t(&resource, 99l), 999);
+        index.force_flush();
+        REQUIRE(std::filesystem::exists(path));
+        REQUIRE(count_bitcask_data_files(path) >= 1);
+
+        index.drop();
+        REQUIRE_FALSE(std::filesystem::exists(path));
+    }
+
+    {
+        auto recreated = bitcask_index_disk_t(path, &resource);
+        REQUIRE(std::filesystem::exists(path));
+        REQUIRE(recreated.find(logical_value_t(&resource, 99l)).empty());
+
+        recreated.insert(logical_value_t(&resource, 100l), 1000);
+        REQUIRE(recreated.find(logical_value_t(&resource, 100l)).size() == 1);
+        REQUIRE(recreated.find(logical_value_t(&resource, 100l)).front() == 1000);
+    }
+}

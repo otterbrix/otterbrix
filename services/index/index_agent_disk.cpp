@@ -9,6 +9,9 @@ namespace services::index {
                                            collection_full_name_t collection_name,
                                            const index_name_t& index_name,
                                            components::logical_plan::index_type type,
+                                           uint64_t bitcask_flush_threshold,
+                                           uint64_t bitcask_segment_record_limit,
+                                           uint64_t btree_flush_threshold,
                                            log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
@@ -16,11 +19,14 @@ namespace services::index {
                           ? std::unique_ptr<index_disk_t>(
                                 std::make_unique<bitcask_index_disk_t>(path_db / collection_name.database /
                                                                            collection_name.collection / index_name,
-                                                                       this->resource()))
+                                                                       this->resource(),
+                                                                       bitcask_flush_threshold,
+                                                                       bitcask_segment_record_limit))
                           : std::unique_ptr<index_disk_t>(
                                 std::make_unique<btree_index_disk_t>(path_db / collection_name.database /
                                                                          collection_name.collection / index_name,
-                                                                     this->resource())))
+                                                                     this->resource(),
+                                                                     btree_flush_threshold)))
         , collection_name_(std::move(collection_name)) {
         trace(log_, "index_agent_disk::create {}", index_name);
     }

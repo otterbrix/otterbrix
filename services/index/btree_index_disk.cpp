@@ -59,11 +59,14 @@ namespace services::index {
         }
     }
 
-    btree_index_disk_t::btree_index_disk_t(const path_t& path, std::pmr::memory_resource* resource)
+    btree_index_disk_t::btree_index_disk_t(const path_t& path,
+                                           std::pmr::memory_resource* resource,
+                                           uint64_t flush_threshold)
         : path_(path)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
+        , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter))
+        , flush_threshold_(flush_threshold) {
         db_->load();
     }
 

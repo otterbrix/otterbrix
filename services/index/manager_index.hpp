@@ -16,6 +16,7 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdint>
 #include <mutex>
 
 namespace services::index {
@@ -35,6 +36,9 @@ namespace services::index {
             actor_zeta::scheduler_raw scheduler,
             log_t& log,
             std::filesystem::path path_db = {},
+            uint64_t bitcask_flush_threshold = 1000,
+            uint64_t bitcask_segment_record_limit = 100,
+            uint64_t btree_flush_threshold = 1000,
             run_fn_t run_fn = [] { std::this_thread::yield(); });
         ~manager_index_t() = default;
 
@@ -123,6 +127,9 @@ namespace services::index {
         run_fn_t run_fn_;
         log_t log_;
         std::filesystem::path path_db_;
+        uint64_t bitcask_flush_threshold_{1000};
+        uint64_t bitcask_segment_record_limit_{100};
+        uint64_t btree_flush_threshold_{1000};
         std::mutex mutex_;
 
         // Per-collection in-memory index engines

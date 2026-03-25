@@ -388,3 +388,206 @@ TEST_CASE("integration::cpp::test_computed_schema::sparse_zero_threshold_no_effe
         REQUIRE(cur->chunk_data().column_count() == 2); // id + name (no _id auto-column)
     }
 }
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_promotion_basic") {
+    // sparse_threshold=3: column stays sparse until 3 non-null values, then promoted to main table
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_promotion_basic");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "CREATE TABLE cs_testdb.promo1 () WITH (sparse_threshold=3);");
+        REQUIRE(cur->is_success());
+    }
+
+    // INSERT 2 rows: non_null_count = 2 < threshold=3, stays sparse
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo1 (name) VALUES ('Alice'), ('Bob');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // INSERT 2 more rows: non_null_count becomes 4 >= threshold=3 → promotion triggered
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo1 (name) VALUES ('Charlie'), ('Dave');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // After promotion, SELECT * should return all 4 rows with 'name' in main table
+    // Columns: _id (BIGINT) + name (STRING) = 2 columns; name comes from main table (not sparse)
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.promo1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        // All 4 name values should be non-null
+        REQUIRE_FALSE(cur->chunk_data().value(1, 0).is_null());
+        REQUIRE_FALSE(cur->chunk_data().value(1, 1).is_null());
+        REQUIRE_FALSE(cur->chunk_data().value(1, 2).is_null());
+        REQUIRE_FALSE(cur->chunk_data().value(1, 3).is_null());
+    }
+
+    // INSERT more rows after promotion: should go directly to main table
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo1 (name) VALUES ('Eve'), ('Frank');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.promo1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 6);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        // All 6 rows non-null
+        for (uint64_t r = 0; r < 6; r++) {
+            REQUIRE_FALSE(cur->chunk_data().value(1, r).is_null());
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_promotion_with_nulls") {
+    // Threshold=2: after promotion, rows without the column stay NULL in main table
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_promotion_nulls");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "CREATE TABLE cs_testdb.promo2 () WITH (sparse_threshold=2);");
+        REQUIRE(cur->is_success());
+    }
+
+    // Row 0: only 'score'
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo2 (score) VALUES (100);");
+        REQUIRE(cur->is_success());
+    }
+
+    // Row 1: only 'name'
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo2 (name) VALUES ('Alice');");
+        REQUIRE(cur->is_success());
+    }
+
+    // Row 2: both 'name' and 'score' → name reaches threshold=2, promotion triggered
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo2 (name, score) VALUES ('Bob', 90);");
+        REQUIRE(cur->is_success());
+    }
+
+    // SELECT *: 3 rows, 3 columns (_id, name, score)
+    // row 0: _id=0, name=NULL, score=100
+    // row 1: _id=1, name='Alice', score=NULL
+    // row 2: _id=2, name='Bob', score=90
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.promo2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // _id + name (promoted) + score (still sparse or promoted depending on count)
+        // name has 2 non-nulls (Alice + Bob) >= threshold=2 → promoted
+        // score has 2 non-nulls (100 + 90) >= threshold=2 → promoted
+        REQUIRE(cur->chunk_data().column_count() == 3);
+
+        // Find column indices by checking values
+        // Row 0: name should be NULL, score non-null
+        // Row 1: name non-null, score NULL
+        // Row 2: both non-null
+        bool found_null_name_row0 = false;
+        bool found_null_score_row1 = false;
+        bool found_both_row2 = false;
+        for (uint64_t r = 0; r < 3; r++) {
+            bool name_null = cur->chunk_data().value(1, r).is_null();
+            bool score_null = cur->chunk_data().value(2, r).is_null();
+            if (name_null && !score_null) found_null_name_row0 = true;
+            if (!name_null && score_null) found_null_score_row1 = true;
+            if (!name_null && !score_null) found_both_row2 = true;
+        }
+        REQUIRE(found_null_name_row0);
+        REQUIRE(found_null_score_row1);
+        REQUIRE(found_both_row2);
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::sparse_promotion_then_insert") {
+    // After promotion, subsequent INSERTs go directly to main table (no sparse intermediate)
+    auto config = test_create_config("/tmp/test_computed_schema/sparse_promotion_then_insert");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "CREATE TABLE cs_testdb.promo3 () WITH (sparse_threshold=2);");
+        REQUIRE(cur->is_success());
+    }
+
+    // 3 batches: first 2 go to sparse (1 non-null each), 3rd triggers promotion
+    for (int i = 1; i <= 3; i++) {
+        auto session = otterbrix::session_id_t();
+        auto name = std::string("'User") + std::to_string(i) + "'";
+        auto sql = std::string("INSERT INTO cs_testdb.promo3 (val) VALUES (") + name + ");";
+        auto cur = dispatcher->execute_sql(session, sql);
+        REQUIRE(cur->is_success());
+    }
+
+    // Now 'val' is promoted. Insert 2 more rows post-promotion.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO cs_testdb.promo3 (val) VALUES ('User4'), ('User5');");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // SELECT: 5 rows, 2 columns (_id, val), all non-null
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.promo3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        for (uint64_t r = 0; r < 5; r++) {
+            REQUIRE_FALSE(cur->chunk_data().value(1, r).is_null());
+        }
+    }
+}

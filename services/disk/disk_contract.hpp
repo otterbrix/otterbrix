@@ -110,6 +110,13 @@ namespace services::disk {
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,
                        std::unique_ptr<components::vector::data_chunk_t> data);
+        // Patch a single column in-place (non-MVCC, used for sparse→promoted migration)
+        actor_zeta::unique_future<void>
+        storage_patch_column(session_id_t session,
+                             collection_full_name_t name,
+                             components::vector::vector_t row_ids,
+                             uint64_t column_idx,
+                             std::unique_ptr<components::vector::data_chunk_t> values);
         actor_zeta::unique_future<uint64_t>
         storage_delete_rows(execution_context_t ctx, components::vector::vector_t row_ids, uint64_t count);
 
@@ -158,6 +165,7 @@ namespace services::disk {
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,
                                                             &disk_contract::storage_update,
+                                                            &disk_contract::storage_patch_column,
                                                             &disk_contract::storage_delete_rows,
                                                             &disk_contract::storage_parallel_scan,
                                                             // MVCC commit/revert

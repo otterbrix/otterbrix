@@ -460,8 +460,14 @@ namespace services::dispatcher {
                                 std::string phys_name;
                                 std::vector<std::pair<int64_t, logical_value_t>> id_value_pairs;
                             };
+                            struct just_promoted_info_t {
+                                std::string field_name;
+                                complex_logical_type col_type;
+                                std::string phys_name;
+                            };
                             std::vector<sparse_entry_t> sparse_entries;
                             std::vector<components::vector::vector_t> promoted_cols;
+                            std::vector<just_promoted_info_t> just_promoted;
 
                             for (auto& col : chunk.data) {
                                 std::string field_name(col.type().alias());
@@ -491,6 +497,10 @@ namespace services::dispatcher {
                                         }
                                     }
                                     schema.increment_non_null(pmr_phys, non_null_count);
+                                    // Check if threshold was just crossed → promotion
+                                    if (!schema.is_sparse(pmr_phys)) {
+                                        just_promoted.push_back({field_name, field_type, phys_name});
+                                    }
                                     if (!entry.id_value_pairs.empty()) {
                                         sparse_entries.push_back(std::move(entry));
                                     }
@@ -512,6 +522,22 @@ namespace services::dispatcher {
                             chunk.data.push_back(std::move(id_vec));
                             for (auto& mc : promoted_cols) {
                                 chunk.data.push_back(std::move(mc));
+                            }
+
+                            // 4a. Add physical columns for just-promoted fields (before main INSERT
+                            //     so column schema is ready; current batch still goes to sparse table)
+                            for (const auto& jp : just_promoted) {
+                                auto jp_type = jp.col_type;
+                                jp_type.set_alias(jp.phys_name);
+                                components::table::column_definition_t jp_col_def(
+                                    jp.phys_name, jp_type, false, std::nullopt);
+                                auto [_jac, jacf] =
+                                    actor_zeta::send(disk_address_,
+                                                     &disk::manager_disk_t::storage_add_column,
+                                                     session,
+                                                     logic_plan->collection_full_name(),
+                                                     jp_col_def);
+                                co_await std::move(jacf);
                             }
 
                             // 4. Execute main INSERT
@@ -569,6 +595,99 @@ namespace services::dispatcher {
                                                          sp_ctx,
                                                          std::move(sp_chunk));
                                     co_await std::move(saf);
+                                }
+
+                                // 6. Migrate just-promoted columns: sparse table → main table column
+                                if (!just_promoted.empty()) {
+                                    // Get current main table columns to find each promoted column's index
+                                    auto [_gc, gcf] =
+                                        actor_zeta::send(disk_address_,
+                                                         &disk::manager_disk_t::storage_columns,
+                                                         session,
+                                                         logic_plan->collection_full_name());
+                                    auto main_cols = co_await std::move(gcf);
+
+                                    for (const auto& jp : just_promoted) {
+                                        // Find the physical column index
+                                        uint64_t col_idx = 0;
+                                        bool found = false;
+                                        for (uint64_t ci = 0; ci < main_cols.size(); ci++) {
+                                            if (main_cols[ci].name() == jp.phys_name) {
+                                                col_idx = ci;
+                                                found = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!found)
+                                            continue;
+
+                                        // Scan entire sparse table (includes current batch)
+                                        std::string sp_mig_str = computed_schema::sparse_table_name(
+                                            std::string(logic_plan->collection_name()),
+                                            jp.field_name,
+                                            jp.col_type);
+                                        collection_full_name_t sp_mig_name(logic_plan->database_name(),
+                                                                            sp_mig_str);
+                                        auto [_ms, msf] =
+                                            actor_zeta::send(disk_address_,
+                                                             &disk::manager_disk_t::storage_scan,
+                                                             session,
+                                                             sp_mig_name,
+                                                             std::unique_ptr<
+                                                                 components::table::table_filter_t>(nullptr),
+                                                             -1,
+                                                             txn_data);
+                                        auto sp_mig = co_await std::move(msf);
+                                        if (!sp_mig || sp_mig->size() == 0) {
+                                            // Nothing to migrate; still drop sparse table
+                                            auto [_dse, dsef] =
+                                                actor_zeta::send(disk_address_,
+                                                                 &disk::manager_disk_t::drop_storage,
+                                                                 session,
+                                                                 sp_mig_name);
+                                            co_await std::move(dsef);
+                                            continue;
+                                        }
+
+                                        uint64_t mig_count = sp_mig->size();
+                                        // _id = physical row position (append-only table)
+                                        auto rid_type = complex_logical_type(logical_type::BIGINT);
+                                        components::vector::vector_t patch_ids(resource(),
+                                                                               rid_type,
+                                                                               mig_count);
+                                        auto val_type = jp.col_type;
+                                        val_type.set_alias(jp.phys_name);
+                                        std::pmr::vector<complex_logical_type> val_types(resource());
+                                        val_types.push_back(val_type);
+                                        auto patch_vals =
+                                            std::make_unique<components::vector::data_chunk_t>(
+                                                resource(), val_types, mig_count);
+                                        patch_vals->set_cardinality(mig_count);
+
+                                        for (uint64_t r = 0; r < mig_count; r++) {
+                                            patch_ids.set_value(r, sp_mig->data[0].value(r));
+                                            patch_vals->data[0].set_value(r, sp_mig->data[1].value(r));
+                                        }
+
+                                        // Patch the promoted column in the main table
+                                        auto [_pc, pcf] =
+                                            actor_zeta::send(disk_address_,
+                                                             &disk::manager_disk_t::storage_patch_column,
+                                                             session,
+                                                             logic_plan->collection_full_name(),
+                                                             std::move(patch_ids),
+                                                             col_idx,
+                                                             std::move(patch_vals));
+                                        co_await std::move(pcf);
+
+                                        // Drop the now-migrated sparse table
+                                        auto [_dsp, dspf] =
+                                            actor_zeta::send(disk_address_,
+                                                             &disk::manager_disk_t::drop_storage,
+                                                             session,
+                                                             sp_mig_name);
+                                        co_await std::move(dspf);
+                                    }
                                 }
                             }
                             break;

@@ -327,6 +327,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_update, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_patch_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_patch_column, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_delete_rows, msg);
                 break;
@@ -1255,6 +1259,22 @@ namespace services::disk {
         co_return s->update(row_ids, *data, ctx.txn);
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_patch_column(session_id_t /*session*/,
+                                         collection_full_name_t name,
+                                         components::vector::vector_t row_ids,
+                                         uint64_t column_idx,
+                                         std::unique_ptr<components::vector::data_chunk_t> values) {
+        auto it = storages_.find(name);
+        if (it == storages_.end() || values->size() == 0) {
+            co_return;
+        }
+        values->flatten();
+        row_ids.flatten(values->size());
+        it->second->table_storage.table().update_column(row_ids, {column_idx}, *values);
+        co_return;
+    }
+
     manager_disk_t::unique_future<uint64_t>
     manager_disk_t::storage_delete_rows(execution_context_t ctx, components::vector::vector_t row_ids, uint64_t count) {
         auto* s = get_storage(ctx.name);
@@ -1429,6 +1449,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_update>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_update, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_patch_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_patch_column, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_delete_rows>: {
@@ -1846,6 +1870,22 @@ namespace services::disk {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         co_return s->update(row_ids, *data, ctx.txn);
+    }
+
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::storage_patch_column(session_id_t /*session*/,
+                                               collection_full_name_t name,
+                                               components::vector::vector_t row_ids,
+                                               uint64_t column_idx,
+                                               std::unique_ptr<components::vector::data_chunk_t> values) {
+        auto it = storages_.find(name);
+        if (it == storages_.end() || values->size() == 0) {
+            co_return;
+        }
+        values->flatten();
+        row_ids.flatten(values->size());
+        it->second->table_storage.table().update_column(row_ids, {column_idx}, *values);
+        co_return;
     }
 
     manager_disk_empty_t::unique_future<uint64_t>

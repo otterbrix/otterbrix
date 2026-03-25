@@ -5,6 +5,7 @@
 #include <components/types/logical_value.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <memory_resource>
 
@@ -13,7 +14,11 @@ namespace services::index {
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class btree_index_disk_t final : public index_disk_t {
     public:
-        btree_index_disk_t(const path_t& path, std::pmr::memory_resource* resource);
+        static constexpr uint64_t default_flush_threshold_{1000};
+
+        btree_index_disk_t(const path_t& path,
+                           std::pmr::memory_resource* resource,
+                           uint64_t flush_threshold = default_flush_threshold_);
         ~btree_index_disk_t() override;
 
         void insert(const value_t& key, size_t value) override;
@@ -38,7 +43,7 @@ namespace services::index {
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};
-        static constexpr uint64_t flush_threshold_{1000};
+        uint64_t flush_threshold_{default_flush_threshold_};
     };
 
 } // namespace services::index

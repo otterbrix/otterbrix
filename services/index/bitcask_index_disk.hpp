@@ -17,7 +17,13 @@ namespace services::index {
 
     class bitcask_index_disk_t final : public index_disk_t {
     public:
-        bitcask_index_disk_t(const path_t& path, std::pmr::memory_resource* resource);
+        static constexpr uint64_t default_flush_threshold_{1000};
+        static constexpr uint64_t default_segment_record_limit_{100};
+
+        bitcask_index_disk_t(const path_t& path,
+                             std::pmr::memory_resource* resource,
+                             uint64_t flush_threshold = default_flush_threshold_,
+                             uint64_t segment_record_limit = default_segment_record_limit_);
         ~bitcask_index_disk_t() override;
 
         using entry_t = std::pair<value_t, size_t>;
@@ -88,9 +94,9 @@ namespace services::index {
         uint64_t next_timestamp_{0};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
+        uint64_t flush_threshold_{default_flush_threshold_};
+        uint64_t segment_record_limit_{default_segment_record_limit_};
         mutable std::shared_mutex mutex_;
-        static constexpr uint64_t flush_threshold_{1000};
-        static constexpr uint64_t segment_record_limit_{100};
     };
 
 } // namespace services::index

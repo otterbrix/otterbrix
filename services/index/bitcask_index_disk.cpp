@@ -118,14 +118,19 @@ namespace services::index {
         }
     }
 
-    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path, std::pmr::memory_resource* resource)
+    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
+                                               std::pmr::memory_resource* resource,
+                                               uint64_t flush_threshold,
+                                               uint64_t segment_record_limit)
         : path_(path)
         , active_data_file_path_()
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , file_(nullptr)
         , index_()
-        , keydir_() {
+        , keydir_()
+        , flush_threshold_(flush_threshold)
+        , segment_record_limit_(segment_record_limit) {
         initialize_storage();
         load_from_disk();
         open_active_segment();

@@ -93,6 +93,9 @@ namespace services::index {
                                      actor_zeta::scheduler_raw scheduler,
                                      log_t& log,
                                      std::filesystem::path path_db,
+                                     uint64_t bitcask_flush_threshold,
+                                     uint64_t bitcask_segment_record_limit,
+                                     uint64_t btree_flush_threshold,
                                      run_fn_t run_fn)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
@@ -100,6 +103,9 @@ namespace services::index {
         , run_fn_(std::move(run_fn))
         , log_(log)
         , path_db_(std::move(path_db))
+        , bitcask_flush_threshold_(bitcask_flush_threshold)
+        , bitcask_segment_record_limit_(bitcask_segment_record_limit)
+        , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
         , metafile_indexes_(nullptr)
         , pending_void_(resource) {
@@ -308,7 +314,8 @@ namespace services::index {
                 if (idx) {
                     try {
                         if (type == components::logical_plan::index_type::hashed) {
-                            auto disk_index = bitcask_index_disk_t(index_path, resource_);
+                            auto disk_index = bitcask_index_disk_t(
+                                index_path, resource_, bitcask_flush_threshold_, bitcask_segment_record_limit_);
                             bitcask_index_disk_t::entries_t raw(resource_);
                             disk_index.load_entries(raw);
                             for (auto& [key, row_id] : raw) {
@@ -352,7 +359,15 @@ namespace services::index {
             if (!path_db_.empty()) {
                 try {
                     auto agent = actor_zeta::spawn<index_agent_disk_t>(
-                        resource_, path_db_, name, std::string(index_name), type, log_);
+                        resource_,
+                        path_db_,
+                        name,
+                        std::string(index_name),
+                        type,
+                        bitcask_flush_threshold_,
+                        bitcask_segment_record_limit_,
+                        btree_flush_threshold_,
+                        log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);

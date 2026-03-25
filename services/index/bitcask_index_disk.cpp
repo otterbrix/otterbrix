@@ -9,6 +9,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <vector>
+#include "absl/crc/crc32c.h"
 
 namespace services::index {
 
@@ -28,7 +29,7 @@ namespace services::index {
         constexpr const char* segment_suffix = ".data";
 
         struct record_header_t {
-            uint32_t crc; // TODO add CRC usage
+            uint32_t crc;
             uint8_t kind;
             uint64_t payload_size;
             uint64_t timestamp;
@@ -93,7 +94,29 @@ namespace services::index {
             const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), segment_id);
             return ec == std::errc() && ptr == digits.data() + digits.size();
         }
-    } // namespace
+
+        void write_record(core::filesystem::file_handle_t& file,
+                  uint8_t kind,
+                  uint64_t timestamp,
+                  const std::pmr::string& payload) {
+            record_header_t header{0, kind, static_cast<uint64_t>(payload.size()), timestamp};
+
+            absl::crc32c_t crc = absl::ComputeCrc32c(
+                absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                  sizeof(header) - sizeof(header.crc))
+            );
+            if (!payload.empty()) {
+                crc = absl::ExtendCrc32c(crc,
+                                         absl::string_view(payload.data(), payload.size()));
+            }
+            header.crc = static_cast<uint32_t>(crc);
+
+            file.write(&header, sizeof(header));
+            if (!payload.empty()) {
+                file.write(const_cast<char*>(payload.data()), payload.size());
+            }
+        }
+    }
 
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path, std::pmr::memory_resource* resource)
         : path_(path)
@@ -139,8 +162,6 @@ namespace services::index {
                     break;
                 }
 
-                // TODO check CRC
-
                 const auto payload_offset = offset + sizeof(record_header_t);
                 if (payload_offset + header.payload_size > file_size) {
                     break;
@@ -153,6 +174,20 @@ namespace services::index {
                     break;
                 }
 
+                {
+                    absl::crc32c_t calc_crc = absl::ComputeCrc32c(
+                        absl::string_view(reinterpret_cast<const char*>(&header.kind),
+                                          sizeof(header) - sizeof(header.crc))
+                    );
+                    if (!payload.empty()) {
+                        calc_crc = absl::ExtendCrc32c(calc_crc,
+                                                      absl::string_view(payload.data(), payload.size()));
+                    }
+                    if (static_cast<uint32_t>(calc_crc) != header.crc) {
+                        throw std::runtime_error("CRC mismatch in segment " + std::to_string(segment.id) +
+                                                 " at offset " + std::to_string(offset));
+                    }
+                }
                 value_t key(resource_, nullptr);
                 row_ids_t rows(resource_);
                 deserialize_payload(resource_, payload, key, rows);
@@ -293,15 +328,10 @@ namespace services::index {
             }
 
             const auto offset = merged_file->seek_position();
-            record_header_t header{0, // TODO write CRC
-                                   static_cast<uint8_t>(record_kind_t::value),
-                                   entry.value_size,
-                                   entry.timestamp};
-
-            merged_file->write(&header, sizeof(header));
-            if (!payload.empty()) {
-                merged_file->write(payload.data(), payload.size());
-            }
+            write_record(*merged_file,
+                         static_cast<uint8_t>(record_kind_t::value),
+                         entry.timestamp,
+                         payload);
 
             updated_entries.emplace(value_t(resource_, key),
                                     keydir_entry_t{merged_segment_id,
@@ -351,22 +381,18 @@ namespace services::index {
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, rows);
         const auto offset = file_->seek_position();
-        record_header_t header{0, // TODO write CRC
-                               static_cast<uint8_t>(record_kind_t::value),
-                               static_cast<uint64_t>(payload.size()),
-                               ++next_timestamp_};
 
-        file_->write(&header, sizeof(header));
-        if (!payload.empty()) {
-            file_->write(payload.data(), payload.size());
-        }
+        write_record(*file_,
+                     static_cast<uint8_t>(record_kind_t::value),
+                     ++next_timestamp_,
+                     payload);
 
         upsert_state(key,
                      rows,
                      keydir_entry_t{active_segment_id_,
                                     offset + sizeof(record_header_t),
                                     static_cast<uint64_t>(payload.size()),
-                                    header.timestamp});
+                                    next_timestamp_});
         ++active_segment_records_;
     }
 
@@ -377,15 +403,11 @@ namespace services::index {
 
         rotate_active_segment_if_needed();
         auto payload = serialize_payload(resource_, key, row_ids_t(resource_));
-        record_header_t header{0, // TODO CRC
-                               static_cast<uint8_t>(record_kind_t::tombstone),
-                               static_cast<uint64_t>(payload.size()),
-                               ++next_timestamp_};
 
-        file_->write(&header, sizeof(header));
-        if (!payload.empty()) {
-            file_->write(payload.data(), payload.size());
-        }
+        write_record(*file_,
+                     static_cast<uint8_t>(record_kind_t::tombstone),
+                     ++next_timestamp_,
+                     payload);
 
         erase_state(key);
         ++active_segment_records_;
@@ -549,4 +571,4 @@ namespace services::index {
         remove_directory(fs_, path_);
     }
 
-} // namespace services::index
+}

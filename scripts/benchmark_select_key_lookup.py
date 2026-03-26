@@ -96,7 +96,6 @@ def main():
     parser.add_argument("--shuffle-ids", action="store_true", help="Use pseudo-random id permutation.")
     parser.add_argument("--seed", type=int, default=1234567, help="Pseudo-random seed.")
     parser.add_argument("--show-runner-output", action="store_true", help="Do not suppress benchmark_runner output.")
-    parser.add_argument("--keep-workspace", action="store_true", help="Keep generated workspace for inspection.")
     args = parser.parse_args()
 
     if args.runner is None:
@@ -159,10 +158,7 @@ def main():
         )
         print(f"{name},{avg_ms:.3f},{median_ms:.3f},{wall_ms:.3f},{setup_overhead_ms:.3f},{verified}")
 
-    if args.keep_workspace:
-        print(f"Workspace preserved at: {workspace}")
-    else:
-        shutil.rmtree(workspace, ignore_errors=True)
+    shutil.rmtree(workspace, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

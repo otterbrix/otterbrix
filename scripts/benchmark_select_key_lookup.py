@@ -42,14 +42,11 @@ def generate_lookup_sql(
     lines.append(f"SELECT * FROM {database_name}.kv WHERE id = {key};")
     query_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-def create_query_file(directory: Path, query_sql: str, expected_rows: int = 1) -> None:
-    text = f"-- @expected_rows {expected_rows}\n{query_sql}\n"
-    (directory / "lookup.sql").write_text(text, encoding="utf-8")
+def run_process(args: list[str], cwd: Path | None = None, suppress_output: bool = True):
+    stdout = subprocess.DEVNULL if suppress_output else None
+    subprocess.run(args, cwd=str(cwd) if cwd else None, check=True, stdout=stdout)
 
-def run_process(args: list[str], cwd: Path | None = None):
-    subprocess.run(args, cwd=str(cwd) if cwd else None, check=True, stdout=subprocess.DEVNULL)
-
-def run_scenario(runner: Path, scenario_dir: Path, runs: int):
+def run_scenario(runner: Path, scenario_dir: Path, runs: int, suppress_runner_output: bool = True):
     out_csv = scenario_dir / "result.csv"
     cmd = [
         str(runner),
@@ -58,7 +55,9 @@ def run_scenario(runner: Path, scenario_dir: Path, runs: int):
         "--disk",
         f"--out={out_csv}",
     ]
-    run_process(cmd, cwd=scenario_dir)
+    wall_start = time.perf_counter()
+    run_process(cmd, cwd=scenario_dir, suppress_output=suppress_runner_output)
+    wall_ms = (time.perf_counter() - wall_start) * 1000.0
 
     rows = []
     with out_csv.open("r", encoding="utf-8", newline="") as f:
@@ -70,8 +69,10 @@ def run_scenario(runner: Path, scenario_dir: Path, runs: int):
         sys.exit(1)
     avg_ms = sum(float(r["avg_ms"]) for r in rows) / len(rows)
     median_ms = sum(float(r["median_ms"]) for r in rows) / len(rows)
+    timed_total_ms = sum(float(r["avg_ms"]) * float(r["nruns"]) for r in rows)
+    setup_overhead_ms = max(0.0, wall_ms - timed_total_ms)
     verified = "OK" if all(r["verified"] == "OK" for r in rows) else "FAIL"
-    return avg_ms, median_ms, verified
+    return avg_ms, median_ms, verified, wall_ms, setup_overhead_ms
 
 def human_size(path: Path):
     size = path.stat().st_size
@@ -94,6 +95,8 @@ def main():
     parser.add_argument("--runs", type=int, default=7, help="Timed runs per scenario.")
     parser.add_argument("--shuffle-ids", action="store_true", help="Use pseudo-random id permutation.")
     parser.add_argument("--seed", type=int, default=1234567, help="Pseudo-random seed.")
+    parser.add_argument("--show-runner-output", action="store_true", help="Do not suppress benchmark_runner output.")
+    parser.add_argument("--keep-workspace", action="store_true", help="Keep generated workspace for inspection.")
     args = parser.parse_args()
 
     if args.runner is None:
@@ -140,7 +143,7 @@ def main():
     print()
     print(f"Running benchmark scenarios with {args.runs} timed runs each...")
     print(f"Workload lookups per scenario file: 1 (shuffle_ids={1 if args.shuffle_ids else 0})")
-    print("scenario,avg_ms,median_ms,verified")
+    print("scenario,avg_ms,median_ms,wall_ms,setup_overhead_ms,verified")
 
     scenarios = [
         ("no_index", no_index_dir),
@@ -148,10 +151,18 @@ def main():
         ("hash_single_field_index", hash_index_dir),
     ]
     for name, d in scenarios:
-        avg_ms, median_ms, verified = run_scenario(runner, d, args.runs)
-        print(f"{name},{avg_ms:.3f},{median_ms:.3f},{verified}")
+        avg_ms, median_ms, verified, wall_ms, setup_overhead_ms = run_scenario(
+            runner,
+            d,
+            args.runs,
+            suppress_runner_output=not args.show_runner_output,
+        )
+        print(f"{name},{avg_ms:.3f},{median_ms:.3f},{wall_ms:.3f},{setup_overhead_ms:.3f},{verified}")
 
-    shutil.rmtree(workspace, ignore_errors=True)
+    if args.keep_workspace:
+        print(f"Workspace preserved at: {workspace}")
+    else:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

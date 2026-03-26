@@ -116,6 +116,7 @@ namespace components::table {
                                                uint64_t depth) {
         if (depth >= column_path.size()) {
             column_data_t::update(column_path[0], update_vector, row_ids, update_count);
+            validity.update(column_path[0], update_vector, row_ids, update_count);
         } else {
             validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         }

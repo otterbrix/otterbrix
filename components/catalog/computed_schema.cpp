@@ -6,7 +6,9 @@ namespace components::catalog {
         , column_order_(resource)
         , sparse_threshold_(sparse_threshold)
         , non_null_counts_(resource)
-        , sparse_flags_(resource) {}
+        , sparse_flags_(resource)
+        , promoted_order_(resource)
+        , phys_to_field_type_(resource) {}
 
     void computed_schema::append(std::pmr::string field_name, const types::complex_logical_type& type) {
         auto& list = fields_[field_name];
@@ -25,6 +27,8 @@ namespace components::catalog {
             if (sparse_flags_.find(phys) == sparse_flags_.end()) {
                 sparse_flags_[phys] = true;
                 non_null_counts_[phys] = 0;
+                // Register reverse mapping for promote_to_regular lookup
+                phys_to_field_type_[phys] = {field_name, type};
             }
         }
     }
@@ -51,6 +55,13 @@ namespace components::catalog {
                                   fields_.get_allocator().resource());
             sparse_flags_.erase(phys);
             non_null_counts_.erase(phys);
+            phys_to_field_type_.erase(phys);
+            // Remove from promoted_order_ if present
+            promoted_order_.erase(
+                std::remove_if(promoted_order_.begin(),
+                               promoted_order_.end(),
+                               [&](const auto& p) { return p.first == field_name && p.second == type; }),
+                promoted_order_.end());
         }
     }
 
@@ -77,25 +88,29 @@ namespace components::catalog {
             auto id_type = types::complex_logical_type(types::logical_type::BIGINT);
             id_type.set_alias("_id");
             retval.push_back(std::move(id_type));
-        }
 
-        retval.reserve(retval.size() + column_order_.size());
-        for (const auto& [name, type] : column_order_) {
-            if (!has_type(name, type)) {
-                continue;
-            }
-            // Skip sparse columns (they are not in the main table physical schema)
-            if (sparse_threshold_ > 0) {
-                std::string phys = storage_column_name(std::string(name), type);
-                std::pmr::string pmr_phys(phys, fields_.get_allocator().resource());
-                auto it = sparse_flags_.find(pmr_phys);
-                if (it != sparse_flags_.end() && it->second) {
-                    continue; // still sparse, exclude from logical schema
+            // Use promoted_order_ so column indices match the physical table order.
+            // promoted_order_ records columns in the same order as storage_add_column calls,
+            // so index K in latest_types_struct() == physical column K in copy_types().
+            retval.reserve(retval.size() + promoted_order_.size());
+            for (const auto& [name, type] : promoted_order_) {
+                if (!has_type(name, type)) {
+                    continue;
                 }
+                auto t = type;
+                t.set_alias(name.c_str());
+                retval.push_back(std::move(t));
             }
-            auto t = type;
-            t.set_alias(name.c_str());
-            retval.push_back(std::move(t));
+        } else {
+            retval.reserve(column_order_.size());
+            for (const auto& [name, type] : column_order_) {
+                if (!has_type(name, type)) {
+                    continue;
+                }
+                auto t = type;
+                t.set_alias(name.c_str());
+                retval.push_back(std::move(t));
+            }
         }
         return types::complex_logical_type::create_struct("latest_types", std::move(retval));
     }
@@ -143,6 +158,11 @@ namespace components::catalog {
         auto it = sparse_flags_.find(phys_name);
         if (it != sparse_flags_.end()) {
             it->second = false;
+        }
+        // Record promotion order to keep latest_types_struct() in sync with physical column order
+        auto map_it = phys_to_field_type_.find(phys_name);
+        if (map_it != phys_to_field_type_.end()) {
+            promoted_order_.emplace_back(map_it->second);
         }
     }
 

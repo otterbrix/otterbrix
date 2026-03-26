@@ -40,10 +40,10 @@ public:
 
 static constexpr bool USE_SPARSE = true;
 
-static constexpr size_t N_ROWS       = 100'000;
-static constexpr const char* DB_NAME    = "bench";
+static constexpr size_t N_ROWS = 100'000;
+static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";
-static constexpr size_t INSERT_BATCH = 500;
+static constexpr size_t INSERT_BATCH = 1000;
 static constexpr size_t SCHEMA_SAMPLE = 2000;
 static constexpr size_t SPARSE_THRESHOLD = USE_SPARSE ? N_ROWS / 10 : 0;
 
@@ -202,7 +202,7 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
 static double run_query(otterbrix::base_otterbrix_t* space,
                         const std::string& label,
                         const std::string& sql,
-                        bool print_rows = false) {
+                        bool print_rows = true) {
     std::cout << "\n=== " << label << " ===\n";
     std::cout << "  SQL: " << sql.substr(0, 120)
               << (sql.size() > 120 ? "..." : "") << "\n\n";
@@ -373,6 +373,16 @@ static BenchResult run_bench(const std::string& label,
         }
         std::cout << "--------------------------\n";
     }
+
+    // ---- Diagnostic -------------------------------------------------------------
+    run_query(&space, "Diag: raw first 5 rows",
+        "SELECT _id, time_us, kind, \"commit.operation\" FROM bench.events LIMIT 5;");
+
+    run_query(&space, "Diag: kind x operation for feed.post",
+        "SELECT kind, \"commit.operation\", COUNT(*) as cnt "
+        "FROM bench.events "
+        "WHERE \"commit.collection\" = 'app.bsky.feed.post' "
+        "GROUP BY kind, \"commit.operation\";");
 
     // ---- Queries -------------------------------------------------------------
     double q1 = run_query(&space, "Q1: Top event types",

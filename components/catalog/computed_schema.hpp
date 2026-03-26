@@ -80,5 +80,13 @@ namespace components::catalog {
         std::pmr::unordered_map<std::pmr::string, uint64_t> non_null_counts_;
         // physical_name -> is_still_sparse
         std::pmr::unordered_map<std::pmr::string, bool> sparse_flags_;
+        // Tracks the order in which columns are promoted from sparse → regular.
+        // This matches the order columns are added to the physical table (via storage_add_column).
+        // Used by latest_types_struct() so logical schema index == physical column index.
+        std::pmr::vector<std::pair<std::pmr::string, types::complex_logical_type>> promoted_order_;
+        // Reverse map: phys_name -> (field_name, type) for promote_to_regular lookup.
+        std::pmr::unordered_map<std::pmr::string,
+                                std::pair<std::pmr::string, types::complex_logical_type>>
+            phys_to_field_type_;
     };
 } // namespace components::catalog

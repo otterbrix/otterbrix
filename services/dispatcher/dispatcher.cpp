@@ -506,7 +506,8 @@ namespace services::dispatcher {
                                     }
                                 } else {
                                     // Promoted column: include in main INSERT chunk
-                                    col.set_type_alias(phys_name);
+                                    // Use original field_name (not phys_name) so SQL queries can resolve it
+                                    col.set_type_alias(field_name);
                                     promoted_cols.push_back(std::move(col));
                                 }
 
@@ -528,9 +529,9 @@ namespace services::dispatcher {
                             //     so column schema is ready; current batch still goes to sparse table)
                             for (const auto& jp : just_promoted) {
                                 auto jp_type = jp.col_type;
-                                jp_type.set_alias(jp.phys_name);
+                                jp_type.set_alias(jp.field_name);
                                 components::table::column_definition_t jp_col_def(
-                                    jp.phys_name, jp_type, false, std::nullopt);
+                                    jp.field_name, jp_type, false, std::nullopt);
                                 auto [_jac, jacf] =
                                     actor_zeta::send(disk_address_,
                                                      &disk::manager_disk_t::storage_add_column,
@@ -645,11 +646,11 @@ namespace services::dispatcher {
                                     auto main_cols = co_await std::move(gcf);
 
                                     for (const auto& jp : just_promoted) {
-                                        // Find the physical column index
+                                        // Find the physical column index (column was added with field_name)
                                         uint64_t col_idx = 0;
                                         bool found = false;
                                         for (uint64_t ci = 0; ci < main_cols.size(); ci++) {
-                                            if (main_cols[ci].name() == jp.phys_name) {
+                                            if (main_cols[ci].name() == jp.field_name) {
                                                 col_idx = ci;
                                                 found = true;
                                                 break;
@@ -688,7 +689,7 @@ namespace services::dispatcher {
 
                                         // Join sparse rows to main table by _id → physical_position
                                         auto val_type = jp.col_type;
-                                        val_type.set_alias(jp.phys_name);
+                                        val_type.set_alias(jp.field_name);
                                         std::pmr::vector<complex_logical_type> val_types(resource());
                                         val_types.push_back(val_type);
 

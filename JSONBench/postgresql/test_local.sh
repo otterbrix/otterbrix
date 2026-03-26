@@ -19,7 +19,7 @@ if [[ "$USE_INDEX" != "index" && "$USE_INDEX" != "noindex" ]]; then
     exit 1
 fi
 
-NUM_RECORDS="20000"
+NUM_RECORDS="100000"
 SINGLE_THREAD=false
 NO_CLEANUP=false
 
@@ -33,7 +33,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTTERBRIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TEST_FILE="$OTTERBRIX_ROOT/JSONBench/file_0001_filtered.json"
+TEST_FILE="$OTTERBRIX_ROOT/JSONBench/file_0001.json"
 DB_NAME="bluesky_test"
 TABLE_NAME="bluesky"
 

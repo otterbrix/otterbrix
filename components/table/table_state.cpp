@@ -179,9 +179,15 @@ namespace components::table {
         while (row_group) {
             row_group->scan(*this, result);
             if (max_row <= row_group->start + static_cast<int64_t>(row_group->count)) {
-                row_group = nullptr;
-                return false;
+                // max_row is within this row group
+                if (static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row) {
+                    // All vectors in this row group have been scanned
+                    row_group = nullptr;
+                    return false;
+                }
+                // More vectors remain in this row group — continue looping
             } else {
+                // max_row is beyond this row group, advance to next
                 do {
                     row_group = row_groups->next_segment(row_group);
                     if (row_group) {

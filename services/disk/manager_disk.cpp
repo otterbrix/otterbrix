@@ -1093,6 +1093,7 @@ namespace services::disk {
 
         // 2. Column expansion — reorder/expand incoming data to match storage columns
         const auto& table_columns = s->columns();
+
         if (!table_columns.empty() && data->column_count() > 0) {
             std::pmr::vector<components::types::complex_logical_type> full_types(resource());
             for (const auto& col_def : table_columns) {
@@ -1719,7 +1720,7 @@ namespace services::disk {
 
         // Column expansion
         const auto& table_columns = s->columns();
-        if (!table_columns.empty() && data->column_count() < table_columns.size()) {
+        if (!table_columns.empty() && data->column_count() > 0) {
             std::pmr::vector<components::types::complex_logical_type> full_types(resource());
             for (const auto& col_def : table_columns) {
                 full_types.push_back(col_def.type());

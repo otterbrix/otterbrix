@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -12,27 +13,39 @@
 #include <integration/cpp/base_spaces.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
+#include <components/catalog/catalog.hpp>
+#include <components/catalog/computed_schema.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
+#include <services/disk/manager_disk.hpp>
 
-// Thin subclass to expose the protected constructor
+// Subclass to expose internals for diagnostics
 class bench_spaces final : public otterbrix::base_otterbrix_t {
 public:
     explicit bench_spaces(const configuration::config& config)
         : otterbrix::base_otterbrix_t(config) {}
+
+    services::dispatcher::manager_dispatcher_t* mgr() {
+        return manager_dispatcher_.get();
+    }
 };
 
 #ifndef JSONBENCH_DATA_FILE
 #define JSONBENCH_DATA_FILE "file_0001.json"
 #endif
 
+static constexpr bool USE_SPARSE = true;
+
 static constexpr size_t N_ROWS       = 100'000;
 static constexpr const char* DB_NAME    = "bench";
 static constexpr const char* TABLE_NAME = "events";
 static constexpr size_t INSERT_BATCH = 500;
 static constexpr size_t SCHEMA_SAMPLE = 2000;
+static constexpr size_t SPARSE_THRESHOLD = USE_SPARSE ? N_ROWS / 10 : 0;
 
 namespace bj = boost::json;
 
@@ -40,8 +53,6 @@ namespace bj = boost::json;
 // JSON flattening
 // ----------------------------------------------------------------------------
 
-// Recursively flatten a JSON object into { dot-path → string value }.
-// Arrays are serialized as JSON strings. Null values are omitted.
 static void flatten_object(const bj::object& obj,
                            const std::string& prefix,
                            std::map<std::string, std::string>& out) {
@@ -74,8 +85,8 @@ static void flatten_object(const bj::object& obj,
 // ----------------------------------------------------------------------------
 
 struct ColDef {
-    std::string path;    // dot-separated JSON path (= column name), e.g. "commit.collection"
-    bool        is_int;  // BIGINT if all sampled values parse as int64, else STRING_LITERAL
+    std::string path;
+    bool        is_int;
 };
 
 static std::vector<ColDef> discover_schema(const char* filename, size_t sample) {
@@ -188,9 +199,10 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
     std::cout << "  (" << nrows << " rows)\n";
 }
 
-static void run_query(otterbrix::base_otterbrix_t* space,
-                      const std::string& label,
-                      const std::string& sql) {
+static double run_query(otterbrix::base_otterbrix_t* space,
+                        const std::string& label,
+                        const std::string& sql,
+                        bool print_rows = false) {
     std::cout << "\n=== " << label << " ===\n";
     std::cout << "  SQL: " << sql.substr(0, 120)
               << (sql.size() > 120 ? "..." : "") << "\n\n";
@@ -200,15 +212,39 @@ static void run_query(otterbrix::base_otterbrix_t* space,
     auto cur     = space->dispatcher()->execute_sql(session, sql);
     double ms    = ms_since(t0);
 
-    print_cursor(cur);
+    if (print_rows) print_cursor(cur);
+    else if (cur->is_error())
+        std::cout << "  ERROR: " << cur->get_error().what << "\n";
+    else
+        std::cout << "  (" << cur->size() << " rows)\n";
+
     std::cout << "  Time: " << ms << " ms\n";
+    return ms;
 }
 
 // ----------------------------------------------------------------------------
-// Main
+// Benchmark run
 // ----------------------------------------------------------------------------
 
-int main() {
+struct BenchResult {
+    double insert_ms;
+    size_t rss_delta_kb;
+    double q1_ms, q2_ms, q3_ms, q4_ms, q5_ms;
+};
+
+static BenchResult run_bench(const std::string& label,
+                             const std::vector<ColDef>& cols,
+                             const std::vector<std::map<std::string, std::string>>& records,
+                             size_t sparse_threshold) {
+    std::cout << "\n\n";
+    std::cout << "########################################\n";
+    std::cout << "# " << label << "\n";
+    if (sparse_threshold > 0)
+        std::cout << "# sparse_threshold = " << sparse_threshold << "\n";
+    else
+        std::cout << "# sparse disabled\n";
+    std::cout << "########################################\n";
+
     std::filesystem::remove_all("/tmp/jsonbench_otterbrix");
     std::filesystem::create_directories("/tmp/jsonbench_otterbrix");
 
@@ -221,40 +257,178 @@ int main() {
     auto* dispatcher = space.dispatcher();
     auto* resource   = dispatcher->resource();
 
-    // ---- Create DB and table (dynamic schema) --------------------------------
+    collection_full_name_t full_name{DB_NAME, TABLE_NAME};
+
     {
         auto session = otterbrix::session_id_t();
         dispatcher->create_database(session, DB_NAME);
     }
     {
+        auto node = components::logical_plan::make_node_create_collection(
+            resource, full_name, static_cast<uint64_t>(sparse_threshold));
         auto session = otterbrix::session_id_t();
-        dispatcher->create_collection(session, DB_NAME, TABLE_NAME);
+        auto cur = dispatcher->execute_plan(session, node);
+        if (cur->is_error()) {
+            std::cerr << "CREATE TABLE error: " << cur->get_error().what << "\n";
+        }
     }
 
-    // ---- Schema discovery ---------------------------------------------------
-    std::cout << "=== Discovering schema from " << JSONBENCH_DATA_FILE << " ===\n";
-    auto cols = discover_schema(JSONBENCH_DATA_FILE, SCHEMA_SAMPLE);
-    std::cout << "Discovered " << cols.size() << " columns.\n";
-
-    // Build path → column index map for fast lookup during insert
+    // Build path → column index map
     std::map<std::string, size_t> path_to_idx;
-    for (size_t i = 0; i < cols.size(); ++i) {
-        path_to_idx[cols[i].path] = i;
-    }
+    for (size_t i = 0; i < cols.size(); ++i) path_to_idx[cols[i].path] = i;
 
-    // Build type vector  (column name = dot-path, e.g. "commit.collection")
     using CT = components::types::complex_logical_type;
     using LT = components::types::logical_type;
     using LV = components::types::logical_value_t;
 
     std::pmr::vector<CT> types(resource);
-    for (const auto& col : cols) {
+    for (const auto& col : cols)
         types.emplace_back(col.is_int ? LT::BIGINT : LT::STRING_LITERAL, col.path);
+
+    // ---- Insert --------------------------------------------------------------
+    std::cout << "\n=== Inserting " << records.size() << " rows"
+              << " (batch=" << INSERT_BATCH << ") ===\n";
+    size_t rss_before = rss_kb();
+    auto t_insert = Clock::now();
+
+    for (size_t start = 0; start < records.size(); start += INSERT_BATCH) {
+        size_t end   = std::min(start + INSERT_BATCH, records.size());
+        size_t batch = end - start;
+
+        components::vector::data_chunk_t chunk(resource, types, batch);
+        chunk.set_cardinality(batch);
+
+        // Mark all columns as invalid (NULL) first; only set valid where JSON has a value
+        for (size_t c = 0; c < cols.size(); ++c) {
+            chunk.data[c].validity().set_all_invalid(batch);
+        }
+
+        for (size_t i = 0; i < batch; ++i) {
+            const auto& flat = records[start + i];
+            for (const auto& [path, val] : flat) {
+                auto it = path_to_idx.find(path);
+                if (it == path_to_idx.end()) continue;
+                size_t col_idx = it->second;
+                if (cols[col_idx].is_int) {
+                    try {
+                        chunk.set_value(col_idx, i, LV{resource, std::stoll(val)});
+                    } catch (...) {
+                        chunk.set_value(col_idx, i, LV{resource, val});
+                    }
+                } else {
+                    chunk.set_value(col_idx, i, LV{resource, val});
+                }
+            }
+        }
+
+        auto ins = components::logical_plan::make_node_insert(resource, full_name, std::move(chunk));
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_plan(session, ins);
+        if (cur->is_error()) {
+            std::cerr << "Insert error at row " << start << ": " << cur->get_error().what << "\n";
+        }
     }
 
-    collection_full_name_t full_name{DB_NAME, TABLE_NAME};
+    double insert_ms  = ms_since(t_insert);
+    size_t rss_after  = rss_kb();
+    size_t rss_delta  = rss_after > rss_before ? rss_after - rss_before : 0;
+    std::cout << "Insert time : " << insert_ms << " ms\n";
+    std::cout << "Memory used : " << rss_delta << " KB"
+              << "  (" << rss_after << " KB RSS total)\n";
 
-    // ---- Read and sort records ----------------------------------------------
+    // ---- Sparse diagnostics --------------------------------------------------
+    if (sparse_threshold > 0) {
+        auto* mgr = space.mgr();
+        auto* res = mgr->resource();
+        components::catalog::table_id tid(res, full_name);
+
+        if (mgr->mutable_catalog().table_computes(tid)) {
+            const auto& schema = mgr->mutable_catalog().get_computing_table_schema(tid);
+            auto sparse_cols = schema.sparse_columns();
+
+            size_t n_sparse = sparse_cols.size();
+            std::cout << "\n--- Sparse diagnostics ---\n";
+            std::cout << "  Sparse columns still remaining : " << n_sparse << "\n";
+
+            // Count total rows in all sparse tables
+            size_t total_sparse_rows = 0;
+            size_t max_sparse_rows   = 0;
+            std::string max_col_name;
+            for (const auto& sp : sparse_cols) {
+                uint64_t nnc = schema.get_non_null_count(
+                    std::pmr::string(
+                        components::catalog::computed_schema::storage_column_name(
+                            sp.field_name, sp.type).c_str(),
+                        res));
+                total_sparse_rows += nnc;
+                if (nnc > max_sparse_rows) {
+                    max_sparse_rows = nnc;
+                    max_col_name    = sp.field_name;
+                }
+            }
+            std::cout << "  Total non-null rows in sparse  : " << total_sparse_rows << "\n";
+            std::cout << "  Largest sparse col             : " << max_col_name
+                      << " (" << max_sparse_rows << " rows)\n";
+            std::cout << "  sparse_threshold               : " << schema.sparse_threshold() << "\n";
+        }
+        std::cout << "--------------------------\n";
+    }
+
+    // ---- Queries -------------------------------------------------------------
+    double q1 = run_query(&space, "Q1: Top event types",
+        "SELECT \"commit.collection\", COUNT(did) as count "
+        "FROM bench.events "
+        "GROUP BY \"commit.collection\" "
+        "ORDER BY count DESC;");
+
+    double q2 = run_query(&space, "Q2: Unique users (kind=commit, op=create)",
+        "SELECT \"commit.collection\", COUNT(did) as count, COUNT(DISTINCT did) as users "
+        "FROM bench.events "
+        "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+        "GROUP BY \"commit.collection\" "
+        "ORDER BY count DESC;");
+
+    double q3 = run_query(&space, "Q3: Post / repost / like counts",
+        "SELECT \"commit.collection\", COUNT(did) as count "
+        "FROM bench.events "
+        "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+        "  AND (\"commit.collection\" = 'app.bsky.feed.post' "
+        "       OR \"commit.collection\" = 'app.bsky.feed.repost' "
+        "       OR \"commit.collection\" = 'app.bsky.feed.like') "
+        "GROUP BY \"commit.collection\" "
+        "ORDER BY count DESC;");
+
+    double q4 = run_query(&space, "Q4: First 3 users to post",
+        "SELECT did, MIN(time_us) as first_post "
+        "FROM bench.events "
+        "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+        "  AND \"commit.collection\" = 'app.bsky.feed.post' "
+        "GROUP BY did "
+        "ORDER BY first_post ASC "
+        "LIMIT 3;");
+
+    double q5 = run_query(&space, "Q5: Top 3 users by activity span",
+        "SELECT did, MIN(time_us) as first_ts, MAX(time_us) as last_ts "
+        "FROM bench.events "
+        "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
+        "  AND \"commit.collection\" = 'app.bsky.feed.post' "
+        "GROUP BY did "
+        "ORDER BY last_ts DESC "
+        "LIMIT 3;");
+
+    return {insert_ms, rss_delta, q1, q2, q3, q4, q5};
+}
+
+// ----------------------------------------------------------------------------
+// Main
+// ----------------------------------------------------------------------------
+
+int main() {
+    // ---- Schema discovery + data load (shared) ------------------------------
+    std::cout << "=== Discovering schema from " << JSONBENCH_DATA_FILE << " ===\n";
+    auto cols = discover_schema(JSONBENCH_DATA_FILE, SCHEMA_SAMPLE);
+    std::cout << "Discovered " << cols.size() << " columns.\n";
+
     std::cout << "\n=== Reading up to " << N_ROWS << " rows ===\n";
     std::vector<std::map<std::string, std::string>> records;
     records.reserve(N_ROWS);
@@ -286,108 +460,14 @@ int main() {
         const auto& opa = get(a, "commit.operation");
         const auto& opb = get(b, "commit.operation");
         if (opa != opb) return opa < opb;
-        const auto& ca  = get(a, "commit.collection");
-        const auto& cb  = get(b, "commit.collection");
-        return ca < cb;
+        return get(a, "commit.collection") < get(b, "commit.collection");
     });
 
-    // ---- Insert in batches --------------------------------------------------
-    std::cout << "\n=== Inserting " << records.size() << " rows (batch=" << INSERT_BATCH << ") ===\n";
-    size_t rss_before = rss_kb();
-    auto t_insert = Clock::now();
-
-    for (size_t start = 0; start < records.size(); start += INSERT_BATCH) {
-        size_t end   = std::min(start + INSERT_BATCH, records.size());
-        size_t batch = end - start;
-
-        components::vector::data_chunk_t chunk(resource, types, batch);
-        chunk.set_cardinality(batch);
-
-        for (size_t i = 0; i < batch; ++i) {
-            const auto& flat = records[start + i];
-            for (const auto& [path, val] : flat) {
-                auto it = path_to_idx.find(path);
-                if (it == path_to_idx.end()) continue;
-                size_t col_idx = it->second;
-                if (cols[col_idx].is_int) {
-                    try {
-                        chunk.set_value(col_idx, i, LV{resource, std::stoll(val)});
-                    } catch (...) {
-                        chunk.set_value(col_idx, i, LV{resource, val});
-                    }
-                } else {
-                    chunk.set_value(col_idx, i, LV{resource, val});
-                }
-            }
-        }
-
-        auto ins = components::logical_plan::make_node_insert(resource, full_name, std::move(chunk));
-        auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
-        if (cur->is_error()) {
-            std::cerr << "Insert error: " << cur->get_error().what << "\n";
-            return 1;
-        }
-    }
-
-    double insert_ms = ms_since(t_insert);
-    size_t rss_after = rss_kb();
-    std::cout << "Insert time : " << insert_ms << " ms\n";
-    std::cout << "Memory used : " << (rss_after - rss_before) << " KB"
-              << "  (" << rss_after << " KB RSS total)\n";
-
-    // ---- Queries (column names with dots require double-quote quoting) -------
-
-    // Q1: Top event types by count
-    run_query(&space,
-              "Q1: Top event types",
-              "SELECT \"commit.collection\", COUNT(did) as count "
-              "FROM bench.events "
-              "GROUP BY \"commit.collection\" "
-              "ORDER BY count DESC;");
-
-    // Q2: Unique users per event type (kind=commit, operation=create)
-    run_query(&space,
-              "Q2: Unique users per event type (kind=commit, op=create)",
-              "SELECT \"commit.collection\", COUNT(did) as count, COUNT(DISTINCT did) as users "
-              "FROM bench.events "
-              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
-              "GROUP BY \"commit.collection\" "
-              "ORDER BY count DESC;");
-
-    // Q3: Post/repost/like counts
-    run_query(&space,
-              "Q3: Post / repost / like counts",
-              "SELECT \"commit.collection\", COUNT(did) as count "
-              "FROM bench.events "
-              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
-              "  AND (\"commit.collection\" = 'app.bsky.feed.post' "
-              "       OR \"commit.collection\" = 'app.bsky.feed.repost' "
-              "       OR \"commit.collection\" = 'app.bsky.feed.like') "
-              "GROUP BY \"commit.collection\" "
-              "ORDER BY count DESC;");
-
-    // Q4: First 3 users to post
-    run_query(&space,
-              "Q4: First 3 users to post",
-              "SELECT did, MIN(time_us) as first_post "
-              "FROM bench.events "
-              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
-              "  AND \"commit.collection\" = 'app.bsky.feed.post' "
-              "GROUP BY did "
-              "ORDER BY first_post ASC "
-              "LIMIT 3;");
-
-    // Q5: Top 3 users by activity span
-    run_query(&space,
-              "Q5: Top 3 users by activity span",
-              "SELECT did, MIN(time_us) as first_ts, MAX(time_us) as last_ts "
-              "FROM bench.events "
-              "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
-              "  AND \"commit.collection\" = 'app.bsky.feed.post' "
-              "GROUP BY did "
-              "ORDER BY last_ts DESC "
-              "LIMIT 3;");
+    // ---- Run selected variant ------------------------------------------------
+    const std::string label = USE_SPARSE
+        ? ("SPARSE (threshold=" + std::to_string(SPARSE_THRESHOLD) + ")")
+        : "BASELINE (no sparse)";
+    run_bench(label, cols, records, SPARSE_THRESHOLD);
 
     return 0;
 }

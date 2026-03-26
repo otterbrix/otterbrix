@@ -3,12 +3,15 @@ project(index_service)
 set(${PROJECT_NAME}_HEADERS
         index_contract.hpp
         index_disk.hpp
+        bitcask_index_disk.hpp
+        btree_index_disk.hpp
         index_agent_disk.hpp
         manager_index.hpp
 )
 
 set(${PROJECT_NAME}_SOURCES
-        index_disk.cpp
+        bitcask_index_disk.cpp
+        btree_index_disk.cpp
         index_agent_disk.cpp
         manager_index.cpp
 )

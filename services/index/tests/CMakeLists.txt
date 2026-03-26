@@ -3,6 +3,7 @@ project(test_index_service)
 set(${PROJECT_NAME}_SOURCES
     main.cpp
     test_index_disk.cpp
+    test_bitcask_index_disk.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

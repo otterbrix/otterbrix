@@ -4,6 +4,7 @@ add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
         test_single_field_index.cpp
+        test_hash_single_field_index.cpp
         test_create_index.cpp
         test_index_mvcc.cpp
 )

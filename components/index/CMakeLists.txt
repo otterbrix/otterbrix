@@ -4,6 +4,7 @@ set(${PROJECT_NAME}_SOURCES
         index.cpp
         index_engine.cpp
         single_field_index.cpp
+        hash_single_field_index.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

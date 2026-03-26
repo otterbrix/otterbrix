@@ -1,8 +1,10 @@
 #include <catch2/catch.hpp>
-#include <services/index/index_disk.hpp>
+#include <services/index/bitcask_index_disk.hpp>
+#include <services/index/btree_index_disk.hpp>
 
 using components::types::logical_value_t;
-using services::index::index_disk_t;
+using services::index::bitcask_index_disk_t;
+using services::index::btree_index_disk_t;
 
 std::string padded_string(int i, std::size_t size = 24) {
     auto s = std::to_string(i);
@@ -26,7 +28,7 @@ TEST_CASE("services::index::index_disk::string") {
     std::filesystem::path path{"/tmp/index_disk/string"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = index_disk_t(path, &resource);
+    auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         index.insert(logical_value_t(&resource, padded_string(i)), static_cast<size_t>(i));
@@ -59,7 +61,7 @@ TEST_CASE("services::index::index_disk::int32") {
     std::filesystem::path path{"/tmp/index_disk/int32"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = index_disk_t(path, &resource);
+    auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
@@ -92,7 +94,7 @@ TEST_CASE("services::index::index_disk::uint32") {
     std::filesystem::path path{"/tmp/index_disk/uint32"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = index_disk_t(path, &resource);
+    auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         index.insert(logical_value_t(&resource, uint64_t(i)), static_cast<size_t>(i));
@@ -125,7 +127,7 @@ TEST_CASE("services::index::index_disk::double") {
     std::filesystem::path path{"/tmp/index_disk/double"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = index_disk_t(path, &resource);
+    auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         index.insert(logical_value_t(&resource, double(i)), static_cast<size_t>(i));
@@ -158,7 +160,7 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
     std::filesystem::path path{"/tmp/index_disk/int32_multi"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    auto index = index_disk_t(path, &resource);
+    auto index = btree_index_disk_t(path, &resource);
 
     for (int i = 1; i <= 100; ++i) {
         for (int j = 0; j < 10; ++j) {
@@ -198,7 +200,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
 
     // Phase 1: create, insert 100 values, flush
     {
-        auto index = index_disk_t(path, &resource);
+        auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -207,7 +209,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
 
     // Phase 2: reopen from same path, verify data persisted
     {
-        auto index = index_disk_t(path, &resource);
+        auto index = btree_index_disk_t(path, &resource);
 
         // find exact values
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
@@ -233,7 +235,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
 
     // Phase 1: create, insert 100, remove even values, flush
     {
-        auto index = index_disk_t(path, &resource);
+        auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
@@ -245,7 +247,7 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
 
     // Phase 2: reopen, verify odd values present, even absent
     {
-        auto index = index_disk_t(path, &resource);
+        auto index = btree_index_disk_t(path, &resource);
 
         // Even values should be absent
         REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());

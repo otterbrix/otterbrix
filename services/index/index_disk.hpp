@@ -1,47 +1,55 @@
 #pragma once
 
 #include <components/types/logical_value.hpp>
-#include <core/b_plus_tree/b_plus_tree.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory_resource>
+#include <vector>
 
 namespace services::index {
 
-    // TODO: add checkpoints to avoid flushing b+tree after each call
     class index_disk_t {
+    public:
         using value_t = components::types::logical_value_t;
         using path_t = std::filesystem::path;
-
-    public:
         using result = std::pmr::vector<size_t>;
 
-        index_disk_t(const path_t& path, std::pmr::memory_resource* resource);
-        ~index_disk_t();
+        explicit index_disk_t(uint64_t flush_threshold = default_flush_threshold_)
+            : flush_threshold_(flush_threshold) {}
+        virtual ~index_disk_t() = default;
 
-        void insert(const value_t& key, size_t value);
-        void remove(value_t key);
-        void remove(const value_t& key, size_t row_id);
-        void find(const value_t& value, result& res) const;
-        result find(const value_t& value) const;
-        void lower_bound(const value_t& value, result& res) const;
-        result lower_bound(const value_t& value) const;
-        void upper_bound(const value_t& value, result& res) const;
-        result upper_bound(const value_t& value) const;
+        virtual void insert(const value_t& key, size_t value) = 0;
+        virtual void remove(value_t key) = 0;
+        virtual void remove(const value_t& key, size_t row_id) = 0;
+        virtual void find(const value_t& value, result& res) const = 0;
+        virtual result find(const value_t& value) const = 0;
+        virtual void lower_bound(const value_t& value, result& res) const = 0;
+        virtual result lower_bound(const value_t& value) const = 0;
+        virtual void upper_bound(const value_t& value, result& res) const = 0;
+        virtual result upper_bound(const value_t& value) const = 0;
+        virtual void drop() = 0;
+        virtual void force_flush() = 0;
 
-        void drop();
-        void force_flush();
+    protected:
+        static constexpr uint64_t default_flush_threshold_{1000};
+
+        bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }
+        void mark_operation_dirty() noexcept {
+            dirty_ = true;
+            ++ops_since_flush_;
+        }
+        bool is_dirty() const noexcept { return dirty_; }
+        void reset_flush_state() noexcept {
+            dirty_ = false;
+            ops_since_flush_ = 0;
+        }
 
     private:
-        void flush_if_needed();
-
-        std::filesystem::path path_;
-        std::pmr::memory_resource* resource_;
-        core::filesystem::local_file_system_t fs_;
-        std::unique_ptr<core::b_plus_tree::btree_t> db_;
+        uint64_t flush_threshold_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};
-        static constexpr uint64_t flush_threshold_{1000};
     };
 
 } // namespace services::index

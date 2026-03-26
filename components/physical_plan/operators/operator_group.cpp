@@ -510,6 +510,7 @@ namespace components::operators {
                     group_ids[row_id] = static_cast<uint32_t>(g);
                 }
             }
+            const bool use_gpu_path = aggregate::gpu_group_aggregate_test_enabled();
 
             // For each aggregate, run vectorized update
             std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
@@ -522,20 +523,29 @@ namespace components::operators {
                 auto& info = agg_infos[a];
                 if (info.is_count_star) {
                     // COUNT(*): count all rows per group (including nulls)
-                    for (uint64_t i = 0; i < num_rows; i++) {
-                        if (group_ids[i] != UINT32_MAX) {
-                            states[group_ids[i]].update_count();
+                    if (use_gpu_path) {
+                        aggregate::update_count_star_gpu(group_ids.data(), num_rows, states);
+                    } else {
+                        for (uint64_t i = 0; i < num_rows; i++) {
+                            if (group_ids[i] != UINT32_MAX) {
+                                states[group_ids[i]].update_count();
+                            }
                         }
                     }
                 } else {
-                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                    if (use_gpu_path) {
+                        aggregate::update_all_gpu(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                    } else {
+                        aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                    }
                 }
 
                 // Finalize states to logical_value_t
                 std::pmr::vector<types::logical_value_t> results(resource_);
                 results.reserve(num_groups);
                 for (size_t g = 0; g < num_groups; g++) {
-                    auto val = aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
+                    auto val = use_gpu_path ? aggregate::finalize_state_gpu(resource_, info.kind, states[g], info.col_type)
+                                            : aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
                     val.set_alias(std::string(values_[a].name));
                     results.push_back(std::move(val));
                 }

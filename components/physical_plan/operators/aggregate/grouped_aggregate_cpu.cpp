@@ -1,0 +1,172 @@
+#include "grouped_aggregate.hpp"
+
+#include <algorithm>
+#include <type_traits>
+
+namespace components::operators::aggregate {
+    namespace {
+
+        template<typename T>
+        auto promote(T value) {
+            if constexpr (std::is_floating_point_v<T>) {
+                return static_cast<double>(value);
+            } else if constexpr (std::is_signed_v<T>) {
+                return static_cast<int64_t>(value);
+            } else {
+                return static_cast<uint64_t>(value);
+            }
+        }
+
+        template<typename T>
+        void update_loop(builtin_agg agg,
+                         const T* data,
+                         const vector::vector_t& vec,
+                         const uint32_t* group_ids,
+                         uint64_t count,
+                         std::pmr::vector<raw_agg_state_t>& states) {
+            for (uint64_t row = 0; row < count; row++) {
+                if (vec.is_null(row)) {
+                    continue;
+                }
+
+                auto& state = states[group_ids[row]];
+                const auto value = promote(data[row]);
+
+                switch (agg) {
+                    case builtin_agg::SUM:
+                        state.update_sum(value);
+                        break;
+                    case builtin_agg::MIN:
+                        state.update_min(value);
+                        break;
+                    case builtin_agg::MAX:
+                        state.update_max(value);
+                        break;
+                    case builtin_agg::AVG:
+                        state.update_avg(value);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+    } // namespace
+
+    void update_all(builtin_agg agg,
+                    const vector::vector_t& vec,
+                    const uint32_t* group_ids,
+                    uint64_t count,
+                    std::pmr::vector<raw_agg_state_t>& states) {
+        if (agg == builtin_agg::COUNT) {
+            for (uint64_t row = 0; row < count; row++) {
+                if (!vec.is_null(row)) {
+                    states[group_ids[row]].update_count();
+                }
+            }
+            return;
+        }
+
+        switch (vec.type().type()) {
+            case types::logical_type::TINYINT:
+                update_loop<int8_t>(agg, vec.data<int8_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::SMALLINT:
+                update_loop<int16_t>(agg, vec.data<int16_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::INTEGER:
+                update_loop<int32_t>(agg, vec.data<int32_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::BIGINT:
+                update_loop<int64_t>(agg, vec.data<int64_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::UTINYINT:
+                update_loop<uint8_t>(agg, vec.data<uint8_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::USMALLINT:
+                update_loop<uint16_t>(agg, vec.data<uint16_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::UINTEGER:
+                update_loop<uint32_t>(agg, vec.data<uint32_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::UBIGINT:
+                update_loop<uint64_t>(agg, vec.data<uint64_t>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::FLOAT:
+                update_loop<float>(agg, vec.data<float>(), vec, group_ids, count, states);
+                break;
+            case types::logical_type::DOUBLE:
+                update_loop<double>(agg, vec.data<double>(), vec, group_ids, count, states);
+                break;
+            default:
+                break;
+        }
+    }
+
+    types::logical_value_t finalize_state(std::pmr::memory_resource* resource,
+                                          builtin_agg agg,
+                                          const raw_agg_state_t& state,
+                                          types::logical_type col_type) {
+        if (!state.initialized) {
+            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+        }
+
+        if (agg == builtin_agg::COUNT) {
+            return types::logical_value_t(resource, state.u64);
+        }
+
+        if (agg == builtin_agg::AVG) {
+            const double avg = state.count > 0 ? state.f64 / static_cast<double>(state.count) : 0.0;
+            switch (col_type) {
+                case types::logical_type::TINYINT:
+                    return types::logical_value_t(resource, static_cast<int8_t>(avg));
+                case types::logical_type::SMALLINT:
+                    return types::logical_value_t(resource, static_cast<int16_t>(avg));
+                case types::logical_type::INTEGER:
+                    return types::logical_value_t(resource, static_cast<int32_t>(avg));
+                case types::logical_type::BIGINT:
+                    return types::logical_value_t(resource, static_cast<int64_t>(avg));
+                case types::logical_type::UTINYINT:
+                    return types::logical_value_t(resource, static_cast<uint8_t>(avg));
+                case types::logical_type::USMALLINT:
+                    return types::logical_value_t(resource, static_cast<uint16_t>(avg));
+                case types::logical_type::UINTEGER:
+                    return types::logical_value_t(resource, static_cast<uint32_t>(avg));
+                case types::logical_type::UBIGINT:
+                    return types::logical_value_t(resource, static_cast<uint64_t>(avg));
+                case types::logical_type::FLOAT:
+                    return types::logical_value_t(resource, static_cast<float>(avg));
+                case types::logical_type::DOUBLE:
+                    return types::logical_value_t(resource, avg);
+                default:
+                    return types::logical_value_t(resource, avg);
+            }
+        }
+
+        switch (col_type) {
+            case types::logical_type::TINYINT:
+                return types::logical_value_t(resource, static_cast<int8_t>(state.i64));
+            case types::logical_type::SMALLINT:
+                return types::logical_value_t(resource, static_cast<int16_t>(state.i64));
+            case types::logical_type::INTEGER:
+                return types::logical_value_t(resource, static_cast<int32_t>(state.i64));
+            case types::logical_type::BIGINT:
+                return types::logical_value_t(resource, state.i64);
+            case types::logical_type::UTINYINT:
+                return types::logical_value_t(resource, static_cast<uint8_t>(state.u64));
+            case types::logical_type::USMALLINT:
+                return types::logical_value_t(resource, static_cast<uint16_t>(state.u64));
+            case types::logical_type::UINTEGER:
+                return types::logical_value_t(resource, static_cast<uint32_t>(state.u64));
+            case types::logical_type::UBIGINT:
+                return types::logical_value_t(resource, state.u64);
+            case types::logical_type::FLOAT:
+                return types::logical_value_t(resource, static_cast<float>(state.f64));
+            case types::logical_type::DOUBLE:
+                return types::logical_value_t(resource, state.f64);
+            default:
+                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+        }
+    }
+
+} // namespace components::operators::aggregate

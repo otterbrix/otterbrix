@@ -108,6 +108,8 @@ namespace components::expressions {
     compare_type get_compare_type(const std::string& key) {
         if (key.empty()) {
             return compare_type::invalid;
+        } else if (key[0] == '$') {
+            return get_compare_type(key.substr(1));
         } else if (key == "eq") {
             return compare_type::eq;
         } else if (key == "ne") {
@@ -126,11 +128,11 @@ namespace components::expressions {
             return compare_type::any;
         } else if (key == "all") {
             return compare_type::all;
-        } else if (key == "union_and" || key == "$and") {
+        } else if (key == "union_and" || key == "and") {
             return compare_type::union_and;
-        } else if (key == "union_or" || key == "$or") {
+        } else if (key == "union_or" || key == "or") {
             return compare_type::union_or;
-        } else if (key == "union_not" || key == "$not") {
+        } else if (key == "union_not" || key == "not") {
             return compare_type::union_not;
         } else if (key == "all_true") {
             return compare_type::all_true;

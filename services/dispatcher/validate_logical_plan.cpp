@@ -505,15 +505,34 @@ namespace services::dispatcher {
                 case compare_type::union_or:
                 case compare_type::union_not: {
                     for (auto& nested_expr : expr->children()) {
-                        auto nested_res = validate_schema(resource,
-                                                          catalog,
-                                                          reinterpret_cast<compare_expression_t*>(nested_expr.get()),
-                                                          parameters,
-                                                          schema_left,
-                                                          schema_right,
-                                                          same_schema);
-                        if (nested_res.is_error()) {
-                            return nested_res;
+                        schema_result<named_schema> res(
+                            resource,
+                            components::cursor::error_t(error_code_t::schema_error,
+                                                        "unsupported expression type in compound predicate"));
+                        switch (nested_expr->group()) {
+                            case expression_group::function:
+                                res = validate_schema(resource,
+                                                      catalog,
+                                                      reinterpret_cast<function_expression_t*>(nested_expr.get()),
+                                                      parameters,
+                                                      schema_left,
+                                                      schema_right,
+                                                      same_schema);
+                                break;
+                            case expression_group::compare:
+                                res = validate_schema(resource,
+                                                      catalog,
+                                                      reinterpret_cast<compare_expression_t*>(nested_expr.get()),
+                                                      parameters,
+                                                      schema_left,
+                                                      schema_right,
+                                                      same_schema);
+                                break;
+                            default: // do noting & return unsupported error
+                                break;
+                        }
+                        if (res.is_error()) {
+                            return res;
                         }
                     }
                     break;

@@ -86,18 +86,18 @@ namespace components::compute {
             return compute_status::ok();
         }
 
-        compute_result<datum_t> execute(const data_chunk_t& args, size_t exec_length) override {
+        compute_result<datum_t> execute(const data_chunk_t& args) override {
             if (auto st = check_init(); !st) {
                 return st;
             }
-            return executor_->execute(args, exec_length);
+            return executor_->execute(args);
         }
 
-        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs, size_t exec_length) override {
+        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
             if (auto st = check_init(); !st) {
                 return st;
             }
-            return executor_->execute(inputs, exec_length);
+            return executor_->execute(inputs);
         }
 
         compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
@@ -179,10 +179,8 @@ namespace components::compute {
     }
     std::vector<kernel_signature_t> function::get_signatures() const { return {}; }
 
-    compute_result<datum_t> function::execute(const data_chunk_t& args,
-                                              size_t exec_length,
-                                              const function_options* options,
-                                              exec_context_t& ctx) const {
+    compute_result<datum_t>
+    function::execute(const data_chunk_t& args, const function_options* options, exec_context_t& ctx) const {
         auto fn_exec = function_executor_impl_t::get_best_function_executor(args.types(), *this);
         if (!fn_exec) {
             return fn_exec.status();
@@ -193,14 +191,13 @@ namespace components::compute {
         }
 
         if (auto st = fn_exec.value().init(options, ctx)) {
-            return fn_exec.value().execute(args, exec_length);
+            return fn_exec.value().execute(args);
         } else {
             return st;
         }
     }
 
     compute_result<datum_t> function::execute(const std::vector<data_chunk_t>& args,
-                                              size_t exec_length,
                                               const function_options* options,
                                               exec_context_t& ctx) const {
         if (args.empty()) {
@@ -217,7 +214,7 @@ namespace components::compute {
         }
 
         if (auto st = fn_exec.value().init(options, ctx)) {
-            return fn_exec.value().execute(args, exec_length);
+            return fn_exec.value().execute(args);
         } else {
             return st;
         }

@@ -381,6 +381,9 @@ namespace components::vector {
         }
         auto result_type = types::complex_logical_type(result_logical);
         vector_t output(resource, result_type, count);
+        if (result_type.type() == types::logical_type::NA) {
+            return output;
+        }
 
         switch (op) {
             case arithmetic_op::add:
@@ -413,6 +416,9 @@ namespace components::vector {
         }
         auto result_type = types::complex_logical_type(result_logical);
         vector_t output(resource, result_type, count);
+        if (result_type.type() == types::logical_type::NA) {
+            return output;
+        }
 
         switch (op) {
             case arithmetic_op::add:
@@ -445,6 +451,9 @@ namespace components::vector {
         }
         auto result_type = types::complex_logical_type(result_logical);
         vector_t output(resource, result_type, count);
+        if (result_type.type() == types::logical_type::NA) {
+            return output;
+        }
 
         switch (op) {
             case arithmetic_op::add:

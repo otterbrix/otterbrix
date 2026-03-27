@@ -78,9 +78,13 @@ namespace services::dispatcher {
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
             for (size_t i = 0; i < schema.size(); i++) {
-                if (truncated_key.storage().size() > 1 &&
-                    core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
-                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
+                if (truncated_key.storage().size() > 2 &&
+                    core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
+                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {
+                    matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 3});
+                } else if (truncated_key.storage().size() > 1 &&
+                           core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
+                           core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
                 } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
@@ -229,13 +233,15 @@ namespace services::dispatcher {
             }
         }
 
-        [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                  const catalog& catalog,
-                                                                  function_expression_t* expr,
-                                                                  const storage_parameters& parameters,
-                                                                  const named_schema& schema_left,
-                                                                  const named_schema& schema_right,
-                                                                  bool same_schema) {
+        [[nodiscard]] schema_result<named_schema>
+        validate_schema(std::pmr::memory_resource* resource,
+                        const catalog& catalog,
+                        function_expression_t* expr,
+                        const storage_parameters& parameters,
+                        const named_schema& schema_left,
+                        const named_schema& schema_right,
+                        bool same_schema,
+                        components::compute::function_types_mask allowed_function_types) {
             named_schema result(resource);
             std::pmr::vector<complex_logical_type> function_input_types(resource);
             function_input_types.reserve(expr->args().size());
@@ -251,6 +257,14 @@ namespace services::dispatcher {
                         }
                     }
                 } else if (std::holds_alternative<components::expressions::expression_ptr>(field)) {
+                    if (std::get<components::expressions::expression_ptr>(field)->group() !=
+                        expression_group::function) {
+                        return schema_result<named_schema>{
+                            resource,
+                            components::cursor::error_t{
+                                error_code_t::incorrect_function_argument,
+                                "otterbrix functions do not support nesting; except other functions"}};
+                    }
                     auto& sub_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(
                         std::get<components::expressions::expression_ptr>(field));
                     auto sub_expr_res = validate_schema(resource,
@@ -259,7 +273,8 @@ namespace services::dispatcher {
                                                         parameters,
                                                         schema_left,
                                                         schema_right,
-                                                        same_schema);
+                                                        same_schema,
+                                                        allowed_function_types);
                     if (sub_expr_res.is_error()) {
                         return sub_expr_res;
                     } else {
@@ -279,6 +294,13 @@ namespace services::dispatcher {
                                                 "function: \'" + expr->name() + "(...)\' was not found by the name"}};
             } else if (catalog.function_exists(expr->name(), function_input_types)) {
                 auto func = catalog.get_function(expr->name(), function_input_types);
+                if (!components::compute::check_mask(allowed_function_types, func.second.function_type)) {
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{error_code_t::unrecognized_function,
+                                                    "function: \'" + expr->name() +
+                                                        "(...)\' was found can not be used in current context"}};
+                }
                 std::vector<complex_logical_type> function_output_types;
                 function_output_types.reserve(func.second.output_types.size());
                 for (const auto& output_type : func.second.output_types) {
@@ -499,6 +521,9 @@ namespace services::dispatcher {
                                                                   bool same_schema) {
             named_schema result(resource);
             result.emplace_back(type_from_t{"", logical_type::BOOLEAN});
+            auto allowed_function_types =
+                components::compute::create_mask(components::compute::function_type_t::row,
+                                                 components::compute::function_type_t::vector);
 
             switch (expr->type()) {
                 case compare_type::union_and:
@@ -548,7 +573,8 @@ namespace services::dispatcher {
                                                             parameters,
                                                             schema_left,
                                                             schema_right,
-                                                            same_schema);
+                                                            same_schema,
+                                                            allowed_function_types);
                             if (expr_res.is_error()) {
                                 return schema_result<named_schema>(resource, expr_res.error());
                             }
@@ -586,7 +612,8 @@ namespace services::dispatcher {
                                                             parameters,
                                                             schema_left,
                                                             schema_right,
-                                                            same_schema);
+                                                            same_schema,
+                                                            allowed_function_types);
                             if (expr_res.is_error()) {
                                 return schema_result<named_schema>(resource, expr_res.error());
                             }
@@ -663,8 +690,17 @@ namespace services::dispatcher {
                     return validate_schema(resource, catalog, expr, parameters, schema_left, schema_right, same_schema);
                 } else if (node->expressions()[0]->group() == expression_group::function) {
                     auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
-                    auto expr_res =
-                        validate_schema(resource, catalog, expr, parameters, schema_left, schema_right, same_schema);
+                    auto allowed_function_types =
+                        components::compute::create_mask(components::compute::function_type_t::row,
+                                                         components::compute::function_type_t::vector);
+                    auto expr_res = validate_schema(resource,
+                                                    catalog,
+                                                    expr,
+                                                    parameters,
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema,
+                                                    allowed_function_types);
                     if (expr_res.is_error()) {
                         return expr_res;
                     }
@@ -1044,11 +1080,20 @@ namespace services::dispatcher {
                                 }
 
                                 const auto& col_type = incoming_schema[key.path()[0]].type;
-                                const components::types::complex_logical_type* tp = &col_type;
-                                for (size_t pi = 1; pi < key.path().size(); pi++) {
-                                    tp = &tp->child_types()[key.path()[pi]];
+                                const components::types::complex_logical_type* res_type = &col_type;
+                                for (size_t i = 1; i < key.path().size(); i++) {
+                                    if (!res_type->is_nested()) {
+                                        return schema_result<named_schema>{
+                                            resource,
+                                            components::cursor::error_t{error_code_t::schema_error,
+                                                                        "trying to access field of non-nested type"}};
+                                    } else if (res_type->type() == logical_type::STRUCT) {
+                                        res_type = &res_type->child_types()[key.path()[i]];
+                                    } else {
+                                        res_type = &res_type->child_type();
+                                    }
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *tp});
+                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
                                 // Try resolve against incoming_schema
@@ -1273,6 +1318,13 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::function_t: {
+                if (node->children().empty()) {
+                    return schema_result<named_schema>{
+                        resource,
+                        components::cursor::error_t{
+                            error_code_t::incorrect_function_argument,
+                            "otterbrix does not support constants as function arguments in this context"}};
+                }
                 auto* function_node = reinterpret_cast<node_function_t*>(node);
                 auto input_schema = validate_schema(resource, catalog, node->children().front().get(), parameters);
                 if (input_schema.is_error()) {

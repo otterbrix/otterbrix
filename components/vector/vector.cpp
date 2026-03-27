@@ -420,11 +420,10 @@ namespace components::vector {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(index), val);
         }
-        if (!val.is_null() && val.type() != type_) {
+        if (!val.is_null() && val.type().to_physical_type() != type_.to_physical_type()) {
             set_value(index, val.cast_as(type_));
             return;
         }
-        assert(val.is_null() || (val.type().type() == type_.type()));
 
         validity_.set(index, !val.is_null());
         if (val.is_null() && !struct_or_array_recursive(type_)) {

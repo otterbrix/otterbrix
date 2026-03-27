@@ -45,8 +45,10 @@ namespace components::operators {
                                        : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
+                    auto results =
+                        predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
                     for (size_t j = 0; j < chunk_right.size(); j++) {
-                        if (predicate->check(chunk_left, chunk_right, i, j)) {
+                        if (results[j]) {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                             // Copy original values to output first (preserves scan data for executor)
                             for (size_t k = 0; k < chunk_left.column_count(); k++) {

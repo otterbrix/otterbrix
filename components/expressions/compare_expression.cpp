@@ -57,7 +57,7 @@ namespace components::expressions {
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
-            boost::hash_combine(hash_, reinterpret_cast<const compare_expression_ptr&>(child)->hash_impl());
+            boost::hash_combine(hash_, child->hash());
         }
         return hash_;
     }
@@ -72,7 +72,7 @@ namespace components::expressions {
                 if (i > 0) {
                     stream << ", ";
                 }
-                stream << reinterpret_cast<const compare_expression_ptr&>(children().at(i))->to_string_impl();
+                stream << children().at(i)->to_string();
             }
             stream << "]";
         } else {

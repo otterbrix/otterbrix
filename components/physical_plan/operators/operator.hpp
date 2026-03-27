@@ -28,7 +28,8 @@ namespace components::operators {
         sort,
         join,
         aggregate,
-        raw_data
+        raw_data,
+        batch
     };
 
     inline bool is_scan(operator_type t) {

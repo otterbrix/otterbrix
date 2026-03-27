@@ -118,7 +118,20 @@ run_query() {
         parallel_set="-c \"SET max_parallel_workers_per_gather = 0;\""
     fi
 
-    for i in $(seq 1 $TRIES); do
+    # First run: print full results
+    if [[ "$SINGLE_THREAD" == "true" ]]; then
+        sudo -u postgres psql -d $DB_NAME \
+            -c "SET max_parallel_workers_per_gather = 0;" \
+            -c "\\timing on" \
+            -c "$query" 2>&1
+    else
+        sudo -u postgres psql -d $DB_NAME \
+            -c "\\timing on" \
+            -c "$query" 2>&1
+    fi
+
+    # Subsequent runs: timing only
+    for i in $(seq 2 $TRIES); do
         if [[ "$SINGLE_THREAD" == "true" ]]; then
             sudo -u postgres psql -d $DB_NAME \
                 -c "SET max_parallel_workers_per_gather = 0;" \

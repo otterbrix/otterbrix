@@ -40,7 +40,7 @@ public:
 
 static constexpr bool USE_SPARSE = true;
 
-static constexpr size_t N_ROWS = 100'000;
+static constexpr size_t N_ROWS = 10'000;
 static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";
 static constexpr size_t INSERT_BATCH = 1000;
@@ -189,6 +189,9 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
                     std::cout << (sp ? *sp : "NULL");
                     break;
                 }
+                case LT::NA:
+                    std::cout << "";
+                    break;
                 default:
                     std::cout << "?";
                     break;
@@ -375,6 +378,10 @@ static BenchResult run_bench(const std::string& label,
     }
 
     // ---- Diagnostic -------------------------------------------------------------
+    run_query(&space, "Diag: feed.like direct count",
+        "SELECT COUNT(*) as cnt FROM bench.events "
+        "WHERE \"commit.collection\" = 'app.bsky.feed.like';");
+
     run_query(&space, "Diag: raw first 5 rows",
         "SELECT _id, time_us, kind, \"commit.operation\" FROM bench.events LIMIT 5;");
 
@@ -386,20 +393,20 @@ static BenchResult run_bench(const std::string& label,
 
     // ---- Queries -------------------------------------------------------------
     double q1 = run_query(&space, "Q1: Top event types",
-        "SELECT \"commit.collection\", COUNT(did) as count "
+        "SELECT \"commit.collection\", COUNT(*) as count "
         "FROM bench.events "
         "GROUP BY \"commit.collection\" "
         "ORDER BY count DESC;");
 
     double q2 = run_query(&space, "Q2: Unique users (kind=commit, op=create)",
-        "SELECT \"commit.collection\", COUNT(did) as count, COUNT(DISTINCT did) as users "
+        "SELECT \"commit.collection\", COUNT(*) as count, COUNT(DISTINCT did) as users "
         "FROM bench.events "
         "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
         "GROUP BY \"commit.collection\" "
         "ORDER BY count DESC;");
 
     double q3 = run_query(&space, "Q3: Post / repost / like counts",
-        "SELECT \"commit.collection\", COUNT(did) as count "
+        "SELECT \"commit.collection\", COUNT(*) as count "
         "FROM bench.events "
         "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
         "  AND (\"commit.collection\" = 'app.bsky.feed.post' "
@@ -423,7 +430,7 @@ static BenchResult run_bench(const std::string& label,
         "WHERE kind = 'commit' AND \"commit.operation\" = 'create' "
         "  AND \"commit.collection\" = 'app.bsky.feed.post' "
         "GROUP BY did "
-        "ORDER BY last_ts DESC "
+        "ORDER BY (last_ts - first_ts) DESC "
         "LIMIT 3;");
 
     return {insert_ms, rss_delta, q1, q2, q3, q4, q5};

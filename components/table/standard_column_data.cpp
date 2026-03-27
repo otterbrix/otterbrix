@@ -51,6 +51,7 @@ namespace components::table {
                                           uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
+        state.child_states[0].result_offset = state.result_offset;
         validity.scan(vector_index, state.child_states[0], result, target_count);
         return scan_count;
     }
@@ -62,6 +63,7 @@ namespace components::table {
                                                     uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         auto scan_count = column_data_t::scan_committed(vector_index, state, result, allow_updates, target_count);
+        state.child_states[0].result_offset = state.result_offset;
         validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
         return scan_count;
     }

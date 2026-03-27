@@ -11,17 +11,14 @@ add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         non_thread_scheduler
-        otterbrix::dispatcher
         otterbrix::sql
-        otterbrix::wal
-        otterbrix::disk
+        otterbrix::services
         otterbrix::test_generaty
 
+        absl::int128
+        actor-zeta::actor-zeta
         Catch2::Catch2
         spdlog::spdlog
-        actor-zeta::actor-zeta
-        absl::int128
-        magic_enum::magic_enum
         msgpackc-cxx
 )
 

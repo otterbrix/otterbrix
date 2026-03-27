@@ -23,7 +23,6 @@ target_link_libraries(
         otterbrix::log
         dl
         Boost::boost
-        magic_enum::magic_enum
 )
 
 target_include_directories(

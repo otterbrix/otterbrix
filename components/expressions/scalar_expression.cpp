@@ -16,7 +16,7 @@ namespace components::expressions {
                 stream << expr->key() << ": ";
             }
             if (expr->type() != scalar_type::get_field) {
-                stream << "{$" << magic_enum::enum_name(expr->type()) << ": ";
+                stream << "{$" << to_string(expr->type()) << ": ";
             }
             if (expr->params().size() > 1) {
                 stream << "[";
@@ -111,13 +111,47 @@ namespace components::expressions {
     }
 
     scalar_type get_scalar_type(const std::string& key) {
-        auto type = magic_enum::enum_cast<scalar_type>(key);
-        if (type.has_value()) {
-            return type.value();
+        if (key.empty()) {
+            return scalar_type::invalid;
+        } else if (key == "get_field") {
+            return scalar_type::get_field;
+        } else if (key == "group_field") {
+            return scalar_type::group_field;
+        } else if (key == "add") {
+            return scalar_type::add;
+        } else if (key == "subtract") {
+            return scalar_type::subtract;
+        } else if (key == "multiply") {
+            return scalar_type::multiply;
+        } else if (key == "divide") {
+            return scalar_type::divide;
+        } else if (key == "round") {
+            return scalar_type::round;
+        } else if (key == "ceil") {
+            return scalar_type::ceil;
+        } else if (key == "floor") {
+            return scalar_type::floor;
+        } else if (key == "abs") {
+            return scalar_type::abs;
+        } else if (key == "mod") {
+            return scalar_type::mod;
+        } else if (key == "pow") {
+            return scalar_type::pow;
+        } else if (key == "sqrt") {
+            return scalar_type::sqrt;
+        } else if (key == "case_expr") {
+            return scalar_type::case_expr;
+        } else if (key == "coalesce") {
+            return scalar_type::coalesce;
+        } else if (key == "case_when") {
+            return scalar_type::case_when;
+        } else if (key == "unary_minus") {
+            return scalar_type::unary_minus;
+        } else {
+            return scalar_type::invalid;
         }
-        return scalar_type::invalid;
     }
 
-    bool is_scalar_type(const std::string& key) { return magic_enum::enum_cast<scalar_type>(key).has_value(); }
+    bool is_scalar_type(const std::string& key) { return get_scalar_type(key) != scalar_type::invalid; }
 
 } // namespace components::expressions

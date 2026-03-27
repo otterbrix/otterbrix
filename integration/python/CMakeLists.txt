@@ -10,12 +10,9 @@ set(${PROJECT_NAME}_sql_sources
 
 set(otterbrix_LIBS
         otterbrix::log
-        otterbrix::collection
+        otterbrix::services
         otterbrix::cursor
         otterbrix::session
-        otterbrix::dispatcher
-        otterbrix::wal
-        otterbrix::disk
         otterbrix::locks
         otterbrix::b_plus_tree
 )

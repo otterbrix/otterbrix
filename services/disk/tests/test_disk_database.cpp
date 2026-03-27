@@ -1,5 +1,5 @@
 #include <catch2/catch.hpp>
-#include <disk/disk.hpp>
+#include <services/disk/disk.hpp>
 
 const core::filesystem::path_t test_folder = "/tmp/databases";
 

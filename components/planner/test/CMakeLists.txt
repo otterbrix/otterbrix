@@ -15,11 +15,11 @@ target_link_libraries(
         otterbrix::planner
         otterbrix::vector
         otterbrix::physical_plan_generator
-        Catch2::Catch2
-        actor-zeta::actor-zeta
+
         absl::int128
+        actor-zeta::actor-zeta
         Boost::boost
-        magic_enum::magic_enum
+        Catch2::Catch2
         msgpackc-cxx
 )
 

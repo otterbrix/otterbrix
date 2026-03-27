@@ -129,7 +129,6 @@ find_package(Catch2 2.13.7 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
 find_package(ZLIB 1.2.12 REQUIRED)
 find_package(BZip2 1.0.8 REQUIRED)
-find_package(magic_enum 0.8.1 REQUIRED)
 find_package(actor-zeta REQUIRED)
 
 if (ENABLE_ASAN AND NOT APPLE)

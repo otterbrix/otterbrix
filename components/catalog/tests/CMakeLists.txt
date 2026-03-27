@@ -14,10 +14,10 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::catalog
         otterbrix::table
-        Catch2::Catch2
-        magic_enum::magic_enum
+
         absl::int128
         Boost::boost
+        Catch2::Catch2
         msgpackc-cxx
 )
 

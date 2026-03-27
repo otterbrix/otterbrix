@@ -61,9 +61,9 @@ target_link_libraries(
     otterbrix_${PROJECT_NAME} PUBLIC
     otterbrix::expressions
     otterbrix::logical_plan
-    magic_enum::magic_enum
-    msgpackc-cxx
+
     absl::int128
+    msgpackc-cxx
 )
 
 target_include_directories(

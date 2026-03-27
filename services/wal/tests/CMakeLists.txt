@@ -14,15 +14,14 @@ target_link_libraries(
         otterbrix::log
         otterbrix::logical_plan
         otterbrix::session
-        otterbrix::wal
+        otterbrix::services
         otterbrix::test_generaty
 
-        Catch2::Catch2
         absl::crc32c
-        actor-zeta::actor-zeta
         absl::int128
+        actor-zeta::actor-zeta
+        Catch2::Catch2
         Boost::boost
-        magic_enum::magic_enum
         msgpackc-cxx
 )
 

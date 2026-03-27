@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
-#include <disk/disk.hpp>
-#include <disk/manager_disk.hpp>
+#include <services/disk/disk.hpp>
+#include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
 #include <components/table/table_state.hpp>

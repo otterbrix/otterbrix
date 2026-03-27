@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
 
-#include "../dispatcher.hpp"
+#include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
 #include <components/session/session.hpp>

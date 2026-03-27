@@ -1,5 +1,5 @@
 #include <catch2/catch.hpp>
-#include <disk/metadata.hpp>
+#include <services/disk/metadata.hpp>
 #include <stdio.h>
 
 using namespace services::disk;

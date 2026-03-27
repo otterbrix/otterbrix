@@ -52,9 +52,9 @@ target_link_libraries(
         otterbrix::file
         otterbrix::types
         otterbrix::vector
-        magic_enum::magic_enum
-        msgpackc-cxx
+
         absl::crc32c
+        msgpackc-cxx
 )
 
 target_include_directories(

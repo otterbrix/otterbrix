@@ -11,12 +11,9 @@ set(${PROJECT_NAME}_sources
 
 set(otterbrix_LIBS
         otterbrix::log
-        otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::dispatcher
-        otterbrix::wal
-        otterbrix::disk
+        otterbrix::services
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree

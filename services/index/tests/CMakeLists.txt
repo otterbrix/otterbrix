@@ -9,8 +9,11 @@ add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
     ${PROJECT_NAME} PRIVATE
-    otterbrix::index_service
+    otterbrix::services
     otterbrix::test_generaty
+
+    absl::int128
+    actor-zeta::actor-zeta
     Boost::boost
     Catch2::Catch2
     actor-zeta::actor-zeta

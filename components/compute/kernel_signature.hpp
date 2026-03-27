@@ -9,6 +9,31 @@
 #include <vector>
 
 namespace components::compute {
+
+    // have to be power of 2 for masking
+    enum class function_type_t : uint8_t
+    {
+        invalid = 0,
+        row = 1,
+        vector = 2,
+        aggregate = 4
+    };
+
+    using function_types_mask = std::underlying_type_t<function_type_t>;
+
+    template<typename T, typename... Args>
+    requires(std::is_same_v<T, function_type_t>) constexpr function_types_mask create_mask(T first, Args... args) {
+        if constexpr (sizeof...(args) == 0) {
+            return static_cast<function_types_mask>(first);
+        } else {
+            return static_cast<function_types_mask>(first) | create_mask(args...);
+        }
+    }
+
+    constexpr bool check_mask(function_types_mask mask, function_type_t type) {
+        return (mask & static_cast<function_types_mask>(type)) != 0;
+    }
+
     using type_matcher_fn = std::function<bool(const types::complex_logical_type&)>;
 
     struct input_type {
@@ -36,8 +61,11 @@ namespace components::compute {
 
     struct kernel_signature_t {
         kernel_signature_t() = delete;
-        kernel_signature_t(std::pmr::vector<input_type> input_types, std::pmr::vector<struct output_type> output_types);
+        kernel_signature_t(function_type_t function_type,
+                           std::pmr::vector<input_type> input_types,
+                           std::pmr::vector<struct output_type> output_types);
 
+        function_type_t function_type;
         std::pmr::vector<input_type> input_types;
         std::pmr::vector<output_type> output_types;
 

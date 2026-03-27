@@ -22,13 +22,13 @@ namespace components::operators::aggregate {
         bool distinct() const { return distinct_; }
 
     private:
-        std::pmr::vector<expressions::param_storage> args_;
-        compute::function* func_;
-        bool distinct_{false};
-
         types::logical_value_t aggregate_impl(pipeline::context_t* pipeline_context) override;
         compute::datum_t aggregate_batch_impl(pipeline::context_t* pipeline_context) override;
         std::string key_impl() const override;
+
+        std::pmr::vector<expressions::param_storage> args_;
+        compute::function* func_;
+        bool distinct_{false};
     };
 
 } // namespace components::operators::aggregate

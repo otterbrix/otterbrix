@@ -33,7 +33,7 @@ namespace components::operators::predicates {
                                       const vector::indexing_vector_t& right_indices,
                                       uint64_t count);
 
-    private:
+    protected:
         virtual bool check_impl(const vector::data_chunk_t& chunk_left,
                                 const vector::data_chunk_t& chunk_right,
                                 size_t index_left,

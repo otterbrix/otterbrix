@@ -10,17 +10,22 @@ set(${PROJECT_NAME}_sources
 
 set(otterbrix_LIBS
         otterbrix::log
-        otterbrix::collection
         otterbrix::cursor
         otterbrix::session
-        otterbrix::dispatcher
-        otterbrix::wal
-        otterbrix::disk
-        otterbrix::index_service
+        otterbrix::services
         otterbrix::locks
         otterbrix::sql
         otterbrix::b_plus_tree
         otterbrix_catalog
+
+        absl::crc32c
+        absl::int128
+        absl::flat_hash_map
+        absl::node_hash_map
+        actor-zeta::actor-zeta
+        Boost::boost
+        msgpackc-cxx
+        spdlog::spdlog
 )
 
 

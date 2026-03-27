@@ -1,6 +1,7 @@
 project(logical_plan CXX)
 
 set(SOURCE_${PROJECT_NAME}
+        forward.cpp
         node.cpp
         node_aggregate.cpp
         node_checkpoint.cpp
@@ -47,10 +48,10 @@ target_link_libraries(
         otterbrix::expressions
         otterbrix::serialization
         otterbrix::table
-        magic_enum::magic_enum
-        msgpackc-cxx
+
         absl::int128
         Boost::boost
+        msgpackc-cxx
 )
 
 target_include_directories(

@@ -23,10 +23,10 @@ target_link_libraries(
         otterbrix::session
         otterbrix::logical_plan
         actor-zeta::actor-zeta
+
         absl::int128
         Boost::boost
         msgpackc-cxx
-        magic_enum::magic_enum
 )
 
 target_include_directories( otterbrix_${PROJECT_NAME} PUBLIC )

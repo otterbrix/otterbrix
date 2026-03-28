@@ -1,13 +1,22 @@
 #pragma once
 
 #include <components/types/types.hpp>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace components::catalog {
     class computed_schema {
     public:
         explicit computed_schema(std::pmr::memory_resource* resource, uint64_t sparse_threshold = 0);
+
+        // Constructor with explicit pinned columns: named columns always go to main table
+        // (no threshold-based promotion for them). When pinned_columns is non-empty,
+        // only pinned columns bypass sparse storage; all others remain threshold-based.
+        explicit computed_schema(std::pmr::memory_resource* resource,
+                                 uint64_t sparse_threshold,
+                                 std::unordered_set<std::string> pinned_columns);
 
         // Add a (field_name, type) pair. No-op if already present.
         void append(std::pmr::string field_name, const types::complex_logical_type& type);
@@ -57,6 +66,10 @@ namespace components::catalog {
         // Returns all (field_name, type, phys_name) pairs that are still sparse.
         [[nodiscard]] std::vector<sparse_column_info> sparse_columns() const;
 
+        // Returns and clears the list of columns that were first seen as pinned since the last call.
+        // Used by the dispatcher to call storage_add_column for newly-seen pinned columns.
+        [[nodiscard]] std::vector<sparse_column_info> take_newly_pinned();
+
         // Sparse physical table name for a given collection + field + type.
         [[nodiscard]] static std::string sparse_table_name(const std::string& collection,
                                                            const std::string& field_name,
@@ -88,5 +101,10 @@ namespace components::catalog {
         std::pmr::unordered_map<std::pmr::string,
                                 std::pair<std::pmr::string, types::complex_logical_type>>
             phys_to_field_type_;
+
+        // Pinned columns: when non-empty, these field names always go to main table (never sparse).
+        std::unordered_set<std::string> pinned_field_names_;
+        // Columns first seen as pinned since last take_newly_pinned() call.
+        std::vector<sparse_column_info> newly_pinned_;
     };
 } // namespace components::catalog

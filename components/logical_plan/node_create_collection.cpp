@@ -14,6 +14,16 @@ namespace components::logical_plan {
 
     node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
                                                        const collection_full_name_t& collection,
+                                                       bool disk_storage,
+                                                       uint64_t sparse_threshold,
+                                                       std::unordered_set<std::string> pinned_columns)
+        : node_t(resource, node_type::create_collection_t, collection)
+        , disk_storage_(disk_storage)
+        , sparse_threshold_(sparse_threshold)
+        , pinned_columns_(std::move(pinned_columns)) {}
+
+    node_create_collection_t::node_create_collection_t(std::pmr::memory_resource* resource,
+                                                       const collection_full_name_t& collection,
                                                        std::vector<table::column_definition_t> column_definitions,
                                                        std::vector<table::table_constraint_t> constraints,
                                                        bool disk_storage)
@@ -53,6 +63,17 @@ namespace components::logical_plan {
                                                            const collection_full_name_t& collection,
                                                            uint64_t sparse_threshold) {
         return {new node_create_collection_t{resource, collection, false, sparse_threshold}};
+    }
+
+    node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
+                                                           const collection_full_name_t& collection,
+                                                           uint64_t sparse_threshold,
+                                                           std::unordered_set<std::string> pinned_columns) {
+        return {new node_create_collection_t{resource,
+                                             collection,
+                                             false,
+                                             sparse_threshold,
+                                             std::move(pinned_columns)}};
     }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,

@@ -10,6 +10,18 @@ namespace components::catalog {
         , promoted_order_(resource)
         , phys_to_field_type_(resource) {}
 
+    computed_schema::computed_schema(std::pmr::memory_resource* resource,
+                                     uint64_t sparse_threshold,
+                                     std::unordered_set<std::string> pinned_columns)
+        : fields_(resource)
+        , column_order_(resource)
+        , sparse_threshold_(sparse_threshold)
+        , non_null_counts_(resource)
+        , sparse_flags_(resource)
+        , promoted_order_(resource)
+        , phys_to_field_type_(resource)
+        , pinned_field_names_(std::move(pinned_columns)) {}
+
     void computed_schema::append(std::pmr::string field_name, const types::complex_logical_type& type) {
         auto& list = fields_[field_name];
         for (const auto& t : list) {
@@ -25,10 +37,20 @@ namespace components::catalog {
             std::pmr::string phys(storage_column_name(std::string(field_name), type),
                                   fields_.get_allocator().resource());
             if (sparse_flags_.find(phys) == sparse_flags_.end()) {
-                sparse_flags_[phys] = true;
-                non_null_counts_[phys] = 0;
                 // Register reverse mapping for promote_to_regular lookup
                 phys_to_field_type_[phys] = {field_name, type};
+
+                bool is_pinned = !pinned_field_names_.empty() &&
+                                 pinned_field_names_.count(std::string(field_name)) > 0;
+                if (is_pinned) {
+                    // Pinned columns go directly to main table — never sparse
+                    sparse_flags_[phys] = false;
+                    promoted_order_.emplace_back(field_name, type);
+                    newly_pinned_.push_back({std::string(field_name), type, std::string(phys)});
+                } else {
+                    sparse_flags_[phys] = true;
+                    non_null_counts_[phys] = 0;
+                }
             }
         }
     }
@@ -193,6 +215,12 @@ namespace components::catalog {
                 result.push_back({std::string(name), type, phys});
             }
         }
+        return result;
+    }
+
+    std::vector<computed_schema::sparse_column_info> computed_schema::take_newly_pinned() {
+        std::vector<sparse_column_info> result = std::move(newly_pinned_);
+        newly_pinned_.clear();
         return result;
     }
 

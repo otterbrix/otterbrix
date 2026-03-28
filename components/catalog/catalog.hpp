@@ -3,6 +3,8 @@
 #include "namespace_storage.hpp"
 #include "table_metadata.hpp"
 #include "transaction/transaction_scope.hpp"
+#include <string>
+#include <unordered_set>
 
 namespace components::catalog {
     class catalog : public std::enable_shared_from_this<catalog> {
@@ -30,6 +32,9 @@ namespace components::catalog {
 
         [[nodiscard]] catalog_error create_table(const table_id& id, table_metadata meta);
         [[nodiscard]] catalog_error create_computing_table(const table_id& id, uint64_t sparse_threshold = 0);
+        [[nodiscard]] catalog_error create_computing_table(const table_id& id,
+                                                            uint64_t sparse_threshold,
+                                                            std::unordered_set<std::string> pinned_columns);
 
         [[nodiscard]] catalog_error rename_table(const table_id& from, std::pmr::string to);
         [[nodiscard]] catalog_error rename_computing_table(const table_id& from, std::pmr::string to);

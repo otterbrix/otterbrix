@@ -8,6 +8,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <integration/cpp/base_spaces.hpp>
@@ -39,12 +40,15 @@ public:
 #endif
 
 static constexpr bool USE_SPARSE = true;
+// When true, columns used in queries are pinned to main table (never sparse).
+// When false, columns are promoted by threshold only.
+static constexpr bool USE_PINNED = true;
 
-static constexpr size_t N_ROWS = 100'000;
+static constexpr size_t N_ROWS = 200'000;
 static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";
 static constexpr size_t INSERT_BATCH = 1000;
-static constexpr size_t SCHEMA_SAMPLE = 2000;
+static constexpr size_t SCHEMA_SAMPLE = 100'000;
 static constexpr size_t SPARSE_THRESHOLD = USE_SPARSE ? N_ROWS / 10 : 0;
 
 namespace bj = boost::json;
@@ -238,7 +242,8 @@ struct BenchResult {
 static BenchResult run_bench(const std::string& label,
                              const std::vector<ColDef>& cols,
                              const std::vector<std::map<std::string, std::string>>& records,
-                             size_t sparse_threshold) {
+                             size_t sparse_threshold,
+                             std::unordered_set<std::string> pinned_columns = {}) {
     std::cout << "\n\n";
     std::cout << "########################################\n";
     std::cout << "# " << label << "\n";
@@ -267,8 +272,15 @@ static BenchResult run_bench(const std::string& label,
         dispatcher->create_database(session, DB_NAME);
     }
     {
-        auto node = components::logical_plan::make_node_create_collection(
-            resource, full_name, static_cast<uint64_t>(sparse_threshold));
+        components::logical_plan::node_create_collection_ptr node;
+        if (!pinned_columns.empty()) {
+            node = components::logical_plan::make_node_create_collection(
+                resource, full_name, static_cast<uint64_t>(sparse_threshold),
+                std::move(pinned_columns));
+        } else {
+            node = components::logical_plan::make_node_create_collection(
+                resource, full_name, static_cast<uint64_t>(sparse_threshold));
+        }
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(session, node);
         if (cur->is_error()) {
@@ -481,10 +493,18 @@ int main() {
     });
 
     // ---- Run selected variant ------------------------------------------------
-    const std::string label = USE_SPARSE
+    std::string label = USE_SPARSE
         ? ("SPARSE (threshold=" + std::to_string(SPARSE_THRESHOLD) + ")")
         : "BASELINE (no sparse)";
-    run_bench(label, cols, records, SPARSE_THRESHOLD);
+    if (USE_SPARSE && USE_PINNED)
+        label += " +PINNED";
+
+    std::unordered_set<std::string> pinned_cols;
+    if (USE_SPARSE && USE_PINNED) {
+        // Columns used in Q1-Q5 queries — always go to main table for fast access
+        pinned_cols = {"commit.collection", "kind", "commit.operation", "did", "time_us"};
+    }
+    run_bench(label, cols, records, SPARSE_THRESHOLD, std::move(pinned_cols));
 
     return 0;
 }

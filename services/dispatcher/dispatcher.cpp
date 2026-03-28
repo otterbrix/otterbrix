@@ -514,6 +514,22 @@ namespace services::dispatcher {
                                 update_result_[{pmr_field, field_type}] += row_count;
                             }
 
+                            // 2b. Add physical columns for first-seen pinned fields (before main INSERT)
+                            auto newly_pinned = schema.take_newly_pinned();
+                            for (const auto& np : newly_pinned) {
+                                auto np_type = np.type;
+                                np_type.set_alias(np.field_name);
+                                components::table::column_definition_t np_col_def(
+                                    np.field_name, np_type, false, std::nullopt);
+                                auto [_npc, npcf] =
+                                    actor_zeta::send(disk_address_,
+                                                     &disk::manager_disk_t::storage_add_column,
+                                                     session,
+                                                     logic_plan->collection_full_name(),
+                                                     np_col_def);
+                                co_await std::move(npcf);
+                            }
+
                             // 3. Build main chunk: [_id, promoted_cols...]
                             auto id_type = complex_logical_type(logical_type::BIGINT);
                             id_type.set_alias("_id");
@@ -1410,7 +1426,14 @@ namespace services::dispatcher {
             case node_type::create_collection_t: {
                 auto node_info = boost::polymorphic_pointer_downcast<node_create_collection_t>(node);
                 if (node_info->column_definitions().empty()) {
-                    auto err = catalog_.create_computing_table(id, node_info->sparse_threshold());
+                    catalog_error err;
+                    if (!node_info->pinned_columns().empty()) {
+                        err = catalog_.create_computing_table(id,
+                                                              node_info->sparse_threshold(),
+                                                              node_info->pinned_columns());
+                    } else {
+                        err = catalog_.create_computing_table(id, node_info->sparse_threshold());
+                    }
                     assert(!err);
                 } else {
                     auto types = node_info->schema();

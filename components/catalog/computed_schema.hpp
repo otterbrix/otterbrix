@@ -1,34 +1,37 @@
 #pragma once
 
-#include "schema.hpp"
-#include "versioned_trie/versioned_trie.hpp"
-
 #include <components/types/types.hpp>
 #include <unordered_map>
+#include <vector>
 
 namespace components::catalog {
     class computed_schema {
     public:
         explicit computed_schema(std::pmr::memory_resource* resource);
 
-        void append(std::pmr::string json, const types::complex_logical_type& type);
-        void drop(std::pmr::string json, const types::complex_logical_type& type);
-        void drop_n(std::pmr::string json, const types::complex_logical_type& type, size_t n);
+        // Add a (field_name, type) pair. No-op if already present.
+        void append(std::pmr::string field_name, const types::complex_logical_type& type);
+        void append_n(std::pmr::string field_name, const types::complex_logical_type& type, size_t n);
 
-        [[nodiscard]] std::vector<types::complex_logical_type> find_field_versions(const std::pmr::string& name) const;
+        // Remove a (field_name, type) pair.
+        void drop(std::pmr::string field_name, const types::complex_logical_type& type);
+        void drop_n(std::pmr::string field_name, const types::complex_logical_type& type, size_t n);
+
+        [[nodiscard]] std::vector<types::complex_logical_type>
+        find_field_versions(const std::pmr::string& field_name) const;
+
         [[nodiscard]] types::complex_logical_type latest_types_struct() const;
 
+        [[nodiscard]] bool has_type(const std::pmr::string& field_name,
+                                    const types::complex_logical_type& type) const;
+
     private:
-        using refcounted_entry_t = std::reference_wrapper<const versioned_value<types::complex_logical_type>>;
+        // field_name -> list of types currently present
+        std::pmr::unordered_map<std::pmr::string,
+                                std::pmr::vector<types::complex_logical_type>>
+            fields_;
 
-        bool try_use_refcout(const std::pmr::string& json,
-                             const types::complex_logical_type& type,
-                             bool is_append,
-                             size_t n = 1);
-
-        // TODO: preserve field order
-        // random order causes issues in computing schema
-        versioned_trie<std::pmr::string, types::complex_logical_type> fields_;
-        std::pmr::unordered_map<std::pmr::string, refcounted_entry_t> existing_versions_;
+        // Preserves insertion order of (field_name, type) pairs for physical column ordering.
+        std::pmr::vector<std::pair<std::pmr::string, types::complex_logical_type>> column_order_;
     };
 } // namespace components::catalog

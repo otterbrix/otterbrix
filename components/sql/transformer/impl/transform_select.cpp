@@ -12,6 +12,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
+
 using namespace components::expressions;
 
 namespace components::sql::transform {
@@ -196,8 +197,27 @@ namespace components::sql::transform {
                         }
                         break;
                     }
+                    case T_TypeCast: {
+                        auto cast = pg_ptr_cast<TypeCast>(res->val);
+                        if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                            // col::TYPE — pass cast type hint via key_t::cast_type_ so the
+                            // validator can resolve the physical column without path mangling.
+                            auto target_type = get_type(cast->typeName);
+                            auto col_ref =
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                            auto field_name = std::string(col_ref.field.storage().back());
+                            col_ref.field.set_cast_type(target_type);
+                            std::string alias = res->name ? res->name : field_name;
+                            group->append_expression(
+                                make_scalar_expression(resource_,
+                                                       scalar_type::get_field,
+                                                       expressions::key_t{resource_, alias},
+                                                       std::move(col_ref.field)));
+                            break;
+                        }
+                        [[fallthrough]];
+                    }
                     case T_ParamRef: // fall-through
-                    case T_TypeCast: // fall-through
                     case T_A_Const: {
                         // constant
                         auto expr = make_scalar_expression(

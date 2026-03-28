@@ -277,6 +277,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_add_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_add_column, msg);
+                break;
+            }
             // Storage queries
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_types, msg);
@@ -947,6 +951,17 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_add_column(session_id_t /*session*/,
+                                       collection_full_name_t name,
+                                       components::table::column_definition_t new_column) {
+        auto it = storages_.find(name);
+        if (it != storages_.end()) {
+            it->second->add_column(std::move(new_column));
+        }
+        co_return;
+    }
+
     // --- Storage queries ---
 
     manager_disk_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
@@ -1087,7 +1102,8 @@ namespace services::disk {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name()) {
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        data->data[col].type() == table_columns[t].type()) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;
@@ -1357,6 +1373,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::drop_storage, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_add_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_add_column, msg);
+                break;
+            }
             // Storage queries
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_types>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_types, msg);
@@ -1532,6 +1552,17 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_empty_t::unique_future<void>
+    manager_disk_empty_t::storage_add_column(session_id_t /*session*/,
+                                             collection_full_name_t name,
+                                             components::table::column_definition_t new_column) {
+        auto it = storages_.find(name);
+        if (it != storages_.end()) {
+            it->second->add_column(std::move(new_column));
+        }
+        co_return;
+    }
+
     manager_disk_empty_t::unique_future<std::pmr::vector<components::types::complex_logical_type>>
     manager_disk_empty_t::storage_types(session_id_t /*session*/, collection_full_name_t name) {
         auto* s = get_storage(name);
@@ -1668,7 +1699,8 @@ namespace services::disk {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name()) {
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        data->data[col].type() == table_columns[t].type()) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;

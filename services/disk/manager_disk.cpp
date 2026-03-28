@@ -311,6 +311,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_projected, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch, msg);
                 break;
@@ -1048,6 +1052,35 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::storage_scan_projected(session_id_t /*session*/,
+                                           collection_full_name_t name,
+                                           size_t column_limit,
+                                           int limit,
+                                           components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto all_types = s->types();
+        size_t n = (column_limit > 0 && column_limit < all_types.size()) ? column_limit : all_types.size();
+
+        // Build projected type list
+        std::pmr::vector<components::types::complex_logical_type> proj_types(resource());
+        proj_types.reserve(n);
+        for (size_t i = 0; i < n; i++) {
+            proj_types.push_back(all_types[i]);
+        }
+
+        // Pre-allocate to total_rows + 1 to avoid triggering a resize at the boundary
+        uint64_t total = s->total_rows();
+        uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
+        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
+        s->scan_projected(*result, nullptr, limit, txn, n);
+
+        co_return std::move(result);
+    }
+
+    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   collection_full_name_t name,
                                   components::vector::vector_t row_ids,
@@ -1366,6 +1399,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan_projected, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_fetch, msg);
                 break;
@@ -1601,6 +1638,34 @@ namespace services::disk {
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit, txn);
+        co_return std::move(result);
+    }
+
+    manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_empty_t::storage_scan_projected(session_id_t /*session*/,
+                                                 collection_full_name_t name,
+                                                 size_t column_limit,
+                                                 int limit,
+                                                 components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto all_types = s->types();
+        size_t n = (column_limit > 0 && column_limit < all_types.size()) ? column_limit : all_types.size();
+
+        std::pmr::vector<components::types::complex_logical_type> proj_types(resource());
+        proj_types.reserve(n);
+        for (size_t i = 0; i < n; i++) {
+            proj_types.push_back(all_types[i]);
+        }
+
+        // Pre-allocate to total_rows + 1 to avoid triggering a resize at the boundary
+        uint64_t total = s->total_rows();
+        uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
+        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
+        s->scan_projected(*result, nullptr, limit, txn, n);
+
         co_return std::move(result);
     }
 

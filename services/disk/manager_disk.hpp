@@ -196,6 +196,13 @@ namespace services::disk {
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
+        // Projected scan: returns only the first column_limit columns. Pre-allocates result.
+        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        storage_scan_projected(session_id_t session,
+                               collection_full_name_t name,
+                               size_t column_limit,
+                               int limit,
+                               components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
@@ -258,6 +265,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_adopt_schema,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
+                                                       &manager_disk_t::storage_scan_projected,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
@@ -479,6 +487,12 @@ namespace services::disk {
                      int limit,
                      components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        storage_scan_projected(session_id_t session,
+                               collection_full_name_t name,
+                               size_t column_limit,
+                               int limit,
+                               components::table::transaction_data txn);
+        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
                       components::vector::vector_t row_ids,
@@ -557,6 +571,7 @@ namespace services::disk {
                                                        &manager_disk_empty_t::storage_adopt_schema,
                                                        // Storage data operations
                                                        &manager_disk_empty_t::storage_scan,
+                                                       &manager_disk_empty_t::storage_scan_projected,
                                                        &manager_disk_empty_t::storage_fetch,
                                                        &manager_disk_empty_t::storage_scan_segment,
                                                        &manager_disk_empty_t::storage_append,

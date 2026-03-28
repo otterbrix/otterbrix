@@ -312,6 +312,7 @@ namespace components::table {
         approved_tuple_count = result_count;
     }
 
+
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
         constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
@@ -375,7 +376,8 @@ namespace components::table {
                         }
                     }
                 }
-                state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
+                // Use max_count (not result.capacity()) to avoid allocating huge indexing arrays
+                state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, max_count);
             } else {
                 uint64_t approved_tuple_count = count;
                 vector::indexing_vector_t indexing(result.resource(), result.capacity());
@@ -446,11 +448,15 @@ namespace components::table {
                 count = approved_tuple_count;
                 state.valid_indexing = indexing;
             }
-            for (uint64_t i = 0; i < count; i++) {
-                types::logical_value_t index{result.row_ids.resource(),
-                                             static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY +
-                                                                  state.valid_indexing.get_index(i))};
-                result.row_ids.set_value(result.size() + i, std::move(index));
+            // Write row IDs directly into the BIGINT buffer — avoids per-row logical_value_t construction
+            {
+                const int64_t base = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+                int64_t* row_id_data = result.row_ids.data<int64_t>();
+                const uint64_t offset = result.size();
+                for (uint64_t i = 0; i < count; i++) {
+                    row_id_data[offset + i] = base + static_cast<int64_t>(state.valid_indexing.get_index(i));
+                }
+                // row_ids validity is initially all-valid (no mask) so no update needed
             }
             result.set_cardinality(result.size() + count);
             state.vector_index++;

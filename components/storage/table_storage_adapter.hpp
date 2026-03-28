@@ -61,6 +61,29 @@ namespace components::storage {
             }
         }
 
+        void scan_projected(vector::data_chunk_t& output,
+                            const table::table_filter_t* filter,
+                            int limit,
+                            table::transaction_data txn,
+                            size_t column_limit) override {
+            fprintf(stderr, "[adapter::scan_projected] output.cap=%zu col_limit=%zu table_cols=%zu\n",
+                    static_cast<size_t>(output.capacity()), column_limit, table_.column_count());
+            size_t n = std::min(column_limit, table_.column_count());
+            std::vector<table::storage_index_t> column_indices;
+            column_indices.reserve(n);
+            for (size_t i = 0; i < n; i++) {
+                column_indices.emplace_back(static_cast<int64_t>(i));
+            }
+            table::table_scan_state state(resource_);
+            table_.initialize_scan(state, column_indices, filter);
+            state.table_state.txn = txn;
+            state.local_state.txn = txn;
+            table_.scan(output, state);
+            if (limit >= 0) {
+                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
+            }
+        }
+
         void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
             table::column_fetch_state state;
             std::vector<table::storage_index_t> column_indices;

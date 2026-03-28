@@ -44,7 +44,7 @@ static constexpr bool USE_SPARSE = true;
 // When false, columns are promoted by threshold only.
 static constexpr bool USE_PINNED = true;
 
-static constexpr size_t N_ROWS = 200'000;
+static constexpr size_t N_ROWS = 100'000;
 static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";
 static constexpr size_t INSERT_BATCH = 1000;

@@ -37,6 +37,16 @@ namespace components::storage {
             scan(output, filter, limit);
         }
 
+        // Scan only the first column_limit columns (column projection).
+        // Default falls back to full scan; override for efficient projection.
+        virtual void scan_projected(vector::data_chunk_t& output,
+                                    const table::table_filter_t* filter,
+                                    int limit,
+                                    table::transaction_data txn,
+                                    size_t /*column_limit*/) {
+            scan(output, filter, limit, txn);
+        }
+
         virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
 
         virtual void scan_segment(int64_t start,

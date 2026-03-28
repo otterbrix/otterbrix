@@ -1,5 +1,7 @@
 #include "create_plan_aggregate.hpp"
 
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -11,6 +13,49 @@
 namespace services::planner::impl {
 
     using components::logical_plan::node_type;
+
+    namespace {
+        using SExpr = components::expressions::scalar_expression_t;
+        using AExpr = components::expressions::aggregate_expression_t;
+        using KeyT  = components::expressions::key_t;
+
+        // Collect the max column index (0-based) referenced by all expressions in a node.
+        // Returns SIZE_MAX if no column references or any wildcard reference found.
+        size_t collect_max_column_index(const components::logical_plan::node_ptr& node) {
+            using components::expressions::expression_group;
+            size_t max_idx = 0;
+            bool found_any = false;
+
+            auto visit_path = [&](const KeyT& key) -> bool {
+                for (size_t idx : key.path()) {
+                    if (idx == SIZE_MAX) return false; // wildcard → can't project
+                    max_idx = std::max(max_idx, idx);
+                    found_any = true;
+                }
+                return true;
+            };
+
+            for (const auto& expr : node->expressions()) {
+                if (expr->group() == expression_group::scalar) {
+                    const auto* se = static_cast<const SExpr*>(expr.get());
+                    if (!visit_path(se->key())) return SIZE_MAX;
+                    for (const auto& p : se->params()) {
+                        if (std::holds_alternative<KeyT>(p)) {
+                            if (!visit_path(std::get<KeyT>(p))) return SIZE_MAX;
+                        }
+                    }
+                } else if (expr->group() == expression_group::aggregate) {
+                    const auto* ae = static_cast<const AExpr*>(expr.get());
+                    for (const auto& p : ae->params()) {
+                        if (std::holds_alternative<KeyT>(p)) {
+                            if (!visit_path(std::get<KeyT>(p))) return SIZE_MAX;
+                        }
+                    }
+                }
+            }
+            return found_any ? max_idx : SIZE_MAX;
+        }
+    } // namespace
 
     components::operators::operator_ptr
     create_plan_aggregate(const context_storage_t& context,
@@ -75,10 +120,25 @@ namespace services::planner::impl {
                 match_op->set_children(std::move(executor));
                 executor = std::move(match_op);
             }
+        } else if (match_op) {
+            executor = std::move(match_op);
         } else {
-            executor = match_op ? std::move(match_op)
-                                : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit)));
+            // Pure GROUP BY with no WHERE: compute column projection limit from group expressions.
+            // Only scan the first column_limit columns to avoid reading unused sparse/wide columns.
+            size_t column_limit = 0;
+            for (const auto& child : node->children()) {
+                if (child->type() == node_type::group_t) {
+                    size_t max_idx = collect_max_column_index(child);
+                    if (max_idx == SIZE_MAX) {
+                        column_limit = 0; // can't project
+                    } else {
+                        column_limit = max_idx + 1;
+                    }
+                    break;
+                }
+            }
+            executor = static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
+                new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, column_limit)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));

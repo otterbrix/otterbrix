@@ -206,6 +206,145 @@ namespace components::operators {
             }
             return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
+
+        // Convert a raw typed key to logical_value_t for storing in group_keys_
+        template<typename T>
+        types::logical_value_t raw_to_logical_value(std::pmr::memory_resource* resource, T key) {
+            return types::logical_value_t(resource, key);
+        }
+
+        template<>
+        types::logical_value_t raw_to_logical_value<std::string_view>(std::pmr::memory_resource* resource,
+                                                                       std::string_view key) {
+            return types::logical_value_t(resource, std::string(key));
+        }
+
+        // Zero-allocation GROUP BY for a single typed key column.
+        // Uses unordered_map<T, uint32_t> directly on raw vector data — no hash_vec allocation,
+        // no two-level collision chains.
+        // Returns the number of groups created.
+        template<typename T>
+        size_t build_single_key_groups_typed(
+            std::pmr::memory_resource* resource,
+            const vector::vector_t& vec,
+            const std::pmr::string& key_name,
+            size_t num_rows,
+            std::pmr::vector<uint32_t>& fast_group_ids,
+            size_t row_offset,
+            std::pmr::vector<uint64_t>& first_row_per_group,
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>>& group_keys,
+            std::pmr::vector<std::pmr::vector<size_t>>& row_ids_per_group)
+        {
+            std::unordered_map<T, uint32_t> key_to_group;
+            const auto* raw = vec.data<T>();
+            const auto& validity = vec.validity();
+            uint32_t next_group_id = 0;
+
+            for (size_t row = 0; row < num_rows; row++) {
+                if (!validity.row_is_valid(row)) {
+                    fast_group_ids[row_offset + row] = UINT32_MAX;
+                    continue;
+                }
+
+                T key = raw[row];
+                auto it = key_to_group.find(key);
+                if (it != key_to_group.end()) {
+                    uint32_t gid = it->second;
+                    fast_group_ids[row_offset + row] = gid;
+                    row_ids_per_group[gid].push_back(row);
+                } else {
+                    uint32_t gid = next_group_id++;
+                    key_to_group.emplace(key, gid);
+                    fast_group_ids[row_offset + row] = gid;
+
+                    auto lv = raw_to_logical_value(resource, key);
+                    lv.set_alias(std::string(key_name));
+                    std::pmr::vector<types::logical_value_t> key_vals(resource);
+                    key_vals.push_back(std::move(lv));
+                    group_keys.push_back(std::move(key_vals));
+                    first_row_per_group.push_back(static_cast<uint64_t>(row));
+                    std::pmr::vector<size_t> row_ids(resource);
+                    row_ids.push_back(row);
+                    row_ids_per_group.push_back(std::move(row_ids));
+                }
+            }
+            return static_cast<size_t>(next_group_id);
+        }
+
+        // Dispatch to the typed single-key GROUP BY path based on physical type.
+        // Returns true if handled, false if the type is unsupported (caller should fall back).
+        bool try_single_key_fast_group(
+            std::pmr::memory_resource* resource,
+            const vector::vector_t& vec,
+            const std::pmr::string& key_name,
+            size_t num_rows,
+            std::pmr::vector<uint32_t>& fast_group_ids,
+            size_t row_offset,
+            std::pmr::vector<uint64_t>& first_row_per_group,
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>>& group_keys,
+            std::pmr::vector<std::pmr::vector<size_t>>& row_ids_per_group)
+        {
+            using PT = types::physical_type;
+            switch (vec.type().to_physical_type()) {
+                case PT::STRING:
+                    build_single_key_groups_typed<std::string_view>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::INT8:
+                    build_single_key_groups_typed<int8_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::INT16:
+                    build_single_key_groups_typed<int16_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::INT32:
+                    build_single_key_groups_typed<int32_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::INT64:
+                    build_single_key_groups_typed<int64_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::UINT8:
+                    build_single_key_groups_typed<uint8_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::UINT16:
+                    build_single_key_groups_typed<uint16_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::UINT32:
+                    build_single_key_groups_typed<uint32_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::UINT64:
+                    build_single_key_groups_typed<uint64_t>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::FLOAT:
+                    build_single_key_groups_typed<float>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                case PT::DOUBLE:
+                    build_single_key_groups_typed<double>(
+                        resource, vec, key_name, num_rows, fast_group_ids, row_offset,
+                        first_row_per_group, group_keys, row_ids_per_group);
+                    return true;
+                default:
+                    return false;
+            }
+        }
     } // anonymous namespace
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
@@ -372,16 +511,30 @@ namespace components::operators {
         }
 
         if (use_fast_path && !key_col_indices.empty()) {
-            // Batch hash all rows at once using type-dispatched vector_ops::hash
+            // Pre-allocate flat group_ids array — avoids conversion loop in calc_aggregate_values
+            fast_group_ids_.resize(fast_group_ids_.size() + num_rows, UINT32_MAX);
+            size_t row_offset = fast_group_ids_.size() - num_rows;
+            fast_group_ids_valid_ = true;
+
+            // Single-key typed fast path: use unordered_map<T, uint32_t> on raw vector data.
+            // Avoids hash_vec allocation, two-level group_index_ indirection, and keys_match calls.
+            if (key_col_indices.size() == 1) {
+                const auto& key_vec = chunk.data[key_col_indices[0]];
+                if (key_vec.get_vector_type() == vector::vector_type::FLAT &&
+                    try_single_key_fast_group(resource_, key_vec, keys_[0].name, num_rows,
+                                              fast_group_ids_, row_offset,
+                                              first_row_per_group_, group_keys_,
+                                              row_ids_per_group_)) {
+                    return;
+                }
+            }
+
+            // Multi-key (or unsupported single-key type): batch hash all rows at once
             vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, num_rows);
             std::vector<uint64_t> col_ids(key_col_indices.begin(), key_col_indices.end());
             chunk.hash(col_ids, hash_vec);
             auto* hashes = hash_vec.data<uint64_t>();
 
-            // Pre-allocate flat group_ids array — avoids conversion loop in calc_aggregate_values
-            fast_group_ids_.resize(fast_group_ids_.size() + num_rows, UINT32_MAX);
-            size_t row_offset = fast_group_ids_.size() - num_rows;
-            fast_group_ids_valid_ = true;
 
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
                 auto hash_val = static_cast<size_t>(hashes[row_idx]);

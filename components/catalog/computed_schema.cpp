@@ -63,11 +63,6 @@ namespace components::catalog {
         return types::complex_logical_type::create_struct("latest_types", std::move(retval));
     }
 
-    std::string computed_schema::storage_column_name(const std::string& field_name,
-                                                      const types::complex_logical_type& type) {
-        return "__" + field_name + "__" + std::to_string(static_cast<unsigned>(type.type()));
-    }
-
     bool computed_schema::has_type(const std::pmr::string& field_name,
                                     const types::complex_logical_type& type) const {
         auto it = fields_.find(field_name);

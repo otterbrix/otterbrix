@@ -448,11 +448,8 @@ namespace services::dispatcher {
 
                             std::pmr::string pmr_field(field_name.c_str(), resource());
                             if (!schema.has_type(pmr_field, field_type)) {
-                                // New (field_name, type) pair — add physical column to storage
-                                std::string phys_name =
-                                    computed_schema::storage_column_name(field_name, field_type);
                                 components::table::column_definition_t col_def(
-                                    phys_name,
+                                    std::string(field_name),
                                     field_type,
                                     false,
                                     std::nullopt);
@@ -469,10 +466,7 @@ namespace services::dispatcher {
                             // for the same (field, type) are no-ops that preserve the original ordering.
                             schema.append(pmr_field, field_type);
 
-                            // Rename alias to physical column name so storage_append can match by name
-                            std::string phys_name =
-                                computed_schema::storage_column_name(field_name, field_type);
-                            col.set_type_alias(phys_name);
+                            col.set_type_alias(std::string(field_name));
 
                             // Track for computed_schema refcount update after successful INSERT
                             update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] +=

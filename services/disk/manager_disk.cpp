@@ -1101,7 +1101,8 @@ namespace services::disk {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name()) {
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        data->data[col].type() == table_columns[t].type()) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;
@@ -1696,7 +1697,8 @@ namespace services::disk {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
-                        data->data[col].type().alias() == table_columns[t].name()) {
+                        data->data[col].type().alias() == table_columns[t].name() &&
+                        data->data[col].type() == table_columns[t].type()) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;

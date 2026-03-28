@@ -22,10 +22,6 @@ namespace components::catalog {
 
         [[nodiscard]] types::complex_logical_type latest_types_struct() const;
 
-        // Physical storage column name: "field_name__TYPENAME"
-        [[nodiscard]] static std::string storage_column_name(const std::string& field_name,
-                                                             const types::complex_logical_type& type);
-
         [[nodiscard]] bool has_type(const std::pmr::string& field_name,
                                     const types::complex_logical_type& type) const;
 

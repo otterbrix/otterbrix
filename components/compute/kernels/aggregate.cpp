@@ -462,7 +462,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {numeric_types_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
 
         fn->add_kernel(std::move(k));
@@ -477,7 +479,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
 
         fn->add_kernel(std::move(k));
@@ -492,7 +496,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
 
         fn->add_kernel(std::move(k));
@@ -507,12 +513,14 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::var_args(0), doc, available_kernel_slots + 1);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::fixed(logical_type::UBIGINT)});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
         fn->add_kernel(std::move(k));
 
         // COUNT(*) — zero-argument kernel
-        kernel_signature_t sig_star({}, {output_type::fixed(logical_type::UBIGINT)});
+        kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k_star{std::move(sig_star), count_init, count_consume, count_merge, count_finalize};
         fn->add_kernel(std::move(k_star));
 
@@ -527,7 +535,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {numeric_types_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
 
         fn->add_kernel(std::move(k));

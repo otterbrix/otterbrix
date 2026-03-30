@@ -256,6 +256,9 @@ namespace components::operators {
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
+                } else if (result_vec.type().type() == types::logical_type::NA) {
+                    set_error("unknown error during evaluate_arithmetic");
+                    return;
                 }
                 result_vec.set_type_alias(std::string(comp.alias));
                 chunk.data.emplace_back(std::move(result_vec));

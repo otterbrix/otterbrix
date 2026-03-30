@@ -201,7 +201,9 @@ TEST_CASE("components::compute::aggregate::batch") {
 TEST_CASE("components::compute::aggregate::batch_per_group") {
     auto fn = std::make_unique<aggregate_function>("agg_per_group", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
+    kernel_signature_t sig(function_type_t::aggregate,
+                           {exact_type_matcher(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
     aggregate_kernel k(std::move(sig), agg_init, agg_consume, agg_push_merge, agg_push_finalize);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -230,7 +232,9 @@ TEST_CASE("components::compute::aggregate::batch_per_group") {
 TEST_CASE("components::compute::row::single") {
     auto fn = std::make_unique<row_function>("row_single", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
+    kernel_signature_t sig(function_type_t::row,
+                           {exact_type_matcher(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
     row_kernel k(std::move(sig), row_double);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -252,7 +256,9 @@ TEST_CASE("components::compute::row::single") {
 TEST_CASE("components::compute::row::batch") {
     auto fn = std::make_unique<row_function>("row_batch", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
+    kernel_signature_t sig(function_type_t::row,
+                           {exact_type_matcher(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
     row_kernel k(std::move(sig), row_double);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -282,7 +288,9 @@ TEST_CASE("components::compute::row::values") {
     // Direct pmr::vector path — single scalar call
     auto fn = std::make_unique<row_function>("row_vals", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)}, {output_type::fixed(logical_type::INTEGER)});
+    kernel_signature_t sig(function_type_t::row,
+                           {exact_type_matcher(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
     row_kernel k(std::move(sig), row_double);
     REQUIRE(fn->add_kernel(std::move(k)));
 
@@ -375,7 +383,8 @@ TEST_CASE("components::compute::errors") {
     SECTION("faulty row exec") {
         auto fn = std::make_unique<row_function>("row", arity::unary(), function_doc{}, 1);
 
-        kernel_signature_t sig({exact_type_matcher(logical_type::INTEGER)},
+        kernel_signature_t sig(function_type_t::row,
+                               {exact_type_matcher(logical_type::INTEGER)},
                                {output_type::fixed(logical_type::INTEGER)});
         row_kernel k(std::move(sig), row_exec_fail);
         REQUIRE(fn->add_kernel(std::move(k)));

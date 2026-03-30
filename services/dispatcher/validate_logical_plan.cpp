@@ -542,7 +542,8 @@ namespace services::dispatcher {
                                                       parameters,
                                                       schema_left,
                                                       schema_right,
-                                                      same_schema);
+                                                      same_schema,
+                                                      allowed_function_types);
                                 break;
                             case expression_group::compare:
                                 res = validate_schema(resource,
@@ -1100,14 +1101,14 @@ namespace services::dispatcher {
 
                                 const auto& col_type = incoming_schema[key.path()[0]].type;
                                 const components::types::complex_logical_type* res_type = &col_type;
-                                for (size_t i = 1; i < key.path().size(); i++) {
+                                for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
                                         return schema_result<named_schema>{
                                             resource,
                                             components::cursor::error_t{error_code_t::schema_error,
                                                                         "trying to access field of non-nested type"}};
                                     } else if (res_type->type() == logical_type::STRUCT) {
-                                        res_type = &res_type->child_types()[key.path()[i]];
+                                        res_type = &res_type->child_types()[key.path()[j]];
                                     } else {
                                         res_type = &res_type->child_type();
                                     }

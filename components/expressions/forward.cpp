@@ -45,6 +45,8 @@ namespace components::expressions {
         switch (type) {
             case scalar_type::get_field:
                 return "get_field";
+            case scalar_type::constant:
+                return "constant";
             case scalar_type::group_field:
                 return "group_field";
             case scalar_type::add:

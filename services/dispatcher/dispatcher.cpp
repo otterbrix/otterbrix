@@ -243,7 +243,11 @@ namespace services::dispatcher {
                 error = check_namespace_exists(resource(), catalog_, id);
                 break;
             case node_type::create_collection_t:
-                if (!check_collection_exists(resource(), catalog_, id)) {
+                if (check_namespace_exists(resource(), catalog_, id)) {
+                    error = make_cursor(resource(),
+                                        error_code_t::database_not_exists,
+                                        "otterbrix currently does not support tables without database");
+                } else if (!check_collection_exists(resource(), catalog_, id)) {
                     error =
                         make_cursor(resource(), error_code_t::collection_already_exists, "collection already exists");
                 } else {

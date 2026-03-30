@@ -54,7 +54,8 @@ std::unique_ptr<aggregate_function> make_concat_func() {
 
     auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
 
-    kernel_signature_t sig({exact_type_matcher(types::logical_type::STRING_LITERAL)},
+    kernel_signature_t sig(function_type_t::aggregate,
+                           {exact_type_matcher(types::logical_type::STRING_LITERAL)},
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_init, concat_consume, concat_merge, concat_finalize};
 
@@ -97,6 +98,7 @@ std::unique_ptr<aggregate_function> make_mult_func() {
     auto fn = std::make_unique<aggregate_function>(udf2_name, arity::binary(), doc, 1);
 
     kernel_signature_t sig(
+        function_type_t::aggregate,
         {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
@@ -117,7 +119,8 @@ std::unique_ptr<row_function> make_is_even_func() {
 
     auto fn = std::make_unique<row_function>(udf3_name, arity::unary(), doc, 1);
 
-    kernel_signature_t sig({exact_type_matcher(types::logical_type::BIGINT)},
+    kernel_signature_t sig(function_type_t::row,
+                           {exact_type_matcher(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), is_even_exec};
 
@@ -138,6 +141,7 @@ std::unique_ptr<row_function> make_modulo_func() {
     auto fn = std::make_unique<row_function>(udf4_name, arity::binary(), doc, 1);
 
     kernel_signature_t sig(
+        function_type_t::row,
         {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), modulo_exec};

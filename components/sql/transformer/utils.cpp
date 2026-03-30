@@ -296,9 +296,13 @@ namespace components::sql::transform {
     types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto cast = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return types::logical_value_t(resource, is_true);
+                auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
+                if (constant->val.type == T_String) {
+                    bool is_true = std::string(strVal(&constant->val)) == "t";
+                    return types::logical_value_t(resource, is_true);
+                } else {
+                    return types::logical_value_t(resource, constant->val.val.ival);
+                }
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -331,11 +335,9 @@ namespace components::sql::transform {
                 }
                 return types::logical_value_t::create_struct(resource, "", fields);
             }
-            case T_ColumnRef:
-                assert(false);
-                return types::logical_value_t(resource, strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data));
+            default:
+                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
-        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
     }
 
     types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list) {

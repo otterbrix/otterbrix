@@ -31,9 +31,11 @@ namespace components::compute {
         return resolver(input_types);
     }
 
-    kernel_signature_t::kernel_signature_t(std::pmr::vector<input_type> input_types,
+    kernel_signature_t::kernel_signature_t(function_type_t function_type,
+                                           std::pmr::vector<input_type> input_types,
                                            std::pmr::vector<struct output_type> output_types)
-        : input_types(std::move(input_types))
+        : function_type(function_type)
+        , input_types(std::move(input_types))
         , output_types(std::move(output_types)) {}
 
     bool kernel_signature_t::matches_inputs(const std::pmr::vector<types::complex_logical_type>& types) const {

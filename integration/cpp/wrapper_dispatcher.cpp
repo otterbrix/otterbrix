@@ -231,16 +231,25 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
-        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-        transformer local_transformer(resource(), query.c_str());
-        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
-            std::holds_alternative<bind_error>(result)) {
-            return make_cursor(resource(),
-                               components::cursor::error_code_t::sql_parse_error,
-                               std::get<bind_error>(std::move(result)).what());
-        } else {
-            auto view = std::get<result_view>(std::move(result));
-            return execute_plan(session, std::move(view.node), std::move(view.params));
+        try {
+            auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+            if (!parse_result) {
+                return make_cursor(resource(),
+                                   components::cursor::error_code_t::sql_parse_error,
+                                   "unknown parser error");
+            }
+            transformer local_transformer(resource(), query.c_str());
+            if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
+                std::holds_alternative<bind_error>(result)) {
+                return make_cursor(resource(),
+                                   components::cursor::error_code_t::sql_parse_error,
+                                   std::get<bind_error>(std::move(result)).what());
+            } else {
+                auto view = std::get<result_view>(std::move(result));
+                return execute_plan(session, std::move(view.node), std::move(view.params));
+            }
+        } catch (const std::exception& exception) {
+            return make_cursor(resource(), components::cursor::error_code_t::sql_parse_error, exception.what());
         }
     }
 

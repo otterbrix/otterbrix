@@ -10,7 +10,7 @@ namespace components::types {
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
             for (auto& v : t) v = physical_type::INVALID;
-            t[uint8_t(logical_type::NA)] = physical_type::BOOL;
+            t[uint8_t(logical_type::NA)] = physical_type::NA;
             t[uint8_t(logical_type::BOOLEAN)] = physical_type::BOOL;
             t[uint8_t(logical_type::TINYINT)] = physical_type::INT8;
             t[uint8_t(logical_type::UTINYINT)] = physical_type::UINT8;
@@ -194,7 +194,7 @@ namespace components::types {
     size_t complex_logical_type::size() const noexcept {
         switch (to_physical_type()) {
             case physical_type::NA:
-                return 1;
+                return 0;
             case physical_type::BIT:
             case physical_type::BOOL:
                 return sizeof(bool);
@@ -304,15 +304,15 @@ namespace components::types {
     }
 
     const std::string& complex_logical_type::type_name() const {
-        if (type_ == logical_type::UNKNOWN) {
+        assert(extension_);
+        if (extension_->type() == logical_type_extension::extension_type::UNKNOWN) {
             return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
-        } else if (type_ == logical_type::STRUCT) {
+        } else if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
             return static_cast<struct_logical_type_extension*>(extension_.get())->type_name();
-        } else if (type_ == logical_type::ENUM) {
+        } else if (extension_->type() == logical_type_extension::extension_type::ENUM) {
             return static_cast<enum_logical_type_extension*>(extension_.get())->type_name();
         }
-        static std::string null_str = "";
-        return null_str;
+        return extension_->alias();
     }
 
     const std::string& complex_logical_type::child_name(uint64_t index) const {
@@ -397,6 +397,9 @@ namespace components::types {
                     return false;
                 }
             }
+            return true;
+        }
+        if (type_ == logical_type::STRING_LITERAL && other.type_ == logical_type::ENUM) {
             return true;
         }
 

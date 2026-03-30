@@ -258,21 +258,35 @@ namespace components::compute {
     static const std::array<std::pair<std::string, registered_func_id>, 5> DEFAULT_FUNCTIONS{
         std::pair<std::string, registered_func_id>{
             "sum",
-            {0, {kernel_signature_t{{numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+            {0,
+             {kernel_signature_t{function_type_t::aggregate,
+                                 {numeric_types_matcher()},
+                                 {output_type::computed(same_type_resolver(0))}}}}},
         std::pair<std::string, registered_func_id>{
             "min",
-            {1, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+            {1,
+             {kernel_signature_t{function_type_t::aggregate,
+                                 {always_true_type_matcher()},
+                                 {output_type::computed(same_type_resolver(0))}}}}},
         std::pair<std::string, registered_func_id>{
             "max",
-            {2, {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}}}}},
+            {2,
+             {kernel_signature_t{function_type_t::aggregate,
+                                 {always_true_type_matcher()},
+                                 {output_type::computed(same_type_resolver(0))}}}}},
         std::pair<std::string, registered_func_id>{
             "count",
             {3,
-             {kernel_signature_t{{always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))}},
-              kernel_signature_t{{}, {output_type::fixed(types::logical_type::UBIGINT)}}}}},
+             {kernel_signature_t{function_type_t::aggregate,
+                                 {always_true_type_matcher()},
+                                 {output_type::computed(same_type_resolver(0))}},
+              kernel_signature_t{function_type_t::aggregate, {}, {output_type::fixed(types::logical_type::UBIGINT)}}}}},
         std::pair<std::string, registered_func_id>{
             "avg",
-            {4, {kernel_signature_t{{numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))}}}}}};
+            {4,
+             {kernel_signature_t{function_type_t::aggregate,
+                                 {numeric_types_matcher()},
+                                 {output_type::computed(same_type_resolver(0))}}}}}};
 
     void register_default_functions(function_registry_t& registry);
 

@@ -17,12 +17,18 @@ namespace components::sql::transform {
                 key_translation.emplace_back(resource_, target->name);
             } else {
                 auto key = expressions::key_t{
-                    std::pmr::vector<std::pmr::string>{{target->name, resource_},
-                                                       pmrStrVal(target->indirection->lst.back().data, resource_)}};
+                    std::pmr::vector<std::pmr::string>{{std::pmr::string{target->name, resource_},
+                                                        pmrStrVal(target->indirection->lst.back().data, resource_)},
+                                                       resource_}};
                 key_translation.emplace_back(std::move(key));
             }
         }
-
+        if (!node.selectStmt) {
+            return logical_plan::make_node_insert(resource_,
+                                                  rangevar_to_collection(node.relation),
+                                                  std::move(vector::data_chunk_t{resource_, {}, 0}),
+                                                  std::move(key_translation));
+        }
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             auto vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
 

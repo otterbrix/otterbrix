@@ -249,7 +249,7 @@ TEST_CASE("components::sql::group_by") {
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
-                       R"_($aggregate: {$group: {name, name1, 9.99: #0, group_by: name, group_by: name1}})_",
+                       R"_($aggregate: {$group: {name, name1, {$constant: #0}, group_by: name, group_by: name1}})_",
                        vec({v(&resource, 9.99)}));
 }
 
@@ -288,6 +288,6 @@ TEST_CASE("components::sql::select_from_fields") {
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
-        R"_($aggregate: {$group: {number, size: #0, title: #1, on: #2, off: #3}})_",
+        R"_($aggregate: {$group: {number, size: {$constant: #0}, title: {$constant: #1}, on: {$constant: #2}, off: {$constant: #3}}})_",
         vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
 }

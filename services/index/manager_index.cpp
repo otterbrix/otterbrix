@@ -70,11 +70,11 @@ namespace {
     using agent_addr_map_t = std::unordered_map<uintptr_t, actor_zeta::address_t>;
 
     [[maybe_unused]] void collect_disk_op(const components::index::index_engine_ptr& engine,
-                         const components::vector::data_chunk_t& chunk,
-                         size_t row,
-                         std::pmr::memory_resource* target_resource,
-                         agent_batch_map_t& batches,
-                         agent_addr_map_t& addrs) {
+                                          const components::vector::data_chunk_t& chunk,
+                                          size_t row,
+                                          std::pmr::memory_resource* target_resource,
+                                          agent_batch_map_t& batches,
+                                          agent_addr_map_t& addrs) {
         engine->for_each_disk_op(chunk,
                                  row,
                                  [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key) {

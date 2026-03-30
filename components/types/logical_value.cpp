@@ -483,8 +483,28 @@ namespace components::types {
             }
 
             return create_struct(resource_, type, fields);
+        } else if (type.type() == logical_type::ENUM) {
+            if (type_.type() == logical_type::STRING_LITERAL) {
+                auto string_val = value<std::string_view>();
+                for (const auto& entry : static_cast<const enum_logical_type_extension*>(type.extension())->entries()) {
+                    if (entry.type().alias() == string_val) {
+                        return entry;
+                    }
+                }
+                // TODO: return error
+                assert(false && "string value is not a part of the enum");
+            } else if (is_numeric(type_.type())) {
+                const auto& enum_entries = static_cast<const enum_logical_type_extension*>(type.extension())->entries();
+                for (const auto& entry : enum_entries) {
+                    if (*this == entry) {
+                        return entry;
+                    }
+                }
+                // TODO: return error
+                assert(false && "string value is not a part of the enum");
+            }
         }
-        assert(false && "cast to value is not implemented");
+        //assert(false && "cast to value is not implemented");
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 

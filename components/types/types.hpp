@@ -319,7 +319,9 @@ namespace components::types {
         if (type1 == type2) {
             return type1;
         }
-        assert((is_numeric(type1) && is_numeric(type2)) || (is_duration(type1) && is_duration(type2)));
+        if (!(is_numeric(type1) && is_numeric(type2)) && !(is_duration(type1) && is_duration(type2))) {
+            return logical_type::NA;
+        }
 
         constexpr uint8_t signage_difference =
             static_cast<uint8_t>(logical_type::UTINYINT) - static_cast<uint8_t>(logical_type::TINYINT);

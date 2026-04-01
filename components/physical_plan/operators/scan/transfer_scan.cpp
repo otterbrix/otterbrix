@@ -33,6 +33,7 @@ namespace components::operators {
                                              ctx->session,
                                              name_,
                                              column_limit_,
+                                             std::unique_ptr<table::table_filter_t>(nullptr),
                                              limit_val,
                                              ctx->txn);
             data = co_await std::move(sf);

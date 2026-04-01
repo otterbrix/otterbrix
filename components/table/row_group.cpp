@@ -313,6 +313,89 @@ namespace components::table {
     }
 
 
+    void row_group_t::filter_indexing_vectorized(std::pmr::memory_resource* resource,
+                                                 uint64_t vector_index,
+                                                 uint64_t max_count,
+                                                 vector::indexing_vector_t& indexing,
+                                                 const table_filter_t* filter,
+                                                 uint64_t& approved_tuple_count) {
+        switch (filter->filter_type) {
+            case expressions::compare_type::union_and: {
+                const auto& conj = filter->cast<conjunction_and_filter_t>();
+                for (const auto& child : conj.child_filters) {
+                    if (approved_tuple_count == 0) return;
+                    filter_indexing_vectorized(resource, vector_index, max_count,
+                                               indexing, child.get(), approved_tuple_count);
+                }
+                break;
+            }
+            case expressions::compare_type::union_or: {
+                const auto& conj = filter->cast<conjunction_or_filter_t>();
+                if (conj.child_filters.empty()) break;
+                // Build a pass-mask over chunk indices [0..max_count), union across children
+                std::pmr::vector<uint8_t> pass_mask(max_count, uint8_t{0}, resource);
+                for (const auto& child : conj.child_filters) {
+                    // Copy current indexing for this child (must allocate backing memory)
+                    vector::indexing_vector_t child_idx(indexing.resource(), approved_tuple_count);
+                    for (uint64_t i = 0; i < approved_tuple_count; i++) {
+                        child_idx.set_index(i, indexing.get_index(i));
+                    }
+                    uint64_t child_count = approved_tuple_count;
+                    filter_indexing_vectorized(resource, vector_index, max_count,
+                                               child_idx, child.get(), child_count);
+                    for (uint64_t i = 0; i < child_count; i++) {
+                        pass_mask[child_idx.get_index(i)] = 1;
+                    }
+                }
+                // Build result — use new_indexing to avoid writing to a potentially null indexing_
+                vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
+                uint64_t result_count = 0;
+                for (uint64_t i = 0; i < approved_tuple_count; i++) {
+                    auto idx = indexing.get_index(i);
+                    if (pass_mask[idx]) {
+                        new_indexing.set_index(result_count++, idx);
+                    }
+                }
+                approved_tuple_count = result_count;
+                indexing = new_indexing;
+                break;
+            }
+            default: {
+                // Leaf filter: use batch column scan + vectorized comparison when possible.
+                // Only eq/ne/lt/gt/lte/gte are supported by filter_selection_switch; everything
+                // else (regex, any, all, is_null, is_not_null, union_not, …) falls back.
+                {
+                    auto ft = filter->filter_type;
+                    if (ft != expressions::compare_type::eq && ft != expressions::compare_type::ne &&
+                        ft != expressions::compare_type::lt && ft != expressions::compare_type::gt &&
+                        ft != expressions::compare_type::lte && ft != expressions::compare_type::gte) {
+                        filter_indexing(resource, vector_index, indexing, filter, approved_tuple_count);
+                        break;
+                    }
+                }
+                const auto& cf = filter->cast<constant_filter_t>();
+                // Only handle flat column reference (no nested struct path)
+                if (cf.table_indices.size() != 1 || cf.table_indices.front() >= get_column_count()) {
+                    filter_indexing(resource, vector_index, indexing, filter, approved_tuple_count);
+                    break;
+                }
+                auto& col = get_column(cf.table_indices.front());
+                // Require matching physical types — mixed-type comparisons (e.g. BIGINT > DOUBLE)
+                // must go through check_predicate which handles implicit conversions.
+                if (col.type().to_physical_type() != cf.constant.type().to_physical_type()) {
+                    filter_indexing(resource, vector_index, indexing, filter, approved_tuple_count);
+                    break;
+                }
+                column_scan_state scan_state;
+                scan_state.initialize(col.type());
+                col.initialize_scan(scan_state);
+                vector::vector_t temp_vec(resource, col.type(), max_count);
+                col.filter(vector_index, scan_state, temp_vec, indexing, approved_tuple_count, *filter);
+                break;
+            }
+        }
+    }
+
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
         constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
@@ -388,11 +471,12 @@ namespace components::table {
                 }
                 if (filter) {
                     assert(ALLOW_UPDATES);
-                    filter_indexing(collection_->resource(),
-                                    state.vector_index,
-                                    indexing,
-                                    filter,
-                                    approved_tuple_count);
+                    filter_indexing_vectorized(collection_->resource(),
+                                               state.vector_index,
+                                               max_count,
+                                               indexing,
+                                               filter,
+                                               approved_tuple_count);
                 }
                 if (approved_tuple_count == 0) {
                     for (uint64_t i = 0; i < column_ids.size(); i++) {

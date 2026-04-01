@@ -1055,6 +1055,7 @@ namespace services::disk {
     manager_disk_t::storage_scan_projected(session_id_t /*session*/,
                                            collection_full_name_t name,
                                            size_t column_limit,
+                                           std::unique_ptr<components::table::table_filter_t> filter,
                                            int limit,
                                            components::table::transaction_data txn) {
         auto* s = get_storage(name);
@@ -1075,7 +1076,7 @@ namespace services::disk {
         uint64_t total = s->total_rows();
         uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
-        s->scan_projected(*result, nullptr, limit, txn, n);
+        s->scan_projected(*result, filter.get(), limit, txn, n);
 
         co_return std::move(result);
     }
@@ -1645,6 +1646,7 @@ namespace services::disk {
     manager_disk_empty_t::storage_scan_projected(session_id_t /*session*/,
                                                  collection_full_name_t name,
                                                  size_t column_limit,
+                                                 std::unique_ptr<components::table::table_filter_t> filter,
                                                  int limit,
                                                  components::table::transaction_data txn) {
         auto* s = get_storage(name);
@@ -1664,7 +1666,7 @@ namespace services::disk {
         uint64_t total = s->total_rows();
         uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
-        s->scan_projected(*result, nullptr, limit, txn, n);
+        s->scan_projected(*result, filter.get(), limit, txn, n);
 
         co_return std::move(result);
     }
@@ -1735,9 +1737,8 @@ namespace services::disk {
                 if (!found) {
                     if (table_columns[t].has_default_value()) {
                         expanded_data.emplace_back(resource(), full_types[t], data->size());
-                        for (uint64_t row = 0; row < data->size(); row++) {
+                        for (uint64_t row = 0; row < data->size(); row++)
                             expanded_data.back().set_value(row, table_columns[t].default_value());
-                        }
                     } else {
                         expanded_data.emplace_back(resource(), full_types[t], data->size());
                         expanded_data.back().validity().set_all_invalid(data->size());

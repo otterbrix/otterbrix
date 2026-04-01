@@ -127,6 +127,13 @@ namespace components::table {
                              const table_filter_t* filter,
                              uint64_t& approved_tuple_count);
 
+        void filter_indexing_vectorized(std::pmr::memory_resource* resource,
+                                        uint64_t vector_index,
+                                        uint64_t max_count,
+                                        vector::indexing_vector_t& indexing,
+                                        const table_filter_t* filter,
+                                        uint64_t& approved_tuple_count);
+
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);
 

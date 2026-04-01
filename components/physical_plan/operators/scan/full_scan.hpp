@@ -18,7 +18,8 @@ namespace components::operators {
                   log_t log,
                   collection_full_name_t name,
                   const expressions::compare_expression_ptr& expression,
-                  logical_plan::limit_t limit);
+                  logical_plan::limit_t limit,
+                  size_t column_limit = 0);
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
@@ -32,6 +33,7 @@ namespace components::operators {
         collection_full_name_t name_;
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
+        size_t column_limit_;
     };
 
 } // namespace components::operators

@@ -146,7 +146,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     INFO("insert with conversions") {
         // is the same for all
         auto changed_types = types;
-        changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, "count_but_integer"};
+        changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, types[0].alias()};
 
         auto insert_with_conversion = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());

@@ -1,7 +1,7 @@
 #include "operator_join.hpp"
+#include "predicates/predicate.hpp"
 
 #include <components/vector/vector_operations.hpp>
-#include <vector>
 
 namespace components::operators {
 
@@ -87,8 +87,9 @@ namespace components::operators {
 
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
+            auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (predicate->check(chunk_left, chunk_right, i, j)) {
+                if (results[j]) {
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
                     ++res_count;
@@ -132,8 +133,9 @@ namespace components::operators {
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
             bool visited_left = false;
+            auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (predicate->check(chunk_left, chunk_right, i, j)) {
+                if (results[j]) {
                     visited_left = true;
                     visited_right[j] = true;
                     copy_indices_left.emplace_back(i);
@@ -198,8 +200,9 @@ namespace components::operators {
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
             bool visited_left = false;
+            auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (predicate->check(chunk_left, chunk_right, i, j)) {
+                if (results[j]) {
                     visited_left = true;
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
@@ -251,8 +254,9 @@ namespace components::operators {
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_right.size(); i++) {
             bool visited_right = false;
+            auto results = predicates::batch_check_Nv1(predicate, chunk_left, chunk_right, chunk_left.size(), i);
             for (size_t j = 0; j < chunk_left.size(); j++) {
-                if (predicate->check(chunk_left, chunk_right, j, i)) {
+                if (results[j]) {
                     visited_right = true;
                     copy_indices_left.emplace_back(j);
                     copy_indices_right.emplace_back(i);

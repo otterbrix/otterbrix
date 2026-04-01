@@ -47,9 +47,8 @@ namespace components::compute {
         virtual ~function_executor() = default;
         virtual compute_status init(const function_options* options, exec_context_t& exec_ctx) = 0;
 
-        virtual compute_result<datum_t> execute(const vector::data_chunk_t& args, size_t exec_length) = 0;
-        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs,
-                                                size_t exec_length) = 0;
+        virtual compute_result<datum_t> execute(const vector::data_chunk_t& args) = 0;
+        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
         virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
     };
 
@@ -63,7 +62,8 @@ namespace components::compute {
     };
 
     template<typename T>
-    requires std::is_move_constructible_v<T> class function_visitor_with_result : public function_visitor {
+        requires std::is_move_constructible_v<T>
+    class function_visitor_with_result : public function_visitor {
     public:
         T result;
 
@@ -84,12 +84,10 @@ namespace components::compute {
         virtual void accept_visitor(function_visitor& visitor) const = 0;
 
         virtual compute_result<datum_t> execute(const vector::data_chunk_t& args,
-                                                size_t exec_length,
                                                 const function_options* options = nullptr,
                                                 exec_context_t& ctx = default_exec_context()) const;
 
         virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& args,
-                                                size_t exec_length,
                                                 const function_options* options = nullptr,
                                                 exec_context_t& ctx = default_exec_context()) const;
 

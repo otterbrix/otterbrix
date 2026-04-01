@@ -17,6 +17,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_join.cpp
         test_connections.cpp
         test_udfs.cpp
+        test_batch_execution.cpp
         test_arithmetic.cpp
 )
 

@@ -32,8 +32,9 @@ namespace components::operators {
 
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
+                auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
                 for (size_t j = 0; j < chunk_right.size(); j++) {
-                    if (predicate->check(chunk_left, chunk_right, i, j)) {
+                    if (results[j]) {
                         ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
                         if (index >= ids_capacity) {
                             ids.resize(ids_capacity, ids_capacity * 2);

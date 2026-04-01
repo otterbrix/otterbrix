@@ -14,6 +14,26 @@ namespace components::operators::predicates {
         return check_impl(chunk_left, chunk_right, index_left, index_right);
     }
 
+    std::vector<bool> predicate::batch_check(const vector::data_chunk_t& left,
+                                             const vector::data_chunk_t& right,
+                                             const vector::indexing_vector_t& left_indices,
+                                             const vector::indexing_vector_t& right_indices,
+                                             uint64_t count) {
+        return batch_check_impl(left, right, left_indices, right_indices, count);
+    }
+
+    std::vector<bool> predicate::batch_check_impl(const vector::data_chunk_t& left,
+                                                  const vector::data_chunk_t& right,
+                                                  const vector::indexing_vector_t& left_indices,
+                                                  const vector::indexing_vector_t& right_indices,
+                                                  uint64_t count) {
+        std::vector<bool> results(count);
+        for (uint64_t k = 0; k < count; ++k) {
+            results[k] = check_impl(left, right, left_indices.get_index(k), right_indices.get_index(k));
+        }
+        return results;
+    }
+
     predicate_ptr create_predicate(std::pmr::memory_resource* resource,
                                    const compute::function_registry_t* function_registry,
                                    const expressions::expression_ptr& expr,
@@ -37,5 +57,37 @@ namespace components::operators::predicates {
                                        {},
                                        {},
                                        nullptr);
+    }
+
+    std::vector<bool> batch_check_1vN(const predicate_ptr& pred,
+                                      const vector::data_chunk_t& left,
+                                      const vector::data_chunk_t& right,
+                                      size_t left_index,
+                                      uint64_t right_count) {
+        if (right_count == 0) {
+            return {};
+        }
+        vector::indexing_vector_t seq(nullptr, nullptr);
+        vector::indexing_vector_t broadcast(left.resource(), right_count);
+        for (uint64_t k = 0; k < right_count; ++k) {
+            broadcast.set_index(k, left_index);
+        }
+        return pred->batch_check(left, right, broadcast, seq, right_count);
+    }
+
+    std::vector<bool> batch_check_Nv1(const predicate_ptr& pred,
+                                      const vector::data_chunk_t& left,
+                                      const vector::data_chunk_t& right,
+                                      uint64_t left_count,
+                                      size_t right_index) {
+        if (left_count == 0) {
+            return {};
+        }
+        vector::indexing_vector_t seq(nullptr, nullptr);
+        vector::indexing_vector_t broadcast(right.resource(), left_count);
+        for (uint64_t k = 0; k < left_count; ++k) {
+            broadcast.set_index(k, right_index);
+        }
+        return pred->batch_check(left, right, seq, broadcast, left_count);
     }
 } // namespace components::operators::predicates

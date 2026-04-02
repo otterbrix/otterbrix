@@ -418,7 +418,7 @@ namespace components::vector {
             if (null_mask) {
                 for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
                     uint64_t bit_index = static_cast<uint64_t>(row_index) * num_columns + column_index;
-                    bool valid = (null_mask[bit_index / 8] >> (bit_index % 8)) & 1u;
+                    bool valid = (static_cast<unsigned char>(null_mask[bit_index / 8]) >> (bit_index % 8)) & 1u;
                     if (!valid) {
                         column.validity().set_invalid(row_index);
                     }

@@ -6,6 +6,7 @@ set(SOURCE_${PROJECT_NAME}
         indexing_vector.cpp
         vector_operations.cpp
         data_chunk.cpp
+        data_chunk_binary.cpp
         validation.cpp
         arithmetic.cpp
 

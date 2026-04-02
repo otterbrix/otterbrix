@@ -65,7 +65,6 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
     config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
     config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
     config.wal.on = cfg.wal_on;
-    config.wal.sync_to_disk = cfg.sync_to_disk;
     config.disk.on = cfg.disk_on;
 
     auto pod_space = std::make_unique<pod_space_t>();

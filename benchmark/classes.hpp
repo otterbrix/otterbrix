@@ -20,7 +20,6 @@ inline configuration::config create_config() {
     config.log.level = log_t::level::off;
     config.disk.on = on_disk;
     config.wal.on = on_wal;
-    config.wal.sync_to_disk = on_disk;
     return config;
 }
 

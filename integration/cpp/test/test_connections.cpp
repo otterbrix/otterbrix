@@ -13,7 +13,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
-    config.wal.sync_to_disk = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -92,7 +91,6 @@ TEST_CASE("integration::cpp::test_connectors") {
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
-    config.wal.sync_to_disk = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
     INFO("initialization") {

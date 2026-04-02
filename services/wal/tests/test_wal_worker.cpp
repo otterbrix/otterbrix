@@ -712,7 +712,9 @@ TEST_CASE("wal_worker::fsync_off_mode") {
         // Records might be empty if the in-memory-only path discards them,
         // or present if they are buffered. Either outcome is acceptable.
         // The key assertion is that we did not crash.
-        REQUIRE(records.size() >= 0); // trivially true; documents intent
+        for (const auto& record : records) {
+            REQUIRE_FALSE(record.is_corrupt);
+        }
     }
 
     scheduler->stop();

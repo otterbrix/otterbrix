@@ -31,7 +31,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_empty_t>(resource, scheduler_, log_)) {
+        , wal_config_([&]() { configuration::config_wal c; c.on = false; return c; }())
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
         manager_dispatcher_->sync(
             std::make_tuple(manager_wal_->address(), manager_disk_->address(), actor_zeta::address_t::empty_address()));
         manager_wal_->sync(
@@ -84,7 +85,8 @@ private:
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
-    std::unique_ptr<manager_wal_replicate_empty_t, actor_zeta::pmr::deleter_t> manager_wal_;
+    configuration::config_wal wal_config_;
+    std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };

@@ -1,5 +1,7 @@
 #include "kernel_executor.hpp"
 
+#include <optional>
+
 using namespace components::types;
 using namespace components::vector;
 
@@ -10,18 +12,19 @@ namespace components::compute::detail {
     public:
         kernel_executor_impl() = default;
 
-        compute_status init(kernel_context& kernel_ctx, kernel_init_args args) override {
+        core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
             kernel_ctx_ = &kernel_ctx;
             kernel_ = static_cast<const KernelType*>(&args.kernel);
 
             // TODO: support multiple output types
-            auto out = kernel_->signature().output_types.front().resolve(args.inputs);
-            if (!out) {
-                return compute_status::execution_error("Failed to resolve function type");
+            auto out =
+                kernel_->signature().output_types.front().resolve(kernel_ctx_->exec_context().resource(), args.inputs);
+            if (out.has_error()) {
+                return out.error();
             }
 
             output_type_ = out.value();
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
     protected:
@@ -30,16 +33,23 @@ namespace components::compute::detail {
             return vector_t(exec_ctx().resource(), output_type_, length);
         }
 
-        compute_status check_kernel() const {
-            if (!kernel_) {
-                return compute_status::invalid("Kernel is null, init() method must be called first!");
-            }
-
+        [[nodiscard]] core::error_t check_kernel() const {
             if (!kernel_ctx_) {
-                return compute_status::invalid("Kernel context is null, init() method must be called first!");
+                // TODO: find another way to get memory_resource
+                return core::error_t(core::error_code_t::kernel_error,
+                                     core::error_tag_t::compute_kernel,
+                                     std::pmr::string{"Kernel context is null, init() method must be called first!",
+                                                      std::pmr::get_default_resource()});
             }
 
-            return compute_status::ok();
+            if (!kernel_) {
+                return core::error_t(core::error_code_t::kernel_error,
+                                     core::error_tag_t::compute_kernel,
+                                     std::pmr::string{"Kernel is null, init() method must be called first!",
+                                                      kernel_ctx_->exec_context().resource()});
+            }
+
+            return core::error_t::no_error();
         }
 
         inline const KernelType& kernel() const {
@@ -63,35 +73,35 @@ namespace components::compute::detail {
 
     class vector_executor final : public kernel_executor_impl<vector_kernel> {
     public:
-        compute_result<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        [[nodiscard]] core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
-            if (auto st = execute_batch(inputs); !st) {
+            if (auto st = execute_batch(inputs); st.contains_error()) {
                 return st;
             }
 
             data_chunk_t out(kernel_ctx().exec_context().resource(), {});
             out.data.emplace_back(std::move(results_.front()));
-            if (auto st = kernel().finalize(kernel_ctx(), out); !st) {
+            if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
             }
-            return compute_result{datum_t{std::move(out)}};
+            return out;
         }
 
-        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        [[nodiscard]] core::result_wrapper_t<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
             data_chunk_t merged(exec_ctx().resource(), {});
             if (inputs.empty()) {
-                return compute_result{datum_t{std::move(merged)}};
+                return merged;
             }
 
             for (const auto& in : inputs) {
-                if (auto st = execute_batch(in); !st) {
+                if (auto st = execute_batch(in); st.contains_error()) {
                     return st;
                 }
             }
@@ -101,15 +111,15 @@ namespace components::compute::detail {
                 merged.data.emplace_back(std::move(res));
             }
 
-            if (auto st = kernel().finalize(kernel_ctx(), merged); !st) {
+            if (auto st = kernel().finalize(kernel_ctx(), merged); st.contains_error()) {
                 return st;
             }
 
-            return compute_result{datum_t{std::move(merged)}};
+            return merged;
         }
 
-        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
@@ -125,30 +135,30 @@ namespace components::compute::detail {
             }
             single_row.set_cardinality(1);
 
-            if (auto st = execute_batch(single_row); !st) {
+            if (auto st = execute_batch(single_row); st.contains_error()) {
                 return st;
             }
 
             data_chunk_t out(exec_ctx().resource(), {});
             out.data.emplace_back(std::move(results_.front()));
-            if (auto st = kernel().finalize(kernel_ctx(), out); !st) {
+            if (auto st = kernel().finalize(kernel_ctx(), out); st.contains_error()) {
                 return st;
             }
 
             std::pmr::vector<logical_value_t> result(exec_ctx().resource());
             result.push_back(out.data.front().value(0));
-            return compute_result{datum_t{std::move(result)}};
+            return result;
         }
 
     private:
-        compute_status execute_batch(const data_chunk_t& inputs) {
+        core::error_t execute_batch(const data_chunk_t& inputs) {
             auto output = prepare_vector_output(inputs.size());
-            if (auto st = kernel().execute(kernel_ctx(), inputs, output); !st) {
+            if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
                 return st;
             }
 
             results_.emplace_back(std::move(output));
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
         std::vector<vector_t> results_;
@@ -156,8 +166,8 @@ namespace components::compute::detail {
 
     class aggregate_executor final : public kernel_executor_impl<aggregate_kernel> {
     public:
-        compute_status init(kernel_context& kernel_ctx, kernel_init_args args) override {
-            if (auto st = kernel_executor_impl<aggregate_kernel>::init(kernel_ctx, args); !st) {
+        core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) override {
+            if (auto st = kernel_executor_impl<aggregate_kernel>::init(kernel_ctx, args); st.contains_error()) {
                 return st;
             }
             // wrap provided context with an aggregate-specific one
@@ -166,37 +176,37 @@ namespace components::compute::detail {
             kernel_ctx_ = &*agg_ctx_;
             input_types_ = &args.inputs;
             options_ = args.options;
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
-        compute_result<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
-            if (auto st = consume(inputs); !st) {
+            if (auto st = consume(inputs); st.contains_error()) {
                 return st;
             }
 
-            if (auto st = kernel().finalize(*agg_ctx_); !st) {
+            if (auto st = kernel().finalize(*agg_ctx_); st.contains_error()) {
                 return st;
             }
-            return compute_result{datum_t{std::move(agg_ctx_->batch_results)}};
+            return agg_ctx_->batch_results;
         }
 
-        compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
             agg_ctx_->batch_results.reserve(inputs.size());
             for (const auto& in : inputs) {
-                if (auto st = consume(in); !st) {
+                if (auto st = consume(in); st.contains_error()) {
                     return st;
                 }
             }
 
-            if (auto st = kernel().finalize(*agg_ctx_); !st) {
+            if (auto st = kernel().finalize(*agg_ctx_); st.contains_error()) {
                 return st;
             }
 
@@ -204,41 +214,50 @@ namespace components::compute::detail {
             agg_ctx_->batch_results.resize(
                 inputs.size(),
                 types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA));
-            return compute_result{datum_t{std::move(agg_ctx_->batch_results)}};
+            return agg_ctx_->batch_results;
         }
 
-        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
-            return compute_result<datum_t>{
-                compute_status::not_implemented("aggregate_executor does not support row operations")};
+        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
+            return core::error_t(core::error_code_t::kernel_error,
+                                 core::error_tag_t::compute_kernel,
+                                 std::pmr::string{"vector_executor does not support row operations",
+                                                  kernel_ctx_->exec_context().resource()});
         }
 
     private:
-        compute_status consume(const data_chunk_t& inputs) {
+        core::error_t consume(const data_chunk_t& inputs) {
+            // TODO: find another way of getting memory_resource
             if (state() == nullptr) {
-                return compute_status::invalid("Aggregation requires non-null kernel state, init returned null state!");
+                core::error_t(core::error_code_t::kernel_error,
+                              core::error_tag_t::compute_kernel,
+                              std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
+                                               std::pmr::get_default_resource()});
             }
 
             auto batch_state = kernel().init(*agg_ctx_, {kernel(), *input_types_, options_});
-            if (!batch_state) {
-                return batch_state.status();
+            if (batch_state.has_error()) {
+                return batch_state.error();
             }
 
             if (batch_state.value() == nullptr) {
-                return compute_status::invalid("Aggregation requires non-null kernel state, init returned null state!");
+                core::error_t(core::error_code_t::kernel_error,
+                              core::error_tag_t::compute_kernel,
+                              std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
+                                               kernel_ctx_->exec_context().resource()});
             }
 
             kernel_context batch_ctx(exec_ctx(), kernel());
             batch_ctx.set_state(batch_state.value().get());
-            if (auto st = kernel().consume(batch_ctx, inputs); !st) {
+            if (auto st = kernel().consume(batch_ctx, inputs); st.contains_error()) {
                 return st;
             }
 
             auto state_ptr = std::move(batch_state.value());
-            if (auto st = kernel().merge(*agg_ctx_, std::move(*state_ptr), *state()); !st) {
+            if (auto st = kernel().merge(*agg_ctx_, std::move(*state_ptr), *state()); st.contains_error()) {
                 return st;
             }
 
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
         std::optional<aggregate_kernel_context> agg_ctx_;
@@ -248,22 +267,22 @@ namespace components::compute::detail {
 
     class row_executor final : public kernel_executor_impl<row_kernel> {
     public:
-        compute_result<datum_t> execute(const data_chunk_t& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const data_chunk_t& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
             std::pmr::vector<logical_value_t> results(exec_ctx().resource());
             results.reserve(inputs.size());
 
-            if (auto st = execute_chunk(inputs, results); !st) {
+            if (auto st = execute_chunk(inputs, results); st.contains_error()) {
                 return st;
             }
-            return compute_result{datum_t{std::move(results)}};
+            return results;
         }
 
-        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
@@ -275,28 +294,28 @@ namespace components::compute::detail {
             results.reserve(total);
 
             for (const auto& chunk : inputs) {
-                if (auto st = execute_chunk(chunk, results); !st) {
+                if (auto st = execute_chunk(chunk, results); st.contains_error()) {
                     return st;
                 }
             }
-            return compute_result{datum_t{std::move(results)}};
+            return results;
         }
 
-        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_kernel(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
+            if (auto st = check_kernel(); st.contains_error()) {
                 return st;
             }
 
             std::pmr::vector<logical_value_t> output(inputs.get_allocator().resource());
-            if (auto st = kernel().execute(kernel_ctx(), inputs, output); !st) {
+            if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
                 return st;
             }
 
-            return compute_result{datum_t{std::move(output)}};
+            return output;
         }
 
     private:
-        compute_status execute_chunk(const data_chunk_t& chunk, std::pmr::vector<logical_value_t>& results) {
+        core::error_t execute_chunk(const data_chunk_t& chunk, std::pmr::vector<logical_value_t>& results) {
             for (size_t i = 0; i < chunk.size(); ++i) {
                 std::pmr::vector<logical_value_t> row_in(exec_ctx().resource());
                 row_in.reserve(chunk.column_count());
@@ -306,7 +325,7 @@ namespace components::compute::detail {
                 }
 
                 std::pmr::vector<logical_value_t> row_out(exec_ctx().resource());
-                if (auto st = kernel().execute(kernel_ctx(), row_in, row_out); !st) {
+                if (auto st = kernel().execute(kernel_ctx(), row_in, row_out); st.contains_error()) {
                     return st;
                 }
 
@@ -315,7 +334,7 @@ namespace components::compute::detail {
                     results.emplace_back(std::move(row_out.front()));
                 }
             }
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
     };
 

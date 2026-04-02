@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <vector>
 
 #include <components/base/collection_full_name.hpp>
@@ -14,47 +16,11 @@ namespace components::cursor {
     using index_t = int32_t;
     constexpr index_t start_index = -1;
 
-    enum class operation_status_t : bool
-    {
-        success = true,
-        failure = false
-    };
-
-    enum class error_code_t : int32_t
-    {
-        other_error = -1,
-        none = 0,
-        database_already_exists = 1,
-        database_not_exists = 2,
-        collection_already_exists = 3,
-        collection_not_exists = 4,
-        index_create_fail = 5,
-        index_not_exists = 6,
-        collection_dropped = 7,
-        sql_parse_error = 8,
-        create_physical_plan_error = 9,
-        schema_error = 10,
-        unrecognized_function = 11,
-        incorrect_function_argument = 12,
-        incorrect_function_return_type = 13,
-        ambiguous_name = 14,
-        field_not_exists = 15,
-        invalid_parameter = 16
-    };
-
-    struct error_t {
-        error_code_t type;
-        std::string what;
-
-        explicit error_t(error_code_t type);
-        explicit error_t(error_code_t type, const std::string& what);
-    };
-
     class cursor_t : public boost::intrusive_ref_counter<cursor_t> {
     public:
         explicit cursor_t(std::pmr::memory_resource* resource);
-        explicit cursor_t(std::pmr::memory_resource* resource, const error_t& error);
-        explicit cursor_t(std::pmr::memory_resource* resource, operation_status_t op_status);
+        explicit cursor_t(std::pmr::memory_resource* resource, const core::error_t& error);
+        explicit cursor_t(std::pmr::memory_resource* resource, core::error_t&& error);
         explicit cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
         explicit cursor_t(std::pmr::memory_resource* resource,
                           std::pmr::vector<components::types::complex_logical_type>&& types);
@@ -77,23 +43,21 @@ namespace components::cursor {
 
         bool is_success() const noexcept;
         bool is_error() const noexcept;
-        error_t get_error() const;
+        core::error_t get_error() const;
 
     private:
         std::size_t size_{};
         index_t current_index_{start_index};
         vector::data_chunk_t table_data_;
         std::pmr::vector<components::types::complex_logical_type> type_data_;
-        error_t error_;
-        bool success_{true};
+        core::error_t error_;
     };
 
     using cursor_t_ptr = boost::intrusive_ptr<cursor_t>;
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource);
-    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, operation_status_t op_status);
-    cursor_t_ptr
-    make_cursor(std::pmr::memory_resource* resource, error_code_t type, const std::string& what = std::string());
+    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, const core::error_t& error);
+    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, core::error_t&& error);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource,
                              std::pmr::vector<components::types::complex_logical_type>&& types);

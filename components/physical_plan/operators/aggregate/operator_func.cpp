@@ -23,16 +23,16 @@ namespace {
                 auto& expr = std::get<expressions::expression_ptr>(arg);
                 if (expr->group() == expressions::expression_group::scalar) {
                     auto* scalar_expr = static_cast<const expressions::scalar_expression_t*>(expr.get());
-                    auto [computed, arith_error] = operators::evaluate_arithmetic(resource,
-                                                                                  scalar_expr->type(),
-                                                                                  scalar_expr->params(),
-                                                                                  chunk,
-                                                                                  pipeline_context->parameters);
-                    if (!arith_error.empty()) {
-                        op.set_error(std::move(arith_error));
+                    auto res = operators::evaluate_arithmetic(resource,
+                                                              scalar_expr->type(),
+                                                              scalar_expr->params(),
+                                                              chunk,
+                                                              pipeline_context->parameters);
+                    if (res.has_error()) {
+                        op.set_error(res.error());
                         return false;
                     }
-                    computed_vecs.emplace_back(std::move(computed));
+                    computed_vecs.emplace_back(std::move(res.value()));
                 }
             }
         }
@@ -130,7 +130,8 @@ namespace components::operators::aggregate {
         assert(func);
     }
 
-    types::logical_value_t operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
+    core::result_wrapper_t<types::logical_value_t>
+    operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
         auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA);
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
@@ -156,7 +157,9 @@ namespace components::operators::aggregate {
                     apply_distinct(resource_, c, types);
                 }
                 auto res = func_->execute(c);
-                if (res.status() == compute::compute_status::ok()) {
+                if (res.has_error()) {
+                    return res.convert_error<types::logical_value_t>();
+                } else {
                     result = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
                 }
             }
@@ -165,7 +168,8 @@ namespace components::operators::aggregate {
         return result;
     }
 
-    compute::datum_t operator_func_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
+    core::result_wrapper_t<compute::datum_t>
+    operator_func_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
         auto* batch = static_cast<operator_batch_t*>(left_.get());
         std::vector<vector::data_chunk_t> arg_chunks;
         arg_chunks.reserve(batch->chunks().size());
@@ -192,8 +196,8 @@ namespace components::operators::aggregate {
         }
 
         auto res = func_->execute(arg_chunks);
-        if (res.status() != compute::compute_status::ok()) {
-            return compute::datum_t{std::pmr::vector<types::logical_value_t>(resource_)};
+        if (res.has_error()) {
+            return res;
         }
 
         if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(res.value())) {

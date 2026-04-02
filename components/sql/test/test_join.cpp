@@ -10,7 +10,7 @@ using namespace components::sql::transform;
 #define TEST_JOIN(QUERY, RESULT, PARAMS)                                                                               \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();                          \
         auto node = result.node;                                                                                       \
         auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \
@@ -87,7 +87,7 @@ TEST_CASE("components::sql::join") {
         auto select = linitial(raw_parser(&arena_resource,
                                           "SELECT * from uid1.db1.sch1.test1 inner join uid2.db2.sch2.test2 on x = y "
                                           "full outer join uid3.db3.sch3.test3 on y = z;"));
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
         auto join = result.node->children().front();
         REQUIRE(join->children().back()->collection_full_name() ==
                 collection_full_name_t("uid3", "db3", "sch3", "test3"));

@@ -34,18 +34,18 @@ namespace components::catalog {
         metadata_transaction& rollback_to_savepoint(const std::pmr::string& name);
 
         [[nodiscard]] State state() const;
-        [[nodiscard]] const catalog_error& error() const;
+        [[nodiscard]] const core::error_t& error() const;
 
     private:
         metadata_transaction(std::pmr::memory_resource* resource);
-        metadata_transaction(std::pmr::memory_resource* resource, catalog_error error);
+        metadata_transaction(std::pmr::memory_resource* resource, core::error_t error);
 
         bool ensure_active();
 
         template<typename F,
                  typename = std::enable_if_t<std::is_invocable_v<F, metadata_diff> &&
-                                             std::is_same_v<std::invoke_result_t<F, metadata_diff>, catalog_error>>>
-        catalog_error commit(F&& fun) {
+                                             std::is_same_v<std::invoke_result_t<F, metadata_diff>, core::error_t>>>
+        core::error_t commit(F&& fun) {
             if (ensure_active()) {
                 metadata_diff_.use_schema_diff(std::move(schema_diff_));
 
@@ -53,7 +53,7 @@ namespace components::catalog {
                     error_ = fun(std::move(metadata_diff_));
                 }
 
-                state_ = static_cast<bool>(error_) ? State::ABORTED : State::COMMITTED;
+                state_ = error_.contains_error() ? State::ABORTED : State::COMMITTED;
             }
             return error_;
         }
@@ -63,8 +63,9 @@ namespace components::catalog {
         State state_ = State::ACTIVE;
         metadata_diff metadata_diff_;
         schema_diff schema_diff_;
-        catalog_error error_;
+        core::error_t error_;
         std::pmr::map<std::pmr::string, std::pair<metadata_diff, schema_diff>> savepoints_;
+        std::pmr::memory_resource* resource_;
 
         friend class transaction_scope;
     };

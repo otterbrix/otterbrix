@@ -42,6 +42,7 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , txn_manager_(txn_manager)
         , log_(log)
+        , function_registry_(resource)
         , pending_void_(resource)
         , pending_execute_(resource) {
         register_default_functions(function_registry_);
@@ -110,7 +111,10 @@ namespace services::collection::executor {
                 if (id_index == components::index::INDEX_ID_UNDEFINED) {
                     trace(log_, "executor: index {} already exists, returning error", node_ci->name());
                     co_return execute_result_t{
-                        make_cursor(resource(), error_code_t::index_create_fail, "index already exists"),
+                        make_cursor(resource(),
+                                    core::error_t(core::error_code_t::index_create_fail,
+                                                  core::error_tag_t::executor,
+                                                  std::pmr::string{"index already exists", resource()})),
                         {}};
                 }
 
@@ -140,7 +144,7 @@ namespace services::collection::executor {
                     }
                 }
             }
-            co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
+            co_return execute_result_t{make_cursor(resource(), core::error_t::no_error()), {}};
         }
 
         if (logical_plan->type() == node_type::drop_index_t) {
@@ -155,7 +159,7 @@ namespace services::collection::executor {
                                                    index::index_name_t(node_di->name()));
                 co_await std::move(ixf);
             }
-            co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
+            co_return execute_result_t{make_cursor(resource(), core::error_t::no_error()), {}};
         }
 
         // Determine if this is a DML operation
@@ -185,9 +189,11 @@ namespace services::collection::executor {
             if (is_dml) {
                 txn_manager_->abort(session);
             }
-            co_return execute_result_t{
-                make_cursor(resource(), error_code_t::create_physical_plan_error, "invalid query plan"),
-                {}};
+            co_return execute_result_t{make_cursor(resource(),
+                                                   core::error_t(core::error_code_t::create_physical_plan_error,
+                                                                 core::error_tag_t::executor,
+                                                                 std::pmr::string{"invalid query plan", resource()})),
+                                       {}};
         }
 
         plan->set_as_root();
@@ -337,16 +343,13 @@ namespace services::collection::executor {
         co_return execute_result_t{std::move(result.cursor), std::move(result.updates)};
     }
 
-    executor_t::unique_future<function_result_t> executor_t::register_udf(components::session::session_id_t session,
-                                                                          components::compute::function_ptr function) {
+    executor_t::unique_future<std::unique_ptr<function_result_t>>
+    executor_t::register_udf(components::session::session_id_t session, components::compute::function_ptr function) {
         trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
         std::string name = function->name();
         auto signatures = function->get_signatures();
         auto res = function_registry_.add_function(std::move(function));
-        if (res.status() == components::compute::compute_status::ok()) {
-            co_return res.value();
-        }
-        co_return components::compute::invalid_function_uid;
+        co_return std::make_unique<function_result_t>(std::move(res));
     }
 
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
@@ -389,7 +392,10 @@ namespace services::collection::executor {
             trace(log_, "executor::execute_sub_plan, session: {}", session.data());
 
             if (!plan) {
-                cursor = make_cursor(resource(), error_code_t::create_physical_plan_error, "invalid query plan");
+                cursor = make_cursor(resource(),
+                                     core::error_t(core::error_code_t::create_physical_plan_error,
+                                                   core::error_tag_t::executor,
+                                                   std::pmr::string{"invalid query plan", resource()}));
                 break;
             }
 
@@ -409,7 +415,7 @@ namespace services::collection::executor {
             plan->on_execute(&pipeline_context);
 
             if (plan->has_error()) {
-                cursor = make_cursor(resource(), error_code_t::create_physical_plan_error, plan->error_message());
+                cursor = make_cursor(resource(), plan->get_error());
                 break;
             }
 
@@ -421,9 +427,8 @@ namespace services::collection::executor {
                           "Plan not executed and no waiting operator! session: {}, plan type: {}",
                           session.data(),
                           static_cast<int>(plan->type()));
-                    cursor = make_cursor(resource(),
-                                         error_code_t::create_physical_plan_error,
-                                         "operator failed to complete execution");
+                    assert(plan->has_error());
+                    cursor = make_cursor(resource(), plan->get_error());
                     break;
                 }
                 trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
@@ -447,7 +452,7 @@ namespace services::collection::executor {
                     if (plan->output()) {
                         cursor = make_cursor(resource(), std::move(plan->output()->data_chunk()));
                     } else {
-                        cursor = make_cursor(resource(), operation_status_t::success);
+                        cursor = make_cursor(resource(), core::error_t::no_error());
                     }
                     break;
                 }
@@ -462,7 +467,7 @@ namespace services::collection::executor {
                     if (plan->output()) {
                         cursor = make_cursor(resource(), std::move(plan->output()->data_chunk()));
                     } else {
-                        cursor = make_cursor(resource(), operation_status_t::success);
+                        cursor = make_cursor(resource(), core::error_t::no_error());
                     }
                     break;
                 }
@@ -472,7 +477,7 @@ namespace services::collection::executor {
                     if (plan->output()) {
                         cursor = make_cursor(resource(), std::move(plan->output()->data_chunk()));
                     } else {
-                        cursor = make_cursor(resource(), operation_status_t::success);
+                        cursor = make_cursor(resource(), core::error_t::no_error());
                     }
                     break;
                 }
@@ -493,10 +498,10 @@ namespace services::collection::executor {
                             }
                             cursor = make_cursor(resource(), std::move(chunk));
                         } else {
-                            cursor = make_cursor(resource(), operation_status_t::success);
+                            cursor = make_cursor(resource(), core::error_t::no_error());
                         }
                     } else {
-                        cursor = make_cursor(resource(), operation_status_t::success);
+                        cursor = make_cursor(resource(), core::error_t::no_error());
                     }
                     break;
                 }

@@ -44,8 +44,13 @@ namespace components::sql::transform {
             }
             case T_A_ArrayExpr: {
                 auto array = pg_ptr_cast<A_ArrayExpr>(node);
-                auto id = params->add_parameter(get_array(resource_, array->elements));
-                return {new update_expr_get_const_value_t(id)};
+                if (auto res = get_array(resource_, array->elements); res.has_error()) {
+                    error_ = res.error();
+                    return nullptr;
+                } else {
+                    auto id = params->add_parameter(std::move(res.value()));
+                    return {new update_expr_get_const_value_t(id)};
+                }
             }
             case T_ParamRef: {
                 return {new update_expr_get_const_value_t(add_param_value(node, params))};
@@ -157,7 +162,10 @@ namespace components::sql::transform {
                 names.right_name = rangevar_to_collection(pg_ptr_cast<RangeVar>(from_first));
                 names.right_alias = construct_alias(pg_ptr_cast<RangeVar>(from_first)->alias);
             } else {
-                throw parser_exception_t{"undefined token in UPDATE FROM", ""};
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       core::error_tag_t::parser,
+                                       std::pmr::string{"undefined token in UPDATE FROM", resource_});
+                return nullptr;
             }
         }
         // set

@@ -17,7 +17,7 @@ TEST_CASE("components::sql::checkpoint") {
 
     SECTION("CHECKPOINT") {
         auto stmt = raw_parser(&arena_resource, "CHECKPOINT")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::checkpoint_t);
         REQUIRE(node->to_string() == "$checkpoint");
@@ -25,7 +25,7 @@ TEST_CASE("components::sql::checkpoint") {
 
     SECTION("CHECKPOINT;") {
         auto stmt = raw_parser(&arena_resource, "CHECKPOINT;")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::checkpoint_t);
         REQUIRE(node->to_string() == "$checkpoint");
@@ -39,7 +39,7 @@ TEST_CASE("components::sql::vacuum") {
 
     SECTION("VACUUM") {
         auto stmt = raw_parser(&arena_resource, "VACUUM")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::vacuum_t);
         REQUIRE(node->to_string() == "$vacuum");
@@ -47,7 +47,7 @@ TEST_CASE("components::sql::vacuum") {
 
     SECTION("VACUUM;") {
         auto stmt = raw_parser(&arena_resource, "VACUUM;")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::vacuum_t);
         REQUIRE(node->to_string() == "$vacuum");

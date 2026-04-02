@@ -4,32 +4,38 @@
 
 namespace components::operators::predicates {
 
-    bool predicate::check(const vector::data_chunk_t& chunk, size_t index) {
+    core::result_wrapper_t<bool> predicate::check(const vector::data_chunk_t& chunk, size_t index) {
         return check_impl(chunk, chunk, index, index);
     }
-    bool predicate::check(const vector::data_chunk_t& chunk_left,
-                          const vector::data_chunk_t& chunk_right,
-                          size_t index_left,
-                          size_t index_right) {
+    core::result_wrapper_t<bool> predicate::check(const vector::data_chunk_t& chunk_left,
+                                                  const vector::data_chunk_t& chunk_right,
+                                                  size_t index_left,
+                                                  size_t index_right) {
         return check_impl(chunk_left, chunk_right, index_left, index_right);
     }
 
-    std::vector<bool> predicate::batch_check(const vector::data_chunk_t& left,
-                                             const vector::data_chunk_t& right,
-                                             const vector::indexing_vector_t& left_indices,
-                                             const vector::indexing_vector_t& right_indices,
-                                             uint64_t count) {
+    core::result_wrapper_t<std::vector<bool>> predicate::batch_check(const vector::data_chunk_t& left,
+                                                                     const vector::data_chunk_t& right,
+                                                                     const vector::indexing_vector_t& left_indices,
+                                                                     const vector::indexing_vector_t& right_indices,
+                                                                     uint64_t count) {
         return batch_check_impl(left, right, left_indices, right_indices, count);
     }
 
-    std::vector<bool> predicate::batch_check_impl(const vector::data_chunk_t& left,
-                                                  const vector::data_chunk_t& right,
-                                                  const vector::indexing_vector_t& left_indices,
-                                                  const vector::indexing_vector_t& right_indices,
-                                                  uint64_t count) {
+    core::result_wrapper_t<std::vector<bool>>
+    predicate::batch_check_impl(const vector::data_chunk_t& left,
+                                const vector::data_chunk_t& right,
+                                const vector::indexing_vector_t& left_indices,
+                                const vector::indexing_vector_t& right_indices,
+                                uint64_t count) {
         std::vector<bool> results(count);
         for (uint64_t k = 0; k < count; ++k) {
-            results[k] = check_impl(left, right, left_indices.get_index(k), right_indices.get_index(k));
+            auto res = check_impl(left, right, left_indices.get_index(k), right_indices.get_index(k));
+            if (res.has_error()) {
+                return res.convert_error<std::vector<bool>>();
+            } else {
+                results[k] = res.value();
+            }
         }
         return results;
     }
@@ -59,11 +65,11 @@ namespace components::operators::predicates {
                                        nullptr);
     }
 
-    std::vector<bool> batch_check_1vN(const predicate_ptr& pred,
-                                      const vector::data_chunk_t& left,
-                                      const vector::data_chunk_t& right,
-                                      size_t left_index,
-                                      uint64_t right_count) {
+    core::result_wrapper_t<std::vector<bool>> batch_check_1vN(const predicate_ptr& pred,
+                                                              const vector::data_chunk_t& left,
+                                                              const vector::data_chunk_t& right,
+                                                              size_t left_index,
+                                                              uint64_t right_count) {
         if (right_count == 0) {
             return {};
         }
@@ -75,11 +81,11 @@ namespace components::operators::predicates {
         return pred->batch_check(left, right, broadcast, seq, right_count);
     }
 
-    std::vector<bool> batch_check_Nv1(const predicate_ptr& pred,
-                                      const vector::data_chunk_t& left,
-                                      const vector::data_chunk_t& right,
-                                      uint64_t left_count,
-                                      size_t right_index) {
+    core::result_wrapper_t<std::vector<bool>> batch_check_Nv1(const predicate_ptr& pred,
+                                                              const vector::data_chunk_t& left,
+                                                              const vector::data_chunk_t& right,
+                                                              uint64_t left_count,
+                                                              size_t right_index) {
         if (left_count == 0) {
             return {};
         }

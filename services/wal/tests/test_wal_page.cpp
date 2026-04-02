@@ -117,7 +117,6 @@ namespace {
 TEST_CASE("small_records_fill_page") {
     tmp_dir_t dir("test_wal_page_small_records");
     auto filepath = dir.file("wal_segment_0");
-    auto* resource = std::pmr::get_default_resource();
 
     // Create writer and write 5 small COMMIT records (29 bytes each = 145 bytes total).
     {
@@ -332,7 +331,7 @@ TEST_CASE("page_checksum_corruption") {
 
         char byte = 0;
         file.read(&byte, 1);
-        byte ^= 0xFF; // flip all bits
+        byte ^= static_cast<char>(0xFF); // flip all bits
         file.seekp(static_cast<std::streamoff>(corrupt_offset));
         file.write(&byte, 1);
         file.flush();
@@ -341,7 +340,7 @@ TEST_CASE("page_checksum_corruption") {
     // Open with reader and verify corruption is detected.
     {
         wal_page_reader_t reader(filepath);
-        auto header = reader.read_page_header(1);
+        [[maybe_unused]] auto header = reader.read_page_header(1);
 
         // The page should be detected as corrupt (checksum mismatch).
         REQUIRE(reader.verify_page_checksum(1) == false);
@@ -351,7 +350,6 @@ TEST_CASE("page_checksum_corruption") {
 TEST_CASE("crc_chain_across_pages") {
     tmp_dir_t dir("test_wal_page_crc_chain");
     auto filepath = dir.file("wal_segment_0");
-    auto* resource = std::pmr::get_default_resource();
 
     // Write enough records to fill 3+ pages.
     // Each COMMIT is 29 bytes, PAGE_DATA_SIZE is 4064.
@@ -428,7 +426,7 @@ TEST_CASE("stop_at_corruption") {
 
         char byte = 0;
         file.read(&byte, 1);
-        byte ^= 0xFF;
+        byte ^= static_cast<char>(0xFF);
         file.seekp(static_cast<std::streamoff>(corrupt_offset));
         file.write(&byte, 1);
         file.flush();
@@ -520,7 +518,7 @@ TEST_CASE("edge_exact_fit") {
     // First, figure out the overhead: encode a minimal INSERT record.
     auto minimal_chunk = gen_data_chunk(1, resource);
     auto minimal_rec = encode_insert_rec(1, 1, 0, "d", "c", minimal_chunk, 0, 1);
-    size_t minimal_size = minimal_rec.data.size();
+    [[maybe_unused]] size_t minimal_size = minimal_rec.data.size();
 
     // We need a record of exactly PAGE_DATA_SIZE bytes.
     // The difference is the payload size: we need to grow the data_chunk payload.

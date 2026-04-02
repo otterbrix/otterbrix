@@ -144,7 +144,7 @@ TEST_CASE("wal_binary::crc32_corruption") {
 
     // Flip a byte in the payload area (somewhere in the middle of the record)
     size_t flip_pos = buffer.size() / 2;
-    buffer[flip_pos] ^= 0xFF;
+    buffer[flip_pos] ^= static_cast<char>(0xFF);
 
     auto record = decode_record(buffer, &resource);
     REQUIRE(record.is_corrupt);

@@ -25,7 +25,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     SECTION("CREATE TABLE with NOT NULL") {
         auto stmt =
             raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, name TEXT)")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -41,7 +41,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT DEFAULT 'unknown')")
                         ->lst.front()
                         .data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -58,7 +58,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, score DOUBLE DEFAULT 0)")
                         ->lst.front()
                         .data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -74,7 +74,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     SECTION("CREATE TABLE with PRIMARY KEY column-level") {
         auto stmt =
             raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER PRIMARY KEY, name TEXT)")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -89,7 +89,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT, PRIMARY KEY (id))")
                         ->lst.front()
                         .data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -104,7 +104,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, email TEXT, UNIQUE (email))")
                         ->lst.front()
                         .data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);
 
@@ -123,7 +123,7 @@ TEST_CASE("components::sql::sequence") {
 
     SECTION("CREATE SEQUENCE basic") {
         auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::create_sequence_t);
         REQUIRE(node->to_string() == "$create_sequence: db.my_seq");
@@ -131,7 +131,7 @@ TEST_CASE("components::sql::sequence") {
 
     SECTION("CREATE SEQUENCE with options") {
         auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq START 10 INCREMENT 2")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::create_sequence_t);
         auto seq = reinterpret_cast<node_create_sequence_ptr&>(node);
@@ -141,7 +141,7 @@ TEST_CASE("components::sql::sequence") {
 
     SECTION("DROP SEQUENCE") {
         auto stmt = raw_parser(&arena_resource, "DROP SEQUENCE db.my_seq")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::drop_sequence_t);
         REQUIRE(node->to_string() == "$drop_sequence: db.my_seq");
@@ -155,7 +155,7 @@ TEST_CASE("components::sql::view") {
     SECTION("CREATE VIEW") {
         transform::transformer transformer(&resource);
         auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::create_view_t);
         REQUIRE(node->to_string() == "$create_view: db.my_view");
@@ -165,7 +165,7 @@ TEST_CASE("components::sql::view") {
         const char* sql = "CREATE VIEW db.my_view AS SELECT id, name FROM db.tbl WHERE id > 10";
         transform::transformer transformer(&resource, sql);
         auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto view_node = boost::static_pointer_cast<node_create_view_t>(result.node);
         REQUIRE(view_node->type() == node_type::create_view_t);
         REQUIRE(view_node->query_sql() == "SELECT id, name FROM db.tbl WHERE id > 10");
@@ -174,7 +174,7 @@ TEST_CASE("components::sql::view") {
     SECTION("DROP VIEW") {
         transform::transformer transformer(&resource);
         auto stmt = raw_parser(&arena_resource, "DROP VIEW db.my_view")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::drop_view_t);
         REQUIRE(node->to_string() == "$drop_view: db.my_view");
@@ -188,7 +188,7 @@ TEST_CASE("components::sql::macro") {
 
     SECTION("DROP FUNCTION (macro)") {
         auto stmt = raw_parser(&arena_resource, "DROP FUNCTION db.my_macro()")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::drop_macro_t);
         REQUIRE(node->to_string() == "$drop_macro: db.my_macro");
@@ -196,7 +196,7 @@ TEST_CASE("components::sql::macro") {
 
     SECTION("DROP FUNCTION simple name") {
         auto stmt = raw_parser(&arena_resource, "DROP FUNCTION my_macro()")->lst.front().data;
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize().value();
         auto node = result.node;
         REQUIRE(node->type() == node_type::drop_macro_t);
     }

@@ -12,7 +12,7 @@ using namespace components::expressions;
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, PARAMS, FIELDS)                                                              \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();                          \
         auto node = result.node;                                                                                       \
         auto agg = result.params;                                                                                      \
         REQUIRE(node->to_string() == RESULT);                                                                          \

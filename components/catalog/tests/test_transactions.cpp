@@ -15,8 +15,8 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
 
     {
         auto scope = cat.begin_transaction({&mr, collection_full_name_t()});
-        REQUIRE(scope.transaction().error().transaction_mistake() == transaction_mistake_t::MISSING_TABLE);
-        REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::MISSING_TABLE);
+        REQUIRE(scope.transaction().error().type == core::error_code_t::missing_table);
+        REQUIRE(scope.error().type == core::error_code_t::missing_table);
         scope.commit();
     }
 
@@ -32,12 +32,12 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
         scope.transaction().add_column(column);
         scope.commit();
         scope.commit();
-        REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::TRANSACTION_FINALIZED);
+        REQUIRE(scope.error().type == core::error_code_t::transaction_finalized);
     }
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(front_cursor_type(new_schema.find_field("new_col")) == logical_type::HUGEINT);
+        REQUIRE(new_schema.find_field("new_col").value() == logical_type::HUGEINT);
     }
 
     {
@@ -50,15 +50,15 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
         scope.transaction().rename_column("new_col", "new_col_1");
         scope.abort();
         scope.transaction().rename_column("new_col", "new_new_col");
-        REQUIRE(scope.transaction().error().transaction_mistake() == transaction_mistake_t::TRANSACTION_INACTIVE);
+        REQUIRE(scope.transaction().error().type == core::error_code_t::transaction_inactive);
         scope.commit();
-        REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::TRANSACTION_FINALIZED);
+        REQUIRE(scope.error().type == core::error_code_t::transaction_finalized);
     }
     // new_col still exists
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(front_cursor_type(new_schema.find_field("new_col")) == logical_type::HUGEINT);
+        REQUIRE(new_schema.find_field("new_col").value() == logical_type::HUGEINT);
     }
 }
 
@@ -77,7 +77,7 @@ TEST_CASE("components::catalog::transactions::changes") {
                    {components::table::column_definition_t{type.alias(), type}},
                    {field_description(1, false, "test")});
         auto err = cat.create_table({&mr, full}, {&mr, sch});
-        REQUIRE(!err);
+        REQUIRE(!err.contains_error());
     }
 
     {
@@ -97,11 +97,11 @@ TEST_CASE("components::catalog::transactions::changes") {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
 
-        REQUIRE(front_cursor_type(new_schema.find_field("new_col")) == logical_type::STRING_LITERAL);
-        REQUIRE(new_schema.get_field_description("new_col")->get().doc == "test1");
+        REQUIRE(new_schema.find_field("new_col").value() == logical_type::STRING_LITERAL);
+        REQUIRE(new_schema.get_field_description("new_col").value().get().doc == "test1");
 
-        REQUIRE(front_cursor_type(new_schema.find_field("new_old_col")) == logical_type::HUGEINT);
-        REQUIRE(new_schema.get_field_description("new_old_col")->get().doc == "test");
+        REQUIRE(new_schema.find_field("new_old_col").value() == logical_type::HUGEINT);
+        REQUIRE(new_schema.get_field_description("new_old_col").value().get().doc == "test");
     }
 }
 
@@ -128,7 +128,7 @@ TEST_CASE("components::catalog::transactions::savepoints") {
 
         scope.commit();
     }
-    REQUIRE(front_cursor_type(cat.get_table_schema({&mr, full}).find_field("name")) == logical_type::BIGINT);
+    REQUIRE(cat.get_table_schema({&mr, full}).find_field("name").value() == logical_type::BIGINT);
 
     {
         auto scope = cat.begin_transaction({&mr, full});
@@ -149,7 +149,7 @@ TEST_CASE("components::catalog::transactions::savepoints") {
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(front_cursor_type(new_schema.find_field("new_old_col")) == logical_type::BIGINT);
+        REQUIRE(new_schema.find_field("new_old_col").value() == logical_type::BIGINT);
     }
 }
 
@@ -169,7 +169,7 @@ TEST_CASE("components::catalog::transactions::edge_cases") {
             auto scope = cat->begin_transaction({&mr, full});
             cat.reset(nullptr);
             scope.commit();
-            REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::COMMIT_FAILED);
+            REQUIRE(scope.error().type == core::error_code_t::commit_failed);
             // must be abortable
         }
     }
@@ -187,7 +187,7 @@ TEST_CASE("components::catalog::transactions::edge_cases") {
             scope.transaction().make_optional("name");
             auto _ = cat.rename_table({&mr, full}, "name1");
             scope.commit();
-            REQUIRE(scope.error().transaction_mistake() == transaction_mistake_t::COMMIT_FAILED);
+            REQUIRE(scope.error().type == core::error_code_t::commit_failed);
         }
 
         {

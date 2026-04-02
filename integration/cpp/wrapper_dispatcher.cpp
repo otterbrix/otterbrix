@@ -172,7 +172,7 @@ namespace otterbrix {
     }
 
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
@@ -181,13 +181,13 @@ namespace otterbrix {
                                                        &services::dispatcher::manager_dispatcher_t::register_udf,
                                                        session,
                                                        std::move(function));
-        return wait_future(future);
+        return *wait_future(future);
     }
 
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -197,7 +197,7 @@ namespace otterbrix {
                                                        session,
                                                        function_name,
                                                        inputs);
-        return wait_future(future);
+        return *wait_future(future);
     }
 
     auto wrapper_dispatcher_t::create_index(const session_id_t& session,
@@ -231,25 +231,29 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
+        void* parse_result;
         try {
-            auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-            if (!parse_result) {
-                return make_cursor(resource(),
-                                   components::cursor::error_code_t::sql_parse_error,
-                                   "unknown parser error");
-            }
-            transformer local_transformer(resource(), query.c_str());
-            if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
-                std::holds_alternative<bind_error>(result)) {
-                return make_cursor(resource(),
-                                   components::cursor::error_code_t::sql_parse_error,
-                                   std::get<bind_error>(std::move(result)).what());
-            } else {
-                auto view = std::get<result_view>(std::move(result));
-                return execute_plan(session, std::move(view.node), std::move(view.params));
-            }
+            parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         } catch (const std::exception& exception) {
-            return make_cursor(resource(), components::cursor::error_code_t::sql_parse_error, exception.what());
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             core::error_tag_t::parser,
+                                             std::pmr::string{exception.what(), resource()}));
+        }
+
+        if (!parse_result) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             core::error_tag_t::parser,
+                                             std::pmr::string{"unknown parser error", resource()}));
+        }
+        transformer local_transformer(resource(), query.c_str());
+        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
+            result.has_error()) {
+            return make_cursor(resource(), result.error());
+        } else {
+            auto& view = std::move(result).value();
+            return execute_plan(session, std::move(view.node), std::move(view.params));
         }
     }
 

@@ -218,7 +218,7 @@ TEST_CASE("example::sql::invalid_queries") {
     INFO("not exists database") {
         auto c = execute_sql(otterbrix, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(c->is_error());
-        REQUIRE(c->get_error().type == error_code_t::collection_not_exists);
+        REQUIRE(c->get_error().type == error_code_t::table_not_exists);
     }
 }
 */

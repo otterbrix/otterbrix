@@ -154,7 +154,7 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
     auto error = storage->cursor->get_error();
     error_message msg;
     msg.code = static_cast<int32_t>(error.type);
-    std::string str = error.what;
+    std::string str = std::string{error.what};
     msg.message = new char[str.size() + 1];
     std::strcpy(msg.message, str.data());
     return msg;

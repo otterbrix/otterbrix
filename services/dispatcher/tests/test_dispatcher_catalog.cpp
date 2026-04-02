@@ -61,19 +61,33 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         }
     }
 
+    // this is a recreation on what happens in wrapper_dispatcher_t
     void execute_sql(const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        void* parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        try {
+            parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        } catch (...) {
+            return;
+        }
+        if (!parse_result) {
+            return;
+        }
         components::sql::transform::transformer local_transformer(resource_);
-        auto view = std::get<components::sql::transform::result_view>(
-            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize());
+        if (auto result =
+                local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+            result.has_error()) {
+            return;
+        } else {
+            auto& view = std::move(result).value();
 
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
-                                                       &manager_dispatcher_t::execute_plan,
-                                                       session_id_t{},
-                                                       std::move(view.node),
-                                                       std::move(view.params));
-        pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
+            auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+                                                           &manager_dispatcher_t::execute_plan,
+                                                           session_id_t{},
+                                                           std::move(view.node),
+                                                           std::move(view.params));
+            pending_future_ = std::make_unique<actor_zeta::unique_future<cursor_t_ptr>>(std::move(future));
+        }
     }
 
 private:
@@ -101,8 +115,8 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
         REQUIRE(catalog.table_exists(id));
         auto sch = catalog.get_table_schema(id);
-        REQUIRE(sch.find_field("fld1")->type_data().front().type() == logical_type::INTEGER);
-        REQUIRE(sch.find_field("fld2")->type_data().front().type() == logical_type::STRING_LITERAL);
+        REQUIRE(sch.find_field("fld1").value().type() == logical_type::INTEGER);
+        REQUIRE(sch.find_field("fld2").value().type() == logical_type::STRING_LITERAL);
 
         REQUIRE(cur->is_success());
     });

@@ -40,7 +40,11 @@ namespace components::sql::transform {
             for (auto row : vals) {
                 auto values = pg_ptr_cast<List>(row.data)->lst;
                 if (values.size() != fields.size()) {
-                    throw parser_exception_t{"INSERT has more expressions than target columns", {}};
+                    error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      core::error_tag_t::parser,
+                                      std::pmr::string{"INSERT has more expressions than target columns", resource_});
+                    return nullptr;
                 }
 
                 auto it_field = key_translation.begin();
@@ -61,16 +65,20 @@ namespace components::sql::transform {
                         // Evaluate constant arithmetic at parse time
                         // TODO: move column matching to validation/optimizer phase for complex path resolution
                         auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
+                        if (value.has_error()) {
+                            error_ = value.error();
+                            return nullptr;
+                        }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == it_field->as_string();
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.set_alias(it_field->as_string());
-                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                            value.value().set_alias(it_field->as_string());
+                            chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                         }
-                        chunk.set_value(column_index, row_index, std::move(value));
+                        chunk.set_value(column_index, row_index, std::move(value.value()));
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
                         auto it =
@@ -79,10 +87,10 @@ namespace components::sql::transform {
                             });
                         size_t column_index = it - chunk.data.begin();
                         if (it == chunk.data.end()) {
-                            value.set_alias(it_field->as_string());
-                            chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                            value.value().set_alias(it_field->as_string());
+                            chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
                         }
-                        chunk.set_value(column_index, row_index, std::move(value));
+                        chunk.set_value(column_index, row_index, std::move(value.value()));
                     }
                 }
                 row_index++;

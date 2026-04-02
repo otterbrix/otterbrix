@@ -22,9 +22,9 @@ TEST_CASE("components::catalog::schema_test") {
         REQUIRE(cat.table_exists({&mr, full}));
 
         auto tbl = cat.get_table_schema({&mr, full});
-        REQUIRE(front_cursor_type(tbl.find_field("name")) == logical_type::BIGINT);
+        REQUIRE(tbl.find_field("name").value() == logical_type::BIGINT);
 
-        auto desc = tbl.get_field_description("name")->get();
+        auto desc = tbl.get_field_description("name").value().get();
         REQUIRE(desc.required == true);
         REQUIRE(desc.doc == "test");
         REQUIRE(desc.field_id == 1);
@@ -46,25 +46,25 @@ TEST_CASE("components::catalog::schema_test") {
 
         {
             auto err = cat.create_table({&mr, full}, {&mr, sch});
-            REQUIRE(!err);
+            REQUIRE(!err.contains_error());
         }
         REQUIRE(cat.table_exists({&mr, full}));
 
         auto tbl = cat.get_table_schema({&mr, full});
-        REQUIRE(front_cursor_type(tbl.find_field("flag")) == logical_type::BOOLEAN);
-        REQUIRE(front_cursor_type(tbl.find_field("number")) == logical_type::INTEGER);
-        REQUIRE(front_cursor_type(tbl.find_field("name")) == logical_type::STRING_LITERAL);
-        REQUIRE(front_cursor_type(tbl.find_field("array")) == logical_type::LIST);
+        REQUIRE(tbl.find_field("flag").value() == logical_type::BOOLEAN);
+        REQUIRE(tbl.find_field("number").value() == logical_type::INTEGER);
+        REQUIRE(tbl.find_field("name").value() == logical_type::STRING_LITERAL);
+        REQUIRE(tbl.find_field("array").value() == logical_type::LIST);
 
-        REQUIRE(tbl.get_field_description("flag")->get().field_id == 1);
-        REQUIRE(tbl.get_field_description("number")->get().field_id == 2);
-        REQUIRE(tbl.get_field_description("name")->get().field_id == 3);
-        REQUIRE(tbl.get_field_description("array")->get().field_id == 4);
+        REQUIRE(tbl.get_field_description("flag").value().get().field_id == 1);
+        REQUIRE(tbl.get_field_description("number").value().get().field_id == 2);
+        REQUIRE(tbl.get_field_description("name").value().get().field_id == 3);
+        REQUIRE(tbl.get_field_description("array").value().get().field_id == 4);
 
         for (size_t i = 0; i < 10; ++i) {
             collection_full_name_t full_n{"db", "fields" + std::to_string(i)};
             auto err = cat.create_table({&mr, full_n}, {&mr, sch});
-            REQUIRE(!err);
+            REQUIRE(!err.contains_error());
         }
 
         auto tbls = cat.list_tables({"db"}); // sorted with std::map
@@ -181,7 +181,7 @@ TEST_CASE("components::catalog::compute_schema") {
 
     {
         auto err = cat.create_computing_table({&mr, full});
-        REQUIRE(!err);
+        REQUIRE(!err.contains_error());
     }
     computed_schema& sch = cat.get_computing_table_schema({&mr, full});
     std::vector<complex_logical_type> types{logical_type::BOOLEAN,
@@ -235,7 +235,7 @@ TEST_CASE("components::catalog::compute_schema") {
         std::pmr::string new_name = "test";
         {
             auto err = cat.rename_computing_table({&mr, full}, new_name);
-            REQUIRE(!err);
+            REQUIRE(!err.contains_error());
         }
 
         REQUIRE(cat.table_computes({&mr, {"db"}, new_name}));

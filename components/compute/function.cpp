@@ -1,5 +1,7 @@
 #include "function.hpp"
 
+#include <optional>
+
 using namespace components::vector;
 using namespace components::types;
 
@@ -20,15 +22,20 @@ namespace components::compute {
         , doc_(std::move(doc))
         , default_options_(default_options) {}
 
-    compute_result<std::reference_wrapper<const compute_kernel>>
-    function::dispatch_exact(const std::pmr::vector<complex_logical_type>& types) const {
+    core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
+    function::dispatch_exact(std::pmr::memory_resource* resource,
+                             const std::pmr::vector<complex_logical_type>& types) const {
         if (!arity_.varargs && arity_.num_args != types.size()) {
-            return compute_status::execution_error("Arity mismatch");
+            return core::error_t(core::error_code_t::kernel_error,
+                                 core::error_tag_t::compute_kernel,
+                                 std::pmr::string{"Arity mismatch", resource});
         }
 
         auto* kernel = detail::dispatch_exact_impl(*this, types);
         if (!kernel) {
-            return compute_status::execution_error("No matching kernel");
+            return core::error_t(core::error_code_t::kernel_error,
+                                 core::error_tag_t::compute_kernel,
+                                 std::pmr::string{"No matching kernel", resource});
         }
 
         return std::ref(*kernel);
@@ -49,74 +56,85 @@ namespace components::compute {
             , func_(func)
             , state_() {}
 
-        compute_status init(const function_options* options, exec_context_t& exec_ctx) override {
+        core::error_t init(const function_options* options, exec_context_t& exec_ctx) override {
             kernel_ctx_ = kernel_context{exec_ctx, kernel_};
             return init_kernel(options);
         }
 
-        compute_status check_args(const std::pmr::vector<types::complex_logical_type>& types) {
+        core::error_t check_args(std::pmr::memory_resource* resource,
+                                 const std::pmr::vector<types::complex_logical_type>& types) {
             if (types.size() != in_types_.size()) {
-                return compute_status::execution_error("Invalid argument count");
+                return core::error_t(core::error_code_t::kernel_error,
+                                     core::error_tag_t::compute_kernel,
+                                     std::pmr::string{"Invalid argument count", resource});
             }
 
             for (size_t i = 0; i < types.size(); ++i) {
                 if (types[i].type() != in_types_[i].type()) {
-                    return compute_status::execution_error("Type mismatch");
+                    return core::error_t(core::error_code_t::kernel_error,
+                                         core::error_tag_t::compute_kernel,
+                                         std::pmr::string{"Type mismatch", resource});
                 }
             }
 
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
-        compute_status check_args(const data_chunk_t& args) { return check_args(args.types()); }
+        core::error_t check_args(std::pmr::memory_resource* resource, const data_chunk_t& args) {
+            return check_args(resource, args.types());
+        }
 
-        compute_status check_args(const std::vector<data_chunk_t>& args) {
+        core::error_t check_args(std::pmr::memory_resource* resource, const std::vector<data_chunk_t>& args) {
             auto types = args.front().types();
-            if (auto st = check_args(types); !st) {
+            if (auto st = check_args(resource, types); st.contains_error()) {
                 return st;
             }
 
             // all batches must have same types
             for (auto it = ++args.begin(); it != args.end(); ++it) {
                 if (types != it->types()) {
-                    return compute_status::execution_error("Type mismatch");
+                    return core::error_t(core::error_code_t::kernel_error,
+                                         core::error_tag_t::compute_kernel,
+                                         std::pmr::string{"Type mismatch", resource});
                 }
             }
 
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
-        compute_result<datum_t> execute(const data_chunk_t& args) override {
-            if (auto st = check_init(); !st) {
+        core::result_wrapper_t<datum_t> execute(const data_chunk_t& args) override {
+            if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
             return executor_->execute(args);
         }
 
-        compute_result<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
-            if (auto st = check_init(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::vector<data_chunk_t>& inputs) override {
+            if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
             return executor_->execute(inputs);
         }
 
-        compute_result<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
-            if (auto st = check_init(); !st) {
+        core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>& inputs) override {
+            if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
             return executor_->execute(inputs);
         }
 
-        static compute_result<function_executor_impl_t>
-        get_best_function_executor(std::pmr::vector<complex_logical_type> in_types, const function& func) {
-            auto kernel_st = func.dispatch_exact(in_types);
-            if (!kernel_st) {
-                return kernel_st.status();
+        static core::result_wrapper_t<function_executor_impl_t>
+        get_best_function_executor(std::pmr::memory_resource* resource,
+                                   std::pmr::vector<complex_logical_type> in_types,
+                                   const function& func) {
+            auto kernel_st = func.dispatch_exact(resource, in_types);
+            if (kernel_st.has_error()) {
+                return kernel_st.convert_error<function_executor_impl_t>();
             }
 
-            auto exec_st = func.get_best_executor(in_types);
-            if (!exec_st) {
-                return exec_st.status();
+            auto exec_st = func.get_best_executor(resource, in_types);
+            if (exec_st.has_error()) {
+                return exec_st.convert_error<function_executor_impl_t>();
             }
 
             // dispatch_exact checks for nullptr, can safely dereference and take const&
@@ -127,35 +145,39 @@ namespace components::compute {
         }
 
     private:
-        compute_status check_init() {
+        core::error_t check_init() {
             if (!kernel_ctx_) {
                 // didn't call init, default (i.e. no options/exec_ctx) call
-                if (auto s = init(nullptr, default_exec_context()); !s) {
-                    return s;
+                if (auto st = init(nullptr, default_exec_context()); st.contains_error()) {
+                    return st;
                 }
             }
 
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
-        compute_status init_kernel(const function_options* options) {
+        core::error_t init_kernel(const function_options* options) {
             if (func_.doc().options_required && !options && !func_.default_options()) {
-                return compute_status::invalid("Function " + func_.name() + " cannot be executed without options");
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    core::error_tag_t::compute_kernel,
+                    std::pmr::string{"Function " + func_.name() + " cannot be executed without options",
+                                     kernel_ctx_.value().exec_context().resource()});
             }
 
             if (!options) {
                 options = func_.default_options();
             }
 
-            if (auto state = kernel_.init(kernel_ctx_.value(), {kernel_, in_types_, options}); state) {
+            if (auto state = kernel_.init(kernel_ctx_.value(), {kernel_, in_types_, options}); !state.has_error()) {
                 state_ = std::move(state.value());
                 kernel_ctx_.value().set_state(state_.get());
             } else {
-                return state.status();
+                return state.error();
             }
 
             executor_->init(kernel_ctx_.value(), {kernel_, in_types_, options});
-            return compute_status::ok();
+            return core::error_t::no_error();
         }
 
         std::pmr::vector<complex_logical_type> in_types_;
@@ -166,82 +188,87 @@ namespace components::compute {
         kernel_state_ptr state_;
     };
 
-    compute_result<std::unique_ptr<detail::kernel_executor_t>>
-    function::get_best_executor(std::pmr::vector<complex_logical_type>) const {
+    core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
+    function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {
         detail::kernel_executor_visitor vis;
         accept_visitor(vis);
 
         if (!vis.result) {
-            return compute_status::invalid("Unsupported function kind");
+            return core::error_t(core::error_code_t::kernel_error,
+                                 core::error_tag_t::compute_kernel,
+                                 std::pmr::string{"Unsupported function kind", resource});
         }
 
         return std::move(vis.result);
     }
     std::vector<kernel_signature_t> function::get_signatures() const { return {}; }
 
-    compute_result<datum_t>
+    core::result_wrapper_t<datum_t>
     function::execute(const data_chunk_t& args, const function_options* options, exec_context_t& ctx) const {
-        auto fn_exec = function_executor_impl_t::get_best_function_executor(args.types(), *this);
-        if (!fn_exec) {
-            return fn_exec.status();
+        auto fn_exec = function_executor_impl_t::get_best_function_executor(ctx.resource(), args.types(), *this);
+        if (fn_exec.has_error()) {
+            return fn_exec.convert_error<datum_t>();
         }
 
-        if (auto st = fn_exec.value().check_args(args); !st) {
+        if (auto st = fn_exec.value().check_args(ctx.resource(), args); st.contains_error()) {
             return st;
         }
 
-        if (auto st = fn_exec.value().init(options, ctx)) {
-            return fn_exec.value().execute(args);
+        if (auto st = fn_exec.value().init(options, ctx); st.contains_error()) {
+            return st;
         } else {
-            return st;
+            return fn_exec.value().execute(args);
         }
     }
 
-    compute_result<datum_t> function::execute(const std::vector<data_chunk_t>& args,
-                                              const function_options* options,
-                                              exec_context_t& ctx) const {
+    core::result_wrapper_t<datum_t> function::execute(const std::vector<data_chunk_t>& args,
+                                                      const function_options* options,
+                                                      exec_context_t& ctx) const {
         if (args.empty()) {
-            return compute_status::invalid("Execution batch cannot be empty!");
+            core::error_t(core::error_code_t::kernel_error,
+                          core::error_tag_t::compute_kernel,
+                          std::pmr::string{"Execution batch cannot be empty!", ctx.resource()});
         }
 
-        auto fn_exec = function_executor_impl_t::get_best_function_executor(args.front().types(), *this);
-        if (!fn_exec) {
-            return fn_exec.status();
+        auto fn_exec =
+            function_executor_impl_t::get_best_function_executor(ctx.resource(), args.front().types(), *this);
+        if (fn_exec.has_error()) {
+            return fn_exec.convert_error<datum_t>();
         }
 
-        if (auto st = fn_exec.value().check_args(args); !st) {
+        if (auto st = fn_exec.value().check_args(ctx.resource(), args); st.contains_error()) {
             return st;
         }
 
-        if (auto st = fn_exec.value().init(options, ctx)) {
-            return fn_exec.value().execute(args);
+        if (auto st = fn_exec.value().init(options, ctx); st.contains_error()) {
+            return st;
         } else {
-            return st;
+            return fn_exec.value().execute(args);
         }
     }
 
-    compute_result<datum_t> function::execute(const std::pmr::vector<logical_value_t>& args,
-                                              const function_options* options,
-                                              exec_context_t& ctx) const {
+    core::result_wrapper_t<datum_t> function::execute(const std::pmr::vector<logical_value_t>& args,
+                                                      const function_options* options,
+                                                      exec_context_t& ctx) const {
         std::pmr::vector<complex_logical_type> types(args.get_allocator().resource());
         types.reserve(args.size());
         for (const auto& arg : args) {
             types.emplace_back(arg.type());
         }
 
-        auto fn_exec = function_executor_impl_t::get_best_function_executor(types, *this);
-        if (!fn_exec) {
-            return fn_exec.status();
+        auto fn_exec = function_executor_impl_t::get_best_function_executor(ctx.resource(), types, *this);
+        if (fn_exec.has_error()) {
+            return fn_exec.convert_error<datum_t>();
         }
 
-        if (auto st = fn_exec.value().check_args(types); !st) {
+        if (auto st = fn_exec.value().check_args(ctx.resource(), types); st.contains_error()) {
             return st;
         }
 
-        if (auto st = fn_exec.value().init(options, ctx)) {
-            return fn_exec.value().execute(args);
+        if (auto st = fn_exec.value().init(options, ctx); st.contains_error()) {
+            return st;
         } else {
-            return st;
+            return fn_exec.value().execute(args);
         }
     }
 
@@ -252,10 +279,10 @@ namespace components::compute {
 
     void vector_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> vector_function::get_copy() const {
+    std::unique_ptr<function> vector_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<vector_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            result->add_kernel(kernel);
+            (void) result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -268,10 +295,10 @@ namespace components::compute {
 
     void aggregate_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> aggregate_function::get_copy() const {
+    std::unique_ptr<function> aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            result->add_kernel(kernel);
+            (void) result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -281,28 +308,34 @@ namespace components::compute {
 
     void row_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> row_function::get_copy() const {
+    std::unique_ptr<function> row_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<row_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            result->add_kernel(kernel);
+            (void) result->add_kernel(resource, kernel);
         }
         return result;
     }
+
+    function_registry_t::function_registry_t(std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , functions_(resource_) {}
 
     std::once_flag function_registry_t::init_flag_;
     std::unique_ptr<function_registry_t> function_registry_t::default_registry_;
 
     function_registry_t* function_registry_t::get_default() {
         std::call_once(init_flag_, []() {
-            default_registry_ = std::make_unique<function_registry_t>();
+            default_registry_ = std::make_unique<function_registry_t>(std::pmr::get_default_resource());
             default_registry_->register_builtin_functions();
         });
         return default_registry_.get();
     }
 
-    compute_result<function_uid> function_registry_t::add_function(function_ptr function) {
+    core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
-            return compute_status::execution_error("Cannot add null function");
+            core::error_t(core::error_code_t::function_registry_error,
+                          core::error_tag_t::compute_kernel,
+                          std::pmr::string{"Cannot add null function", resource_});
         }
 
         auto uid = current_uid_++;
@@ -327,6 +360,8 @@ namespace components::compute {
         }
         return result;
     }
+
+    std::pmr::memory_resource* function_registry_t::resource() const noexcept { return resource_; }
 
     void function_registry_t::register_builtin_functions() { register_default_functions(*this); }
 

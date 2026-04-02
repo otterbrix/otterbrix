@@ -114,7 +114,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::write_physical_insert(session_id_t session,
+    wal_worker_t::write_physical_insert(session_id_t /*session*/,
                                         std::string database,
                                         std::string collection,
                                         std::unique_ptr<components::vector::data_chunk_t> data_chunk,
@@ -144,7 +144,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::write_physical_delete(session_id_t session,
+    wal_worker_t::write_physical_delete(session_id_t /*session*/,
                                         std::string database,
                                         std::string collection,
                                         std::pmr::vector<int64_t> row_ids,
@@ -173,7 +173,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::write_physical_update(session_id_t session,
+    wal_worker_t::write_physical_update(session_id_t /*session*/,
                                         std::string database,
                                         std::string collection,
                                         std::pmr::vector<int64_t> row_ids,
@@ -203,7 +203,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<wal::id_t>
-    wal_worker_t::commit_txn(session_id_t session,
+    wal_worker_t::commit_txn(session_id_t /*session*/,
                              uint64_t transaction_id,
                              wal_sync_mode sync_mode,
                              wal::id_t wal_id) {
@@ -306,7 +306,7 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<void>
-    wal_worker_t::truncate_before(session_id_t session, wal::id_t checkpoint_wal_id) {
+    wal_worker_t::truncate_before(session_id_t /*session*/, wal::id_t checkpoint_wal_id) {
         trace(log_, "wal_worker::truncate_before , checkpoint_wal_id : {}", checkpoint_wal_id);
 
         auto segments = discover_segments();

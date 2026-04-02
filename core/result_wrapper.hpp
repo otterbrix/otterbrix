@@ -124,16 +124,11 @@ namespace core {
         explicit error_t(error_code_t type, error_tag_t source, const std::pmr::string& what)
             : type(type)
             , source(source)
-            , what(what, what.get_allocator()) {}
+            , what(what) {}
         explicit error_t(error_code_t type, error_tag_t source, std::pmr::string&& what)
             : type(type)
             , source(source)
             , what(std::move(what)) {}
-
-        error_t(const error_t& other)
-            : type(other.type)
-            , source(other.source)
-            , what(other.what, other.what.get_allocator()) {}
 
         error_t& operator=(const error_t& other) {
             type = other.type;

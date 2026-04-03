@@ -2,6 +2,7 @@
 
 #include <memory_resource>
 #include <string_view>
+#include <unordered_map>
 
 namespace core {
 
@@ -19,6 +20,7 @@ namespace core {
 
     private:
         std::pmr::monotonic_buffer_resource arena_allocator_;
+        std::unordered_map<std::string_view, void*> interned_;
     };
 
     template<typename T>

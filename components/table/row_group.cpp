@@ -374,12 +374,25 @@ namespace components::table {
                     }
                 }
                 const auto& cf = filter->cast<constant_filter_t>();
-                // Only handle flat column reference (no nested struct path)
-                if (cf.table_indices.size() != 1 || cf.table_indices.front() >= get_column_count()) {
+                if (cf.table_indices.empty() || cf.table_indices.front() >= get_column_count()) {
                     filter_indexing(resource, vector_index, indexing, filter, approved_tuple_count);
                     break;
                 }
-                auto& col = get_column(cf.table_indices.front());
+                // Navigate struct hierarchy to reach the leaf column
+                column_data_t* col_ptr = &get_column(cf.table_indices.front());
+                for (size_t path_i = 1; path_i < cf.table_indices.size(); path_i++) {
+                    auto* struct_col = dynamic_cast<struct_column_data_t*>(col_ptr);
+                    if (!struct_col || cf.table_indices[path_i] >= struct_col->sub_columns.size()) {
+                        col_ptr = nullptr;
+                        break;
+                    }
+                    col_ptr = struct_col->sub_columns[cf.table_indices[path_i]].get();
+                }
+                if (!col_ptr) {
+                    filter_indexing(resource, vector_index, indexing, filter, approved_tuple_count);
+                    break;
+                }
+                auto& col = *col_ptr;
                 // Require matching physical types — mixed-type comparisons (e.g. BIGINT > DOUBLE)
                 // must go through check_predicate which handles implicit conversions.
                 if (col.type().to_physical_type() != cf.constant.type().to_physical_type()) {

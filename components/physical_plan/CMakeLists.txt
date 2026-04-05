@@ -12,6 +12,10 @@ set(${PROJECT_NAME}_SOURCES
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp
         operators/aggregate/grouped_aggregate.cpp
+        operators/aggregate/grouped_aggregate_cpu.cpp
+        operators/aggregate/grouped_aggregate_gpu.cpp
+        operators/aggregate/grouped_aggregate_gpu_runtime.cpp
+        operators/aggregate/grouped_aggregate_gpu_execute.cpp
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
@@ -66,3 +70,7 @@ target_link_libraries(
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )
 
+target_compile_definitions(
+        otterbrix_${PROJECT_NAME} PRIVATE
+        OTTERBRIX_GROUPED_AGGREGATE_GPU_KERNEL_FILE="${CMAKE_CURRENT_SOURCE_DIR}/operators/aggregate/grouped_aggregate_gpu_kernel.cl"
+)

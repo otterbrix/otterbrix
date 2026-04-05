@@ -9,11 +9,38 @@
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
 #include <components/physical_plan/operators/operator_batch.hpp>
 #include <core/operations_helper.hpp>
+#include <future>
 #include <type_traits>
 
 namespace components::operators {
 
     namespace {
+        struct aggregate_partition_t {
+            uint64_t cpu_offset{0};
+            uint64_t cpu_count{0};
+            uint64_t gpu_offset{0};
+            uint64_t gpu_count{0};
+
+            [[nodiscard]] bool use_cpu() const noexcept { return cpu_count > 0; }
+            [[nodiscard]] bool use_gpu() const noexcept { return gpu_count > 0; }
+            [[nodiscard]] bool hybrid() const noexcept { return use_cpu() && use_gpu(); }
+        };
+
+        aggregate_partition_t plan_aggregate_partition(uint64_t row_count, bool gpu_enabled) {
+            if (!gpu_enabled || row_count == 0) {
+                return {0, row_count, 0, 0};
+            }
+
+            if (row_count == 1) {
+                return {0, 0, 0, 1};
+            }
+
+            auto gpu_count = std::max<uint64_t>(1, (row_count * 3) / 4);
+            gpu_count = std::min(gpu_count, row_count - 1);
+            const auto cpu_count = row_count - gpu_count;
+            return {0, cpu_count, cpu_count, gpu_count};
+        }
+
         template<typename T>
         bool equals_typed(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
             if constexpr (std::is_floating_point_v<T>) {
@@ -518,40 +545,98 @@ namespace components::operators {
                     group_ids[row_id] = static_cast<uint32_t>(g);
                 }
             }
+            const auto partition =
+                plan_aggregate_partition(num_rows, aggregate::gpu_group_aggregate_test_enabled());
 
-            // For each aggregate, run vectorized update
-            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
-            agg_results.reserve(values_.size());
+            std::pmr::vector<types::complex_logical_type> out_types(resource_);
+            out_types.reserve(key_count + values_.size());
+            if (num_groups > 0) {
+                for (size_t k = 0; k < key_count; k++) {
+                    out_types.push_back(group_keys_[0][k].type());
+                }
+            }
+            for (size_t a = 0; a < values_.size(); a++) {
+                out_types.push_back(aggregate::result_type(agg_infos[a].kind, agg_infos[a].col_type));
+            }
+
+            uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
+            vector::data_chunk_t result(resource_, out_types, cap);
+            result.set_cardinality(static_cast<uint64_t>(num_groups));
+
+            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
+                for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
+                    result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
+                }
+            }
 
             for (size_t a = 0; a < values_.size(); a++) {
                 std::pmr::vector<aggregate::raw_agg_state_t> states(resource_);
                 states.resize(num_groups);
 
                 auto& info = agg_infos[a];
-                if (info.is_count_star) {
-                    // COUNT(*): count all rows per group (including nulls)
-                    for (uint64_t i = 0; i < num_rows; i++) {
-                        if (group_ids[i] != UINT32_MAX) {
-                            states[group_ids[i]].update_count();
+                if (!partition.hybrid()) {
+                    if (info.is_count_star) {
+                        if (partition.use_gpu()) {
+                            aggregate::update_count_star_gpu(group_ids.data(), num_rows, states);
+                        } else {
+                            aggregate::update_count_star(group_ids.data(), num_rows, states);
+                        }
+                    } else {
+                        if (partition.use_gpu()) {
+                            aggregate::update_all_gpu(
+                                info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                        } else {
+                            aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
                         }
                     }
                 } else {
-                    aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                    std::pmr::vector<aggregate::raw_agg_state_t> gpu_states(resource_);
+                    gpu_states.resize(num_groups);
+
+                    auto run_cpu_partition = [&]() {
+                        if (info.is_count_star) {
+                            aggregate::update_count_star(
+                                group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
+                            return;
+                        }
+
+                        const auto* source = chunk.at(info.full_path);
+                        vector::vector_t cpu_slice(*source, partition.cpu_offset, partition.cpu_count);
+                        aggregate::update_all(
+                            info.kind, cpu_slice, group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
+                    };
+
+                    auto run_gpu_partition = [&]() {
+                        if (info.is_count_star) {
+                            aggregate::update_count_star_gpu(
+                                group_ids.data() + partition.gpu_offset, partition.gpu_count, gpu_states);
+                            return;
+                        }
+
+                        const auto* source = chunk.at(info.full_path);
+                        vector::vector_t gpu_slice(*source, partition.gpu_offset, partition.gpu_count);
+                        aggregate::update_all_gpu(info.kind,
+                                                  gpu_slice,
+                                                  group_ids.data() + partition.gpu_offset,
+                                                  partition.gpu_count,
+                                                  gpu_states);
+                    };
+
+                    auto gpu_future = std::async(std::launch::async, run_gpu_partition);
+                    run_cpu_partition();
+                    gpu_future.get();
+
+                    for (size_t g = 0; g < num_groups; g++) {
+                        aggregate::merge_state(info.kind, states[g], gpu_states[g]);
+                    }
                 }
 
-                // Finalize states to logical_value_t
-                std::pmr::vector<types::logical_value_t> results(resource_);
-                results.reserve(num_groups);
                 for (size_t g = 0; g < num_groups; g++) {
-                    auto val = aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
-                    val.set_alias(std::string(values_[a].name));
-                    results.push_back(std::move(val));
+                    aggregate::write_finalized_state(result.data[key_count + a], g, info.kind, states[g], info.col_type);
                 }
-                agg_results.push_back(std::move(results));
             }
 
-            // Build result chunk
-            return build_result_chunk(num_groups, key_count, agg_results);
+            return result;
         }
 
         // Fallback: gather + slice_contiguous per group

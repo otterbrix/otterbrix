@@ -2,6 +2,7 @@
 #pragma OPENCL EXTENSION cl_khr_global_int32_extended_atomics : enable
 #pragma OPENCL EXTENSION cl_khr_int64_base_atomics : enable
 #pragma OPENCL EXTENSION cl_khr_int64_extended_atomics : enable
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
 #define AGG_SUM 0
 #define AGG_MIN 1
@@ -161,140 +162,172 @@ __kernel void agg_count_non_null_rows(__global const uint* gids,
     atomic_add_u64(&out_count[gid], 1UL);
 }
 
-__kernel void agg_signed_rows(__global const long* data,
-                              __global const uint* gids,
-                              __global const ulong* mask,
-                              const int has_mask,
-                              const ulong rows,
-                              const int agg,
-                              __global long* out_value,
-                              __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    const long value = data[row];
-    if (agg == AGG_SUM) {
-        atomic_add_s64(&out_value[gid], value);
-    } else if (agg == AGG_MIN) {
-        atomic_min_s64(&out_value[gid], value);
-    } else {
-        atomic_max_s64(&out_value[gid], value);
-    }
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_SIGNED_REGULAR_KERNEL(NAME, INPUT_T)                                                   \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   const int agg,                                                                     \
+                   __global long* out_value,                                                          \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    const long value = (long)data[row];                                                               \
+    if (agg == AGG_SUM) {                                                                             \
+        atomic_add_s64(&out_value[gid], value);                                                       \
+    } else if (agg == AGG_MIN) {                                                                      \
+        atomic_min_s64(&out_value[gid], value);                                                       \
+    } else {                                                                                          \
+        atomic_max_s64(&out_value[gid], value);                                                       \
+    }                                                                                                 \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
 
-__kernel void agg_unsigned_rows(__global const ulong* data,
-                                __global const uint* gids,
-                                __global const ulong* mask,
-                                const int has_mask,
-                                const ulong rows,
-                                const int agg,
-                                __global ulong* out_value,
-                                __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    const ulong value = data[row];
-    if (agg == AGG_SUM) {
-        atomic_add_u64(&out_value[gid], value);
-    } else if (agg == AGG_MIN) {
-        atomic_min_u64(&out_value[gid], value);
-    } else {
-        atomic_max_u64(&out_value[gid], value);
-    }
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_UNSIGNED_REGULAR_KERNEL(NAME, INPUT_T)                                                 \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   const int agg,                                                                     \
+                   __global ulong* out_value,                                                         \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    const ulong value = (ulong)data[row];                                                             \
+    if (agg == AGG_SUM) {                                                                             \
+        atomic_add_u64(&out_value[gid], value);                                                       \
+    } else if (agg == AGG_MIN) {                                                                      \
+        atomic_min_u64(&out_value[gid], value);                                                       \
+    } else {                                                                                          \
+        atomic_max_u64(&out_value[gid], value);                                                       \
+    }                                                                                                 \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
 
-__kernel void agg_float_rows(__global const double* data,
-                             __global const uint* gids,
-                             __global const ulong* mask,
-                             const int has_mask,
-                             const ulong rows,
-                             const int agg,
-                             __global ulong* out_value_bits,
-                             __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    const double value = data[row];
-    if (agg == AGG_SUM) {
-        atomic_add_f64(&out_value_bits[gid], value);
-    } else if (agg == AGG_MIN) {
-        atomic_min_f64(&out_value_bits[gid], value);
-    } else {
-        atomic_max_f64(&out_value_bits[gid], value);
-    }
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_FLOAT_REGULAR_KERNEL(NAME, INPUT_T)                                                    \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   const int agg,                                                                     \
+                   __global ulong* out_value_bits,                                                    \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    const double value = (double)data[row];                                                           \
+    if (agg == AGG_SUM) {                                                                             \
+        atomic_add_f64(&out_value_bits[gid], value);                                                  \
+    } else if (agg == AGG_MIN) {                                                                      \
+        atomic_min_f64(&out_value_bits[gid], value);                                                  \
+    } else {                                                                                          \
+        atomic_max_f64(&out_value_bits[gid], value);                                                  \
+    }                                                                                                 \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
 
-__kernel void agg_signed_avg_rows(__global const long* data,
-                                  __global const uint* gids,
-                                  __global const ulong* mask,
-                                  const int has_mask,
-                                  const ulong rows,
-                                  __global ulong* out_sum_bits,
-                                  __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    atomic_add_f64(&out_sum_bits[gid], (double)data[row]);
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_SIGNED_AVG_KERNEL(NAME, INPUT_T)                                                       \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   __global ulong* out_sum_bits,                                                      \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    atomic_add_f64(&out_sum_bits[gid], (double)data[row]);                                            \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
 
-__kernel void agg_unsigned_avg_rows(__global const ulong* data,
-                                    __global const uint* gids,
-                                    __global const ulong* mask,
-                                    const int has_mask,
-                                    const ulong rows,
-                                    __global ulong* out_sum_bits,
-                                    __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    atomic_add_f64(&out_sum_bits[gid], (double)data[row]);
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_UNSIGNED_AVG_KERNEL(NAME, INPUT_T)                                                     \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   __global ulong* out_sum_bits,                                                      \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    atomic_add_f64(&out_sum_bits[gid], (double)data[row]);                                            \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
 
-__kernel void agg_float_avg_rows(__global const double* data,
-                                 __global const uint* gids,
-                                 __global const ulong* mask,
-                                 const int has_mask,
-                                 const ulong rows,
-                                 __global ulong* out_sum_bits,
-                                 __global ulong* out_count) {
-    const ulong row = get_global_id(0);
-    if (row >= rows || !row_is_valid(mask, row, has_mask)) {
-        return;
-    }
-    const uint gid = gids[row];
-    if (gid == INVALID_GROUP) {
-        return;
-    }
-    atomic_add_f64(&out_sum_bits[gid], data[row]);
-    atomic_add_u64(&out_count[gid], 1UL);
+#define DEFINE_FLOAT_AVG_KERNEL(NAME, INPUT_T)                                                        \
+__kernel void NAME(__global const INPUT_T* data,                                                      \
+                   __global const uint* gids,                                                         \
+                   __global const ulong* mask,                                                        \
+                   const int has_mask,                                                                \
+                   const ulong rows,                                                                  \
+                   __global ulong* out_sum_bits,                                                      \
+                   __global ulong* out_count) {                                                       \
+    const ulong row = get_global_id(0);                                                               \
+    if (row >= rows || !row_is_valid(mask, row, has_mask)) {                                          \
+        return;                                                                                       \
+    }                                                                                                 \
+    const uint gid = gids[row];                                                                       \
+    if (gid == INVALID_GROUP) {                                                                       \
+        return;                                                                                       \
+    }                                                                                                 \
+    atomic_add_f64(&out_sum_bits[gid], (double)data[row]);                                            \
+    atomic_add_u64(&out_count[gid], 1UL);                                                             \
 }
+
+DEFINE_SIGNED_REGULAR_KERNEL(agg_i8_rows, char)
+DEFINE_SIGNED_REGULAR_KERNEL(agg_i16_rows, short)
+DEFINE_SIGNED_REGULAR_KERNEL(agg_i32_rows, int)
+DEFINE_SIGNED_REGULAR_KERNEL(agg_i64_rows, long)
+
+DEFINE_UNSIGNED_REGULAR_KERNEL(agg_u8_rows, uchar)
+DEFINE_UNSIGNED_REGULAR_KERNEL(agg_u16_rows, ushort)
+DEFINE_UNSIGNED_REGULAR_KERNEL(agg_u32_rows, uint)
+DEFINE_UNSIGNED_REGULAR_KERNEL(agg_u64_rows, ulong)
+
+DEFINE_FLOAT_REGULAR_KERNEL(agg_f32_rows, float)
+DEFINE_FLOAT_REGULAR_KERNEL(agg_f64_rows, double)
+
+DEFINE_SIGNED_AVG_KERNEL(agg_i8_avg_rows, char)
+DEFINE_SIGNED_AVG_KERNEL(agg_i16_avg_rows, short)
+DEFINE_SIGNED_AVG_KERNEL(agg_i32_avg_rows, int)
+DEFINE_SIGNED_AVG_KERNEL(agg_i64_avg_rows, long)
+
+DEFINE_UNSIGNED_AVG_KERNEL(agg_u8_avg_rows, uchar)
+DEFINE_UNSIGNED_AVG_KERNEL(agg_u16_avg_rows, ushort)
+DEFINE_UNSIGNED_AVG_KERNEL(agg_u32_avg_rows, uint)
+DEFINE_UNSIGNED_AVG_KERNEL(agg_u64_avg_rows, ulong)
+
+DEFINE_FLOAT_AVG_KERNEL(agg_f32_avg_rows, float)
+DEFINE_FLOAT_AVG_KERNEL(agg_f64_avg_rows, double)

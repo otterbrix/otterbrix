@@ -64,20 +64,8 @@ namespace components::operators::aggregate {
         }
 
         gpu::log_warn_if_available(fmt::format("grouped_aggregate GPU fallback to CPU: agg=count(*), reason={}", reason));
-        for (uint64_t row = 0; row < count; row++) {
-            if (group_ids[row] != UINT32_MAX) {
-                states[group_ids[row]].update_count();
-            }
-        }
+        update_count_star(group_ids, count, states);
     }
-
-    types::logical_value_t finalize_state_gpu(std::pmr::memory_resource* resource,
-                                              builtin_agg agg,
-                                              const raw_agg_state_t& state,
-                                              types::logical_type col_type) {
-        return finalize_state(resource, agg, state, col_type);
-    }
-
     bool gpu_group_aggregate_test_enabled() { return gpu::read_bool_env("OTTERBRIX_GROUP_AGG_GPU_TEST"); }
 
 } // namespace components::operators::aggregate

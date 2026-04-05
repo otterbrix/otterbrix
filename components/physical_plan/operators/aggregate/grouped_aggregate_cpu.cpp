@@ -25,7 +25,7 @@ namespace components::operators::aggregate {
                          uint64_t count,
                          std::pmr::vector<raw_agg_state_t>& states) {
             for (uint64_t row = 0; row < count; row++) {
-                if (vec.is_null(row)) {
+                if (group_ids[row] == UINT32_MAX || vec.is_null(row)) {
                     continue;
                 }
 
@@ -60,7 +60,7 @@ namespace components::operators::aggregate {
                     std::pmr::vector<raw_agg_state_t>& states) {
         if (agg == builtin_agg::COUNT) {
             for (uint64_t row = 0; row < count; row++) {
-                if (!vec.is_null(row)) {
+                if (group_ids[row] != UINT32_MAX && !vec.is_null(row)) {
                     states[group_ids[row]].update_count();
                 }
             }
@@ -103,69 +103,117 @@ namespace components::operators::aggregate {
         }
     }
 
-    types::logical_value_t finalize_state(std::pmr::memory_resource* resource,
-                                          builtin_agg agg,
-                                          const raw_agg_state_t& state,
-                                          types::logical_type col_type) {
+    void update_count_star(const uint32_t* group_ids, uint64_t count, std::pmr::vector<raw_agg_state_t>& states) {
+        for (uint64_t row = 0; row < count; row++) {
+            if (group_ids[row] != UINT32_MAX) {
+                states[group_ids[row]].update_count();
+            }
+        }
+    }
+
+    namespace {
+        template<typename T>
+        void write_value(vector::vector_t& target, uint64_t row, T value) {
+            target.set_null(row, false);
+            target.data<T>()[row] = value;
+        }
+    } // namespace
+
+    types::complex_logical_type result_type(builtin_agg agg, types::logical_type col_type) {
+        if (agg == builtin_agg::COUNT) {
+            return types::complex_logical_type{types::logical_type::UBIGINT};
+        }
+        return types::complex_logical_type{col_type};
+    }
+
+    void write_finalized_state(vector::vector_t& target,
+                               uint64_t row,
+                               builtin_agg agg,
+                               const raw_agg_state_t& state,
+                               types::logical_type col_type) {
         if (!state.initialized) {
-            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+            target.set_null(row, true);
+            return;
         }
 
         if (agg == builtin_agg::COUNT) {
-            return types::logical_value_t(resource, state.u64);
+            write_value(target, row, state.u64);
+            return;
         }
 
         if (agg == builtin_agg::AVG) {
             const double avg = state.count > 0 ? state.f64 / static_cast<double>(state.count) : 0.0;
             switch (col_type) {
                 case types::logical_type::TINYINT:
-                    return types::logical_value_t(resource, static_cast<int8_t>(avg));
+                    write_value(target, row, static_cast<int8_t>(avg));
+                    return;
                 case types::logical_type::SMALLINT:
-                    return types::logical_value_t(resource, static_cast<int16_t>(avg));
+                    write_value(target, row, static_cast<int16_t>(avg));
+                    return;
                 case types::logical_type::INTEGER:
-                    return types::logical_value_t(resource, static_cast<int32_t>(avg));
+                    write_value(target, row, static_cast<int32_t>(avg));
+                    return;
                 case types::logical_type::BIGINT:
-                    return types::logical_value_t(resource, static_cast<int64_t>(avg));
+                    write_value(target, row, static_cast<int64_t>(avg));
+                    return;
                 case types::logical_type::UTINYINT:
-                    return types::logical_value_t(resource, static_cast<uint8_t>(avg));
+                    write_value(target, row, static_cast<uint8_t>(avg));
+                    return;
                 case types::logical_type::USMALLINT:
-                    return types::logical_value_t(resource, static_cast<uint16_t>(avg));
+                    write_value(target, row, static_cast<uint16_t>(avg));
+                    return;
                 case types::logical_type::UINTEGER:
-                    return types::logical_value_t(resource, static_cast<uint32_t>(avg));
+                    write_value(target, row, static_cast<uint32_t>(avg));
+                    return;
                 case types::logical_type::UBIGINT:
-                    return types::logical_value_t(resource, static_cast<uint64_t>(avg));
+                    write_value(target, row, static_cast<uint64_t>(avg));
+                    return;
                 case types::logical_type::FLOAT:
-                    return types::logical_value_t(resource, static_cast<float>(avg));
+                    write_value(target, row, static_cast<float>(avg));
+                    return;
                 case types::logical_type::DOUBLE:
-                    return types::logical_value_t(resource, avg);
+                    write_value(target, row, avg);
+                    return;
                 default:
-                    return types::logical_value_t(resource, avg);
+                    target.set_null(row, true);
+                    return;
             }
         }
 
         switch (col_type) {
             case types::logical_type::TINYINT:
-                return types::logical_value_t(resource, static_cast<int8_t>(state.i64));
+                write_value(target, row, static_cast<int8_t>(state.i64));
+                return;
             case types::logical_type::SMALLINT:
-                return types::logical_value_t(resource, static_cast<int16_t>(state.i64));
+                write_value(target, row, static_cast<int16_t>(state.i64));
+                return;
             case types::logical_type::INTEGER:
-                return types::logical_value_t(resource, static_cast<int32_t>(state.i64));
+                write_value(target, row, static_cast<int32_t>(state.i64));
+                return;
             case types::logical_type::BIGINT:
-                return types::logical_value_t(resource, state.i64);
+                write_value(target, row, state.i64);
+                return;
             case types::logical_type::UTINYINT:
-                return types::logical_value_t(resource, static_cast<uint8_t>(state.u64));
+                write_value(target, row, static_cast<uint8_t>(state.u64));
+                return;
             case types::logical_type::USMALLINT:
-                return types::logical_value_t(resource, static_cast<uint16_t>(state.u64));
+                write_value(target, row, static_cast<uint16_t>(state.u64));
+                return;
             case types::logical_type::UINTEGER:
-                return types::logical_value_t(resource, static_cast<uint32_t>(state.u64));
+                write_value(target, row, static_cast<uint32_t>(state.u64));
+                return;
             case types::logical_type::UBIGINT:
-                return types::logical_value_t(resource, state.u64);
+                write_value(target, row, state.u64);
+                return;
             case types::logical_type::FLOAT:
-                return types::logical_value_t(resource, static_cast<float>(state.f64));
+                write_value(target, row, static_cast<float>(state.f64));
+                return;
             case types::logical_type::DOUBLE:
-                return types::logical_value_t(resource, state.f64);
+                write_value(target, row, state.f64);
+                return;
             default:
-                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                target.set_null(row, true);
+                return;
         }
     }
 

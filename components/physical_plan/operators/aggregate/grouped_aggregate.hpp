@@ -2,7 +2,8 @@
 
 #include <string>
 
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/vector.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace components::operators::aggregate {
@@ -20,6 +21,14 @@ namespace components::operators::aggregate {
     builtin_agg classify(const std::string& func_name);
 
     struct raw_agg_state_t {
+        enum class value_kind_t : uint8_t
+        {
+            none,
+            signed_integer,
+            unsigned_integer,
+            floating_point
+        };
+
         union {
             int64_t i64;
             uint64_t u64;
@@ -27,6 +36,7 @@ namespace components::operators::aggregate {
         };
         uint64_t count{0};
         bool initialized{false};
+        value_kind_t value_kind{value_kind_t::none};
 
         void update_sum(int64_t v);
         void update_sum(uint64_t v);
@@ -45,6 +55,12 @@ namespace components::operators::aggregate {
         void update_avg(int64_t v);
         void update_avg(uint64_t v);
         void update_avg(double v);
+
+        void merge_sum(const raw_agg_state_t& source);
+        void merge_min(const raw_agg_state_t& source);
+        void merge_max(const raw_agg_state_t& source);
+        void merge_count(const raw_agg_state_t& source);
+        void merge_avg(const raw_agg_state_t& source);
     };
 
     // Update all states in a single pass over the column data
@@ -55,6 +71,8 @@ namespace components::operators::aggregate {
                     const uint32_t* group_ids,
                     uint64_t count,
                     std::pmr::vector<raw_agg_state_t>& states);
+
+    void update_count_star(const uint32_t* group_ids, uint64_t count, std::pmr::vector<raw_agg_state_t>& states);
 
     // GPU counterpart of update_all. The path is enabled by runtime flag and
     // executes grouped aggregation through the OpenCL runtime when available.
@@ -67,17 +85,15 @@ namespace components::operators::aggregate {
     // GPU helper for COUNT(*) (counts all rows per group).
     void update_count_star_gpu(const uint32_t* group_ids, uint64_t count, std::pmr::vector<raw_agg_state_t>& states);
 
-    // Convert finalized state to logical_value_t
-    types::logical_value_t finalize_state(std::pmr::memory_resource* resource,
-                                          builtin_agg agg,
-                                          const raw_agg_state_t& state,
-                                          types::logical_type col_type);
+    types::complex_logical_type result_type(builtin_agg agg, types::logical_type col_type);
 
-    // GPU counterpart of finalize_state.
-    types::logical_value_t finalize_state_gpu(std::pmr::memory_resource* resource,
-                                              builtin_agg agg,
-                                              const raw_agg_state_t& state,
-                                              types::logical_type col_type);
+    void write_finalized_state(vector::vector_t& target,
+                               uint64_t row,
+                               builtin_agg agg,
+                               const raw_agg_state_t& state,
+                               types::logical_type col_type);
+
+    void merge_state(builtin_agg agg, raw_agg_state_t& target, const raw_agg_state_t& source);
 
     // Runtime toggle for grouped aggregate GPU path.
     // Enable with: OTTERBRIX_GROUP_AGG_GPU_TEST=1

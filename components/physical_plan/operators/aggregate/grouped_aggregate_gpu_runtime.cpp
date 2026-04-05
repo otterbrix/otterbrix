@@ -323,11 +323,12 @@ namespace components::operators::aggregate::gpu {
 
     device_buffer_t create_device_buffer(opencl_runtime_t& runtime,
                                          cl_mem_flags flags,
-                                         void* host_ptr,
+                                         const void* host_ptr,
                                          size_t byte_size,
                                          std::string_view label) {
         cl_int status = cl_success;
-        cl_mem mem = runtime.api().clCreateBuffer(runtime.context(), flags, byte_size, host_ptr, &status);
+        cl_mem mem = runtime.api().clCreateBuffer(
+            runtime.context(), flags, byte_size, const_cast<void*>(host_ptr), &status);
         if (status != cl_success || !mem) {
             runtime.set_last_error(fmt::format("failed to allocate OpenCL buffer '{}'", label));
             return {};

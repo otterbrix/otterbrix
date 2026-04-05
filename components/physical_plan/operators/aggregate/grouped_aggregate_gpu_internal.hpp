@@ -181,7 +181,7 @@ namespace components::operators::aggregate::gpu {
 
     device_buffer_t create_device_buffer(opencl_runtime_t& runtime,
                                          cl_mem_flags flags,
-                                         void* host_ptr,
+                                         const void* host_ptr,
                                          size_t byte_size,
                                          std::string_view label);
     bool read_device_buffer(opencl_runtime_t& runtime,

@@ -11,15 +11,6 @@ namespace components::operators::aggregate::gpu {
 #if defined(__linux__)
     namespace {
 
-        template<typename Src, typename Dst>
-        std::vector<Dst> materialize_input(const Src* data, uint64_t count) {
-            std::vector<Dst> result(static_cast<size_t>(count));
-            for (uint64_t row = 0; row < count; row++) {
-                result[static_cast<size_t>(row)] = static_cast<Dst>(data[row]);
-            }
-            return result;
-        }
-
         std::vector<cl_uint> to_opencl_group_ids(const uint32_t* group_ids, uint64_t count) {
             std::vector<cl_uint> result(static_cast<size_t>(count));
             for (uint64_t row = 0; row < count; row++) {
@@ -41,81 +32,6 @@ namespace components::operators::aggregate::gpu {
 
             has_mask = 0;
             return std::vector<cl_ulong>(1, std::numeric_limits<cl_ulong>::max());
-        }
-
-        enum class gpu_domain_t
-        {
-            signed_integer,
-            unsigned_integer,
-            floating_point,
-            unsupported,
-        };
-
-        gpu_domain_t detect_gpu_domain(types::logical_type type) {
-            switch (type) {
-                case types::logical_type::TINYINT:
-                case types::logical_type::SMALLINT:
-                case types::logical_type::INTEGER:
-                case types::logical_type::BIGINT:
-                    return gpu_domain_t::signed_integer;
-                case types::logical_type::UTINYINT:
-                case types::logical_type::USMALLINT:
-                case types::logical_type::UINTEGER:
-                case types::logical_type::UBIGINT:
-                    return gpu_domain_t::unsigned_integer;
-                case types::logical_type::FLOAT:
-                case types::logical_type::DOUBLE:
-                    return gpu_domain_t::floating_point;
-                default:
-                    return gpu_domain_t::unsupported;
-            }
-        }
-
-        std::vector<cl_long> materialize_signed_input(const vector::vector_t& vec, uint64_t count, bool& ok) {
-            ok = true;
-            switch (vec.type().type()) {
-                case types::logical_type::TINYINT:
-                    return materialize_input<int8_t, cl_long>(vec.data<int8_t>(), count);
-                case types::logical_type::SMALLINT:
-                    return materialize_input<int16_t, cl_long>(vec.data<int16_t>(), count);
-                case types::logical_type::INTEGER:
-                    return materialize_input<int32_t, cl_long>(vec.data<int32_t>(), count);
-                case types::logical_type::BIGINT:
-                    return materialize_input<int64_t, cl_long>(vec.data<int64_t>(), count);
-                default:
-                    ok = false;
-                    return {};
-            }
-        }
-
-        std::vector<cl_ulong> materialize_unsigned_input(const vector::vector_t& vec, uint64_t count, bool& ok) {
-            ok = true;
-            switch (vec.type().type()) {
-                case types::logical_type::UTINYINT:
-                    return materialize_input<uint8_t, cl_ulong>(vec.data<uint8_t>(), count);
-                case types::logical_type::USMALLINT:
-                    return materialize_input<uint16_t, cl_ulong>(vec.data<uint16_t>(), count);
-                case types::logical_type::UINTEGER:
-                    return materialize_input<uint32_t, cl_ulong>(vec.data<uint32_t>(), count);
-                case types::logical_type::UBIGINT:
-                    return materialize_input<uint64_t, cl_ulong>(vec.data<uint64_t>(), count);
-                default:
-                    ok = false;
-                    return {};
-            }
-        }
-
-        std::vector<cl_double> materialize_floating_input(const vector::vector_t& vec, uint64_t count, bool& ok) {
-            ok = true;
-            switch (vec.type().type()) {
-                case types::logical_type::FLOAT:
-                    return materialize_input<float, cl_double>(vec.data<float>(), count);
-                case types::logical_type::DOUBLE:
-                    return materialize_input<double, cl_double>(vec.data<double>(), count);
-                default:
-                    ok = false;
-                    return {};
-            }
         }
 
         int agg_code_for_opencl(builtin_agg agg) {
@@ -150,6 +66,7 @@ namespace components::operators::aggregate::gpu {
                 states[group].u64 = static_cast<uint64_t>(values[group]);
                 states[group].count = static_cast<uint64_t>(values[group]);
                 states[group].initialized = values[group] > 0;
+                states[group].value_kind = raw_agg_state_t::value_kind_t::unsigned_integer;
             }
         }
 
@@ -160,6 +77,7 @@ namespace components::operators::aggregate::gpu {
                 states[group].i64 = static_cast<int64_t>(values[group]);
                 states[group].count = static_cast<uint64_t>(counts[group]);
                 states[group].initialized = counts[group] > 0;
+                states[group].value_kind = raw_agg_state_t::value_kind_t::signed_integer;
             }
         }
 
@@ -170,6 +88,7 @@ namespace components::operators::aggregate::gpu {
                 states[group].u64 = static_cast<uint64_t>(values[group]);
                 states[group].count = static_cast<uint64_t>(counts[group]);
                 states[group].initialized = counts[group] > 0;
+                states[group].value_kind = raw_agg_state_t::value_kind_t::unsigned_integer;
             }
         }
 
@@ -180,12 +99,25 @@ namespace components::operators::aggregate::gpu {
                 states[group].f64 = std::bit_cast<double>(value_bits[group]);
                 states[group].count = static_cast<uint64_t>(counts[group]);
                 states[group].initialized = counts[group] > 0;
+                states[group].value_kind = raw_agg_state_t::value_kind_t::floating_point;
             }
         }
 
         template<typename T>
         bool set_scalar_arg_typed(opencl_runtime_t& runtime, cl_kernel kernel, cl_uint index, const T& value) {
             return set_scalar_arg(runtime, kernel, index, &value, sizeof(T));
+        }
+
+        template<typename InputValue>
+        device_buffer_t create_input_buffer(opencl_runtime_t& runtime,
+                                            const InputValue* input_values,
+                                            uint64_t count,
+                                            std::string_view label) {
+            return create_device_buffer(runtime,
+                                        cl_mem_read_only | cl_mem_copy_host_ptr,
+                                        input_values,
+                                        sizeof(InputValue) * static_cast<size_t>(count),
+                                        label);
         }
 
         bool run_count_kernel(std::string_view kernel_name,
@@ -274,15 +206,17 @@ namespace components::operators::aggregate::gpu {
             return true;
         }
 
-        template<typename HostValue>
-        bool run_regular_integer_kernel(std::string_view kernel_name,
-                                        std::vector<HostValue>& input_values,
-                                        builtin_agg agg,
-                                        const uint32_t* group_ids,
-                                        uint64_t count,
-                                        const vector::vector_t& vec,
-                                        std::vector<HostValue>& out_values,
-                                        std::vector<cl_ulong>& out_counts) {
+        template<typename InputValue, typename OutputValue>
+        bool run_regular_kernel(std::string_view kernel_name,
+                                const InputValue* input_values,
+                                builtin_agg agg,
+                                const uint32_t* group_ids,
+                                uint64_t count,
+                                const vector::vector_t& vec,
+                                std::vector<OutputValue>& out_values,
+                                std::vector<cl_ulong>& out_counts,
+                                std::string_view input_label,
+                                std::string_view output_label) {
             auto& runtime = opencl_runtime();
             if (!runtime.ready()) {
                 return false;
@@ -295,11 +229,7 @@ namespace components::operators::aggregate::gpu {
             std::lock_guard<std::mutex> guard(runtime.mutex());
             runtime.clear_last_error();
 
-            const auto d_values = create_device_buffer(runtime,
-                                                       cl_mem_read_only | cl_mem_copy_host_ptr,
-                                                       input_values.data(),
-                                                       sizeof(HostValue) * input_values.size(),
-                                                       "input_values");
+            const auto d_values = create_input_buffer(runtime, input_values, count, input_label);
             const auto d_gids = create_device_buffer(runtime,
                                                      cl_mem_read_only | cl_mem_copy_host_ptr,
                                                      gids.data(),
@@ -313,8 +243,8 @@ namespace components::operators::aggregate::gpu {
             auto d_out_values = create_device_buffer(runtime,
                                                      cl_mem_read_write | cl_mem_copy_host_ptr,
                                                      out_values.data(),
-                                                     sizeof(HostValue) * out_values.size(),
-                                                     "output_values");
+                                                     sizeof(OutputValue) * out_values.size(),
+                                                     output_label);
             auto d_out_counts = create_device_buffer(runtime,
                                                      cl_mem_read_write | cl_mem_copy_host_ptr,
                                                      out_counts.data(),
@@ -328,7 +258,7 @@ namespace components::operators::aggregate::gpu {
             const cl_int agg_code = agg_code_for_opencl(agg);
             if (!kernel || agg_code < 0) {
                 if (agg_code < 0) {
-                    runtime.set_last_error("unsupported aggregate kind for OpenCL integer kernel");
+                    runtime.set_last_error("unsupported aggregate kind for OpenCL regular kernel");
                 }
                 return false;
             }
@@ -342,8 +272,8 @@ namespace components::operators::aggregate::gpu {
                 !read_device_buffer(runtime,
                                     d_out_values,
                                     out_values.data(),
-                                    sizeof(HostValue) * out_values.size(),
-                                    "output_values") ||
+                                    sizeof(OutputValue) * out_values.size(),
+                                    output_label) ||
                 !read_device_buffer(runtime,
                                     d_out_counts,
                                     out_counts.data(),
@@ -355,93 +285,15 @@ namespace components::operators::aggregate::gpu {
             return true;
         }
 
-        bool run_float_kernel(std::vector<cl_double>& input_values,
-                              builtin_agg agg,
-                              const uint32_t* group_ids,
-                              uint64_t count,
-                              const vector::vector_t& vec,
-                              std::vector<cl_ulong>& out_value_bits,
-                              std::vector<cl_ulong>& out_counts) {
-            auto& runtime = opencl_runtime();
-            if (!runtime.ready()) {
-                return false;
-            }
-
-            auto gids = to_opencl_group_ids(group_ids, count);
-            cl_int has_mask = 0;
-            auto mask = validity_words(vec, count, has_mask);
-
-            std::lock_guard<std::mutex> guard(runtime.mutex());
-            runtime.clear_last_error();
-
-            const auto d_values = create_device_buffer(runtime,
-                                                       cl_mem_read_only | cl_mem_copy_host_ptr,
-                                                       input_values.data(),
-                                                       sizeof(cl_double) * input_values.size(),
-                                                       "input_values");
-            const auto d_gids = create_device_buffer(runtime,
-                                                     cl_mem_read_only | cl_mem_copy_host_ptr,
-                                                     gids.data(),
-                                                     sizeof(cl_uint) * gids.size(),
-                                                     "group_ids");
-            const auto d_mask = create_device_buffer(runtime,
-                                                     cl_mem_read_only | cl_mem_copy_host_ptr,
-                                                     mask.data(),
-                                                     sizeof(cl_ulong) * mask.size(),
-                                                     "validity_mask");
-            auto d_out_values = create_device_buffer(runtime,
-                                                     cl_mem_read_write | cl_mem_copy_host_ptr,
-                                                     out_value_bits.data(),
-                                                     sizeof(cl_ulong) * out_value_bits.size(),
-                                                     "output_value_bits");
-            auto d_out_counts = create_device_buffer(runtime,
-                                                     cl_mem_read_write | cl_mem_copy_host_ptr,
-                                                     out_counts.data(),
-                                                     sizeof(cl_ulong) * out_counts.size(),
-                                                     "output_counts");
-            if (!d_values || !d_gids || !d_mask || !d_out_values || !d_out_counts) {
-                return false;
-            }
-
-            const cl_kernel kernel = runtime.kernel("agg_float_rows");
-            const cl_int agg_code = agg_code_for_opencl(agg);
-            if (!kernel || agg_code < 0) {
-                if (agg_code < 0) {
-                    runtime.set_last_error("unsupported aggregate kind for OpenCL floating kernel");
-                }
-                return false;
-            }
-
-            const auto rows = static_cast<cl_ulong>(count);
-            if (!set_buffer_arg(runtime, kernel, 0, d_values) || !set_buffer_arg(runtime, kernel, 1, d_gids) ||
-                !set_buffer_arg(runtime, kernel, 2, d_mask) || !set_scalar_arg_typed(runtime, kernel, 3, has_mask) ||
-                !set_scalar_arg_typed(runtime, kernel, 4, rows) || !set_scalar_arg_typed(runtime, kernel, 5, agg_code) ||
-                !set_buffer_arg(runtime, kernel, 6, d_out_values) ||
-                !set_buffer_arg(runtime, kernel, 7, d_out_counts) || !run_1d_kernel(runtime, kernel, count) ||
-                !read_device_buffer(runtime,
-                                    d_out_values,
-                                    out_value_bits.data(),
-                                    sizeof(cl_ulong) * out_value_bits.size(),
-                                    "output_value_bits") ||
-                !read_device_buffer(runtime,
-                                    d_out_counts,
-                                    out_counts.data(),
-                                    sizeof(cl_ulong) * out_counts.size(),
-                                    "output_counts")) {
-                return false;
-            }
-
-            return true;
-        }
-
-        template<typename HostValue>
+        template<typename InputValue>
         bool run_avg_kernel(std::string_view kernel_name,
-                            std::vector<HostValue>& input_values,
+                            const InputValue* input_values,
                             const uint32_t* group_ids,
                             uint64_t count,
                             const vector::vector_t& vec,
                             std::vector<cl_ulong>& out_sum_bits,
-                            std::vector<cl_ulong>& out_counts) {
+                            std::vector<cl_ulong>& out_counts,
+                            std::string_view input_label) {
             auto& runtime = opencl_runtime();
             if (!runtime.ready()) {
                 return false;
@@ -454,11 +306,7 @@ namespace components::operators::aggregate::gpu {
             std::lock_guard<std::mutex> guard(runtime.mutex());
             runtime.clear_last_error();
 
-            const auto d_values = create_device_buffer(runtime,
-                                                       cl_mem_read_only | cl_mem_copy_host_ptr,
-                                                       input_values.data(),
-                                                       sizeof(HostValue) * input_values.size(),
-                                                       "input_values");
+            const auto d_values = create_input_buffer(runtime, input_values, count, input_label);
             const auto d_gids = create_device_buffer(runtime,
                                                      cl_mem_read_only | cl_mem_copy_host_ptr,
                                                      gids.data(),
@@ -509,6 +357,154 @@ namespace components::operators::aggregate::gpu {
             return true;
         }
 
+        template<typename InputValue>
+        bool try_run_signed_aggregate(std::string_view regular_kernel,
+                                      std::string_view avg_kernel,
+                                      builtin_agg agg,
+                                      const InputValue* input_values,
+                                      const uint32_t* group_ids,
+                                      uint64_t count,
+                                      const vector::vector_t& vec,
+                                      std::pmr::vector<raw_agg_state_t>& states) {
+            auto out_counts = make_zero_vector<cl_ulong>(states.size());
+
+            if (agg == builtin_agg::AVG) {
+                auto out_sum_bits = make_float_identity_vector(states.size(), 0.0);
+                if (!run_avg_kernel(avg_kernel,
+                                    input_values,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_sum_bits,
+                                    out_counts,
+                                    "input_values")) {
+                    return false;
+                }
+                fill_float_states(states, out_sum_bits, out_counts);
+                return true;
+            }
+
+            auto out_values = agg == builtin_agg::MIN
+                                  ? make_filled_vector<cl_long>(states.size(), std::numeric_limits<cl_long>::max())
+                              : agg == builtin_agg::MAX
+                                  ? make_filled_vector<cl_long>(states.size(), std::numeric_limits<cl_long>::min())
+                                  : make_zero_vector<cl_long>(states.size());
+
+            if (!run_regular_kernel(regular_kernel,
+                                    input_values,
+                                    agg,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_values,
+                                    out_counts,
+                                    "input_values",
+                                    "output_values")) {
+                return false;
+            }
+
+            fill_signed_states(states, out_values, out_counts);
+            return true;
+        }
+
+        template<typename InputValue>
+        bool try_run_unsigned_aggregate(std::string_view regular_kernel,
+                                        std::string_view avg_kernel,
+                                        builtin_agg agg,
+                                        const InputValue* input_values,
+                                        const uint32_t* group_ids,
+                                        uint64_t count,
+                                        const vector::vector_t& vec,
+                                        std::pmr::vector<raw_agg_state_t>& states) {
+            auto out_counts = make_zero_vector<cl_ulong>(states.size());
+
+            if (agg == builtin_agg::AVG) {
+                auto out_sum_bits = make_float_identity_vector(states.size(), 0.0);
+                if (!run_avg_kernel(avg_kernel,
+                                    input_values,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_sum_bits,
+                                    out_counts,
+                                    "input_values")) {
+                    return false;
+                }
+                fill_float_states(states, out_sum_bits, out_counts);
+                return true;
+            }
+
+            auto out_values = agg == builtin_agg::MIN
+                                  ? make_filled_vector<cl_ulong>(states.size(), std::numeric_limits<cl_ulong>::max())
+                                  : make_zero_vector<cl_ulong>(states.size());
+
+            if (!run_regular_kernel(regular_kernel,
+                                    input_values,
+                                    agg,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_values,
+                                    out_counts,
+                                    "input_values",
+                                    "output_values")) {
+                return false;
+            }
+
+            fill_unsigned_states(states, out_values, out_counts);
+            return true;
+        }
+
+        template<typename InputValue>
+        bool try_run_floating_aggregate(std::string_view regular_kernel,
+                                        std::string_view avg_kernel,
+                                        builtin_agg agg,
+                                        const InputValue* input_values,
+                                        const uint32_t* group_ids,
+                                        uint64_t count,
+                                        const vector::vector_t& vec,
+                                        std::pmr::vector<raw_agg_state_t>& states) {
+            auto out_counts = make_zero_vector<cl_ulong>(states.size());
+
+            if (agg == builtin_agg::AVG) {
+                auto out_sum_bits = make_float_identity_vector(states.size(), 0.0);
+                if (!run_avg_kernel(avg_kernel,
+                                    input_values,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_sum_bits,
+                                    out_counts,
+                                    "input_values")) {
+                    return false;
+                }
+                fill_float_states(states, out_sum_bits, out_counts);
+                return true;
+            }
+
+            auto out_value_bits = agg == builtin_agg::MIN
+                                      ? make_float_identity_vector(states.size(), std::numeric_limits<double>::infinity())
+                                  : agg == builtin_agg::MAX
+                                      ? make_float_identity_vector(states.size(), -std::numeric_limits<double>::infinity())
+                                      : make_float_identity_vector(states.size(), 0.0);
+
+            if (!run_regular_kernel(regular_kernel,
+                                    input_values,
+                                    agg,
+                                    group_ids,
+                                    count,
+                                    vec,
+                                    out_value_bits,
+                                    out_counts,
+                                    "input_values",
+                                    "output_value_bits")) {
+                return false;
+            }
+
+            fill_float_states(states, out_value_bits, out_counts);
+            return true;
+        }
+
     } // namespace
 
     bool try_run_count_star_gpu(const uint32_t* group_ids, uint64_t count, std::pmr::vector<raw_agg_state_t>& states) {
@@ -531,141 +527,102 @@ namespace components::operators::aggregate::gpu {
             return run_count_kernel("agg_count_non_null_rows", group_ids, count, &vec, states);
         }
 
-        const auto domain = detect_gpu_domain(vec.type().type());
-        if (domain == gpu_domain_t::unsupported) {
-            opencl_runtime().set_last_error(
-                fmt::format("unsupported GPU aggregate type {}", static_cast<int>(vec.type().type())));
-            return false;
-        }
-
-        auto out_counts = make_zero_vector<cl_ulong>(states.size());
-
-        if (agg == builtin_agg::AVG) {
-            auto out_sum_bits = make_float_identity_vector(states.size(), 0.0);
-
-            if (domain == gpu_domain_t::signed_integer) {
-                bool ok = false;
-                auto input_values = materialize_signed_input(vec, count, ok);
-                if (!ok) {
-                    return false;
-                }
-                if (!run_avg_kernel("agg_signed_avg_rows",
-                                    input_values,
-                                    group_ids,
-                                    count,
-                                    vec,
-                                    out_sum_bits,
-                                    out_counts)) {
-                    return false;
-                }
-            } else if (domain == gpu_domain_t::unsigned_integer) {
-                bool ok = false;
-                auto input_values = materialize_unsigned_input(vec, count, ok);
-                if (!ok) {
-                    return false;
-                }
-                if (!run_avg_kernel("agg_unsigned_avg_rows",
-                                    input_values,
-                                    group_ids,
-                                    count,
-                                    vec,
-                                    out_sum_bits,
-                                    out_counts)) {
-                    return false;
-                }
-            } else {
-                bool ok = false;
-                auto input_values = materialize_floating_input(vec, count, ok);
-                if (!ok) {
-                    return false;
-                }
-                if (!run_avg_kernel("agg_float_avg_rows",
-                                    input_values,
-                                    group_ids,
-                                    count,
-                                    vec,
-                                    out_sum_bits,
-                                    out_counts)) {
-                    return false;
-                }
-            }
-
-            fill_float_states(states, out_sum_bits, out_counts);
-            return true;
-        }
-
-        if (domain == gpu_domain_t::signed_integer) {
-            bool ok = false;
-            auto input_values = materialize_signed_input(vec, count, ok);
-            if (!ok) {
+        switch (vec.type().type()) {
+            case types::logical_type::TINYINT:
+                return try_run_signed_aggregate("agg_i8_rows",
+                                                "agg_i8_avg_rows",
+                                                agg,
+                                                vec.data<int8_t>(),
+                                                group_ids,
+                                                count,
+                                                vec,
+                                                states);
+            case types::logical_type::SMALLINT:
+                return try_run_signed_aggregate("agg_i16_rows",
+                                                "agg_i16_avg_rows",
+                                                agg,
+                                                vec.data<int16_t>(),
+                                                group_ids,
+                                                count,
+                                                vec,
+                                                states);
+            case types::logical_type::INTEGER:
+                return try_run_signed_aggregate("agg_i32_rows",
+                                                "agg_i32_avg_rows",
+                                                agg,
+                                                vec.data<int32_t>(),
+                                                group_ids,
+                                                count,
+                                                vec,
+                                                states);
+            case types::logical_type::BIGINT:
+                return try_run_signed_aggregate("agg_i64_rows",
+                                                "agg_i64_avg_rows",
+                                                agg,
+                                                vec.data<int64_t>(),
+                                                group_ids,
+                                                count,
+                                                vec,
+                                                states);
+            case types::logical_type::UTINYINT:
+                return try_run_unsigned_aggregate("agg_u8_rows",
+                                                  "agg_u8_avg_rows",
+                                                  agg,
+                                                  vec.data<uint8_t>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            case types::logical_type::USMALLINT:
+                return try_run_unsigned_aggregate("agg_u16_rows",
+                                                  "agg_u16_avg_rows",
+                                                  agg,
+                                                  vec.data<uint16_t>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            case types::logical_type::UINTEGER:
+                return try_run_unsigned_aggregate("agg_u32_rows",
+                                                  "agg_u32_avg_rows",
+                                                  agg,
+                                                  vec.data<uint32_t>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            case types::logical_type::UBIGINT:
+                return try_run_unsigned_aggregate("agg_u64_rows",
+                                                  "agg_u64_avg_rows",
+                                                  agg,
+                                                  vec.data<uint64_t>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            case types::logical_type::FLOAT:
+                return try_run_floating_aggregate("agg_f32_rows",
+                                                  "agg_f32_avg_rows",
+                                                  agg,
+                                                  vec.data<float>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            case types::logical_type::DOUBLE:
+                return try_run_floating_aggregate("agg_f64_rows",
+                                                  "agg_f64_avg_rows",
+                                                  agg,
+                                                  vec.data<double>(),
+                                                  group_ids,
+                                                  count,
+                                                  vec,
+                                                  states);
+            default:
+                opencl_runtime().set_last_error(
+                    fmt::format("unsupported GPU aggregate type {}", static_cast<int>(vec.type().type())));
                 return false;
-            }
-
-            auto out_values = agg == builtin_agg::MIN
-                                  ? make_filled_vector<cl_long>(states.size(), std::numeric_limits<cl_long>::max())
-                              : agg == builtin_agg::MAX
-                                  ? make_filled_vector<cl_long>(states.size(), std::numeric_limits<cl_long>::min())
-                                  : make_zero_vector<cl_long>(states.size());
-
-            if (!run_regular_integer_kernel("agg_signed_rows",
-                                            input_values,
-                                            agg,
-                                            group_ids,
-                                            count,
-                                            vec,
-                                            out_values,
-                                            out_counts)) {
-                return false;
-            }
-
-            fill_signed_states(states, out_values, out_counts);
-            return true;
         }
-
-        if (domain == gpu_domain_t::unsigned_integer) {
-            bool ok = false;
-            auto input_values = materialize_unsigned_input(vec, count, ok);
-            if (!ok) {
-                return false;
-            }
-
-            auto out_values = agg == builtin_agg::MIN
-                                  ? make_filled_vector<cl_ulong>(states.size(), std::numeric_limits<cl_ulong>::max())
-                                  : make_zero_vector<cl_ulong>(states.size());
-
-            if (!run_regular_integer_kernel("agg_unsigned_rows",
-                                            input_values,
-                                            agg,
-                                            group_ids,
-                                            count,
-                                            vec,
-                                            out_values,
-                                            out_counts)) {
-                return false;
-            }
-
-            fill_unsigned_states(states, out_values, out_counts);
-            return true;
-        }
-
-        bool ok = false;
-        auto input_values = materialize_floating_input(vec, count, ok);
-        if (!ok) {
-            return false;
-        }
-
-        auto out_value_bits = agg == builtin_agg::MIN
-                                  ? make_float_identity_vector(states.size(), std::numeric_limits<double>::infinity())
-                              : agg == builtin_agg::MAX
-                                  ? make_float_identity_vector(states.size(), -std::numeric_limits<double>::infinity())
-                                  : make_float_identity_vector(states.size(), 0.0);
-
-        if (!run_float_kernel(input_values, agg, group_ids, count, vec, out_value_bits, out_counts)) {
-            return false;
-        }
-
-        fill_float_states(states, out_value_bits, out_counts);
-        return true;
     }
 
 #endif

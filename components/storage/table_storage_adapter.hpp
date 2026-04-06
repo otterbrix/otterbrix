@@ -65,14 +65,21 @@ namespace components::storage {
                             const table::table_filter_t* filter,
                             int limit,
                             table::transaction_data txn,
-                            size_t column_limit) override {
-            fprintf(stderr, "[adapter::scan_projected] output.cap=%zu col_limit=%zu table_cols=%zu\n",
-                    static_cast<size_t>(output.capacity()), column_limit, table_.column_count());
-            size_t n = std::min(column_limit, table_.column_count());
+                            const std::vector<size_t>& projected_cols) override {
             std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(n);
-            for (size_t i = 0; i < n; i++) {
-                column_indices.emplace_back(static_cast<int64_t>(i));
+            if (projected_cols.empty()) {
+                // Scan all columns
+                column_indices.reserve(table_.column_count());
+                for (size_t i = 0; i < table_.column_count(); i++) {
+                    column_indices.emplace_back(static_cast<int64_t>(i));
+                }
+            } else {
+                column_indices.reserve(projected_cols.size());
+                for (size_t idx : projected_cols) {
+                    if (idx < table_.column_count()) {
+                        column_indices.emplace_back(static_cast<int64_t>(idx));
+                    }
+                }
             }
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);

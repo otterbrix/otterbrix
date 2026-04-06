@@ -9,6 +9,11 @@ namespace components::vector {
         data_chunk_t(std::pmr::memory_resource* resource,
                      const std::pmr::vector<types::complex_logical_type>& types,
                      uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
+        // Sparse constructor: allocates buffers only for projected_cols, others are placeholders.
+        data_chunk_t(std::pmr::memory_resource* resource,
+                     const std::pmr::vector<types::complex_logical_type>& all_types,
+                     const std::vector<size_t>& projected_cols,
+                     uint64_t capacity);
         data_chunk_t(const data_chunk_t&) = delete;
         data_chunk_t& operator=(const data_chunk_t&) = delete;
         data_chunk_t(data_chunk_t&&) = default;

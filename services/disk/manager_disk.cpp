@@ -1054,7 +1054,7 @@ namespace services::disk {
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan_projected(session_id_t /*session*/,
                                            collection_full_name_t name,
-                                           size_t column_limit,
+                                           std::vector<size_t> projected_cols,
                                            std::unique_ptr<components::table::table_filter_t> filter,
                                            int limit,
                                            components::table::transaction_data txn) {
@@ -1063,20 +1063,17 @@ namespace services::disk {
             co_return nullptr;
         }
         auto all_types = s->types();
-        size_t n = (column_limit > 0 && column_limit < all_types.size()) ? column_limit : all_types.size();
 
-        // Build projected type list
-        std::pmr::vector<components::types::complex_logical_type> proj_types(resource());
-        proj_types.reserve(n);
-        for (size_t i = 0; i < n; i++) {
-            proj_types.push_back(all_types[i]);
-        }
-
-        // Pre-allocate to total_rows + 1 to avoid triggering a resize at the boundary
+        // Pre-allocate sparse full-width chunk: only projected columns get buffers
         uint64_t total = s->total_rows();
         uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
-        s->scan_projected(*result, filter.get(), limit, txn, n);
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), all_types, pre_cap);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), all_types, projected_cols, pre_cap);
+        }
+        s->scan_projected(*result, filter.get(), limit, txn, projected_cols);
 
         co_return std::move(result);
     }
@@ -1645,7 +1642,7 @@ namespace services::disk {
     manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_empty_t::storage_scan_projected(session_id_t /*session*/,
                                                  collection_full_name_t name,
-                                                 size_t column_limit,
+                                                 std::vector<size_t> projected_cols,
                                                  std::unique_ptr<components::table::table_filter_t> filter,
                                                  int limit,
                                                  components::table::transaction_data txn) {
@@ -1654,19 +1651,16 @@ namespace services::disk {
             co_return nullptr;
         }
         auto all_types = s->types();
-        size_t n = (column_limit > 0 && column_limit < all_types.size()) ? column_limit : all_types.size();
 
-        std::pmr::vector<components::types::complex_logical_type> proj_types(resource());
-        proj_types.reserve(n);
-        for (size_t i = 0; i < n; i++) {
-            proj_types.push_back(all_types[i]);
-        }
-
-        // Pre-allocate to total_rows + 1 to avoid triggering a resize at the boundary
         uint64_t total = s->total_rows();
         uint64_t pre_cap = (limit < 0) ? total + 1 : components::vector::DEFAULT_VECTOR_CAPACITY;
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), proj_types, pre_cap);
-        s->scan_projected(*result, filter.get(), limit, txn, n);
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), all_types, pre_cap);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), all_types, projected_cols, pre_cap);
+        }
+        s->scan_projected(*result, filter.get(), limit, txn, projected_cols);
 
         co_return std::move(result);
     }

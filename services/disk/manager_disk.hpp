@@ -200,7 +200,7 @@ namespace services::disk {
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_projected(session_id_t session,
                                collection_full_name_t name,
-                               size_t column_limit,
+                               std::vector<size_t> projected_cols,
                                std::unique_ptr<components::table::table_filter_t> filter,
                                int limit,
                                components::table::transaction_data txn);
@@ -490,7 +490,7 @@ namespace services::disk {
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_projected(session_id_t session,
                                collection_full_name_t name,
-                               size_t column_limit,
+                               std::vector<size_t> projected_cols,
                                std::unique_ptr<components::table::table_filter_t> filter,
                                int limit,
                                components::table::transaction_data txn);

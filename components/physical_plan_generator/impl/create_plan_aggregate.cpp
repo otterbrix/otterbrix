@@ -1,6 +1,7 @@
 #include "create_plan_aggregate.hpp"
 #include "create_plan_match.hpp"
 
+#include <algorithm>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -21,81 +22,69 @@ namespace services::planner::impl {
         using AExpr = components::expressions::aggregate_expression_t;
         using KeyT  = components::expressions::key_t;
 
-        // Collect the max column index referenced in a compare expression tree (WHERE clause).
-        // Returns SIZE_MAX if any wildcard is found or expression is not a simple column reference.
-        size_t collect_max_from_compare(const components::expressions::compare_expression_ptr& expr) {
+        // Collect column indices from a compare expression tree (WHERE clause) into a set.
+        // Returns false if any wildcard/unresolved reference is found (projection not safe).
+        bool collect_cols_from_compare(const components::expressions::compare_expression_ptr& expr,
+                                       std::vector<size_t>& cols) {
             using namespace components::expressions;
-            if (!expr) return SIZE_MAX;
+            if (!expr) return true;
 
             if (is_union_compare_condition(expr->type())) {
-                size_t max_idx = 0;
-                bool found = false;
                 for (const auto& child : expr->children()) {
                     const auto& ce = reinterpret_cast<const compare_expression_ptr&>(child);
-                    size_t m = collect_max_from_compare(ce);
-                    if (m == SIZE_MAX) return SIZE_MAX;
-                    max_idx = std::max(max_idx, m);
-                    found = true;
+                    if (!collect_cols_from_compare(ce, cols)) return false;
                 }
-                return found ? max_idx : SIZE_MAX;
+                return true;
             }
 
-            // Leaf: extract column index from whichever side holds key_t
             using components::expressions::key_t;
             using components::expressions::param_storage;
-            auto extract = [](const param_storage& side) -> size_t {
-                if (!std::holds_alternative<key_t>(side)) return SIZE_MAX;
+            auto extract = [&](const param_storage& side) -> bool {
+                if (!std::holds_alternative<key_t>(side)) return true;
                 const auto& path = std::get<key_t>(side).path();
-                if (path.empty()) return SIZE_MAX;
+                if (path.empty()) return true;
                 size_t idx = path[0];
-                return (idx == SIZE_MAX) ? SIZE_MAX : idx;
+                if (idx == SIZE_MAX) return false; // wildcard
+                cols.push_back(idx);
+                return true;
             };
 
-            size_t left_idx  = extract(expr->left());
-            size_t right_idx = extract(expr->right());
-
-            // Return the max of whichever sides are valid column refs
-            if (left_idx != SIZE_MAX && right_idx != SIZE_MAX) return std::max(left_idx, right_idx);
-            if (left_idx  != SIZE_MAX) return left_idx;
-            if (right_idx != SIZE_MAX) return right_idx;
-            return SIZE_MAX;
+            return extract(expr->left()) && extract(expr->right());
         }
 
-        // Collect the max column index (0-based) referenced by all expressions in a node.
-        // Returns SIZE_MAX if no column references or any wildcard reference found.
-        size_t collect_max_column_index(const components::logical_plan::node_ptr& node) {
+        // Collect all column indices referenced by expressions in a node into a set.
+        // Returns false if any wildcard/unresolved reference is found.
+        bool collect_cols_from_node(const components::logical_plan::node_ptr& node,
+                                    std::vector<size_t>& cols) {
             using components::expressions::expression_group;
-            size_t max_idx = 0;
-            bool found_any = false;
 
             auto visit_path = [&](const KeyT& key) -> bool {
-                for (size_t idx : key.path()) {
-                    if (idx == SIZE_MAX) return false; // wildcard → can't project
-                    max_idx = std::max(max_idx, idx);
-                    found_any = true;
-                }
+                if (key.path().empty()) return true;
+                size_t idx = key.path()[0];
+                if (idx == SIZE_MAX) return false;
+                cols.push_back(idx);
                 return true;
             };
 
             for (const auto& expr : node->expressions()) {
                 if (expr->group() == expression_group::scalar) {
                     const auto* se = static_cast<const SExpr*>(expr.get());
-                    if (!visit_path(se->key())) return SIZE_MAX;
+                    if (!visit_path(se->key())) return false;
                     for (const auto& p : se->params()) {
                         if (std::holds_alternative<KeyT>(p)) {
-                            if (!visit_path(std::get<KeyT>(p))) return SIZE_MAX;
+                            if (!visit_path(std::get<KeyT>(p))) return false;
                         }
                     }
                 } else if (expr->group() == expression_group::aggregate) {
                     const auto* ae = static_cast<const AExpr*>(expr.get());
                     for (const auto& p : ae->params()) {
                         if (std::holds_alternative<KeyT>(p)) {
-                            if (!visit_path(std::get<KeyT>(p))) return SIZE_MAX;
+                            if (!visit_path(std::get<KeyT>(p))) return false;
                         }
                     }
                 }
             }
-            return found_any ? max_idx : SIZE_MAX;
+            return true;
         }
     } // namespace
 
@@ -126,44 +115,51 @@ namespace services::planner::impl {
         }
         auto pre_sort_limit = has_sort ? components::logical_plan::limit_t::unlimit() : limit;
 
-        // Compute column projection limit: max column index referenced by GROUP BY + SELECT + WHERE.
-        // column_limit = 0 means no projection (read all columns).
-        // We use a contiguous prefix [0..column_limit-1] to avoid remapping in downstream operators.
-        size_t column_limit = 0;
+        // Compute exact set of column indices needed by GROUP BY + WHERE.
+        // Column projection is only safe when a GROUP BY is present — in that case we know
+        // exactly which columns are needed in the output (group keys + aggregated fields).
+        // For plain SELECT * / find queries (no GROUP BY), we must read all columns so that
+        // every field is available to the caller.  Empty projected_cols → no projection.
+        std::vector<size_t> projected_cols;
         {
-            size_t max_idx = 0;
-            bool can_project = true;
-
-            // GROUP BY expressions
+            bool has_group = false;
             for (const auto& child : node->children()) {
-                if (child->type() == node_type::group_t) {
-                    size_t m = collect_max_column_index(child);
-                    if (m == SIZE_MAX) { can_project = false; break; }
-                    max_idx = std::max(max_idx, m);
-                    break;
-                }
+                if (child->type() == node_type::group_t) { has_group = true; break; }
             }
 
-            // WHERE (match) expressions
-            if (can_project) {
+            if (has_group) {
+                std::vector<size_t> raw_cols;
+                bool can_project = true;
+
+                // GROUP BY expressions
                 for (const auto& child : node->children()) {
-                    if (child->type() == node_type::match_t) {
-                        for (const auto& expr : child->expressions()) {
-                            const auto& ce = reinterpret_cast<const components::expressions::compare_expression_ptr&>(expr);
-                            size_t m = collect_max_from_compare(ce);
-                            if (m == SIZE_MAX) { can_project = false; break; }
-                            max_idx = std::max(max_idx, m);
-                        }
+                    if (child->type() == node_type::group_t) {
+                        if (!collect_cols_from_node(child, raw_cols)) { can_project = false; break; }
                         break;
                     }
                 }
-            }
 
-            if (can_project && max_idx > 0) {
-                column_limit = max_idx + 1;
+                // WHERE (match) expressions
+                if (can_project) {
+                    for (const auto& child : node->children()) {
+                        if (child->type() == node_type::match_t) {
+                            for (const auto& expr : child->expressions()) {
+                                const auto& ce =
+                                    reinterpret_cast<const components::expressions::compare_expression_ptr&>(expr);
+                                if (!collect_cols_from_compare(ce, raw_cols)) { can_project = false; break; }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if (can_project && !raw_cols.empty()) {
+                    // Deduplicate and sort
+                    std::sort(raw_cols.begin(), raw_cols.end());
+                    raw_cols.erase(std::unique(raw_cols.begin(), raw_cols.end()), raw_cols.end());
+                    projected_cols = std::move(raw_cols);
+                }
             }
-            fprintf(stderr, "[create_plan_aggregate] column_limit=%zu can_project=%d\n",
-                    column_limit, static_cast<int>(can_project));
         }
 
         // Build operator chain directly: scan/child → match → group → sort
@@ -177,7 +173,7 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    match_op = create_plan_match(context, child, pre_sort_limit, column_limit);
+                    match_op = create_plan_match(context, child, pre_sort_limit, projected_cols);
                     break;
                 case node_type::group_t:
                     group_op = create_plan(context, function_registry, child, pre_sort_limit, params);
@@ -207,7 +203,7 @@ namespace services::planner::impl {
         } else {
             // Pure GROUP BY with no WHERE: use transfer_scan with column projection.
             executor = static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, column_limit)));
+                new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, projected_cols)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));

@@ -37,13 +37,14 @@ namespace components::storage {
             scan(output, filter, limit);
         }
 
-        // Scan only the first column_limit columns (column projection).
+        // Scan only the specified columns (column projection).
+        // projected_cols: indices into the schema; empty means scan all columns.
         // Default falls back to full scan; override for efficient projection.
         virtual void scan_projected(vector::data_chunk_t& output,
                                     const table::table_filter_t* filter,
                                     int limit,
                                     table::transaction_data txn,
-                                    size_t /*column_limit*/) {
+                                    const std::vector<size_t>& /*projected_cols*/) {
             scan(output, filter, limit, txn);
         }
 

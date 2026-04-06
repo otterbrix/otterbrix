@@ -17,6 +17,31 @@ namespace components::vector {
         }
     }
 
+    data_chunk_t::data_chunk_t(std::pmr::memory_resource* resource,
+                               const std::pmr::vector<types::complex_logical_type>& all_types,
+                               const std::vector<size_t>& projected_cols,
+                               uint64_t capacity)
+        : resource_(resource)
+        , capacity_(capacity)
+        , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        // Build a fast lookup: which column indices need real buffers
+        std::vector<bool> needed(all_types.size(), false);
+        for (size_t idx : projected_cols) {
+            if (idx < all_types.size()) {
+                needed[idx] = true;
+            }
+        }
+        data.reserve(all_types.size());
+        for (size_t i = 0; i < all_types.size(); i++) {
+            if (needed[i]) {
+                data.emplace_back(resource_, all_types[i], capacity_);
+            } else {
+                // Placeholder: type info only, no buffer allocation
+                data.emplace_back(resource_, all_types[i], false, false, 0);
+            }
+        }
+    }
+
     uint64_t data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;
         auto cardinality = size();
@@ -121,11 +146,18 @@ namespace components::vector {
         }
     }
 
+    // A sparse placeholder vector has no data buffer AND no auxiliary buffer.
+    // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null.)
+    static bool is_sparse_placeholder(const vector_t& v) noexcept {
+        return v.data() == nullptr && v.auxiliary() == nullptr;
+    }
+
     void data_chunk_t::copy(data_chunk_t& other, uint64_t offset) const {
         assert(column_count() == other.column_count());
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            if (is_sparse_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
@@ -141,6 +173,7 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
+            if (is_sparse_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);
         }
@@ -412,6 +445,7 @@ namespace components::vector {
             new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
         }
         for (auto& column : data) {
+            if (is_sparse_placeholder(column)) continue;
             column.resize(capacity_, new_size);
         }
         row_ids.resize(capacity_, new_size);

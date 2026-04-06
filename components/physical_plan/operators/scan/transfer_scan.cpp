@@ -7,11 +7,11 @@ namespace components::operators {
     transfer_scan::transfer_scan(std::pmr::memory_resource* resource,
                                  collection_full_name_t name,
                                  logical_plan::limit_t limit,
-                                 size_t column_limit)
+                                 std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
         , name_(std::move(name))
         , limit_(limit)
-        , column_limit_(column_limit) {}
+        , projected_cols_(std::move(projected_cols)) {}
 
     void transfer_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (name_.empty())
@@ -21,18 +21,13 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> transfer_scan::await_async_and_resume(pipeline::context_t* ctx) {
         int limit_val = limit_.limit();
-
-        fprintf(stderr, "[transfer_scan] column_limit_=%zu name=%s\n",
-                column_limit_, name_.to_string().c_str());
-
         std::unique_ptr<components::vector::data_chunk_t> data;
-        if (column_limit_ > 0) {
-            // Projected scan: only first column_limit_ columns, pre-allocated
+        if (!projected_cols_.empty()) {
             auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_scan_projected,
                                              ctx->session,
                                              name_,
-                                             column_limit_,
+                                             projected_cols_,
                                              std::unique_ptr<table::table_filter_t>(nullptr),
                                              limit_val,
                                              ctx->txn);

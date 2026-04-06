@@ -2,6 +2,7 @@
 
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <vector>
 
 namespace components::operators {
 
@@ -10,7 +11,7 @@ namespace components::operators {
         transfer_scan(std::pmr::memory_resource* resource,
                       collection_full_name_t name,
                       logical_plan::limit_t limit,
-                      size_t column_limit = 0);
+                      std::vector<size_t> projected_cols = {});
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
         const logical_plan::limit_t& limit() const { return limit_; }
@@ -22,7 +23,7 @@ namespace components::operators {
 
         collection_full_name_t name_;
         const logical_plan::limit_t limit_;
-        size_t column_limit_{0};
+        std::vector<size_t> projected_cols_;
     };
 
 } // namespace components::operators

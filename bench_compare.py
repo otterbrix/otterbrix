@@ -11,11 +11,11 @@ import numpy as np
 # ── Данные ───────────────────────────────────────────────────────────────────
 labels = ["Q1", "Q2", "Q3", "Q4", "Q5"]
 
-duckdb    = [75,  306, 262, 241, 211]
-mongodb   = [361, 454, 420,  72,  89]
-otterbrix = [21,  333, 273,  77, 167]
+duckdb    = [3.5,  4.5, 4.6, 8.3, 8.9]
+mongodb   = [0.486,  1.133, 1.498,  0.582, 0.719]
+otterbrix = [0.021,  0.333, 0.273,  0.077, 0.167]
 
-unit  = "ms"
+unit  = "sec"
 title = "Время выполнения запросов (500к документов)"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -24,11 +24,11 @@ width = 0.25
 
 fig, ax = plt.subplots(figsize=(10, 5))
 
-bars_duckdb    = ax.bar(x - width, duckdb,    width, label="duckdb (JSON)",
+bars_duckdb    = ax.bar(x - width, duckdb,    width, label="old",
                         color="#4C72B0", edgecolor="white", linewidth=0.8)
-bars_mongodb   = ax.bar(x,         mongodb,   width, label="mongodb",
+bars_mongodb   = ax.bar(x,         mongodb,   width, label="new",
                         color="#DD8452", edgecolor="white", linewidth=0.8)
-bars_otterbrix = ax.bar(x + width, otterbrix, width, label="otterbrix",
+bars_otterbrix = ax.bar(x + width, otterbrix, width, label="new optimized",
                         color="#55A868", edgecolor="white", linewidth=0.8)
 
 all_vals = duckdb + mongodb + otterbrix

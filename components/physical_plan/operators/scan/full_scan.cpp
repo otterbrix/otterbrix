@@ -94,12 +94,12 @@ namespace components::operators {
                          collection_full_name_t name,
                          const expressions::compare_expression_ptr& expression,
                          logical_plan::limit_t limit,
-                         size_t column_limit)
+                         std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::full_scan)
         , name_(std::move(name))
         , expression_(expression)
         , limit_(limit)
-        , column_limit_(column_limit) {}
+        , projected_cols_(std::move(projected_cols)) {}
 
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (name_.empty())
@@ -130,12 +130,12 @@ namespace components::operators {
         // Scan from storage
         int limit_val = limit_.limit();
         std::unique_ptr<components::vector::data_chunk_t> data;
-        if (column_limit_ > 0) {
+        if (!projected_cols_.empty()) {
             auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_scan_projected,
                                              ctx->session,
                                              name_,
-                                             column_limit_,
+                                             projected_cols_,
                                              std::move(filter),
                                              limit_val,
                                              ctx->txn);

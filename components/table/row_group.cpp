@@ -319,17 +319,20 @@ namespace components::table {
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     const auto& column = column_ids[i];
+                    // Write into the output slot corresponding to the storage column index
+                    // (for row_id column, write into slot i as the caller expects it there).
+                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
                     if (column.is_row_id_column()) {
-                        assert(result.data[i].type().type() == types::logical_type::BIGINT);
-                        result.data[i].sequence(static_cast<int64_t>(start + current_row), 1, count);
+                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
+                        result.data[out_idx].sequence(static_cast<int64_t>(start + current_row), 1, count);
                     } else {
                         auto& col_data = get_column(column);
                         if (TYPE == table_scan_type::REGULAR) {
-                            col_data.scan(state.vector_index, state.column_scans[i], result.data[i]);
+                            col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                         } else {
                             col_data.scan_committed(state.vector_index,
                                                     state.column_scans[i],
-                                                    result.data[i],
+                                                    result.data[out_idx],
                                                     ALLOW_UPDATES);
                         }
                     }
@@ -365,10 +368,11 @@ namespace components::table {
                 }
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     auto& column = column_ids[i];
+                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
                     if (column.is_row_id_column()) {
-                        assert(result.data[i].type().type() == types::logical_type::BIGINT);
-                        result.data[i].set_vector_type(vector::vector_type::FLAT);
-                        auto result_data = result.data[i].data<int64_t>();
+                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
+                        result.data[out_idx].set_vector_type(vector::vector_type::FLAT);
+                        auto result_data = result.data[out_idx].data<int64_t>();
                         for (size_t indexing_idx = 0; indexing_idx < approved_tuple_count; indexing_idx++) {
                             result_data[indexing_idx] =
                                 start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
@@ -376,7 +380,7 @@ namespace components::table {
                     } else {
                         auto& col_data = get_column(column);
                         if (TYPE == table_scan_type::REGULAR) {
-                            vector::vector_t select_vector(result.resource(), result.data[i].type(), max_count);
+                            vector::vector_t select_vector(result.resource(), result.data[out_idx].type(), max_count);
                             auto prev_offset = state.column_scans[i].result_offset;
                             state.column_scans[i].result_offset = 0;
                             col_data.select(state.vector_index,
@@ -386,14 +390,14 @@ namespace components::table {
                                             approved_tuple_count);
                             state.column_scans[i].result_offset = prev_offset;
                             vector::vector_ops::copy(select_vector,
-                                                     result.data[i],
+                                                     result.data[out_idx],
                                                      approved_tuple_count,
                                                      0,
                                                      state.column_scans[i].result_offset);
                         } else {
                             col_data.select_committed(state.vector_index,
                                                       state.column_scans[i],
-                                                      result.data[i],
+                                                      result.data[out_idx],
                                                       indexing,
                                                       approved_tuple_count,
                                                       ALLOW_UPDATES);

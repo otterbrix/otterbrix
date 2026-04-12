@@ -54,33 +54,54 @@ namespace services::planner::impl {
 
         // Collect all column indices referenced by expressions in a node into a set.
         // Returns false if any wildcard/unresolved reference is found.
-        bool collect_cols_from_node(const components::logical_plan::node_ptr& node,
-                                    std::vector<size_t>& cols) {
-            using components::expressions::expression_group;
 
-            auto visit_path = [&](const KeyT& key) -> bool {
+        // Forward declaration for mutual recursion
+        bool collect_cols_from_param(const components::expressions::param_storage& p,
+                                     std::vector<size_t>& cols);
+
+        bool collect_cols_from_param(const components::expressions::param_storage& p,
+                                     std::vector<size_t>& cols) {
+            using components::expressions::expression_group;
+            if (std::holds_alternative<KeyT>(p)) {
+                const auto& key = std::get<KeyT>(p);
                 if (key.path().empty()) return true;
                 size_t idx = key.path()[0];
                 if (idx == SIZE_MAX) return false;
                 cols.push_back(idx);
-                return true;
-            };
+            } else if (std::holds_alternative<components::expressions::expression_ptr>(p)) {
+                const auto& sub = std::get<components::expressions::expression_ptr>(p);
+                if (sub->group() == expression_group::scalar) {
+                    const auto* se = static_cast<const SExpr*>(sub.get());
+                    for (const auto& sp : se->params()) {
+                        if (!collect_cols_from_param(sp, cols)) return false;
+                    }
+                } else if (sub->group() == expression_group::compare) {
+                    const auto& ce = reinterpret_cast<const components::expressions::compare_expression_ptr&>(sub);
+                    if (!collect_cols_from_compare(ce, cols)) return false;
+                }
+            }
+            return true;
+        }
+
+        bool collect_cols_from_node(const components::logical_plan::node_ptr& node,
+                                    std::vector<size_t>& cols) {
+            using components::expressions::expression_group;
 
             for (const auto& expr : node->expressions()) {
                 if (expr->group() == expression_group::scalar) {
                     const auto* se = static_cast<const SExpr*>(expr.get());
-                    if (!visit_path(se->key())) return false;
+                    if (!se->key().path().empty()) {
+                        size_t idx = se->key().path()[0];
+                        if (idx == SIZE_MAX) return false;
+                        cols.push_back(idx);
+                    }
                     for (const auto& p : se->params()) {
-                        if (std::holds_alternative<KeyT>(p)) {
-                            if (!visit_path(std::get<KeyT>(p))) return false;
-                        }
+                        if (!collect_cols_from_param(p, cols)) return false;
                     }
                 } else if (expr->group() == expression_group::aggregate) {
                     const auto* ae = static_cast<const AExpr*>(expr.get());
                     for (const auto& p : ae->params()) {
-                        if (std::holds_alternative<KeyT>(p)) {
-                            if (!visit_path(std::get<KeyT>(p))) return false;
-                        }
+                        if (!collect_cols_from_param(p, cols)) return false;
                     }
                 }
             }

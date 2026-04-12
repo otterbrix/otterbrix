@@ -28,8 +28,6 @@ bars_duckdb    = ax.bar(x - width, duckdb,    width, label="old",
                         color="#4C72B0", edgecolor="white", linewidth=0.8)
 bars_mongodb   = ax.bar(x,         mongodb,   width, label="new",
                         color="#DD8452", edgecolor="white", linewidth=0.8)
-bars_otterbrix = ax.bar(x + width, otterbrix, width, label="new optimized",
-                        color="#55A868", edgecolor="white", linewidth=0.8)
 
 all_vals = duckdb + mongodb + otterbrix
 y_max = max(all_vals)
@@ -38,7 +36,6 @@ y_max = max(all_vals)
 for bars, vals, color in [
     (bars_duckdb,    duckdb,    "#4C72B0"),
     (bars_mongodb,   mongodb,   "#DD8452"),
-    (bars_otterbrix, otterbrix, "#55A868"),
 ]:
     for bar, val in zip(bars, vals):
         ax.text(bar.get_x() + bar.get_width() / 2,

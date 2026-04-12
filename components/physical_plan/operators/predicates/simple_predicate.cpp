@@ -1,6 +1,7 @@
 #include "simple_predicate.hpp"
 #include "utils.hpp"
 
+#include <optional>
 #include <regex>
 
 namespace components::operators::predicates {
@@ -33,6 +34,72 @@ namespace components::operators::predicates {
         bool evaluate_comp(const types::logical_value_t& left,
                            const types::logical_value_t& right) requires(std::is_same_v<COMP, regex<>>) {
             return evaluate_comp<COMP>(left.value<std::string_view>(), right.value<std::string_view>());
+        }
+
+        // Typed fast path: compare a flat column directly against a constant, no boxing.
+        // Returns nullopt if the pattern doesn't match (falls back to boxing path).
+        template<typename COMP, typename T>
+        simple_predicate::check_function_t make_typed_comparator(size_t col_idx, T constant) {
+            return [col_idx, constant](const vector::data_chunk_t& chunk_left,
+                                       const vector::data_chunk_t&,
+                                       size_t index_left,
+                                       size_t) {
+                const auto& vec = chunk_left.data[col_idx];
+                if (!vec.validity().row_is_valid(index_left)) return false;
+                return COMP{}(vec.data<T>()[index_left], constant);
+            };
+        }
+
+        // String specialization: store std::string, compare as string_view
+        template<typename COMP>
+        simple_predicate::check_function_t make_typed_comparator_str(size_t col_idx, std::string constant) {
+            return [col_idx, constant = std::move(constant)](const vector::data_chunk_t& chunk_left,
+                                                              const vector::data_chunk_t&,
+                                                              size_t index_left,
+                                                              size_t) {
+                const auto& vec = chunk_left.data[col_idx];
+                if (!vec.validity().row_is_valid(index_left)) return false;
+                return COMP{}(vec.data<std::string_view>()[index_left], std::string_view(constant));
+            };
+        }
+
+        template<typename COMP>
+        std::optional<simple_predicate::check_function_t>
+        try_typed_comparator(const expressions::compare_expression_ptr& expr,
+                             const std::pmr::vector<types::complex_logical_type>& types_left,
+                             const logical_plan::storage_parameters* parameters) {
+            if (!parameters) return std::nullopt;
+            // Pattern: left = key_t, right = parameter_id_t (constant)
+            if (!std::holds_alternative<expressions::key_t>(expr->left())) return std::nullopt;
+            if (!std::holds_alternative<core::parameter_id_t>(expr->right())) return std::nullopt;
+
+            const auto& key = std::get<expressions::key_t>(expr->left());
+            if (key.side() != expressions::side_t::left) return std::nullopt;
+            if (key.path().size() != 1) return std::nullopt;
+            size_t col_idx = key.path()[0];
+            if (col_idx >= types_left.size()) return std::nullopt;
+
+            auto id = std::get<core::parameter_id_t>(expr->right());
+            auto it = parameters->parameters.find(id);
+            if (it == parameters->parameters.end()) return std::nullopt;
+            const auto& constant = it->second;
+
+            using PT = types::physical_type;
+            switch (types_left[col_idx].to_physical_type()) {
+                case PT::INT8:   return make_typed_comparator<COMP, int8_t>(col_idx, constant.value<int8_t>());
+                case PT::INT16:  return make_typed_comparator<COMP, int16_t>(col_idx, constant.value<int16_t>());
+                case PT::INT32:  return make_typed_comparator<COMP, int32_t>(col_idx, constant.value<int32_t>());
+                case PT::INT64:  return make_typed_comparator<COMP, int64_t>(col_idx, constant.value<int64_t>());
+                case PT::UINT8:  return make_typed_comparator<COMP, uint8_t>(col_idx, constant.value<uint8_t>());
+                case PT::UINT16: return make_typed_comparator<COMP, uint16_t>(col_idx, constant.value<uint16_t>());
+                case PT::UINT32: return make_typed_comparator<COMP, uint32_t>(col_idx, constant.value<uint32_t>());
+                case PT::UINT64: return make_typed_comparator<COMP, uint64_t>(col_idx, constant.value<uint64_t>());
+                case PT::FLOAT:  return make_typed_comparator<COMP, float>(col_idx, constant.value<float>());
+                case PT::DOUBLE: return make_typed_comparator<COMP, double>(col_idx, constant.value<double>());
+                case PT::STRING:
+                    return make_typed_comparator_str<COMP>(col_idx, std::string(constant.value<std::string_view>()));
+                default: return std::nullopt;
+            }
         }
 
         template<typename COMP>
@@ -118,21 +185,33 @@ namespace components::operators::predicates {
                 return {new simple_predicate(std::move(nested), expr->type())};
             }
             case compare_type::eq:
+                if (auto f = try_typed_comparator<std::equal_to<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {new simple_predicate(
                     make_comparator<std::equal_to<>>(resource, function_registry, expr, parameters))};
             case compare_type::ne:
+                if (auto f = try_typed_comparator<std::not_equal_to<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {new simple_predicate(
                     make_comparator<std::not_equal_to<>>(resource, function_registry, expr, parameters))};
             case compare_type::gt:
+                if (auto f = try_typed_comparator<std::greater<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {new simple_predicate(
                     make_comparator<std::greater<>>(resource, function_registry, expr, parameters))};
             case compare_type::gte:
+                if (auto f = try_typed_comparator<std::greater_equal<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {new simple_predicate(
                     make_comparator<std::greater_equal<>>(resource, function_registry, expr, parameters))};
             case compare_type::lt:
+                if (auto f = try_typed_comparator<std::less<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {
                     new simple_predicate(make_comparator<std::less<>>(resource, function_registry, expr, parameters))};
             case compare_type::lte:
+                if (auto f = try_typed_comparator<std::less_equal<>>(expr, types_left, parameters))
+                    return {new simple_predicate(std::move(*f))};
                 return {new simple_predicate(
                     make_comparator<std::less_equal<>>(resource, function_registry, expr, parameters))};
             case compare_type::regex:

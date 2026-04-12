@@ -42,9 +42,10 @@ namespace components::vector {
         }
     }
 
-    // A sparse placeholder vector has no data buffer AND no auxiliary buffer.
+    // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
     // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null.)
-    static bool is_sparse_placeholder(const vector_t& v) noexcept {
+    // These exist to keep column indices stable when projected_scan skips columns.
+    static bool is_unprojected_placeholder(const vector_t& v) noexcept {
         return v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
@@ -158,7 +159,7 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_sparse_placeholder(data[i])) continue;
+            if (is_unprojected_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
@@ -176,7 +177,7 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_sparse_placeholder(data[i])) continue;
+            if (is_unprojected_placeholder(data[i])) continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);
         }
@@ -451,7 +452,7 @@ namespace components::vector {
             new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
         }
         for (auto& column : data) {
-            if (is_sparse_placeholder(column)) continue;
+            if (is_unprojected_placeholder(column)) continue;
             column.resize(capacity_, new_size);
         }
         row_ids.resize(capacity_, new_size);

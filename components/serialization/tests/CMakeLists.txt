@@ -15,11 +15,11 @@ target_link_libraries(
         otterbrix::types
         otterbrix::test_generaty
         otterbrix::expressions
-        magic_enum::magic_enum
-        msgpackc-cxx
+
         absl::int128
         Boost::boost
         Catch2::Catch2
+        msgpackc-cxx
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

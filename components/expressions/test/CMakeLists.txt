@@ -12,11 +12,11 @@ add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::expressions
-        Catch2::Catch2
-        actor-zeta::actor-zeta
-        magic_enum::magic_enum
-        msgpackc-cxx
+
         absl::int128
+        actor-zeta::actor-zeta
+        Catch2::Catch2
+        msgpackc-cxx
 )
 
 include(CTest)

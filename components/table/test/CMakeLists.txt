@@ -22,9 +22,9 @@ target_link_libraries(
     otterbrix::types
     otterbrix::vector
     otterbrix::session
-    Catch2::Catch2
-    magic_enum::magic_enum
+
     absl::crc32c
+    Catch2::Catch2
 )
 
 include(CTest)

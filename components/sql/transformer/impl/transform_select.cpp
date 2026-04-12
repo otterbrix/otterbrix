@@ -94,6 +94,13 @@ namespace components::sql::transform {
     }
 
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
+        if (node.op == SETOP_UNION) {
+            throw parser_exception_t{"Select with union is not supported yet", {}};
+        } else if (node.op == SETOP_INTERSECT) {
+            throw parser_exception_t{"Select with intersect is not supported yet", {}};
+        } else if (node.op == SETOP_EXCEPT) {
+            throw parser_exception_t{"Select with except is not supported yet", {}};
+        }
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
         name_collection_t names;
@@ -117,9 +124,53 @@ namespace components::sql::transform {
                 auto range_func = *pg_ptr_cast<RangeFunction>(from_first);
                 names.left_alias = construct_alias(range_func.alias);
                 agg->append_child(transform_function(range_func, names, params));
+            } else if (nodeTag(from_first) == T_RangeSubselect) {
+                auto* sub_select = pg_ptr_cast<RangeSubselect>(from_first);
+                agg = logical_plan::make_node_aggregate(resource_, {});
+                agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), params));
+
+                if (sub_select->alias) {
+                    agg->children().back()->set_result_alias(sub_select->alias->aliasname);
+                    if (sub_select->alias->colnames &&
+                        agg->children().back()->type() == logical_plan::node_type::data_t) {
+                        auto& chunk =
+                            reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get())->data_chunk();
+                        if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
+                            throw parser_exception_t{"column names count has to equal actual column count", {}};
+                        }
+                        size_t column_index = 0;
+                        for (auto colname : sub_select->alias->colnames->lst) {
+                            chunk.data[column_index].set_type_alias(strVal(colname.data));
+                            column_index++;
+                        }
+                    }
+                }
+            } else {
+                assert(false);
             }
         } else {
             agg = logical_plan::make_node_aggregate(resource_, {});
+        }
+        if (node.valuesLists) {
+            vector::data_chunk_t chunk(resource_, {}, node.valuesLists->lst.size());
+            chunk.set_cardinality(node.valuesLists->lst.size());
+            size_t row_index = 0;
+
+            for (auto row : node.valuesLists->lst) {
+                auto values = pg_ptr_cast<List>(row.data)->lst;
+
+                size_t column_index = 0;
+                for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
+                    auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
+                    if (column_index >= chunk.data.size()) {
+                        chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                    }
+                    chunk.set_value(column_index, row_index, std::move(value));
+                }
+                row_index++;
+            }
+
+            return logical_plan::make_node_raw_data(resource_, std::move(chunk));
         }
 
         auto group = logical_plan::make_node_group(resource_, agg->collection_full_name());
@@ -133,7 +184,7 @@ namespace components::sql::transform {
                         auto func = pg_ptr_cast<FuncCall>(res->val);
 
                         auto funcname = std::string{strVal(linitial(func->funcname))};
-                        std::pmr::vector<param_storage> args;
+                        std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
                         // Note: AGGREGATE(*) invoke parameterless aggregate (also agg_star is set to true)
                         for (const auto& arg : func->args->lst) {
@@ -150,6 +201,9 @@ namespace components::sql::transform {
                                 } else {
                                     args.emplace_back(add_param_value(arg_value, params));
                                 }
+                            } else if (nodeTag(arg_value) == T_FuncCall) {
+                                args.emplace_back(
+                                    transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, params));
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }
@@ -197,11 +251,18 @@ namespace components::sql::transform {
                         }
                         break;
                     }
+                    case T_ParamRef: {
+                        auto expr = make_scalar_expression(
+                            resource_,
+                            scalar_type::get_field,
+                            expressions::key_t{resource_, res->name ? res->name : get_str_value(res->val)});
+                        expr->append_param(add_param_value(res->val, params));
+                        group->append_expression(expr);
+                        break;
+                    }
                     case T_TypeCast: {
                         auto cast = pg_ptr_cast<TypeCast>(res->val);
                         if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
-                            // col::TYPE — pass cast type hint via key_t::cast_type_ so the
-                            // validator can resolve the physical column without path mangling.
                             auto target_type = get_type(cast->typeName);
                             auto col_ref =
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
@@ -217,13 +278,11 @@ namespace components::sql::transform {
                         }
                         [[fallthrough]];
                     }
-                    case T_ParamRef: // fall-through
                     case T_A_Const: {
-                        // constant
-                        auto expr = make_scalar_expression(
-                            resource_,
-                            scalar_type::get_field,
-                            expressions::key_t{resource_, res->name ? res->name : get_str_value(res->val)});
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::constant,
+                                                           res->name ? expressions::key_t{resource_, res->name}
+                                                                     : expressions::key_t{resource_});
                         expr->append_param(add_param_value(res->val, params));
                         group->append_expression(expr);
                         break;
@@ -241,7 +300,7 @@ namespace components::sql::transform {
                         throw std::runtime_error("Unknown A_Expr kind in field clause");
                     }
                     case T_A_Indirection: {
-                        std::pmr::vector<std::pmr::string> path;
+                        std::pmr::vector<std::pmr::string> path{resource_};
                         A_Indirection* indirection = pg_ptr_cast<A_Indirection>(res->val);
                         while (indirection) {
                             auto& lst = indirection->indirection->lst;
@@ -265,11 +324,13 @@ namespace components::sql::transform {
                                 throw parser_exception_t(
                                     "Otterbrix does not support field selection from function results for now",
                                     {});
-                            } else {
+                            } else if (nodeTag(indirection->arg) == T_ColumnRef) {
                                 path.emplace_back(
                                     pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
                                               resource_));
                                 break;
+                            } else {
+                                throw parser_exception_t("Encountered unsupported expression on transform_select", {});
                             }
                         }
                         std::reverse(path.begin(), path.end());

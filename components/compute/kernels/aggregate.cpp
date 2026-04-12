@@ -344,22 +344,18 @@ namespace {
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
-    static compute_status sum_consume(kernel_context& ctx, const data_chunk_t& in, size_t exec_length) {
+    static compute_status sum_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<sum_kernel_state*>(ctx.state());
-        acc->value = sum(in.data[0], exec_length);
+        acc->value = sum(in.data[0], in.size());
         return compute_status::ok();
     }
 
-    static compute_status sum_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<sum_kernel_state&>(into).value = logical_value_t::sum(static_cast<sum_kernel_state&>(from).value,
-                                                                          static_cast<sum_kernel_state&>(into).value);
+    static compute_status sum_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+        ctx.batch_results.push_back(static_cast<sum_kernel_state&>(from).value);
         return compute_status::ok();
     }
 
-    static compute_status sum_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(static_cast<sum_kernel_state*>(ctx.state())->value);
-        return compute_status::ok();
-    }
+    static compute_status sum_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
     struct min_kernel_state : kernel_state {
         logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
@@ -371,23 +367,18 @@ namespace {
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
-    static compute_status min_consume(kernel_context& ctx, const data_chunk_t& in, size_t exec_length) {
+    static compute_status min_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<min_kernel_state*>(ctx.state());
-        acc->value = min(in.data[0], exec_length);
+        acc->value = min(in.data[0], in.size());
         return compute_status::ok();
     }
 
-    static compute_status min_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<min_kernel_state&>(into).value =
-            operator_switch<min_operator_t>(static_cast<min_kernel_state&>(from).value,
-                                            static_cast<min_kernel_state&>(into).value);
+    static compute_status min_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+        ctx.batch_results.push_back(static_cast<min_kernel_state&>(from).value);
         return compute_status::ok();
     }
 
-    static compute_status min_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(static_cast<min_kernel_state*>(ctx.state())->value);
-        return compute_status::ok();
-    }
+    static compute_status min_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
     struct max_kernel_state : kernel_state {
         logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
@@ -399,23 +390,18 @@ namespace {
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
-    static compute_status max_consume(kernel_context& ctx, const data_chunk_t& in, size_t exec_length) {
+    static compute_status max_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<max_kernel_state*>(ctx.state());
-        acc->value = max(in.data[0], exec_length);
+        acc->value = max(in.data[0], in.size());
         return compute_status::ok();
     }
 
-    static compute_status max_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<max_kernel_state&>(into).value =
-            operator_switch<max_operator_t>(static_cast<max_kernel_state&>(from).value,
-                                            static_cast<max_kernel_state&>(into).value);
+    static compute_status max_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+        ctx.batch_results.push_back(static_cast<max_kernel_state&>(from).value);
         return compute_status::ok();
     }
 
-    static compute_status max_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(static_cast<max_kernel_state*>(ctx.state())->value);
-        return compute_status::ok();
-    }
+    static compute_status max_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
     struct count_kernel_state : kernel_state {
         size_t value;
@@ -427,21 +413,19 @@ namespace {
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
-    static compute_status count_consume(kernel_context& ctx, const data_chunk_t& in, size_t) {
+    static compute_status count_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<count_kernel_state*>(ctx.state());
         acc->value = in.size();
         return compute_status::ok();
     }
 
-    static compute_status count_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<count_kernel_state&>(into).value += static_cast<count_kernel_state&>(from).value;
+    static compute_status count_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                       static_cast<count_kernel_state&>(from).value);
         return compute_status::ok();
     }
 
-    static compute_status count_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(out.get_allocator().resource(), static_cast<count_kernel_state*>(ctx.state())->value);
-        return compute_status::ok();
-    }
+    static compute_status count_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
     struct avg_kernel_state : kernel_state {
         size_t count;
@@ -455,25 +439,20 @@ namespace {
         return compute_result<kernel_state_ptr>(std::move(c));
     }
 
-    static compute_status avg_consume(kernel_context& ctx, const data_chunk_t& in, size_t exec_length) {
+    static compute_status avg_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<avg_kernel_state*>(ctx.state());
         acc->count = in.size();
-        acc->value = sum(in.data[0], exec_length);
+        acc->value = sum(in.data[0], in.size());
         return compute_status::ok();
     }
 
-    static compute_status avg_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-        static_cast<avg_kernel_state&>(into).count += static_cast<avg_kernel_state&>(from).count;
-        static_cast<avg_kernel_state&>(into).value = logical_value_t::sum(static_cast<avg_kernel_state&>(from).value,
-                                                                          static_cast<avg_kernel_state&>(into).value);
+    static compute_status avg_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+        auto& s = static_cast<avg_kernel_state&>(from);
+        ctx.batch_results.push_back(operator_switch<divide_operator_t>(s.value, s.count));
         return compute_status::ok();
     }
 
-    static compute_status avg_finalize(kernel_context& ctx, std::pmr::vector<logical_value_t>& out) {
-        out.emplace_back(operator_switch<divide_operator_t>(static_cast<avg_kernel_state*>(ctx.state())->value,
-                                                            static_cast<avg_kernel_state*>(ctx.state())->count));
-        return compute_status::ok();
-    }
+    static compute_status avg_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
     std::unique_ptr<aggregate_function> make_sum_func(const std::string& name,
                                                       const std::string& short_doc,
@@ -483,7 +462,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {numeric_types_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
 
         fn->add_kernel(std::move(k));
@@ -498,7 +479,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
 
         fn->add_kernel(std::move(k));
@@ -513,7 +496,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
 
         fn->add_kernel(std::move(k));
@@ -528,12 +513,14 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::var_args(0), doc, available_kernel_slots + 1);
 
-        kernel_signature_t sig({always_true_type_matcher()}, {output_type::fixed(logical_type::UBIGINT)});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {always_true_type_matcher()},
+                               {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
         fn->add_kernel(std::move(k));
 
         // COUNT(*) — zero-argument kernel
-        kernel_signature_t sig_star({}, {output_type::fixed(logical_type::UBIGINT)});
+        kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k_star{std::move(sig_star), count_init, count_consume, count_merge, count_finalize};
         fn->add_kernel(std::move(k_star));
 
@@ -548,7 +535,9 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
-        kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {numeric_types_matcher()},
+                               {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
 
         fn->add_kernel(std::move(k));

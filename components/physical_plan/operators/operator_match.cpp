@@ -33,8 +33,10 @@ namespace components::operators {
                                                                         types,
                                                                         &pipeline_context->parameters)
                                          : predicates::create_all_true_predicate(left_->output()->resource());
+            vector::indexing_vector_t all_indices(nullptr, nullptr);
+            auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());
             for (size_t i = 0; i < chunk.size(); i++) {
-                if (predicate->check(chunk, i)) {
+                if (results[i]) {
                     for (size_t j = 0; j < chunk.column_count(); j++) {
                         out_chunk.set_value(j, count, chunk.data[j].value(i));
                     }

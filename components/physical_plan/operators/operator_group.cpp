@@ -7,6 +7,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
+#include <components/physical_plan/operators/operator_batch.hpp>
 #include <core/operations_helper.hpp>
 #include <type_traits>
 
@@ -255,6 +256,9 @@ namespace components::operators {
                 if (!arith_error.empty()) {
                     set_error(std::move(arith_error));
                     return;
+                } else if (result_vec.type().type() == types::logical_type::NA) {
+                    set_error("unknown error during evaluate_arithmetic");
+                    return;
                 }
                 result_vec.set_type_alias(std::string(comp.alias));
                 chunk.data.emplace_back(std::move(result_vec));
@@ -457,6 +461,10 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
+                if (func_op->distinct()) {
+                    can_vectorize = false;
+                    break;
+                }
 
                 std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
                 types::logical_type col_type = types::logical_type::NA;
@@ -574,16 +582,40 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> results(resource_);
             results.reserve(num_groups);
 
+            std::vector<vector::data_chunk_t> group_chunks;
+            group_chunks.reserve(num_groups);
             for (size_t i = 0; i < num_groups; i++) {
                 auto off = group_offsets[i];
                 auto cnt = group_offsets[i + 1] - group_offsets[i];
-                auto sub_chunk = gathered.slice_contiguous(resource_, off, cnt);
-                aggregator->execute_on(operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),
-                                       pipeline_context);
-                auto agg_val = aggregator->value();
-                agg_val.set_alias(std::string(value.name));
-                results.push_back(std::move(agg_val));
+                group_chunks.emplace_back(gathered.slice_contiguous(resource_, off, cnt));
             }
+
+            aggregator->clear();
+            aggregator->set_children(make_operator_batch(resource_, std::move(group_chunks)));
+            aggregator->on_execute(pipeline_context);
+
+            auto datum = aggregator->take_batch_values();
+
+            if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                for (auto& v : vals) {
+                    v.set_alias(std::string(value.name));
+                    results.push_back(std::move(v));
+                }
+            } else {
+                // data_chunk_t — each row corresponds to a group
+                auto& result_chunk = std::get<vector::data_chunk_t>(datum);
+                for (size_t i = 0; i < num_groups && i < result_chunk.size(); i++) {
+                    auto val = result_chunk.data.empty() ? types::logical_value_t(resource_, types::logical_type::NA)
+                                                         : result_chunk.value(0, i);
+                    val.set_alias(std::string(value.name));
+                    results.push_back(std::move(val));
+                }
+                while (results.size() < num_groups) {
+                    results.emplace_back(resource_, types::logical_type::NA);
+                }
+            }
+
             agg_results.push_back(std::move(results));
         }
 
@@ -836,6 +868,7 @@ namespace components::operators {
             auto keep_count = static_cast<uint64_t>(keep_indices.size());
             vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(keep_indices.data()));
             result.slice(idx, keep_count);
+            result.flatten();
         }
     }
 

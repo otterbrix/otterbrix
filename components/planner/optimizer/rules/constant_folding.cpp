@@ -71,6 +71,7 @@ namespace components::planner::optimizer {
                 return false;
             }
 
+            // TODO: this is even worse than using logical_value_t...
             // Create single-element vectors from the values
             vector_t left_vec(resource, left_val, 1);
             vector_t right_vec(resource, right_val, 1);
@@ -92,7 +93,7 @@ namespace components::planner::optimizer {
         std::pair<bool, bool>
         eval_compare(compare_type ct, const expr_value_t& left_val, const expr_value_t& right_val) {
             if (left_val.is_null() || right_val.is_null()) {
-                return {false, false};
+                return {true, false};
             }
 
             auto cmp = left_val.compare(right_val);
@@ -139,6 +140,8 @@ namespace components::planner::optimizer {
             auto [ok, result] = eval_compare(expr.type(), left_val, right_val);
             if (ok) {
                 expr.set_type(result ? compare_type::all_true : compare_type::all_false);
+            } else {
+                assert(false);
             }
         }
 

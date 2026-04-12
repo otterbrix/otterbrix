@@ -57,7 +57,7 @@ namespace components::expressions {
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
-            boost::hash_combine(hash_, reinterpret_cast<const compare_expression_ptr&>(child)->hash_impl());
+            boost::hash_combine(hash_, child->hash());
         }
         return hash_;
     }
@@ -72,7 +72,7 @@ namespace components::expressions {
                 if (i > 0) {
                     stream << ", ";
                 }
-                stream << reinterpret_cast<const compare_expression_ptr&>(children().at(i))->to_string_impl();
+                stream << children().at(i)->to_string();
             }
             stream << "]";
         } else {
@@ -106,18 +106,45 @@ namespace components::expressions {
     }
 
     compare_type get_compare_type(const std::string& key) {
-        if (key.empty())
+        if (key.empty()) {
             return compare_type::invalid;
-        auto type = magic_enum::enum_cast<compare_type>(key.substr(1));
-        if (type.has_value())
-            return type.value();
-        if (key == "$and")
+        } else if (key[0] == '$') {
+            return get_compare_type(key.substr(1));
+        } else if (key == "eq") {
+            return compare_type::eq;
+        } else if (key == "ne") {
+            return compare_type::ne;
+        } else if (key == "gt") {
+            return compare_type::gt;
+        } else if (key == "lt") {
+            return compare_type::lt;
+        } else if (key == "gte") {
+            return compare_type::gte;
+        } else if (key == "lte") {
+            return compare_type::lte;
+        } else if (key == "regex") {
+            return compare_type::regex;
+        } else if (key == "any") {
+            return compare_type::any;
+        } else if (key == "all") {
+            return compare_type::all;
+        } else if (key == "union_and" || key == "and") {
             return compare_type::union_and;
-        if (key == "$or")
+        } else if (key == "union_or" || key == "or") {
             return compare_type::union_or;
-        if (key == "$not")
+        } else if (key == "union_not" || key == "not") {
             return compare_type::union_not;
-        return compare_type::invalid;
+        } else if (key == "all_true") {
+            return compare_type::all_true;
+        } else if (key == "all_false") {
+            return compare_type::all_false;
+        } else if (key == "is_null") {
+            return compare_type::is_null;
+        } else if (key == "is_not_null") {
+            return compare_type::is_not_null;
+        } else {
+            return compare_type::invalid;
+        }
     }
 
 } // namespace components::expressions

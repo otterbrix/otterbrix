@@ -271,6 +271,9 @@ namespace components::sql::transform {
                 if (nodeTag(node) == T_A_Indirection) {
                     return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, params);
                 }
+                if (!node->name || nodeTag(node->name->lst.front().data) != T_String) {
+                    throw parser_exception_t{"Unsupported expr in transform_a_exr", ""};
+                }
                 auto op_str = std::string_view(strVal(node->name->lst.front().data));
 
                 // Check if this is arithmetic (+, -, *, /, %)
@@ -349,10 +352,44 @@ namespace components::sql::transform {
                                     return transform_a_expr_arithmetic(sub, names, params);
                                 }
                             }
-                            return nullptr;
+                            throw parser_exception_t{"unrecognized expression in transform_a_expr", {}};
+                        }
+                        case T_MinMaxExpr: {
+                            auto expr = pg_ptr_cast<MinMaxExpr>(node);
+                            std::string funcname = expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least";
+                            std::pmr::vector<param_storage> args{resource_};
+                            args.reserve(expr->args->lst.size());
+                            for (const auto& arg : expr->args->lst) {
+                                if (nodeTag(arg.data) == T_ColumnRef) {
+                                    auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                                    key.deduce_side(names);
+                                    args.emplace_back(std::move(key.field));
+                                } else if (nodeTag(arg.data) == T_A_Indirection) {
+                                    auto key =
+                                        indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(arg.data), names);
+                                    key.deduce_side(names);
+                                    args.emplace_back(std::move(key.field));
+                                } else if (nodeTag(arg.data) == T_FuncCall) {
+                                    args.emplace_back(
+                                        transform_a_expr_func(pg_ptr_cast<FuncCall>(arg.data), names, params));
+                                } else if (nodeTag(arg.data) == T_A_Expr) {
+                                    auto sub = pg_ptr_cast<A_Expr>(arg.data);
+                                    if (sub->kind == AEXPR_OP &&
+                                        is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
+                                        args.emplace_back(transform_a_expr_arithmetic(sub, names, params));
+                                    } else {
+                                        args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
+                                    }
+                                } else {
+                                    args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), params));
+                                }
+                            }
+                            return make_function_expression(params->parameters().resource(),
+                                                            std::move(funcname),
+                                                            std::move(args));
                         }
                         default:
-                            return nullptr;
+                            throw parser_exception_t{"Unsupported expression", {}};
                     }
                 };
 
@@ -361,7 +398,9 @@ namespace components::sql::transform {
                 return make_compare_expression(params->parameters().resource(), comp_type, left, right);
             }
             case AEXPR_NOT: {
-                assert(nodeTag(node->rexpr) == T_A_Expr || nodeTag(node->rexpr) == T_A_Indirection);
+                if (nodeTag(node->rexpr) != T_A_Expr && nodeTag(node->rexpr) != T_A_Indirection) {
+                    throw parser_exception_t{"Unsupported expr type in transform_a_expr", {}};
+                }
                 expression_ptr right;
                 if (nodeTag(node->rexpr) == T_A_Expr) {
                     right = transform_a_expr(pg_ptr_cast<A_Expr>(node->rexpr), names, params);
@@ -419,7 +458,7 @@ namespace components::sql::transform {
                                                       const name_collection_t& names,
                                                       logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node->funcname->lst.front().data);
-        std::pmr::vector<param_storage> args;
+        std::pmr::vector<param_storage> args{resource_};
         args.reserve(node->args->lst.size());
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
@@ -472,7 +511,7 @@ namespace components::sql::transform {
                                                            const name_collection_t& names,
                                                            logical_plan::parameter_node_t* params) {
         std::string funcname = strVal(node.funcname->lst.front().data);
-        std::pmr::vector<param_storage> args;
+        std::pmr::vector<param_storage> args{resource_};
         args.reserve(node.args->lst.size());
         for (const auto& arg : node.args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {

@@ -36,7 +36,7 @@ namespace components::operators::predicates {
         }
 
         template<typename COMP>
-        simple_predicate::check_function_t make_comparator(std::pmr::memory_resource* resource,
+        simple_predicate::row_check_fn_t make_comparator(std::pmr::memory_resource* resource,
                                                            const compute::function_registry_t* function_registry,
                                                            const expressions::compare_expression_ptr& expr,
                                                            const logical_plan::storage_parameters* parameters) {
@@ -59,12 +59,55 @@ namespace components::operators::predicates {
 
     } // anonymous namespace
 
-    simple_predicate::simple_predicate(check_function_t func)
+    simple_predicate::simple_predicate(row_check_fn_t func)
         : func_(std::move(func)) {}
 
     simple_predicate::simple_predicate(std::vector<predicate_ptr>&& nested, expressions::compare_type nested_type)
         : nested_(std::move(nested))
         , nested_type_(nested_type) {}
+
+    std::vector<bool> simple_predicate::batch_check_impl(const vector::data_chunk_t& left,
+                                                         const vector::data_chunk_t& right,
+                                                         const vector::indexing_vector_t& left_indices,
+                                                         const vector::indexing_vector_t& right_indices,
+                                                         uint64_t count) {
+        switch (nested_type_) {
+            case expressions::compare_type::union_and: {
+                std::vector<bool> result(count, true);
+                for (const auto& child : nested_) {
+                    auto cr = child->batch_check(left, right, left_indices, right_indices, count);
+                    for (uint64_t k = 0; k < count; ++k) {
+                        result[k] = result[k] && cr[k];
+                    }
+                }
+                return result;
+            }
+            case expressions::compare_type::union_or: {
+                std::vector<bool> result(count, false);
+                for (const auto& child : nested_) {
+                    auto cr = child->batch_check(left, right, left_indices, right_indices, count);
+                    for (uint64_t k = 0; k < count; ++k) {
+                        result[k] = result[k] || cr[k];
+                    }
+                }
+                return result;
+            }
+            case expressions::compare_type::union_not: {
+                auto result = nested_.front()->batch_check(left, right, left_indices, right_indices, count);
+                for (size_t i = 0; i < result.size(); ++i) {
+                    result[i] = !result[i];
+                }
+                return result;
+            }
+            default:
+                // fallback to row-by-row via func_
+                std::vector<bool> result(count);
+                for (uint64_t k = 0; k < count; ++k) {
+                    result[k] = func_(left, right, left_indices.get_index(k), right_indices.get_index(k));
+                }
+                return result;
+        }
+    }
 
     bool simple_predicate::check_impl(const vector::data_chunk_t& chunk_left,
                                       const vector::data_chunk_t& chunk_right,

@@ -31,30 +31,29 @@ static compute_result<kernel_state_ptr> concat_init(kernel_context&, kernel_init
     return compute_result<kernel_state_ptr>(std::move(c));
 }
 
-static compute_status concat_consume(kernel_context& ctx, const vector::data_chunk_t& in, size_t exec_length) {
+static compute_status concat_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
     auto* acc = static_cast<concat_kernel_state*>(ctx.state());
-    for (size_t i = 0; i < exec_length; i++) {
-        acc->value += *in.data[0].data<std::string_view>();
+    for (size_t i = 0; i < in.size(); i++) {
+        acc->value += in.data[0].data<std::string_view>()[i];
     }
     return compute_status::ok();
 }
 
-static compute_status concat_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-    static_cast<concat_kernel_state&>(into).value += static_cast<concat_kernel_state&>(from).value;
+static compute_status concat_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                   static_cast<concat_kernel_state&>(from).value);
     return compute_status::ok();
 }
 
-static compute_status concat_finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(out.get_allocator().resource(), static_cast<concat_kernel_state*>(ctx.state())->value);
-    return compute_status::ok();
-}
+static compute_status concat_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
 std::unique_ptr<aggregate_function> make_concat_func() {
     function_doc doc{"short_doc", "full_doc", {"arg"}, false};
 
     auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
 
-    kernel_signature_t sig({exact_type_matcher(types::logical_type::STRING_LITERAL)},
+    kernel_signature_t sig(function_type_t::aggregate,
+                           {exact_type_matcher(types::logical_type::STRING_LITERAL)},
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_init, concat_consume, concat_merge, concat_finalize};
 
@@ -72,23 +71,21 @@ static compute_result<kernel_state_ptr> mult_init(kernel_context&, kernel_init_a
     return compute_result<kernel_state_ptr>(std::move(c));
 }
 
-static compute_status mult_consume(kernel_context& ctx, const vector::data_chunk_t& in, size_t exec_length) {
+static compute_status mult_consume(kernel_context& ctx, const vector::data_chunk_t& in) {
     auto* acc = static_cast<mult_kernel_state*>(ctx.state());
-    for (size_t i = 0; i < exec_length; i++) {
+    for (size_t i = 0; i < in.size(); i++) {
         acc->value += in.data[0].data<double>()[i] * static_cast<double>(in.data[1].data<int64_t>()[i]);
     }
     return compute_status::ok();
 }
 
-static compute_status mult_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
-    static_cast<mult_kernel_state&>(into).value += static_cast<mult_kernel_state&>(from).value;
+static compute_status mult_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
+    ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                   static_cast<mult_kernel_state&>(from).value);
     return compute_status::ok();
 }
 
-static compute_status mult_finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(out.get_allocator().resource(), static_cast<mult_kernel_state*>(ctx.state())->value);
-    return compute_status::ok();
-}
+static compute_status mult_finalize(aggregate_kernel_context&) { return compute_status::ok(); }
 
 // has overloads for diff argument types
 std::unique_ptr<aggregate_function> make_mult_func() {
@@ -97,6 +94,7 @@ std::unique_ptr<aggregate_function> make_mult_func() {
     auto fn = std::make_unique<aggregate_function>(udf2_name, arity::binary(), doc, 1);
 
     kernel_signature_t sig(
+        function_type_t::aggregate,
         {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
@@ -117,7 +115,8 @@ std::unique_ptr<row_function> make_is_even_func() {
 
     auto fn = std::make_unique<row_function>(udf3_name, arity::unary(), doc, 1);
 
-    kernel_signature_t sig({exact_type_matcher(types::logical_type::BIGINT)},
+    kernel_signature_t sig(function_type_t::row,
+                           {exact_type_matcher(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BOOLEAN)});
     row_kernel k{std::move(sig), is_even_exec};
 
@@ -138,6 +137,7 @@ std::unique_ptr<row_function> make_modulo_func() {
     auto fn = std::make_unique<row_function>(udf4_name, arity::binary(), doc, 1);
 
     kernel_signature_t sig(
+        function_type_t::row,
         {exact_type_matcher(types::logical_type::BIGINT), exact_type_matcher(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BIGINT)});
     row_kernel k{std::move(sig), modulo_exec};

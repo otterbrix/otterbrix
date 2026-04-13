@@ -88,8 +88,12 @@ namespace components::operators {
         size_t res_count = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
             auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+            if (results.has_error()) {
+                set_error(results.error());
+                return;
+            }
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (results[j]) {
+                if (results.value()[j]) {
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
                     ++res_count;
@@ -134,8 +138,12 @@ namespace components::operators {
         for (size_t i = 0; i < chunk_left.size(); i++) {
             bool visited_left = false;
             auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+            if (results.has_error()) {
+                set_error(results.error());
+                return;
+            }
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (results[j]) {
+                if (results.value()[j]) {
                     visited_left = true;
                     visited_right[j] = true;
                     copy_indices_left.emplace_back(i);
@@ -201,8 +209,12 @@ namespace components::operators {
         for (size_t i = 0; i < chunk_left.size(); i++) {
             bool visited_left = false;
             auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+            if (results.has_error()) {
+                set_error(results.error());
+                return;
+            }
             for (size_t j = 0; j < chunk_right.size(); j++) {
-                if (results[j]) {
+                if (results.value()[j]) {
                     visited_left = true;
                     copy_indices_left.emplace_back(i);
                     copy_indices_right.emplace_back(j);
@@ -255,8 +267,12 @@ namespace components::operators {
         for (size_t i = 0; i < chunk_right.size(); i++) {
             bool visited_right = false;
             auto results = predicates::batch_check_Nv1(predicate, chunk_left, chunk_right, chunk_left.size(), i);
+            if (results.has_error()) {
+                set_error(results.error());
+                return;
+            }
             for (size_t j = 0; j < chunk_left.size(); j++) {
-                if (results[j]) {
+                if (results.value()[j]) {
                     visited_right = true;
                     copy_indices_left.emplace_back(j);
                     copy_indices_right.emplace_back(i);

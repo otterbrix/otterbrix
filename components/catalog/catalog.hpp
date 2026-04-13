@@ -28,11 +28,11 @@ namespace components::catalog {
         [[nodiscard]] computed_schema& get_computing_table_schema(const table_id& id);
         [[nodiscard]] const computed_schema& get_computing_table_schema(const table_id& id) const;
 
-        [[nodiscard]] catalog_error create_table(const table_id& id, table_metadata meta);
-        [[nodiscard]] catalog_error create_computing_table(const table_id& id);
+        [[nodiscard]] core::error_t create_table(const table_id& id, table_metadata meta);
+        [[nodiscard]] core::error_t create_computing_table(const table_id& id);
 
-        [[nodiscard]] catalog_error rename_table(const table_id& from, std::pmr::string to);
-        [[nodiscard]] catalog_error rename_computing_table(const table_id& from, std::pmr::string to);
+        [[nodiscard]] core::error_t rename_table(const table_id& from, std::pmr::string to);
+        [[nodiscard]] core::error_t rename_computing_table(const table_id& from, std::pmr::string to);
 
         void drop_table(const table_id& id);
         void drop_computing_table(const table_id& id);
@@ -72,7 +72,7 @@ namespace components::catalog {
         void drop_table_impl(const table_id& id);
 
         template<catalog::schema_type>
-        catalog_error rename_table_impl(const table_id& from, std::pmr::string to);
+        core::error_t rename_table_impl(const table_id& from, std::pmr::string to);
 
         template<catalog::schema_type>
         bool table_exists_impl(const table_id& id) const;

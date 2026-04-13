@@ -78,11 +78,12 @@ namespace services::dispatcher {
         unique_future<components::cursor::cursor_t_ptr>
         get_schema(components::session::session_id_t session,
                    std::pmr::vector<std::pair<database_name_t, collection_name_t>> ids);
-        unique_future<bool> register_udf(components::session::session_id_t session,
-                                         components::compute::function_ptr function);
-        unique_future<bool> unregister_udf(components::session::session_id_t session,
-                                           std::string function_name,
-                                           std::pmr::vector<components::types::complex_logical_type> inputs);
+        unique_future<std::unique_ptr<core::error_t>> register_udf(components::session::session_id_t session,
+                                                                   components::compute::function_ptr function);
+        unique_future<std::unique_ptr<core::error_t>>
+        unregister_udf(components::session::session_id_t session,
+                       std::string function_name,
+                       std::pmr::vector<components::types::complex_logical_type> inputs);
         unique_future<void> close_cursor(components::session::session_id_t session);
 
         // Transaction lifecycle (actor-callable by executor)

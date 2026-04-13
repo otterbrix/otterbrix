@@ -15,7 +15,7 @@ namespace components::catalog {
                           const table_id& id,
                           namespace_storage* ns_storage);
 
-        transaction_scope(std::pmr::memory_resource* resource, catalog_error error);
+        transaction_scope(std::pmr::memory_resource* resource, core::error_t error);
 
         ~transaction_scope();
 
@@ -26,7 +26,7 @@ namespace components::catalog {
         transaction_scope& operator=(transaction_scope&& other) noexcept;
 
         [[nodiscard]] metadata_transaction& transaction();
-        [[nodiscard]] const catalog_error& error() const;
+        [[nodiscard]] const core::error_t& error() const;
 
         void commit();
         void abort();
@@ -35,9 +35,10 @@ namespace components::catalog {
         bool is_committed_ = false;
         bool is_aborted_ = false;
         table_id id_;
-        catalog_error error_;
+        core::error_t error_;
         std::weak_ptr<transaction_list> transaction_list_;
         namespace_storage* ns_storage_ptr_;
         std::unique_ptr<metadata_transaction> transaction_;
+        std::pmr::memory_resource* resource_;
     };
 } // namespace components::catalog

@@ -24,8 +24,14 @@ namespace components::sql::transform {
             name_collection_t sub_query_names;
             join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, sub_query_names, params);
             auto prev = node_join;
-            node_join =
-                logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
             node_join->append_child(prev);
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -44,7 +50,14 @@ namespace components::sql::transform {
             assert(!node_join);
             names.left_name = rangevar_to_collection(table_l);
             names.left_alias = construct_alias(table_l->alias);
-            node_join = logical_plan::make_node_join(resource, {}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {}, j_type);
             node_join->append_child(logical_plan::make_node_aggregate(resource, names.left_name));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -57,8 +70,14 @@ namespace components::sql::transform {
             }
         } else if (nodeTag(join->larg) == T_RangeFunction) {
             assert(!node_join);
-            node_join =
-                logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
             node_join->append_child(transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, params));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -70,8 +89,12 @@ namespace components::sql::transform {
                 node_join->append_child(transform_function(*func, names, params));
             }
         } else {
-            throw parser_exception_t{"incorrect type for join join->larg node",
-                                     node_tag_to_string(nodeTag(join->larg))};
+            error_ = core::error_t(
+                core::error_code_t::sql_parse_error,
+
+                std::pmr::string{"incorrect type for join join->larg node" + node_tag_to_string(nodeTag(join->larg)),
+                                 resource_});
+            return;
         }
         // on
         if (join->quals) {
@@ -84,8 +107,12 @@ namespace components::sql::transform {
             } else if (nodeTag(join->quals) == T_FuncCall) {
                 node_join->append_expression(transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, params));
             } else {
-                throw parser_exception_t{"incorrect type for join join->quals node",
-                                         node_tag_to_string(nodeTag(join->larg))};
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"incorrect type for join join->quals node" +
+                                                            node_tag_to_string(nodeTag(join->quals)),
+                                                        resource_});
+                return;
             }
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
@@ -94,11 +121,20 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
         if (node.op == SETOP_UNION) {
-            throw parser_exception_t{"Select with union is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+
+                                   std::pmr::string{"Select with union is not supported yet", resource_});
+            return nullptr;
         } else if (node.op == SETOP_INTERSECT) {
-            throw parser_exception_t{"Select with intersect is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+
+                                   std::pmr::string{"Select with intersect is not supported yet", resource_});
+            return nullptr;
         } else if (node.op == SETOP_EXCEPT) {
-            throw parser_exception_t{"Select with except is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+
+                                   std::pmr::string{"Select with except is not supported yet", resource_});
+            return nullptr;
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
@@ -135,7 +171,11 @@ namespace components::sql::transform {
                         auto& chunk =
                             reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get())->data_chunk();
                         if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
-                            throw parser_exception_t{"column names count has to equal actual column count", {}};
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+
+                                std::pmr::string{"column names count has to equal actual column count", resource_});
+                            return nullptr;
                         }
                         size_t column_index = 0;
                         for (auto colname : sub_select->alias->colnames->lst) {
@@ -145,7 +185,10 @@ namespace components::sql::transform {
                     }
                 }
             } else {
-                assert(false);
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"encountered unrecognized node", resource_});
+                return nullptr;
             }
         } else {
             agg = logical_plan::make_node_aggregate(resource_, {});
@@ -161,10 +204,14 @@ namespace components::sql::transform {
                 size_t column_index = 0;
                 for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
                     auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                    if (column_index >= chunk.data.size()) {
-                        chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                    if (value.has_error()) {
+                        error_ = value.error();
+                        return nullptr;
                     }
-                    chunk.set_value(column_index, row_index, std::move(value));
+                    if (column_index >= chunk.data.size()) {
+                        chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                    }
+                    chunk.set_value(column_index, row_index, std::move(value.value()));
                 }
                 row_index++;
             }
@@ -279,7 +326,11 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        throw std::runtime_error("Unknown A_Expr kind in field clause");
+
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                               std::pmr::string{"Unknown A_Expr kind in field clause", resource_});
+                        return nullptr;
                     }
                     case T_A_Indirection: {
                         std::pmr::vector<std::pmr::string> path{resource_};
@@ -303,16 +354,25 @@ namespace components::sql::transform {
                             } else if (nodeTag(indirection->arg) == T_FuncCall) {
                                 // function here is an aggregate_expr and field selection is a scalar_expr
                                 // TODO: proper expression chaining support
-                                throw parser_exception_t(
-                                    "Otterbrix does not support field selection from function results for now",
-                                    {});
+                                error_ = core::error_t(
+                                    core::error_code_t::unimplemented_yet,
+
+                                    std::pmr::string{
+                                        "Otterbrix does not support field selection from function results for now",
+                                        resource_});
+                                return nullptr;
                             } else if (nodeTag(indirection->arg) == T_ColumnRef) {
                                 path.emplace_back(
                                     pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
                                               resource_));
                                 break;
                             } else {
-                                throw parser_exception_t("Encountered unsupported expression on transform_select", {});
+                                error_ = core::error_t(
+                                    core::error_code_t::unimplemented_yet,
+
+                                    std::pmr::string{"Encountered unsupported expression on transform_select",
+                                                     resource_});
+                                return nullptr;
                             }
                         }
                         std::reverse(path.begin(), path.end());
@@ -356,8 +416,12 @@ namespace components::sql::transform {
                         break;
                     }
                     default:
-                        throw std::runtime_error("Unknown node type in field clause: " +
-                                                 node_tag_to_string(nodeTag(res->val)));
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                               std::pmr::string{"Unknown node type in field clause: " +
+                                                                    node_tag_to_string(nodeTag(res->val)),
+                                                                resource_});
+                        return nullptr;
                 }
             }
         }
@@ -393,8 +457,12 @@ namespace components::sql::transform {
             // Note: right now execution implicitly assumes that every SELECT field is in GROUP BY
             for (auto field : node.groupClause->lst) {
                 if (nodeTag(field.data) != T_ColumnRef) {
-                    throw std::runtime_error("Unknown node type in group by clause: " +
-                                             node_tag_to_string(nodeTag(field.data)));
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                           std::pmr::string{"Unknown node type in group by clause: " +
+                                                                node_tag_to_string(nodeTag(field.data)),
+                                                            resource_});
+                    return nullptr;
                 }
 
                 group->append_expression(make_scalar_expression(
@@ -454,8 +522,12 @@ namespace components::sql::transform {
                     transform_select_a_expr(a_expr, sort_alias.c_str(), names, params, group_node);
                     field.field = expressions::key_t{resource_, sort_alias};
                 } else {
-                    throw std::runtime_error("Unknown node type in ORDER BY: " +
-                                             node_tag_to_string(nodeTag(sortby->node)));
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+
+                        std::pmr::string{"Unknown node type in ORDER BY: " + node_tag_to_string(nodeTag(sortby->node)),
+                                         resource_});
+                    return nullptr;
                 }
                 expressions.emplace_back(
                     make_sort_expression(field.field,
@@ -467,8 +539,12 @@ namespace components::sql::transform {
         // limit
         if (node.limitCount) {
             if (nodeTag(node.limitCount) != T_A_Const) {
-                throw std::runtime_error("Unknown node type in limit clause: " +
-                                         node_tag_to_string(nodeTag(node.limitCount)));
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                       std::pmr::string{"Unknown node type in limit clause: " +
+                                                            node_tag_to_string(nodeTag(node.limitCount)),
+                                                        resource_});
+                return nullptr;
             }
 
             auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
@@ -482,7 +558,12 @@ namespace components::sql::transform {
                     limit = logical_plan::limit_t(intVal(value));
                     break;
                 default:
-                    throw std::runtime_error("Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL");
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+
+                        std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                         resource_});
+                    return nullptr;
             }
 
             agg->append_child(logical_plan::make_node_limit(resource_, agg->collection_full_name(), limit));

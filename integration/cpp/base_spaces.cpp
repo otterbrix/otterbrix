@@ -281,12 +281,12 @@ namespace otterbrix {
                               info.name.database,
                               info.name.collection);
                         auto err = catalog.create_computing_table(table_id);
-                        if (err) {
+                        if (err.contains_error()) {
                             warn(log_,
                                  "spaces::failed to create computing table {}.{}: {}",
                                  info.name.database,
                                  info.name.collection,
-                                 err.what());
+                                 err.what);
                         }
                     } else {
                         trace(log_,
@@ -309,12 +309,12 @@ namespace otterbrix {
                         }
                         auto sch = schema(&resource, std::move(schema_cols), std::move(descs));
                         auto err = catalog.create_table(table_id, table_metadata(&resource, std::move(sch)));
-                        if (err) {
+                        if (err.contains_error()) {
                             warn(log_,
                                  "spaces::failed to create in-memory table {}.{}: {}",
                                  info.name.database,
                                  info.name.collection,
-                                 err.what());
+                                 err.what);
                         }
                     }
                 } else {
@@ -339,12 +339,12 @@ namespace otterbrix {
                     }
                     auto sch = schema(&resource, std::move(schema_cols), std::move(descs));
                     auto err = catalog.create_table(table_id, table_metadata(&resource, std::move(sch)));
-                    if (err) {
+                    if (err.contains_error()) {
                         warn(log_,
                              "spaces::failed to create disk table {}.{}: {}",
                              info.name.database,
                              info.name.collection,
-                             err.what());
+                             err.what);
                     }
                 }
             }

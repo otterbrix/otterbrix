@@ -121,7 +121,7 @@ bool wrapper_cursor::is_success() const noexcept { return ptr_->is_success(); }
 bool wrapper_cursor::is_error() const noexcept { return ptr_->is_error(); }
 
 py::tuple wrapper_cursor::get_error() const {
-    using error_code_t = components::cursor::error_code_t;
+    using error_code_t = core::error_code_t;
 
     py::str type;
     switch (ptr_->get_error().type) {
@@ -137,16 +137,16 @@ py::tuple wrapper_cursor::get_error() const {
             type = "database_not_exists";
             break;
 
-        case error_code_t::collection_already_exists:
-            type = "collection_already_exists";
+        case error_code_t::table_already_exists:
+            type = "table_already_exists";
             break;
 
-        case error_code_t::collection_not_exists:
-            type = "collection_not_exists";
+        case error_code_t::table_not_exists:
+            type = "table_not_exists";
             break;
 
-        case error_code_t::collection_dropped:
-            type = "collection_dropped";
+        case error_code_t::table_dropped:
+            type = "table_dropped";
             break;
 
         case error_code_t::sql_parse_error:

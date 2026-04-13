@@ -29,7 +29,7 @@ namespace services::collection::executor {
         components::operators::operator_write_data_t::updated_types_map_t updates;
     };
 
-    using function_result_t = components::compute::function_uid;
+    using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
 
     struct plan_t {
         std::stack<components::operators::operator_ptr> sub_plans;
@@ -80,8 +80,8 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
-        unique_future<function_result_t> register_udf(components::session::session_id_t session,
-                                                      components::compute::function_ptr function);
+        unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
+                                                                       components::compute::function_ptr function);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan, &executor_t::register_udf>;
 

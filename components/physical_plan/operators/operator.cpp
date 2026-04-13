@@ -7,7 +7,8 @@ namespace components::operators {
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)
         , log_(std::move(log))
-        , type_(type) {}
+        , type_(type)
+        , error_(core::error_t::no_error()) {}
 
     void operator_t::prepare() {
         if (!prepared_) {
@@ -32,20 +33,23 @@ namespace components::operators {
             if (left_) {
                 left_->on_execute(pipeline_context);
                 if (left_->has_error()) {
-                    error_message_ = left_->error_message();
+                    error_ = left_->get_error();
+                    state_ = operator_state::failed;
                     return;
                 }
             }
             if (right_ && is_success(left_)) {
                 right_->on_execute(pipeline_context);
                 if (right_->has_error()) {
-                    error_message_ = right_->error_message();
+                    error_ = right_->get_error();
+                    state_ = operator_state::failed;
                     return;
                 }
             }
             if (is_success(left_) && is_success(right_)) {
                 on_execute_impl(pipeline_context);
                 if (has_error()) {
+                    state_ = operator_state::failed;
                     return;
                 }
                 if (!is_wait_sync_disk()) {
@@ -116,9 +120,11 @@ namespace components::operators {
     void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
 
     void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
-    void operator_t::set_error(std::string msg) { error_message_ = std::move(msg); }
-    bool operator_t::has_error() const noexcept { return !error_message_.empty(); }
-    const std::string& operator_t::error_message() const noexcept { return error_message_; }
+    void operator_t::set_error(const core::error_t& error) { error_ = error; }
+    void operator_t::set_error(core::error_t&& error) { error_ = std::move(error); }
+    bool operator_t::has_error() const noexcept { return error_.contains_error(); }
+    const core::error_t& operator_t::get_error() const noexcept { return error_; }
+
     void operator_t::mark_executed() { state_ = operator_state::executed; }
 
     void operator_t::clear() {

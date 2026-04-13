@@ -22,8 +22,8 @@ namespace components::operators::aggregate {
         bool distinct() const { return distinct_; }
 
     private:
-        types::logical_value_t aggregate_impl(pipeline::context_t* pipeline_context) override;
-        compute::datum_t aggregate_batch_impl(pipeline::context_t* pipeline_context) override;
+        core::result_wrapper_t<types::logical_value_t> aggregate_impl(pipeline::context_t* pipeline_context) override;
+        core::result_wrapper_t<compute::datum_t> aggregate_batch_impl(pipeline::context_t* pipeline_context) override;
         std::string key_impl() const override;
 
         std::pmr::vector<expressions::param_storage> args_;

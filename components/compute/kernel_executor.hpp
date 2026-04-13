@@ -1,7 +1,6 @@
 #pragma once
 
 #include "compute_kernel.hpp"
-#include "compute_result.hpp"
 #include "kernel_signature.hpp"
 
 #include <memory>
@@ -12,11 +11,13 @@ namespace components::compute::detail {
     public:
         virtual ~kernel_executor_t() = default;
 
-        virtual compute_status init(kernel_context& kernel_ctx, kernel_init_args args) = 0;
+        virtual core::error_t init(kernel_context& kernel_ctx, kernel_init_args args) = 0;
 
-        virtual compute_result<datum_t> execute(const vector::data_chunk_t& inputs) = 0;
-        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
-        virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& inputs) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<datum_t>
+        execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<datum_t>
+        execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
 
         static std::unique_ptr<kernel_executor_t> make_vector();
         static std::unique_ptr<kernel_executor_t> make_aggregate();

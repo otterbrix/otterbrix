@@ -11,13 +11,22 @@ namespace components::operators::aggregate {
 
     void operator_aggregate_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->type() == operator_type::batch) {
-            batch_results_ = aggregate_batch_impl(pipeline_context);
+            if (auto res = aggregate_batch_impl(pipeline_context); res.has_error()) {
+                set_error(res.error());
+            } else {
+                batch_results_ = std::move(res.value());
+            }
         } else {
-            aggregate_result_ = aggregate_impl(pipeline_context);
+            if (auto res = aggregate_impl(pipeline_context); res.has_error()) {
+                set_error(res.error());
+            } else {
+                aggregate_result_ = std::move(res.value());
+            }
         }
     }
 
-    compute::datum_t operator_aggregate_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
+    core::result_wrapper_t<compute::datum_t>
+    operator_aggregate_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
         auto* batch = static_cast<operator_batch_t*>(left_.get());
         auto& chunks = batch->chunks();
         std::pmr::vector<types::logical_value_t> results(resource_);
@@ -25,7 +34,11 @@ namespace components::operators::aggregate {
         for (size_t i = 0; i < chunks.size(); ++i) {
             auto data = make_operator_data(resource_, std::move(chunks[i]));
             set_children(boost::intrusive_ptr<operator_t>(new operator_empty_t(resource_, std::move(data))));
-            aggregate_result_ = aggregate_impl(pipeline_context);
+            auto res = aggregate_impl(pipeline_context);
+            if (res.has_error()) {
+                return res.convert_error<compute::datum_t>();
+            }
+            aggregate_result_ = std::move(res.value());
             results.push_back(aggregate_result_);
         }
         return compute::datum_t{std::move(results)};

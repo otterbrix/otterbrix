@@ -251,17 +251,19 @@ namespace components::operators {
 
             // Phase 1: Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] =
+                auto result_vec =
                     evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
-                if (!arith_error.empty()) {
-                    set_error(std::move(arith_error));
+                if (result_vec.has_error()) {
+                    set_error(result_vec.error());
                     return;
-                } else if (result_vec.type().type() == types::logical_type::NA) {
-                    set_error("unknown error during evaluate_arithmetic");
+                } else if (result_vec.value().type().type() == types::logical_type::NA) {
+                    set_error(core::error_t(core::error_code_t::physical_plan_error,
+
+                                            std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                     return;
                 }
-                result_vec.set_type_alias(std::string(comp.alias));
-                chunk.data.emplace_back(std::move(result_vec));
+                result_vec.value().set_type_alias(std::string(comp.alias));
+                chunk.data.emplace_back(std::move(result_vec.value()));
             }
 
             // Resolve col_index for computed-column keys (they were appended at known positions)
@@ -321,14 +323,14 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] =
+                auto result_vec =
                     evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
-                if (!arith_error.empty()) {
-                    set_error(std::move(arith_error));
+                if (result_vec.has_error()) {
+                    set_error(result_vec.error());
                     return;
                 }
-                result_vec.set_type_alias(std::string(comp.alias));
-                chunk.data.emplace_back(std::move(result_vec));
+                result_vec.value().set_type_alias(std::string(comp.alias));
+                chunk.data.emplace_back(std::move(result_vec.value()));
             }
 
             output_ = operators::make_operator_data(resource_, std::move(chunk));

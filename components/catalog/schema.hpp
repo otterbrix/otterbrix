@@ -1,10 +1,10 @@
 #pragma once
 
-#include "catalog_error.hpp"
 #include "catalog_types.hpp"
 
 #include <components/cursor/cursor.hpp>
 #include <components/table/column_definition.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <memory_resource>
 #include <optional>
@@ -20,18 +20,20 @@ namespace components::catalog {
                         const std::vector<types::field_description>& descriptions,
                         const std::pmr::vector<field_id_t>& primary_key = {});
 
-        cursor::cursor_t_ptr find_field(field_id_t id) const;
-        cursor::cursor_t_ptr find_field(const std::pmr::string& name) const;
+        [[nodiscard]] core::result_wrapper_t<types::complex_logical_type> find_field(field_id_t id) const;
+        [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
+        find_field(const std::pmr::string& name) const;
 
-        [[nodiscard]] std::optional<field_description_cref> get_field_description(field_id_t id) const;
-        [[nodiscard]] std::optional<field_description_cref> get_field_description(const std::pmr::string& name) const;
+        [[nodiscard]] core::result_wrapper_t<field_description_cref> get_field_description(field_id_t id) const;
+        [[nodiscard]] core::result_wrapper_t<field_description_cref>
+        get_field_description(const std::pmr::string& name) const;
 
         [[nodiscard]] const std::pmr::vector<field_id_t>& primary_key() const;
         [[nodiscard]] const std::vector<table::column_definition_t>& columns() const;
         [[nodiscard]] const std::vector<types::field_description>& descriptions() const;
         [[nodiscard]] field_id_t highest_field_id() const;
 
-        [[nodiscard]] const catalog_error& error() const;
+        [[nodiscard]] const core::error_t& error() const;
         [[nodiscard]] std::vector<types::complex_logical_type> types() const;
 
     private:
@@ -43,7 +45,7 @@ namespace components::catalog {
         std::pmr::vector<field_id_t> primary_key_field_ids_;
         std::pmr::unordered_map<field_id_t, size_t> id_to_struct_idx_;
         field_id_t highest_ = 0;
-        mutable catalog_error error_;
+        mutable core::error_t error_;
         std::pmr::memory_resource* resource_;
     };
 } // namespace components::catalog

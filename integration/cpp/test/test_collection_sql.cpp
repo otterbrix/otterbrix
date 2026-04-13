@@ -443,7 +443,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(GROUP BY name )_"
                                            R"_(ORDER BY name DESC;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::unrecognized_function);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
     */
 }
@@ -460,7 +460,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::database_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
     }
 
     INFO("create database") {
@@ -472,7 +472,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::collection_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
     }
 }
 

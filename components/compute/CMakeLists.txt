@@ -2,7 +2,6 @@ project(compute)
 
 set(${PROJECT_NAME}_SOURCES
         compute_kernel.cpp
-        compute_result.cpp
         function.cpp
         kernel_executor.cpp
         kernel_signature.cpp

@@ -10,9 +10,10 @@ using namespace components::sql::transform;
 #define TEST_SIMPLE_DELETE(QUERY, RESULT, PARAMS)                                                                      \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(select)).finalize());           \
-        auto node = result.node;                                                                                       \
-        auto agg = result.params;                                                                                      \
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();                                  \
+        REQUIRE(!result.has_error());                                                                                  \
+        auto node = result.value().node;                                                                               \
+        auto agg = result.value().params;                                                                              \
         REQUIRE(node->type() == components::logical_plan::node_type::delete_t);                                        \
         REQUIRE(node->to_string() == RESULT);                                                                          \
         REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \

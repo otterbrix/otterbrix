@@ -6,7 +6,9 @@ namespace components::compute {
     kernel_context::kernel_context(exec_context_t& exec_ctx, const compute_kernel& kernel)
         : exec_ctx_(exec_ctx)
         , kernel_(kernel)
-        , state_(nullptr) {}
+        , state_(nullptr) {
+        assert(exec_context().resource());
+    }
 
     exec_context_t& kernel_context::exec_context() const { return exec_ctx_; }
 
@@ -20,7 +22,8 @@ namespace components::compute {
         : signature_(std::move(signature))
         , init_(init) {}
 
-    compute_result<kernel_state_ptr> compute_kernel::init(kernel_context& ctx, const kernel_init_args& args) const {
+    core::result_wrapper_t<kernel_state_ptr> compute_kernel::init(kernel_context& ctx,
+                                                                  const kernel_init_args& args) const {
         if (init_) {
             return init_(ctx, args);
         }
@@ -35,15 +38,15 @@ namespace components::compute {
         , exec_(exec)
         , finalize_(finalize) {}
 
-    compute_status vector_kernel::execute(kernel_context& ctx, const data_chunk_t& inputs, vector_t& output) const {
+    core::error_t vector_kernel::execute(kernel_context& ctx, const data_chunk_t& inputs, vector_t& output) const {
         return exec_(ctx, inputs, output);
     }
 
-    compute_status vector_kernel::finalize(kernel_context& ctx, data_chunk_t& output) const {
+    core::error_t vector_kernel::finalize(kernel_context& ctx, data_chunk_t& output) const {
         if (finalize_) {
             return finalize_(ctx, output);
         }
-        return compute_status::ok();
+        return core::error_t::no_error();
     }
 
     aggregate_kernel::aggregate_kernel(kernel_signature_t signature,
@@ -60,24 +63,24 @@ namespace components::compute {
         }
     }
 
-    compute_status aggregate_kernel::consume(kernel_context& ctx, const data_chunk_t& input) const {
+    core::error_t aggregate_kernel::consume(kernel_context& ctx, const data_chunk_t& input) const {
         return consume_(ctx, input);
     }
 
-    compute_status
+    core::error_t
     aggregate_kernel::merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state& into) const {
         return merge_(ctx, std::move(from), into);
     }
 
-    compute_status aggregate_kernel::finalize(aggregate_kernel_context& ctx) const { return finalize_(ctx); }
+    core::error_t aggregate_kernel::finalize(aggregate_kernel_context& ctx) const { return finalize_(ctx); }
 
     row_kernel::row_kernel(kernel_signature_t signature, row_exec_fn exec)
         : compute_kernel(std::move(signature))
         , exec_(exec) {}
 
-    compute_status row_kernel::execute(kernel_context& ctx,
-                                       const std::pmr::vector<types::logical_value_t>& inputs,
-                                       std::pmr::vector<types::logical_value_t>& output) const {
+    core::error_t row_kernel::execute(kernel_context& ctx,
+                                      const std::pmr::vector<types::logical_value_t>& inputs,
+                                      std::pmr::vector<types::logical_value_t>& output) const {
         return exec_(ctx, inputs, output);
     }
 

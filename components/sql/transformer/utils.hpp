@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <components/base/collection_full_name.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
@@ -86,7 +88,7 @@ namespace components::sql::transform {
             case JOIN_RIGHT:
                 return logical_plan::join_type::right;
             default:
-                throw parser_exception_t{"unsupported join type", ""};
+                return logical_plan::join_type::invalid;
         }
     }
 
@@ -107,7 +109,7 @@ namespace components::sql::transform {
             return it->second;
         }
 
-        throw parser_exception_t{"Unknown comparison operator: " + std::string(str), ""};
+        return expressions::compare_type::invalid;
     }
 
     inline types::logical_type get_logical_type(std::string_view str) {
@@ -163,26 +165,28 @@ namespace components::sql::transform {
             return expressions::scalar_type::divide;
         if (op == "%")
             return expressions::scalar_type::mod;
-        throw parser_exception_t{"Unknown arithmetic operator: " + std::string(op), ""};
+        return expressions::scalar_type::invalid;
     }
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
     std::string like_to_regex(const std::string& pattern);
 
-    types::complex_logical_type get_type(TypeName* type);
-    std::vector<types::complex_logical_type> get_types(PGList& list);
-    std::pmr::vector<types::complex_logical_type> get_types(std::pmr::memory_resource* resource, PGList& list);
+    core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
+    core::result_wrapper_t<std::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
+                                                                               PGList& list);
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>>
+    get_types_pmr(std::pmr::memory_resource* resource, PGList& list);
 
-    types::logical_value_t get_value(std::pmr::memory_resource* resource, Node* node);
-    types::logical_value_t get_array(std::pmr::memory_resource* resource, PGList* list);
+    core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
+    core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 
     // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
-    types::logical_value_t evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
+    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
+                                                                         A_Expr* node);
 
-    void fill_column_definitions(std::vector<table::column_definition_t>& out,
-                                 std::pmr::memory_resource* resource,
-                                 PGList& table_elts);
+    core::result_wrapper_t<std::vector<table::column_definition_t>>
+    get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
     std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts);
 
 } // namespace components::sql::transform

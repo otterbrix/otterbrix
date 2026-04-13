@@ -7,17 +7,19 @@ namespace components::catalog {
                                          namespace_storage* ns_storage)
 
         : id_(id)
-        , error_()
+        , error_(core::error_t::no_error())
         , transaction_list_(transactions)
-        , ns_storage_ptr_(ns_storage) {
+        , ns_storage_ptr_(ns_storage)
+        , resource_(resource) {
         transaction_ = std::unique_ptr<metadata_transaction>(new metadata_transaction(resource));
     }
 
-    transaction_scope::transaction_scope(std::pmr::memory_resource* resource, catalog_error error)
+    transaction_scope::transaction_scope(std::pmr::memory_resource* resource, core::error_t error)
         : id_(table_id(resource, table_namespace_t{}, ""))
         , error_(std::move(error))
         , transaction_list_()
-        , ns_storage_ptr_(nullptr) {
+        , ns_storage_ptr_(nullptr)
+        , resource_(resource) {
         transaction_ = std::unique_ptr<metadata_transaction>(new metadata_transaction(resource, error_));
     }
 
@@ -59,18 +61,20 @@ namespace components::catalog {
 
     metadata_transaction& transaction_scope::transaction() { return *transaction_; }
 
-    const catalog_error& transaction_scope::error() const { return error_; }
+    const core::error_t& transaction_scope::error() const { return error_; }
 
     void transaction_scope::commit() {
         if (is_committed_ || is_aborted_) {
-            error_ = catalog_error(transaction_mistake_t::TRANSACTION_FINALIZED, "Transaction already finalized!");
+            error_ = core::error_t(core::error_code_t::transaction_finalized,
+                                   std::pmr::string{"Transaction already finalized!", resource_});
         }
 
         if (transaction_list_.expired()) {
-            error_ = catalog_error(transaction_mistake_t::COMMIT_FAILED, "Transaction list has been destroyed!");
+            error_ = core::error_t(core::error_code_t::commit_failed,
+                                   std::pmr::string{"Transaction list has been destroyed!", resource_});
         }
 
-        if (!error_ && ns_storage_ptr_) {
+        if (!error_.contains_error() && ns_storage_ptr_) {
             auto list = transaction_list_.lock();
             error_ = transaction_->commit([&](metadata_diff&& diff) {
                 auto& info = ns_storage_ptr_->get_namespace_info(id_.get_namespace()).tables;
@@ -78,15 +82,16 @@ namespace components::catalog {
                 if (auto it = info.find(id_.table_name()); it != info.end()) {
                     auto new_diff = diff.apply(it->second);
                     it->second = new_diff;
-                    return catalog_error();
+                    return core::error_t::no_error();
                 }
 
-                return catalog_error(transaction_mistake_t::COMMIT_FAILED, "Table not found!");
+                return core::error_t(core::error_code_t::commit_failed,
+                                     std::pmr::string{"Table not found!", resource_});
             });
 
             list->remove_transaction(id_);
 
-            if (!error_) {
+            if (!error_.contains_error()) {
                 is_committed_ = true;
                 return;
             }
@@ -97,7 +102,8 @@ namespace components::catalog {
 
     void transaction_scope::abort() {
         if (is_committed_) {
-            error_ = catalog_error(transaction_mistake_t::TRANSACTION_FINALIZED, "Transaction already committed!");
+            error_ = core::error_t(core::error_code_t::transaction_finalized,
+                                   std::pmr::string{"Transaction already committed!", resource_});
             return;
         }
 

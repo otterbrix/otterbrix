@@ -45,11 +45,11 @@ namespace components::compute {
     class function_executor {
     public:
         virtual ~function_executor() = default;
-        virtual compute_status init(const function_options* options, exec_context_t& exec_ctx) = 0;
+        virtual core::error_t init(const function_options* options, exec_context_t& exec_ctx) = 0;
 
-        virtual compute_result<datum_t> execute(const vector::data_chunk_t& args) = 0;
-        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
-        virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
+        virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args) = 0;
+        virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
+        virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
     };
 
     class function_visitor {
@@ -62,8 +62,7 @@ namespace components::compute {
     };
 
     template<typename T>
-        requires std::is_move_constructible_v<T>
-    class function_visitor_with_result : public function_visitor {
+    requires std::is_move_constructible_v<T> class function_visitor_with_result : public function_visitor {
     public:
         T result;
 
@@ -83,29 +82,31 @@ namespace components::compute {
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
 
-        virtual compute_result<datum_t> execute(const vector::data_chunk_t& args,
-                                                const function_options* options = nullptr,
-                                                exec_context_t& ctx = default_exec_context()) const;
+        virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args,
+                                                        const function_options* options = nullptr,
+                                                        exec_context_t& ctx = default_exec_context()) const;
 
-        virtual compute_result<datum_t> execute(const std::vector<vector::data_chunk_t>& args,
-                                                const function_options* options = nullptr,
-                                                exec_context_t& ctx = default_exec_context()) const;
+        virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& args,
+                                                        const function_options* options = nullptr,
+                                                        exec_context_t& ctx = default_exec_context()) const;
 
-        virtual compute_result<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs,
-                                                const function_options* options = nullptr,
-                                                exec_context_t& ctx = default_exec_context()) const;
+        virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs,
+                                                        const function_options* options = nullptr,
+                                                        exec_context_t& ctx = default_exec_context()) const;
 
         const function_options* default_options() const;
 
-        virtual compute_result<std::reference_wrapper<const compute_kernel>>
-        dispatch_exact(const std::pmr::vector<types::complex_logical_type>& types) const;
+        virtual core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
+        dispatch_exact(std::pmr::memory_resource* resource,
+                       const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        virtual compute_result<std::unique_ptr<detail::kernel_executor_t>>
-        get_best_executor(std::pmr::vector<types::complex_logical_type> types) const;
+        virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
+        get_best_executor(std::pmr::memory_resource* resource,
+                          std::pmr::vector<types::complex_logical_type> types) const;
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
-        [[nodiscard]] virtual std::unique_ptr<function> get_copy() const = 0;
+        [[nodiscard]] virtual std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const = 0;
 
     protected:
         function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options = nullptr);
@@ -136,7 +137,7 @@ namespace components::compute {
                 kernels_.reserve(kernel_slots_);
             }
 
-            std::vector<std::reference_wrapper<const KernelType>> kernels() const {
+            [[nodiscard]] std::vector<std::reference_wrapper<const KernelType>> kernels() const {
                 std::vector<std::reference_wrapper<const KernelType>> out;
                 out.reserve(kernels_.size());
                 for (auto& k : kernels_) {
@@ -148,21 +149,27 @@ namespace components::compute {
 
             size_t num_kernels() const override { return kernels_.size(); }
 
-            compute_status add_kernel(KernelType kernel) {
+            core::error_t add_kernel(std::pmr::memory_resource* resource, KernelType kernel) {
                 if (kernels_.size() >= kernel_slots_) {
-                    return compute_status::invalid("Cannot append kernel: all " + std::to_string(kernel_slots_) +
-                                                   " slots are taken!");
+                    return core::error_t(core::error_code_t::kernel_error,
+
+                                         std::pmr::string{"Cannot append kernel: all " + std::to_string(kernel_slots_) +
+                                                              " slots are taken!",
+                                                          resource});
                 }
 
                 size_t input_sz = kernel.signature().input_types.size();
                 if (!arity_.varargs && input_sz != arity_.num_args) {
-                    return compute_status::invalid("Cannot append kernel: arity mismatch, function requires " +
-                                                   std::to_string(arity_.num_args) +
-                                                   " args, while kernel: " + std::to_string(input_sz));
+                    return core::error_t(core::error_code_t::kernel_error,
+
+                                         std::pmr::string{"Cannot append kernel: arity mismatch, function requires " +
+                                                              std::to_string(arity_.num_args) +
+                                                              " args, while kernel: " + std::to_string(input_sz),
+                                                          resource});
                 }
 
                 kernels_.emplace_back(std::move(kernel));
-                return compute_status::ok();
+                return core::error_t::no_error();
             }
 
             [[nodiscard]] std::vector<kernel_signature_t> get_signatures() const override;
@@ -173,7 +180,7 @@ namespace components::compute {
         };
 
         template<typename KernelType>
-        std::vector<kernel_signature_t> function_impl<KernelType>::get_signatures() const {
+        [[nodiscard]] std::vector<kernel_signature_t> function_impl<KernelType>::get_signatures() const {
             std::vector<kernel_signature_t> result;
             result.reserve(kernels_.size());
             for (const auto& kernel : kernels_) {
@@ -213,7 +220,7 @@ namespace components::compute {
         vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
 
-        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
+        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
     class aggregate_function : public detail::function_impl<aggregate_kernel> {
@@ -221,7 +228,7 @@ namespace components::compute {
         aggregate_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
 
-        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
+        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
     class row_function : public detail::function_impl<row_kernel> {
@@ -229,24 +236,29 @@ namespace components::compute {
         row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
 
-        [[nodiscard]] std::unique_ptr<function> get_copy() const override;
+        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
     // WARNING: function_registry_t does NOT provide thread-safety guarantees, use mutex
     class function_registry_t {
     public:
+        explicit function_registry_t(std::pmr::memory_resource* resource);
+
         static function_registry_t* get_default();
 
-        compute_result<function_uid> add_function(function_ptr function);
+        [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
         function* get_function(function_uid uid) const;
-        std::vector<std::pair<std::string, function_uid>> get_functions() const;
+        [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
+
+        std::pmr::memory_resource* resource() const noexcept;
 
     private:
         void register_builtin_functions();
 
         static std::once_flag init_flag_;
         static std::unique_ptr<function_registry_t> default_registry_;
-        std::unordered_map<function_uid, function_ptr> functions_;
+        std::pmr::memory_resource* resource_;
+        std::pmr::unordered_map<function_uid, function_ptr> functions_;
         function_uid current_uid_{0};
     };
 

@@ -29,7 +29,6 @@ private:
         cfg.log.level = log_t::level::off;
         cfg.disk.on = config.disk_on;
         cfg.wal.on = config.wal_on;
-        cfg.wal.sync_to_disk = config.disk_on;
         return cfg;
     }
 };

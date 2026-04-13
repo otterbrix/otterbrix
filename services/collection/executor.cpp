@@ -5,6 +5,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <services/wal/wal_sync_mode.hpp>
 
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
@@ -313,7 +314,9 @@ namespace services::collection::executor {
                 auto [_wc, wcf] = actor_zeta::send(wal_address_,
                                                    &wal::manager_wal_replicate_t::commit_txn,
                                                    session,
-                                                   txn_data.transaction_id);
+                                                   txn_data.transaction_id,
+                                                   wal::wal_sync_mode::NORMAL,
+                                                   std::string(coll_name.database));
                 co_await std::move(wcf);
             }
 

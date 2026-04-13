@@ -7,6 +7,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
+#include <services/wal/wal_sync_mode.hpp>
 
 namespace services::wal {
 
@@ -17,7 +18,8 @@ namespace services::wal {
         using unique_future = actor_zeta::unique_future<T>;
         actor_zeta::unique_future<std::vector<record_t>> load(session_id_t session, id_t wal_id);
 
-        actor_zeta::unique_future<id_t> commit_txn(session_id_t session, uint64_t transaction_id);
+        actor_zeta::unique_future<id_t> commit_txn(session_id_t session, uint64_t transaction_id,
+                                                   wal_sync_mode sync_mode, std::string database_name);
 
         actor_zeta::unique_future<void> truncate_before(session_id_t session, id_t checkpoint_wal_id);
 

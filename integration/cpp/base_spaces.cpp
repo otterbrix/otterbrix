@@ -118,7 +118,7 @@ namespace otterbrix {
         , scheduler_dispatcher_(new actor_zeta::shared_work(3, 1000))
         , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_disk_()
-        , manager_wal_()
+        , manager_wal_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_index_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , scheduler_disk_(new actor_zeta::shared_work(3, 1000)) {
@@ -178,7 +178,7 @@ namespace otterbrix {
                                      : read_index_definitions(config.disk.path, &resource, log_);
 
         // Read WAL records via wal_reader_t
-        services::wal::wal_reader_t wal_reader(config.wal, &resource, log_);
+        services::wal::wal_reader_t wal_reader(config.wal, log_);
         auto wal_records = wal_reader.read_committed_records(last_wal_id);
 
         trace(log_,
@@ -191,20 +191,13 @@ namespace otterbrix {
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
         services::wal::manager_wal_replicate_t* wal_ptr = nullptr;
-        services::wal::manager_wal_replicate_empty_t* wal_empty_ptr = nullptr;
-        if (config.wal.on) {
+        {
             auto manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                                      scheduler_.get(),
                                                                                      config.wal,
                                                                                      log_);
             manager_wal_address = manager->address();
             wal_ptr = manager.get();
-            manager_wal_ = std::move(manager);
-        } else {
-            auto manager =
-                actor_zeta::spawn<services::wal::manager_wal_replicate_empty_t>(&resource, scheduler_.get(), log_);
-            manager_wal_address = manager->address();
-            wal_empty_ptr = manager.get();
             manager_wal_ = std::move(manager);
         }
         trace(log_, "spaces::manager_wal finish");
@@ -246,12 +239,7 @@ namespace otterbrix {
 
         manager_dispatcher_->sync(std::make_tuple(manager_wal_address, manager_disk_address, manager_index_address));
 
-        if (wal_ptr) {
-            wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-        } else {
-            wal_empty_ptr->sync(
-                std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
-        }
+        wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
 
         if (disk_ptr) {
             disk_ptr->sync(std::make_tuple(manager_dispatcher_->address()));
@@ -371,6 +359,23 @@ namespace otterbrix {
                 } else {
                     auto otbx_path =
                         config.disk.path / info.name.database / "main" / info.name.collection / "table.otbx";
+                    auto prev_path = otbx_path;
+                    prev_path += ".prev";
+
+                    // W-TORN recovery: if .prev exists, previous checkpoint was interrupted.
+                    if (std::filesystem::exists(prev_path)) {
+                        if (!std::filesystem::exists(otbx_path) ||
+                            std::filesystem::file_size(otbx_path) == 0) {
+                            // Current file missing or empty — restore from backup.
+                            warn(log_, "W-TORN recovery: restoring {} from {}", otbx_path.string(),
+                                 prev_path.string());
+                            std::filesystem::rename(prev_path, otbx_path);
+                        } else {
+                            // Both exist — current completed, remove stale backup.
+                            std::filesystem::remove(prev_path);
+                        }
+                    }
+
                     disk_ptr->load_storage_disk_sync(info.name, otbx_path);
                 }
             }

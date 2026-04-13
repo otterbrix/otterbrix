@@ -822,13 +822,18 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
 
     INFO("check WAL segment files exist") {
         // With 4KB segments and 500 rows of data, there should be multiple WAL files
+        // New WAL puts files in per-database subdirectories
         int wal_file_count = 0;
         if (std::filesystem::exists(config.wal.path)) {
-            for (const auto& entry : std::filesystem::directory_iterator(config.wal.path)) {
-                if (entry.is_regular_file()) {
-                    auto name = entry.path().filename().string();
-                    if (name.find(".wal_") == 0) {
-                        ++wal_file_count;
+            for (const auto& database_entry : std::filesystem::directory_iterator(config.wal.path)) {
+                if (database_entry.is_directory()) {
+                    for (const auto& segment_entry : std::filesystem::directory_iterator(database_entry.path())) {
+                        if (segment_entry.is_regular_file()) {
+                            auto filename = segment_entry.path().filename().string();
+                            if (filename.find("wal_") == 0) {
+                                ++wal_file_count;
+                            }
+                        }
                     }
                 }
             }

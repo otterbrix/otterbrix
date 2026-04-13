@@ -225,9 +225,9 @@ namespace components::compute {
                                                       const function_options* options,
                                                       exec_context_t& ctx) const {
         if (args.empty()) {
-            core::error_t(core::error_code_t::kernel_error,
-                          core::error_tag_t::compute_kernel,
-                          std::pmr::string{"Execution batch cannot be empty!", ctx.resource()});
+            return core::error_t(core::error_code_t::kernel_error,
+                                 core::error_tag_t::compute_kernel,
+                                 std::pmr::string{"Execution batch cannot be empty!", ctx.resource()});
         }
 
         auto fn_exec =

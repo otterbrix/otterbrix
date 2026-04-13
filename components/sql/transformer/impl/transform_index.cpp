@@ -9,7 +9,7 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_create_index(IndexStmt& node) {
         if (!(node.relation->relname && node.relation->catalogname && node.idxname)) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"incorrect create index arguments", resource_});
             return nullptr;
         }

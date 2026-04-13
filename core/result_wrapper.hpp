@@ -55,90 +55,62 @@ namespace core {
         incorrect_function_return_type,
     };
 
-    // Where does error originate from
-    enum class error_tag_t : int32_t
-    {
-        general = -1,
-        none = 0,
-        parser,
-        binder,
-        catalog,
-        plan_validation,
-        executor,
-        compute_kernel,
-        physical_plan,
-    };
-
     struct error_t {
         error_code_t type;
-        error_tag_t source;
         std::pmr::string what;
 #if defined(DEV_MODE)
         std::source_location error_origin{};
 
         explicit error_t(std::pmr::memory_resource* resource,
                          error_code_t type,
-                         error_tag_t source,
                          std::source_location location = std::source_location::current())
             : type(type)
-            , source(source)
             , what(resource)
             , error_origin(location) {}
         explicit error_t(error_code_t type,
-                         error_tag_t source,
                          const std::pmr::string& what,
                          std::source_location location = std::source_location::current())
             : type(type)
-            , source(source)
             , what(what)
             , error_origin(location) {}
         explicit error_t(error_code_t type,
-                         error_tag_t source,
                          std::pmr::string&& what,
                          std::source_location location = std::source_location::current())
             : type(type)
-            , source(source)
             , what(std::move(what))
             , error_origin(location) {}
 
         error_t& operator=(const error_t& other) {
             type = other.type;
-            source = other.source;
             reconstruct_string(other.what);
             error_origin = other.error_origin;
             return *this;
         }
         error_t& operator=(error_t&& other) noexcept {
             type = other.type;
-            source = other.source;
             reconstruct_string(std::move(other.what));
             error_origin = std::move(other.error_origin);
             return *this;
         }
 #else
 
-        explicit error_t(std::pmr::memory_resource* resource, error_code_t type, error_tag_t source)
+        explicit error_t(std::pmr::memory_resource* resource, error_code_t type)
             : type(type)
-            , source(source)
             , what(resource) {}
-        explicit error_t(error_code_t type, error_tag_t source, const std::pmr::string& what)
+        explicit error_t(error_code_t type, const std::pmr::string& what)
             : type(type)
-            , source(source)
             , what(what) {}
-        explicit error_t(error_code_t type, error_tag_t source, std::pmr::string&& what)
+        explicit error_t(error_code_t type, std::pmr::string&& what)
             : type(type)
-            , source(source)
             , what(std::move(what)) {}
 
         error_t& operator=(const error_t& other) {
             type = other.type;
-            source = other.source;
             reconstruct_string(other.what);
             return *this;
         }
         error_t& operator=(error_t&& other) noexcept {
             type = other.type;
-            source = other.source;
             reconstruct_string(std::move(other.what));
             return *this;
         }
@@ -154,7 +126,6 @@ namespace core {
     private:
         explicit error_t()
             : type(error_code_t::none)
-            , source(error_tag_t::none)
             // since we are using null_memory_resource, we have to explicitly change allocator on assignments
             , what(std::pmr::null_memory_resource()) {}
 

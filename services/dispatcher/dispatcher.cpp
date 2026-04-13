@@ -237,7 +237,7 @@ namespace services::dispatcher {
             case node_type::create_database_t:
                 if (auto res = check_namespace_exists(resource(), catalog_, id); !res.contains_error()) {
                     error = core::error_t(core::error_code_t::database_already_exists,
-                                          core::error_tag_t::catalog,
+
                                           std::pmr::string{"database already exists", resource()});
                 }
                 break;
@@ -253,7 +253,7 @@ namespace services::dispatcher {
                 } else if (auto table_res = check_collection_exists(resource(), catalog_, id);
                            !table_res.contains_error()) {
                     error = core::error_t(core::error_code_t::database_already_exists,
-                                          core::error_tag_t::catalog,
+
                                           std::pmr::string{"table already exists", resource()});
                 } else {
                     auto& n = reinterpret_cast<node_create_collection_ptr&>(logic_plan);
@@ -277,7 +277,7 @@ namespace services::dispatcher {
                 if (auto res = check_type_exists(resource(), catalog_, n->type().type_name()); !res.contains_error()) {
                     error = core::error_t(
                         core::error_code_t::type_already_exists,
-                        core::error_tag_t::catalog,
+
                         std::pmr::string{"type: \'" + n->type().alias() + "\' already exists", resource()});
                     break;
                 } else {
@@ -725,7 +725,7 @@ namespace services::dispatcher {
         if (!catalog_.check_function_conflicts(func_name, func_signatures)) {
             co_return std::make_unique<core::error_t>(
                 core::error_code_t::function_registry_error,
-                core::error_tag_t::plan_validation,
+
                 std::pmr::string{"there was a conflict, while trying to register a function", resource()});
         } else {
             // we have to send it to all executors and validate, that results are the same...
@@ -754,7 +754,7 @@ namespace services::dispatcher {
             } else {
                 co_return std::make_unique<core::error_t>(
                     core::error_code_t::function_registry_error,
-                    core::error_tag_t::plan_validation,
+
                     std::pmr::string{"executors disagree on assigned uid, currently the only way "
                                      "to fix this is a reboot, but we are working on it",
                                      resource()});
@@ -772,7 +772,7 @@ namespace services::dispatcher {
             co_return std::make_unique<core::error_t>(core::error_t::no_error());
         }
         co_return std::make_unique<core::error_t>(core::error_code_t::function_registry_error,
-                                                  core::error_tag_t::plan_validation,
+
                                                   std::pmr::string{"could not find the function", resource()});
     }
 

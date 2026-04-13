@@ -17,7 +17,7 @@ namespace components::sql::transform {
         std::vector<types::logical_value_t> values;
         if (!node.vals || node.vals->lst.empty()) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"Can not create enum without values", resource_});
             return nullptr;
         }

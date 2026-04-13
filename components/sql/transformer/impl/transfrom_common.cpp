@@ -16,7 +16,6 @@ namespace components::sql::transform {
         auto stype = get_arithmetic_scalar_type(op_str);
         if (stype == scalar_type::invalid) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   core::error_tag_t::parser,
                                    std::pmr::string{"invalid arithmetics operator", resource_});
             return nullptr;
         }
@@ -63,7 +62,6 @@ namespace components::sql::transform {
                     }
                 }
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
                                        std::pmr::string{"Unsupported A_Expr in arithmetic operand", resource_});
                 return nullptr;
             }
@@ -72,7 +70,6 @@ namespace components::sql::transform {
             default:
                 error_ =
                     core::error_t(core::error_code_t::sql_parse_error,
-                                  core::error_tag_t::parser,
                                   std::pmr::string{"Unsupported operand type in arithmetic expression", resource_});
                 return nullptr;
         }
@@ -87,7 +84,6 @@ namespace components::sql::transform {
         if (!is_arithmetic_operator(op_str)) {
             error_ =
                 core::error_t(core::error_code_t::sql_parse_error,
-                              core::error_tag_t::parser,
                               std::pmr::string{"Unsupported operator in SELECT: " + std::string(op_str), resource_});
             return;
         }
@@ -98,7 +94,6 @@ namespace components::sql::transform {
             auto stype = get_arithmetic_scalar_type(op_str);
             if (stype == scalar_type::invalid) {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
                                        std::pmr::string{"invalid arithmetics operand", resource_});
                 return;
             }
@@ -143,7 +138,6 @@ namespace components::sql::transform {
                         auto sub_stype = get_arithmetic_scalar_type(sub_op);
                         if (sub_stype == scalar_type::invalid) {
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                                   core::error_tag_t::parser,
                                                    std::pmr::string{"invalid arithmetics operand", resource_});
                             return nullptr;
                         }
@@ -159,7 +153,6 @@ namespace components::sql::transform {
                     }
                 }
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
                                        std::pmr::string{"Unsupported A_Expr in SELECT operand", resource_});
                 return nullptr;
             }
@@ -205,7 +198,6 @@ namespace components::sql::transform {
             }
             default:
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
                                        std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
                 return nullptr;
         }
@@ -235,7 +227,6 @@ namespace components::sql::transform {
                 return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                               core::error_tag_t::parser,
                                std::pmr::string{"incorrect string value in get_str_value", resource_});
         return {};
     }
@@ -283,7 +274,6 @@ namespace components::sql::transform {
                     } else {
                         error_ = core::error_t(
                             core::error_code_t::sql_parse_error,
-                            core::error_tag_t::parser,
                             std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr",
                                              resource_});
                         return;
@@ -310,7 +300,6 @@ namespace components::sql::transform {
                 }
                 if (!node->name || nodeTag(node->name->lst.front().data) != T_String) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           core::error_tag_t::parser,
                                            std::pmr::string{"Unsupported expr in transform_a_exr", resource_});
                     return nullptr;
                 }
@@ -331,7 +320,7 @@ namespace components::sql::transform {
                     } else {
                         error_ =
                             core::error_t(core::error_code_t::sql_parse_error,
-                                          core::error_tag_t::parser,
+
                                           std::pmr::string{"LIKE: left side must be a column reference", resource_});
                         return nullptr;
                     }
@@ -362,7 +351,7 @@ namespace components::sql::transform {
                 auto comp_type = get_compare_type(op_str);
                 if (comp_type == compare_type::invalid) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           core::error_tag_t::parser,
+
                                            std::pmr::string{"invalid compare operand", resource_});
                     return nullptr;
                 }
@@ -397,7 +386,7 @@ namespace components::sql::transform {
                             }
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-                                core::error_tag_t::parser,
+
                                 std::pmr::string{"unrecognized expression in transform_a_expr", resource_});
                             return nullptr;
                         }
@@ -437,7 +426,7 @@ namespace components::sql::transform {
                         }
                         default:
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                                   core::error_tag_t::parser,
+
                                                    std::pmr::string{"Unsupported expression", resource_});
                             return nullptr;
                     }
@@ -450,7 +439,7 @@ namespace components::sql::transform {
             case AEXPR_NOT: {
                 if (nodeTag(node->rexpr) != T_A_Expr && nodeTag(node->rexpr) != T_A_Indirection) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           core::error_tag_t::parser,
+
                                            std::pmr::string{"Unsupported expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -464,7 +453,7 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
@@ -487,7 +476,7 @@ namespace components::sql::transform {
                 if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"IN expression: left side must be a column reference", resource_});
                     return nullptr;
                 }
@@ -513,7 +502,7 @@ namespace components::sql::transform {
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-                    core::error_tag_t::parser,
+
                     std::pmr::string{"Unsupported node type: " + expr_kind_to_string(node->kind), resource_});
                 return nullptr;
         }
@@ -562,7 +551,7 @@ namespace components::sql::transform {
         } else {
             error_ =
                 core::error_t(core::error_code_t::sql_parse_error,
-                              core::error_tag_t::parser,
+
                               std::pmr::string{"Unsupported node type: " + node_tag_to_string(node->type), resource_});
             return nullptr;
         }
@@ -628,7 +617,7 @@ namespace components::sql::transform {
                     expr->append_param(condition);
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           core::error_tag_t::parser,
+
                                            std::pmr::string{"Unsupported WHEN condition type", resource_});
                     return;
                 }
@@ -686,7 +675,7 @@ namespace components::sql::transform {
                         auto stype = get_arithmetic_scalar_type(sub_op);
                         if (stype == scalar_type::invalid) {
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                                   core::error_tag_t::parser,
+
                                                    std::pmr::string{"invalid arithmetics operand", resource_});
                             return nullptr;
                         }
@@ -721,7 +710,7 @@ namespace components::sql::transform {
                     auto comp_type = get_compare_type(op_str);
                     if (comp_type == compare_type::invalid) {
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               core::error_tag_t::parser,
+
                                                std::pmr::string{"invalid comparison operand", resource_});
                         return nullptr;
                     }
@@ -739,7 +728,7 @@ namespace components::sql::transform {
             }
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                               core::error_tag_t::parser,
+
                                std::pmr::string{"Unsupported expression in HAVING clause", resource_});
         return nullptr;
     }
@@ -749,7 +738,7 @@ namespace components::sql::transform {
                                                     logical_plan::parameter_node_t* params) {
         if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
             error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"IS NULL: argument must be a column reference", resource_});
             return nullptr;
         }

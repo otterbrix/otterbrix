@@ -163,7 +163,7 @@ namespace components::sql::transform {
                 names.right_alias = construct_alias(pg_ptr_cast<RangeVar>(from_first)->alias);
             } else {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"undefined token in UPDATE FROM", resource_});
                 return nullptr;
             }

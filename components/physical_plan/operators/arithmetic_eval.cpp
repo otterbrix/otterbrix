@@ -38,7 +38,7 @@ namespace components::operators {
                     return result;
                 } else {
                     return core::error_t(core::error_code_t::arithmetics_failure,
-                                         core::error_tag_t::physical_plan,
+
                                          std::pmr::string{"Column not found in chunk: " + key.as_string()});
                 }
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
@@ -341,7 +341,7 @@ namespace components::operators {
         if (op == expressions::scalar_type::unary_minus) {
             if (operands.empty()) {
                 return core::error_t(core::error_code_t::arithmetics_failure,
-                                     core::error_tag_t::physical_plan,
+
                                      std::pmr::string{"unary minus requires 1 operand", resource});
             }
             std::deque<vector::vector_t> temp_vecs;
@@ -366,7 +366,7 @@ namespace components::operators {
 
         if (operands.size() < 2) {
             return core::error_t(core::error_code_t::arithmetics_failure,
-                                 core::error_tag_t::physical_plan,
+
                                  std::pmr::string{"arithmetic expression requires at least 2 operands", resource});
         }
 
@@ -395,7 +395,7 @@ namespace components::operators {
                 types::logical_value_t zero(resource, right_op.value().scalar->type());
                 if (*right_op.value().scalar == zero) {
                     return core::error_t(core::error_code_t::arithmetics_failure,
-                                         core::error_tag_t::physical_plan,
+
                                          std::pmr::string{"division by zero", resource});
                 }
             }
@@ -417,7 +417,7 @@ namespace components::operators {
                 types::logical_value_t zero(resource, rval.type());
                 if (rval == zero) {
                     return core::error_t(core::error_code_t::arithmetics_failure,
-                                         core::error_tag_t::physical_plan,
+
                                          std::pmr::string{"division by zero", resource});
                 }
             }

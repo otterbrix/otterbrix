@@ -42,7 +42,7 @@ namespace components::sql::transform {
                 if (values.size() != fields.size()) {
                     error_ =
                         core::error_t(core::error_code_t::sql_parse_error,
-                                      core::error_tag_t::parser,
+
                                       std::pmr::string{"INSERT has more expressions than target columns", resource_});
                     return nullptr;
                 }

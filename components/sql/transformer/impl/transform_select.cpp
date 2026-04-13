@@ -27,7 +27,7 @@ namespace components::sql::transform {
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
@@ -53,7 +53,7 @@ namespace components::sql::transform {
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
@@ -73,7 +73,7 @@ namespace components::sql::transform {
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"invalid join type", resource_});
                 return;
             }
@@ -91,7 +91,7 @@ namespace components::sql::transform {
         } else {
             error_ = core::error_t(
                 core::error_code_t::sql_parse_error,
-                core::error_tag_t::parser,
+
                 std::pmr::string{"incorrect type for join join->larg node" + node_tag_to_string(nodeTag(join->larg)),
                                  resource_});
             return;
@@ -108,7 +108,7 @@ namespace components::sql::transform {
                 node_join->append_expression(transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, params));
             } else {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"incorrect type for join join->quals node" +
                                                             node_tag_to_string(nodeTag(join->quals)),
                                                         resource_});
@@ -122,17 +122,17 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
         if (node.op == SETOP_UNION) {
             error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"Select with union is not supported yet", resource_});
             return nullptr;
         } else if (node.op == SETOP_INTERSECT) {
             error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"Select with intersect is not supported yet", resource_});
             return nullptr;
         } else if (node.op == SETOP_EXCEPT) {
             error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   core::error_tag_t::parser,
+
                                    std::pmr::string{"Select with except is not supported yet", resource_});
             return nullptr;
         }
@@ -173,7 +173,7 @@ namespace components::sql::transform {
                         if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-                                core::error_tag_t::parser,
+
                                 std::pmr::string{"column names count has to equal actual column count", resource_});
                             return nullptr;
                         }
@@ -186,7 +186,7 @@ namespace components::sql::transform {
                 }
             } else {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"encountered unrecognized node", resource_});
                 return nullptr;
             }
@@ -328,7 +328,7 @@ namespace components::sql::transform {
                         }
 
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               core::error_tag_t::parser,
+
                                                std::pmr::string{"Unknown A_Expr kind in field clause", resource_});
                         return nullptr;
                     }
@@ -356,7 +356,7 @@ namespace components::sql::transform {
                                 // TODO: proper expression chaining support
                                 error_ = core::error_t(
                                     core::error_code_t::unimplemented_yet,
-                                    core::error_tag_t::parser,
+
                                     std::pmr::string{
                                         "Otterbrix does not support field selection from function results for now",
                                         resource_});
@@ -369,7 +369,7 @@ namespace components::sql::transform {
                             } else {
                                 error_ = core::error_t(
                                     core::error_code_t::unimplemented_yet,
-                                    core::error_tag_t::parser,
+
                                     std::pmr::string{"Encountered unsupported expression on transform_select",
                                                      resource_});
                                 return nullptr;
@@ -417,7 +417,7 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               core::error_tag_t::parser,
+
                                                std::pmr::string{"Unknown node type in field clause: " +
                                                                     node_tag_to_string(nodeTag(res->val)),
                                                                 resource_});
@@ -458,7 +458,7 @@ namespace components::sql::transform {
             for (auto field : node.groupClause->lst) {
                 if (nodeTag(field.data) != T_ColumnRef) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           core::error_tag_t::parser,
+
                                            std::pmr::string{"Unknown node type in group by clause: " +
                                                                 node_tag_to_string(nodeTag(field.data)),
                                                             resource_});
@@ -524,7 +524,7 @@ namespace components::sql::transform {
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Unknown node type in ORDER BY: " + node_tag_to_string(nodeTag(sortby->node)),
                                          resource_});
                     return nullptr;
@@ -540,7 +540,7 @@ namespace components::sql::transform {
         if (node.limitCount) {
             if (nodeTag(node.limitCount) != T_A_Const) {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       core::error_tag_t::parser,
+
                                        std::pmr::string{"Unknown node type in limit clause: " +
                                                             node_tag_to_string(nodeTag(node.limitCount)),
                                                         resource_});
@@ -560,7 +560,7 @@ namespace components::sql::transform {
                 default:
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
                                          resource_});
                     return nullptr;

@@ -92,7 +92,7 @@ namespace components::compute {
                              const std::pmr::vector<fixed_t>& in) -> core::result_wrapper_t<fixed_t> {
             if (in.size() <= input_index) {
                 return core::error_t(core::error_code_t::incorrect_function_argument,
-                                     core::error_tag_t::compute_kernel,
+
                                      std::pmr::string{"less inputs than expected", resource});
             }
             return in[input_index];

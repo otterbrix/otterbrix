@@ -66,13 +66,11 @@ namespace components::catalog {
     void transaction_scope::commit() {
         if (is_committed_ || is_aborted_) {
             error_ = core::error_t(core::error_code_t::transaction_finalized,
-                                   core::error_tag_t::catalog,
                                    std::pmr::string{"Transaction already finalized!", resource_});
         }
 
         if (transaction_list_.expired()) {
             error_ = core::error_t(core::error_code_t::commit_failed,
-                                   core::error_tag_t::catalog,
                                    std::pmr::string{"Transaction list has been destroyed!", resource_});
         }
 
@@ -88,7 +86,6 @@ namespace components::catalog {
                 }
 
                 return core::error_t(core::error_code_t::commit_failed,
-                                     core::error_tag_t::catalog,
                                      std::pmr::string{"Table not found!", resource_});
             });
 
@@ -106,7 +103,6 @@ namespace components::catalog {
     void transaction_scope::abort() {
         if (is_committed_) {
             error_ = core::error_t(core::error_code_t::transaction_finalized,
-                                   core::error_tag_t::catalog,
                                    std::pmr::string{"Transaction already committed!", resource_});
             return;
         }

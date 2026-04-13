@@ -258,7 +258,7 @@ namespace components::operators {
                     return;
                 } else if (result_vec.value().type().type() == types::logical_type::NA) {
                     set_error(core::error_t(core::error_code_t::physical_plan_error,
-                                            core::error_tag_t::physical_plan,
+
                                             std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                     return;
                 }

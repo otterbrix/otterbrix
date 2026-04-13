@@ -237,14 +237,14 @@ namespace otterbrix {
         } catch (const std::exception& exception) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             core::error_tag_t::parser,
+
                                              std::pmr::string{exception.what(), resource()}));
         }
 
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             core::error_tag_t::parser,
+
                                              std::pmr::string{"unknown parser error", resource()}));
         }
         transformer local_transformer(resource(), query.c_str());

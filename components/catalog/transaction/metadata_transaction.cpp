@@ -22,7 +22,6 @@ namespace components::catalog {
 
         if (state_ != State::ACTIVE) {
             error_ = core::error_t(core::error_code_t::transaction_inactive,
-                                   core::error_tag_t::catalog,
                                    std::pmr::string{"Transaction is not active", resource_});
             return false;
         }
@@ -103,7 +102,6 @@ namespace components::catalog {
             auto it = savepoints_.find(name);
             if (it == savepoints_.end()) {
                 error_ = core::error_t(core::error_code_t::missing_savepoint,
-                                       core::error_tag_t::catalog,
                                        std::pmr::string{"Savepoint not found", resource_});
                 return *this;
             }

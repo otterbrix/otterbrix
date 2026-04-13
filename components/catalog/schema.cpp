@@ -23,7 +23,6 @@ namespace components::catalog {
                 std::pmr::string alias(column.name(), resource);
                 if (names.count(alias)) {
                     error_ = core::error_t(core::error_code_t::duplicate_field,
-                                           core::error_tag_t::catalog,
                                            std::pmr::string{"Duplicate column with name \"" + column.type().alias() +
                                                                 "\", names must be unique",
                                                             resource_});
@@ -39,7 +38,6 @@ namespace components::catalog {
             for (const auto& desc : descriptions_) {
                 if (id_to_struct_idx_.find(desc.field_id) != id_to_struct_idx_.end()) {
                     error_ = core::error_t(core::error_code_t::duplicate_field,
-                                           core::error_tag_t::catalog,
                                            std::pmr::string{"Duplicate id in schema: " + std::to_string(desc.field_id) +
                                                                 ", ids must be unique",
                                                             resource_});
@@ -53,7 +51,6 @@ namespace components::catalog {
                 if (id_to_struct_idx_.find(key) == id_to_struct_idx_.end()) {
                     error_ = core::error_t(
                         core::error_code_t::missing_primary_key_id,
-                        core::error_tag_t::catalog,
                         std::pmr::string{"No field with id from primary key: " + std::to_string(key), resource_});
                 }
             }
@@ -127,7 +124,7 @@ namespace components::catalog {
         }
 
         error_ = core::error_t(core::error_code_t::missing_field,
-                               core::error_tag_t::catalog,
+
                                std::pmr::string{"No field with such id: " + std::to_string(id), resource_});
         return std::numeric_limits<size_t>::max();
     }
@@ -143,7 +140,7 @@ namespace components::catalog {
         }
 
         error_ = core::error_t(core::error_code_t::missing_field,
-                               core::error_tag_t::catalog,
+
                                std::pmr::string{"No field with such name: \"" + std::string(name) + "\"", resource_});
         return std::numeric_limits<size_t>::max();
     }

@@ -69,7 +69,7 @@ namespace components::sql::transform {
             if (it == param_insert_map_.end()) {
                 last_error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-                    core::error_tag_t::binder,
+
                     std::pmr::string{"Parameter with id=" + std::to_string(id) + " not found", resource_});
                 return *this;
             }
@@ -100,7 +100,7 @@ namespace components::sql::transform {
             if (it == param_map_.end()) {
                 last_error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-                    core::error_tag_t::binder,
+
                     std::pmr::string{"Parameter with id=" + std::to_string(id) + " not found", resource_});
                 return *this;
             }
@@ -147,7 +147,7 @@ namespace components::sql::transform {
                     msg += " $" + std::to_string(id);
                 }
             }
-            last_error_ = core::error_t(core::error_code_t::sql_parse_error, core::error_tag_t::binder, std::move(msg));
+            last_error_ = core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
             return last_error_;
         }
 

@@ -27,14 +27,14 @@ namespace components::compute {
                              const std::pmr::vector<complex_logical_type>& types) const {
         if (!arity_.varargs && arity_.num_args != types.size()) {
             return core::error_t(core::error_code_t::kernel_error,
-                                 core::error_tag_t::compute_kernel,
+
                                  std::pmr::string{"Arity mismatch", resource});
         }
 
         auto* kernel = detail::dispatch_exact_impl(*this, types);
         if (!kernel) {
             return core::error_t(core::error_code_t::kernel_error,
-                                 core::error_tag_t::compute_kernel,
+
                                  std::pmr::string{"No matching kernel", resource});
         }
 
@@ -65,14 +65,14 @@ namespace components::compute {
                                  const std::pmr::vector<types::complex_logical_type>& types) {
             if (types.size() != in_types_.size()) {
                 return core::error_t(core::error_code_t::kernel_error,
-                                     core::error_tag_t::compute_kernel,
+
                                      std::pmr::string{"Invalid argument count", resource});
             }
 
             for (size_t i = 0; i < types.size(); ++i) {
                 if (types[i].type() != in_types_[i].type()) {
                     return core::error_t(core::error_code_t::kernel_error,
-                                         core::error_tag_t::compute_kernel,
+
                                          std::pmr::string{"Type mismatch", resource});
                 }
             }
@@ -94,7 +94,7 @@ namespace components::compute {
             for (auto it = ++args.begin(); it != args.end(); ++it) {
                 if (types != it->types()) {
                     return core::error_t(core::error_code_t::kernel_error,
-                                         core::error_tag_t::compute_kernel,
+
                                          std::pmr::string{"Type mismatch", resource});
                 }
             }
@@ -160,7 +160,7 @@ namespace components::compute {
             if (func_.doc().options_required && !options && !func_.default_options()) {
                 return core::error_t(
                     core::error_code_t::kernel_error,
-                    core::error_tag_t::compute_kernel,
+
                     std::pmr::string{"Function " + func_.name() + " cannot be executed without options",
                                      kernel_ctx_.value().exec_context().resource()});
             }
@@ -195,7 +195,7 @@ namespace components::compute {
 
         if (!vis.result) {
             return core::error_t(core::error_code_t::kernel_error,
-                                 core::error_tag_t::compute_kernel,
+
                                  std::pmr::string{"Unsupported function kind", resource});
         }
 
@@ -226,7 +226,7 @@ namespace components::compute {
                                                       exec_context_t& ctx) const {
         if (args.empty()) {
             return core::error_t(core::error_code_t::kernel_error,
-                                 core::error_tag_t::compute_kernel,
+
                                  std::pmr::string{"Execution batch cannot be empty!", ctx.resource()});
         }
 
@@ -334,7 +334,7 @@ namespace components::compute {
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
             core::error_t(core::error_code_t::function_registry_error,
-                          core::error_tag_t::compute_kernel,
+
                           std::pmr::string{"Cannot add null function", resource_});
         }
 

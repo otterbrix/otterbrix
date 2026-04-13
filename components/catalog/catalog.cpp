@@ -68,13 +68,11 @@ namespace components::catalog {
     core::error_t catalog::create_table(const table_id& id, table_metadata meta) {
         if (!namespace_exists(id.get_namespace())) {
             return core::error_t(core::error_code_t::missing_namespace,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Namespace does not exist for table: " + id.to_string(), resource_});
         }
 
         if (table_exists(id)) {
             return core::error_t(core::error_code_t::already_exists,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Table already exists: " + id.to_string(), resource_});
         }
 
@@ -85,13 +83,11 @@ namespace components::catalog {
     core::error_t catalog::create_computing_table(const table_id& id) {
         if (!namespace_exists(id.get_namespace())) {
             return core::error_t(core::error_code_t::missing_namespace,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Namespace does not exist for table: " + id.to_string(), resource_});
         }
 
         if (table_computes(id)) {
             return core::error_t(core::error_code_t::already_exists,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Table already exists: " + id.to_string(), resource_});
         }
 
@@ -169,13 +165,11 @@ namespace components::catalog {
     core::error_t catalog::rename_table_impl(const table_id& from, std::pmr::string to) {
         if (!table_exists_impl<type>(from)) {
             return core::error_t(core::error_code_t::already_exists,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Source table does not exist: " + from.to_string(), resource_});
         }
 
         if (table_exists_impl<type>(table_id(resource_, from.get_namespace(), to))) {
             return core::error_t(core::error_code_t::already_exists,
-                                 core::error_tag_t::catalog,
                                  std::pmr::string{"Target table already exists: " + std::string(to), resource_});
         }
 
@@ -213,7 +207,6 @@ namespace components::catalog {
             return {
                 resource_,
                 core::error_t(core::error_code_t::missing_table,
-                              core::error_tag_t::catalog,
                               std::pmr::string{"Table does not exist: " + std::string(id.table_name()), resource_})};
         }
 

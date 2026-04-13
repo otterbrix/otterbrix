@@ -152,7 +152,7 @@ namespace components::compute {
             core::error_t add_kernel(std::pmr::memory_resource* resource, KernelType kernel) {
                 if (kernels_.size() >= kernel_slots_) {
                     return core::error_t(core::error_code_t::kernel_error,
-                                         core::error_tag_t::compute_kernel,
+
                                          std::pmr::string{"Cannot append kernel: all " + std::to_string(kernel_slots_) +
                                                               " slots are taken!",
                                                           resource});
@@ -161,7 +161,7 @@ namespace components::compute {
                 size_t input_sz = kernel.signature().input_types.size();
                 if (!arity_.varargs && input_sz != arity_.num_args) {
                     return core::error_t(core::error_code_t::kernel_error,
-                                         core::error_tag_t::compute_kernel,
+
                                          std::pmr::string{"Cannot append kernel: arity mismatch, function requires " +
                                                               std::to_string(arity_.num_args) +
                                                               " args, while kernel: " + std::to_string(input_sz),

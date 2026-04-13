@@ -37,14 +37,14 @@ namespace components::compute::detail {
             if (!kernel_ctx_) {
                 // TODO: find another way to get memory_resource
                 return core::error_t(core::error_code_t::kernel_error,
-                                     core::error_tag_t::compute_kernel,
+
                                      std::pmr::string{"Kernel context is null, init() method must be called first!",
                                                       std::pmr::get_default_resource()});
             }
 
             if (!kernel_) {
                 return core::error_t(core::error_code_t::kernel_error,
-                                     core::error_tag_t::compute_kernel,
+
                                      std::pmr::string{"Kernel is null, init() method must be called first!",
                                                       kernel_ctx_->exec_context().resource()});
             }
@@ -219,7 +219,7 @@ namespace components::compute::detail {
 
         core::result_wrapper_t<datum_t> execute(const std::pmr::vector<logical_value_t>&) override {
             return core::error_t(core::error_code_t::kernel_error,
-                                 core::error_tag_t::compute_kernel,
+
                                  std::pmr::string{"vector_executor does not support row operations",
                                                   kernel_ctx_->exec_context().resource()});
         }
@@ -229,7 +229,7 @@ namespace components::compute::detail {
             // TODO: find another way of getting memory_resource
             if (state() == nullptr) {
                 core::error_t(core::error_code_t::kernel_error,
-                              core::error_tag_t::compute_kernel,
+
                               std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
                                                std::pmr::get_default_resource()});
             }
@@ -241,7 +241,7 @@ namespace components::compute::detail {
 
             if (batch_state.value() == nullptr) {
                 core::error_t(core::error_code_t::kernel_error,
-                              core::error_tag_t::compute_kernel,
+
                               std::pmr::string{"Aggregation requires non-null kernel state, init returned null state!",
                                                kernel_ctx_->exec_context().resource()});
             }

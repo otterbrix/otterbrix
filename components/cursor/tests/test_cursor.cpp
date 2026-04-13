@@ -15,9 +15,8 @@ TEST_CASE("components::cursor::construction") {
         REQUIRE_FALSE(cursor->is_error());
     }
     INFO("failed operation cursor") {
-        auto cursor = components::cursor::make_cursor(
-            &resource,
-            core::error_t(&resource, core::error_code_t::other_error, core::error_tag_t::general));
+        auto cursor =
+            components::cursor::make_cursor(&resource, core::error_t(&resource, core::error_code_t::other_error));
         REQUIRE_FALSE(cursor->is_success());
         REQUIRE(cursor->is_error());
     }
@@ -28,9 +27,8 @@ TEST_CASE("components::cursor::construction") {
     }
     INFO("error cursor") {
         std::pmr::string description = {"error description", &resource};
-        auto cursor = components::cursor::make_cursor(
-            &resource,
-            core::error_t(core::error_code_t::other_error, core::error_tag_t::general, description));
+        auto cursor =
+            components::cursor::make_cursor(&resource, core::error_t(core::error_code_t::other_error, description));
         REQUIRE_FALSE(cursor->is_success());
         REQUIRE(cursor->is_error());
         REQUIRE(cursor->get_error().type == core::error_code_t::other_error);

@@ -6,8 +6,7 @@ using namespace components::types;
 using namespace components::vector;
 
 constexpr int MAGIC_MULTIPLIER = 1234;
-static const auto TEST_ERROR =
-    core::error_t(core::error_code_t::kernel_error, core::error_tag_t::compute_kernel, std::pmr::string{"error!"});
+static const auto TEST_ERROR = core::error_t(core::error_code_t::kernel_error, std::pmr::string{"error!"});
 
 struct test_options : function_options {
     int multiplier;

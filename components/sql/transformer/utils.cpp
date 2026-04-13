@@ -238,13 +238,13 @@ namespace components::sql::transform {
                 if (list_length(type->typmods) != 2) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Incorrect modifiers for DECIMAL, width and scale required", resource});
                 } else if (nodeTag(linitial(type->typmods)) != T_A_Const ||
                            nodeTag(lsecond(type->typmods)) != T_A_Const) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
 
@@ -254,7 +254,7 @@ namespace components::sql::transform {
                 if (width->val.type != scale->val.type || width->val.type != T_Integer) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
-                        core::error_tag_t::parser,
+
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
                 column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
@@ -361,7 +361,7 @@ namespace components::sql::transform {
             }
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,
-                                     core::error_tag_t::parser,
+
                                      std::pmr::string{"unable to parse value", resource});
         }
     }
@@ -381,7 +381,7 @@ namespace components::sql::transform {
         for (auto it = ++values.begin(); it != values.end(); ++it) {
             if (fist_type != it->type()) {
                 return core::error_t(core::error_code_t::sql_parse_error,
-                                     core::error_tag_t::parser,
+
                                      std::pmr::string{"array has inconsistent element types", resource});
             }
         }
@@ -392,7 +392,7 @@ namespace components::sql::transform {
                                                                          A_Expr* node) {
         if (node->kind != AEXPR_OP) {
             return core::error_t(core::error_code_t::sql_parse_error,
-                                 core::error_tag_t::parser,
+
                                  std::pmr::string{"Only AEXPR_OP supported in constant arithmetic", resource});
         }
         auto op_str = std::string_view(strVal(node->name->lst.front().data));
@@ -427,7 +427,7 @@ namespace components::sql::transform {
             return types::logical_value_t::modulus(left.value(), right.value());
         return core::error_t(
             core::error_code_t::sql_parse_error,
-            core::error_tag_t::parser,
+
             std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
     }
 

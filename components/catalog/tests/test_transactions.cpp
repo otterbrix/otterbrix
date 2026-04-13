@@ -9,6 +9,12 @@ using namespace test;
 using namespace components::types;
 using namespace components::catalog;
 
+template<typename T>
+T get_result(core::result_wrapper_t<T>&& wrapper) {
+    REQUIRE(!wrapper.has_error());
+    return wrapper.value();
+}
+
 TEST_CASE("components::catalog::transactions::commit_abort") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
@@ -37,7 +43,7 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(new_schema.find_field("new_col").value() == logical_type::HUGEINT);
+        REQUIRE(get_result(new_schema.find_field("new_col")) == logical_type::HUGEINT);
     }
 
     {
@@ -58,7 +64,7 @@ TEST_CASE("components::catalog::transactions::commit_abort") {
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(new_schema.find_field("new_col").value() == logical_type::HUGEINT);
+        REQUIRE(get_result(new_schema.find_field("new_col")) == logical_type::HUGEINT);
     }
 }
 
@@ -97,11 +103,11 @@ TEST_CASE("components::catalog::transactions::changes") {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
 
-        REQUIRE(new_schema.find_field("new_col").value() == logical_type::STRING_LITERAL);
-        REQUIRE(new_schema.get_field_description("new_col").value().get().doc == "test1");
+        REQUIRE(get_result(new_schema.find_field("new_col")) == logical_type::STRING_LITERAL);
+        REQUIRE(get_result(new_schema.get_field_description("new_col")).get().doc == "test1");
 
-        REQUIRE(new_schema.find_field("new_old_col").value() == logical_type::HUGEINT);
-        REQUIRE(new_schema.get_field_description("new_old_col").value().get().doc == "test");
+        REQUIRE(get_result(new_schema.find_field("new_old_col")) == logical_type::HUGEINT);
+        REQUIRE(get_result(new_schema.get_field_description("new_old_col")).get().doc == "test");
     }
 }
 
@@ -128,7 +134,7 @@ TEST_CASE("components::catalog::transactions::savepoints") {
 
         scope.commit();
     }
-    REQUIRE(cat.get_table_schema({&mr, full}).find_field("name").value() == logical_type::BIGINT);
+    REQUIRE(get_result(cat.get_table_schema({&mr, full}).find_field("name")) == logical_type::BIGINT);
 
     {
         auto scope = cat.begin_transaction({&mr, full});
@@ -149,7 +155,7 @@ TEST_CASE("components::catalog::transactions::savepoints") {
     {
         auto new_schema = cat.get_table_schema({&mr, full});
         REQUIRE(new_schema.columns().size() == 2);
-        REQUIRE(new_schema.find_field("new_old_col").value() == logical_type::BIGINT);
+        REQUIRE(get_result(new_schema.find_field("new_old_col")) == logical_type::BIGINT);
     }
 }
 

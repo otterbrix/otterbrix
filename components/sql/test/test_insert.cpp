@@ -17,8 +17,9 @@ TEST_CASE("components::sql::insert_into") {
         auto select =
             linitial(raw_parser(&arena_resource,
                                 "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "testdatabase");
         REQUIRE(node->collection_name() == "testcollection");
@@ -33,8 +34,9 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into without TestDatabase") {
         auto select = linitial(
             raw_parser(&arena_resource, "INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -49,8 +51,9 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into with quoted") {
         auto select = linitial(
             raw_parser(&arena_resource, R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -66,8 +69,9 @@ TEST_CASE("components::sql::insert_into") {
         auto select = linitial(raw_parser(
             &arena_resource,
             R"(INSERT INTO TestCollection (struct_type.field_1, struct_type.field_3) VALUES(43, 'some text');)"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -81,8 +85,9 @@ TEST_CASE("components::sql::insert_into") {
     SECTION("insert into array") {
         auto select =
             linitial(raw_parser(&arena_resource, R"(INSERT INTO TestCollection (array_type) VALUES(ARRAY[1, 2, 3]);)"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -106,8 +111,9 @@ TEST_CASE("components::sql::insert_into") {
                                           "(3, 'Name3', 3), "
                                           "(4, 'Name4', 4), "
                                           "(5, 'Name5', 5);"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "testcollection");
@@ -127,8 +133,9 @@ TEST_CASE("components::sql::insert_into") {
 SELECT column1, column2, column3
 FROM table1
 WHERE condition = true;)_"));
-        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize().value();
-        auto node = result.node;
+        auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().node;
         REQUIRE(node->type() == components::logical_plan::node_type::insert_t);
         REQUIRE(node->database_name() == "");
         REQUIRE(node->collection_name() == "table2");

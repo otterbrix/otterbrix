@@ -21,6 +21,12 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
+template<typename T>
+T get_result(core::result_wrapper_t<T>&& wrapper) {
+    REQUIRE(!wrapper.has_error());
+    return wrapper.value();
+}
+
 struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     test_dispatcher(std::pmr::memory_resource* resource, const std::string& disk_path)
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
@@ -115,8 +121,8 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
         REQUIRE(catalog.table_exists(id));
         auto sch = catalog.get_table_schema(id);
-        REQUIRE(sch.find_field("fld1").value().type() == logical_type::INTEGER);
-        REQUIRE(sch.find_field("fld2").value().type() == logical_type::STRING_LITERAL);
+        REQUIRE(get_result(sch.find_field("fld1")).type() == logical_type::INTEGER);
+        REQUIRE(get_result(sch.find_field("fld2")).type() == logical_type::STRING_LITERAL);
 
         REQUIRE(cur->is_success());
     });

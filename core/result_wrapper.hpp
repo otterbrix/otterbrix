@@ -163,11 +163,54 @@ namespace core {
         result_wrapper_t(error_t&& error)
             : error_(std::move(error)) {}
 
+#if defined(DEV_MODE)
+        result_wrapper_t(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>)
+            : value_(other.value_)
+            , error_(other.error_) {}
+        result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
+            : value_(std::make_unique<T>(*other.value_))
+            , error_(other.error_) {}
+
+        result_wrapper_t(result_wrapper_t&& other) noexcept
+            : value_(std::move(other.value_))
+            , error_(std::move(other.error_)) {}
+
+        result_wrapper_t&
+        operator=(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) {
+            value_ = std::make_unique<T>(other.value_);
+            error_ = other.error_;
+#if defined(DEV_MODE)
+            error_checked_ = false;
+#endif
+            return *this;
+        }
+        result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
+                                                                            std::is_copy_constructible_v<T>) {
+            value_ = std::make_unique<T>(*other.value_);
+            error_ = other.error_;
+#if defined(DEV_MODE)
+            error_checked_ = false;
+#endif
+            return *this;
+        }
+
+        result_wrapper_t& operator=(result_wrapper_t&& other) noexcept {
+            value_ = std::move(other.value_);
+            error_ = other.error_;
+#if defined(DEV_MODE)
+            error_checked_ = false;
+#endif
+            return *this;
+        }
+#else
         result_wrapper_t(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) =
             default;
         result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
             : value_(std::make_unique<T>(other.value()))
             , error_(other.error_) {}
+
+        result_wrapper_t(result_wrapper_t&&) noexcept = default;
+
         result_wrapper_t&
         operator=(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) = default;
         result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
@@ -177,12 +220,20 @@ namespace core {
             return *this;
         }
 
-        result_wrapper_t(result_wrapper_t&&) noexcept = default;
         result_wrapper_t& operator=(result_wrapper_t&&) noexcept = default;
+#endif
 
-        bool has_error() const noexcept { return error_.type != error_code_t::none; }
+        bool has_error() const noexcept {
+#if defined(DEV_MODE)
+            error_checked_ = true;
+#endif
+            return error_.type != error_code_t::none;
+        }
         const error_t& error() const noexcept { return error_; }
         const T& value() const noexcept {
+#if defined(DEV_MODE)
+            assert(error_checked_);
+#endif
             assert(!has_error());
             if constexpr (trivial_store) {
                 return value_;
@@ -191,6 +242,9 @@ namespace core {
             }
         }
         T& value() noexcept {
+#if defined(DEV_MODE)
+            assert(error_checked_);
+#endif
             assert(!has_error());
             if constexpr (trivial_store) {
                 return value_;
@@ -209,6 +263,9 @@ namespace core {
     private:
         Store_T value_;
         error_t error_;
+#if defined(DEV_MODE)
+        mutable bool error_checked_{false};
+#endif
     };
 
 } // namespace core

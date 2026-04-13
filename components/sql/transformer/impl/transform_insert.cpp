@@ -81,6 +81,10 @@ namespace components::sql::transform {
                         chunk.set_value(column_index, row_index, std::move(value.value()));
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
+                        if (value.has_error()) {
+                            error_ = value.error();
+                            return nullptr;
+                        }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
                                 return column.type().alias() == it_field->as_string();

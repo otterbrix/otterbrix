@@ -9,6 +9,12 @@ using namespace test;
 using namespace components::types;
 using namespace components::catalog;
 
+template<typename T>
+T get_result(core::result_wrapper_t<T>&& wrapper) {
+    REQUIRE(!wrapper.has_error());
+    return wrapper.value();
+}
+
 TEST_CASE("components::catalog::schema_test") {
     auto mr = std::pmr::synchronized_pool_resource();
     catalog cat(&mr);
@@ -22,9 +28,9 @@ TEST_CASE("components::catalog::schema_test") {
         REQUIRE(cat.table_exists({&mr, full}));
 
         auto tbl = cat.get_table_schema({&mr, full});
-        REQUIRE(tbl.find_field("name").value() == logical_type::BIGINT);
+        REQUIRE(get_result(tbl.find_field("name")) == logical_type::BIGINT);
 
-        auto desc = tbl.get_field_description("name").value().get();
+        auto desc = get_result(tbl.get_field_description("name")).get();
         REQUIRE(desc.required == true);
         REQUIRE(desc.doc == "test");
         REQUIRE(desc.field_id == 1);
@@ -51,15 +57,15 @@ TEST_CASE("components::catalog::schema_test") {
         REQUIRE(cat.table_exists({&mr, full}));
 
         auto tbl = cat.get_table_schema({&mr, full});
-        REQUIRE(tbl.find_field("flag").value() == logical_type::BOOLEAN);
-        REQUIRE(tbl.find_field("number").value() == logical_type::INTEGER);
-        REQUIRE(tbl.find_field("name").value() == logical_type::STRING_LITERAL);
-        REQUIRE(tbl.find_field("array").value() == logical_type::LIST);
+        REQUIRE(get_result(tbl.find_field("flag")) == logical_type::BOOLEAN);
+        REQUIRE(get_result(tbl.find_field("number")) == logical_type::INTEGER);
+        REQUIRE(get_result(tbl.find_field("name")) == logical_type::STRING_LITERAL);
+        REQUIRE(get_result(tbl.find_field("array")) == logical_type::LIST);
 
-        REQUIRE(tbl.get_field_description("flag").value().get().field_id == 1);
-        REQUIRE(tbl.get_field_description("number").value().get().field_id == 2);
-        REQUIRE(tbl.get_field_description("name").value().get().field_id == 3);
-        REQUIRE(tbl.get_field_description("array").value().get().field_id == 4);
+        REQUIRE(get_result(tbl.get_field_description("flag")).get().field_id == 1);
+        REQUIRE(get_result(tbl.get_field_description("number")).get().field_id == 2);
+        REQUIRE(get_result(tbl.get_field_description("name")).get().field_id == 3);
+        REQUIRE(get_result(tbl.get_field_description("array")).get().field_id == 4);
 
         for (size_t i = 0; i < 10; ++i) {
             collection_full_name_t full_n{"db", "fields" + std::to_string(i)};

@@ -199,6 +199,10 @@ namespace components::operators::aggregate::gpu {
                                 const uint32_t* group_ids,
                                 uint64_t count,
                                 std::pmr::vector<raw_agg_state_t>& states);
+    bool try_run_batch_gpu(const gpu_update_request_t* requests,
+                           size_t request_count,
+                           const uint32_t* group_ids,
+                           uint64_t count);
 #else
     bool try_run_count_star_gpu(const uint32_t*, uint64_t, std::pmr::vector<raw_agg_state_t>&);
     bool try_run_update_all_gpu(builtin_agg,
@@ -206,6 +210,7 @@ namespace components::operators::aggregate::gpu {
                                 const uint32_t*,
                                 uint64_t,
                                 std::pmr::vector<raw_agg_state_t>&);
+    bool try_run_batch_gpu(const gpu_update_request_t*, size_t, const uint32_t*, uint64_t);
 #endif
 
 } // namespace components::operators::aggregate::gpu

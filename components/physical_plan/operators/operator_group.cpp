@@ -493,6 +493,9 @@ namespace components::operators {
                     break;
                 }
                 auto kind = aggregate::classify(func_op->func()->name());
+                if (kind == aggregate::builtin_agg::UNKNOWN && func_op->func()->has_gpu_udf_kind()) {
+                    kind = aggregate::classify(func_op->func()->gpu_udf_kind());
+                }
                 if (kind == aggregate::builtin_agg::UNKNOWN) {
                     can_vectorize = false;
                     break;
@@ -561,68 +564,104 @@ namespace components::operators {
                 }
             }
 
+            std::pmr::vector<std::pmr::vector<aggregate::raw_agg_state_t>> states_per_agg(resource_);
+            states_per_agg.reserve(values_.size());
             for (size_t a = 0; a < values_.size(); a++) {
-                std::pmr::vector<aggregate::raw_agg_state_t> states(resource_);
-                states.resize(num_groups);
+                states_per_agg.push_back(std::pmr::vector<aggregate::raw_agg_state_t>(resource_));
+                states_per_agg.back().resize(num_groups);
+            }
 
+            std::pmr::vector<std::pmr::vector<aggregate::raw_agg_state_t>> gpu_states_per_agg(resource_);
+            if (partition.hybrid()) {
+                gpu_states_per_agg.reserve(values_.size());
+                for (size_t a = 0; a < values_.size(); a++) {
+                    gpu_states_per_agg.push_back(std::pmr::vector<aggregate::raw_agg_state_t>(resource_));
+                    gpu_states_per_agg.back().resize(num_groups);
+                }
+            }
+
+            std::pmr::vector<aggregate::gpu_update_request_t> gpu_requests(resource_);
+            gpu_requests.reserve(values_.size());
+
+            std::pmr::vector<std::pmr::vector<size_t>> gpu_input_paths(resource_);
+            gpu_input_paths.reserve(values_.size());
+
+            auto gpu_input_id = [&](const std::pmr::vector<size_t>& path) {
+                for (size_t index = 0; index < gpu_input_paths.size(); index++) {
+                    if (gpu_input_paths[index] == path) {
+                        return static_cast<uint32_t>(index);
+                    }
+                }
+                gpu_input_paths.push_back(std::pmr::vector<size_t>(resource_));
+                gpu_input_paths.back() = path;
+                return static_cast<uint32_t>(gpu_input_paths.size() - 1);
+            };
+
+            std::pmr::vector<vector::vector_t> gpu_slices(resource_);
+            if (partition.hybrid()) {
+                gpu_slices.reserve(values_.size());
+            }
+
+            for (size_t a = 0; a < values_.size(); a++) {
                 auto& info = agg_infos[a];
-                if (!partition.hybrid()) {
+                auto& states = states_per_agg[a];
+
+                if (partition.use_cpu()) {
                     if (info.is_count_star) {
-                        if (partition.use_gpu()) {
-                            aggregate::update_count_star_gpu(group_ids.data(), num_rows, states);
-                        } else {
-                            aggregate::update_count_star(group_ids.data(), num_rows, states);
-                        }
+                        aggregate::update_count_star(
+                            group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
                     } else {
-                        if (partition.use_gpu()) {
-                            aggregate::update_all_gpu(
-                                info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                        const auto* source = chunk.at(info.full_path);
+                        if (partition.hybrid()) {
+                            vector::vector_t cpu_slice(*source, partition.cpu_offset, partition.cpu_count);
+                            aggregate::update_all(
+                                info.kind, cpu_slice, group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
                         } else {
-                            aggregate::update_all(info.kind, *chunk.at(info.full_path), group_ids.data(), num_rows, states);
+                            aggregate::update_all(info.kind, *source, group_ids.data(), num_rows, states);
                         }
                     }
-                } else {
-                    std::pmr::vector<aggregate::raw_agg_state_t> gpu_states(resource_);
-                    gpu_states.resize(num_groups);
+                }
 
-                    auto run_cpu_partition = [&]() {
-                        if (info.is_count_star) {
-                            aggregate::update_count_star(
-                                group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
-                            return;
+                if (partition.use_gpu()) {
+                    aggregate::gpu_update_request_t request{};
+                    request.kind = info.kind;
+                    request.is_count_star = info.is_count_star;
+                    request.states = partition.hybrid() ? &gpu_states_per_agg[a] : &states_per_agg[a];
+
+                    if (!info.is_count_star) {
+                        request.input_id = gpu_input_id(info.full_path);
+                        if (partition.hybrid()) {
+                            gpu_slices.emplace_back(*chunk.at(info.full_path), partition.gpu_offset, partition.gpu_count);
+                            request.vec = &gpu_slices.back();
+                        } else {
+                            request.vec = chunk.at(info.full_path);
                         }
+                    }
 
-                        const auto* source = chunk.at(info.full_path);
-                        vector::vector_t cpu_slice(*source, partition.cpu_offset, partition.cpu_count);
-                        aggregate::update_all(
-                            info.kind, cpu_slice, group_ids.data() + partition.cpu_offset, partition.cpu_count, states);
-                    };
+                    gpu_requests.push_back(request);
+                }
+            }
 
-                    auto run_gpu_partition = [&]() {
-                        if (info.is_count_star) {
-                            aggregate::update_count_star_gpu(
-                                group_ids.data() + partition.gpu_offset, partition.gpu_count, gpu_states);
-                            return;
-                        }
+            if (partition.use_gpu() && !gpu_requests.empty()) {
+                const auto* gpu_group_ids = group_ids.data() + partition.gpu_offset;
+                const auto gpu_row_count = partition.hybrid() ? partition.gpu_count : num_rows;
+                aggregate::update_batch_gpu(gpu_requests.data(), gpu_requests.size(), gpu_group_ids, gpu_row_count);
+            }
 
-                        const auto* source = chunk.at(info.full_path);
-                        vector::vector_t gpu_slice(*source, partition.gpu_offset, partition.gpu_count);
-                        aggregate::update_all_gpu(info.kind,
-                                                  gpu_slice,
-                                                  group_ids.data() + partition.gpu_offset,
-                                                  partition.gpu_count,
-                                                  gpu_states);
-                    };
-
-                    auto gpu_future = std::async(std::launch::async, run_gpu_partition);
-                    run_cpu_partition();
-                    gpu_future.get();
-
+            if (partition.hybrid()) {
+                for (size_t a = 0; a < values_.size(); a++) {
+                    auto& info = agg_infos[a];
+                    auto& states = states_per_agg[a];
+                    auto& gpu_states = gpu_states_per_agg[a];
                     for (size_t g = 0; g < num_groups; g++) {
                         aggregate::merge_state(info.kind, states[g], gpu_states[g]);
                     }
                 }
+            }
 
+            for (size_t a = 0; a < values_.size(); a++) {
+                auto& info = agg_infos[a];
+                auto& states = states_per_agg[a];
                 for (size_t g = 0; g < num_groups; g++) {
                     aggregate::write_finalized_state(result.data[key_count + a], g, info.kind, states[g], info.col_type);
                 }

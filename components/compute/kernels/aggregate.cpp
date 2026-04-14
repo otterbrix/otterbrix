@@ -482,6 +482,7 @@ namespace {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        fn->set_gpu_udf_kind("sum");
 
         kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), sum_init, sum_consume, sum_merge, sum_finalize};
@@ -497,6 +498,7 @@ namespace {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        fn->set_gpu_udf_kind("min");
 
         kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), min_init, min_consume, min_merge, min_finalize};
@@ -512,6 +514,7 @@ namespace {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        fn->set_gpu_udf_kind("max");
 
         kernel_signature_t sig({always_true_type_matcher()}, {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), max_init, max_consume, max_merge, max_finalize};
@@ -527,6 +530,7 @@ namespace {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<aggregate_function>(name, arity::var_args(0), doc, available_kernel_slots + 1);
+        fn->set_gpu_udf_kind("count");
 
         kernel_signature_t sig({always_true_type_matcher()}, {output_type::fixed(logical_type::UBIGINT)});
         aggregate_kernel k{std::move(sig), count_init, count_consume, count_merge, count_finalize};
@@ -547,6 +551,7 @@ namespace {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        fn->set_gpu_udf_kind("avg");
 
         kernel_signature_t sig({numeric_types_matcher()}, {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};

@@ -79,6 +79,9 @@ namespace components::compute {
         const std::string& name() const { return name_; }
         const arity& fn_arity() const { return arity_; }
         const function_doc& doc() const { return doc_; }
+        void set_gpu_udf_kind(std::string kind);
+        const std::string& gpu_udf_kind() const { return gpu_udf_kind_; }
+        bool has_gpu_udf_kind() const { return !gpu_udf_kind_.empty(); }
 
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
@@ -116,6 +119,7 @@ namespace components::compute {
         arity arity_;
         function_doc doc_;
         const function_options* default_options_;
+        std::string gpu_udf_kind_;
     };
 
     using function_ptr = std::unique_ptr<function>;

@@ -1,5 +1,8 @@
 #include "function.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 using namespace components::vector;
 using namespace components::types;
 
@@ -19,6 +22,13 @@ namespace components::compute {
         , arity_(fn_arity)
         , doc_(std::move(doc))
         , default_options_(default_options) {}
+
+    void function::set_gpu_udf_kind(std::string kind) {
+        std::transform(kind.begin(), kind.end(), kind.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        gpu_udf_kind_ = std::move(kind);
+    }
 
     compute_result<std::reference_wrapper<const compute_kernel>>
     function::dispatch_exact(const std::pmr::vector<complex_logical_type>& types) const {
@@ -257,6 +267,7 @@ namespace components::compute {
 
     std::unique_ptr<function> vector_function::get_copy() const {
         auto result = std::make_unique<vector_function>(name_, arity_, doc_, kernel_slots_);
+        result->set_gpu_udf_kind(gpu_udf_kind_);
         for (const auto& kernel : kernels_) {
             result->add_kernel(kernel);
         }
@@ -273,6 +284,7 @@ namespace components::compute {
 
     std::unique_ptr<function> aggregate_function::get_copy() const {
         auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_);
+        result->set_gpu_udf_kind(gpu_udf_kind_);
         for (const auto& kernel : kernels_) {
             result->add_kernel(kernel);
         }
@@ -286,6 +298,7 @@ namespace components::compute {
 
     std::unique_ptr<function> row_function::get_copy() const {
         auto result = std::make_unique<row_function>(name_, arity_, doc_, kernel_slots_);
+        result->set_gpu_udf_kind(gpu_udf_kind_);
         for (const auto& kernel : kernels_) {
             result->add_kernel(kernel);
         }

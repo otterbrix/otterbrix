@@ -20,6 +20,7 @@ static const std::string udf1_name = "concat";
 static const std::string udf2_name = "mult";
 static const std::string udf3_name = "is_even";
 static const std::string udf4_name = "modulo";
+static const std::string udf5_name = "sum_alias";
 
 struct concat_kernel_state : kernel_state {
     std::string value;
@@ -100,6 +101,48 @@ std::unique_ptr<aggregate_function> make_mult_func() {
         {exact_type_matcher(types::logical_type::DOUBLE), exact_type_matcher(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::DOUBLE)});
     aggregate_kernel k{std::move(sig), mult_init, mult_consume, mult_merge, mult_finalize};
+    fn->add_kernel(std::move(k));
+
+    return fn;
+}
+
+struct sum_alias_kernel_state : kernel_state {
+    int64_t value;
+};
+
+static compute_result<kernel_state_ptr> sum_alias_init(kernel_context&, kernel_init_args) {
+    auto c = std::make_unique<sum_alias_kernel_state>();
+    c->value = 0;
+    return compute_result<kernel_state_ptr>(std::move(c));
+}
+
+static compute_status sum_alias_consume(kernel_context& ctx, const vector::data_chunk_t& in, size_t exec_length) {
+    auto* acc = static_cast<sum_alias_kernel_state*>(ctx.state());
+    for (size_t i = 0; i < exec_length; i++) {
+        acc->value += in.data[0].data<int64_t>()[i];
+    }
+    return compute_status::ok();
+}
+
+static compute_status sum_alias_merge(kernel_context&, kernel_state&& from, kernel_state& into) {
+    static_cast<sum_alias_kernel_state&>(into).value += static_cast<sum_alias_kernel_state&>(from).value;
+    return compute_status::ok();
+}
+
+static compute_status sum_alias_finalize(kernel_context& ctx, std::pmr::vector<types::logical_value_t>& out) {
+    out.emplace_back(out.get_allocator().resource(), static_cast<sum_alias_kernel_state*>(ctx.state())->value);
+    return compute_status::ok();
+}
+
+std::unique_ptr<aggregate_function> make_sum_alias_func() {
+    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+
+    auto fn = std::make_unique<aggregate_function>(udf5_name, arity::unary(), doc, 1);
+    fn->set_gpu_udf_kind("sum");
+
+    kernel_signature_t sig({exact_type_matcher(types::logical_type::BIGINT)},
+                           {output_type::fixed(types::logical_type::BIGINT)});
+    aggregate_kernel k{std::move(sig), sum_alias_init, sum_alias_consume, sum_alias_merge, sum_alias_finalize};
     fn->add_kernel(std::move(k));
 
     return fn;
@@ -215,6 +258,11 @@ TEST_CASE("integration::cpp::test_udfs") {
             bool result = dispatcher->register_udf(session, make_modulo_func());
             REQUIRE(result);
         }
+        {
+            auto session = otterbrix::session_id_t();
+            bool result = dispatcher->register_udf(session, make_sum_alias_func());
+            REQUIRE(result);
+        }
         // Trying to create same function will result in error
         {
             auto session = otterbrix::session_id_t();
@@ -256,6 +304,23 @@ TEST_CASE("integration::cpp::test_udfs") {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
                 auto d = static_cast<double>(i + 1);
                 REQUIRE(core::is_equals(chunk.data[1].data<double>()[i], ((d + 0.1) * d) * 2));
+            }
+        }
+        INFO("aggregate udf with gpu semantic binding") {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               R"_(SELECT count, sum_alias(count) AS result )_"
+                                               R"_(FROM TestDatabase.TestCollection )_"
+                                               R"_(GROUP BY count )_"
+                                               R"_(ORDER BY count ASC;)_");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == kNumInserts);
+            auto& chunk = cur->chunk_data();
+            REQUIRE(chunk.column_count() == 2);
+            for (size_t i = 0; i < chunk.size(); i++) {
+                auto value = static_cast<int64_t>(i + 1);
+                REQUIRE(chunk.data[0].data<int64_t>()[i] == value);
+                REQUIRE(chunk.data[1].data<int64_t>()[i] == value * 2);
             }
         }
         INFO("multiple arguments with parameter") {

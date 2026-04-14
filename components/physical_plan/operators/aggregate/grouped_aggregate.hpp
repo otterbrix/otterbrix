@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 #include <components/types/types.hpp>
@@ -84,6 +85,19 @@ namespace components::operators::aggregate {
 
     // GPU helper for COUNT(*) (counts all rows per group).
     void update_count_star_gpu(const uint32_t* group_ids, uint64_t count, std::pmr::vector<raw_agg_state_t>& states);
+
+    struct gpu_update_request_t {
+        builtin_agg kind{builtin_agg::UNKNOWN};
+        const vector::vector_t* vec{nullptr};
+        std::pmr::vector<raw_agg_state_t>* states{nullptr};
+        uint32_t input_id{0};
+        bool is_count_star{false};
+    };
+
+    void update_batch_gpu(const gpu_update_request_t* requests,
+                          size_t request_count,
+                          const uint32_t* group_ids,
+                          uint64_t count);
 
     types::complex_logical_type result_type(builtin_agg agg, types::logical_type col_type);
 

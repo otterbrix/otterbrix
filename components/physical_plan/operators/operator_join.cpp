@@ -5,6 +5,14 @@
 
 namespace components::operators {
 
+    namespace {
+        // Placeholder columns (produced by projected scans) have no buffer and no auxiliary.
+        // They must be skipped when copying — vector_ops::copy would dereference a null data_.
+        bool is_placeholder(const vector::vector_t& v) noexcept {
+            return v.data() == nullptr && v.auxiliary() == nullptr;
+        }
+    } // namespace
+
     operator_join_t::operator_join_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      type join_type,
@@ -21,11 +29,37 @@ namespace components::operators {
             const auto& chunk_left = left_->output()->data_chunk();
             const auto& chunk_right = right_->output()->data_chunk();
 
+            // Build joined schema AND the list of projected indices (slots that have data).
+            // The join output mirrors the sparse pattern of its inputs so downstream operators
+            // see the same placeholder positions, not a fully materialized chunk.
             auto res_types = chunk_left.types();
             auto right_types = chunk_right.types();
             res_types.insert(res_types.end(), right_types.begin(), right_types.end());
 
-            output_ = operators::make_operator_data(left_->output()->resource(), res_types);
+            std::vector<size_t> joined_projected;
+            joined_projected.reserve(chunk_left.column_count() + chunk_right.column_count());
+            for (size_t i = 0; i < chunk_left.column_count(); i++) {
+                if (!is_placeholder(chunk_left.data[i])) {
+                    joined_projected.push_back(i);
+                }
+            }
+            for (size_t i = 0; i < chunk_right.column_count(); i++) {
+                if (!is_placeholder(chunk_right.data[i])) {
+                    joined_projected.push_back(chunk_left.column_count() + i);
+                }
+            }
+
+            if (joined_projected.size() == res_types.size()) {
+                // Dense inputs — regular chunk.
+                output_ = operators::make_operator_data(left_->output()->resource(), res_types);
+            } else {
+                // Sparse inputs — build a sparse output chunk directly and hand it to operator_data.
+                vector::data_chunk_t sparse_chunk(left_->output()->resource(),
+                                                  res_types,
+                                                  joined_projected,
+                                                  vector::DEFAULT_VECTOR_CAPACITY);
+                output_ = operators::make_operator_data(left_->output()->resource(), std::move(sparse_chunk));
+            }
 
             if (log_.is_valid()) {
                 trace(log(), "operator_join::left_size(): {}", chunk_left.size());
@@ -100,6 +134,7 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(output_->resource(), copy_indices_left.data());
         vector::indexing_vector_t right_indexing(output_->resource(), copy_indices_right.data());
         for (size_t i = 0; i < chunk_left.column_count(); i++) {
+            if (is_placeholder(chunk_left.data[i])) continue;
             vector::vector_ops::copy(chunk_left.data[i],
                                      chunk_res.data[indices_left_.at(i)],
                                      left_indexing,
@@ -108,6 +143,7 @@ namespace components::operators {
                                      0);
         }
         for (size_t i = 0; i < chunk_right.column_count(); i++) {
+            if (is_placeholder(chunk_right.data[i])) continue;
             vector::vector_ops::copy(chunk_right.data[i],
                                      chunk_res.data[indices_right_.at(i)],
                                      right_indexing,
@@ -162,6 +198,7 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(output_->resource(), copy_indices_left.data());
         vector::indexing_vector_t right_indexing(output_->resource(), copy_indices_right.data());
         for (size_t i = 0; i < chunk_left.column_count(); i++) {
+            if (is_placeholder(chunk_left.data[i])) continue;
             vector::vector_ops::copy(chunk_left.data[i],
                                      chunk_res.data[indices_left_.at(i)],
                                      left_indexing,
@@ -173,6 +210,7 @@ namespace components::operators {
             }
         }
         for (size_t i = 0; i < chunk_right.column_count(); i++) {
+            if (is_placeholder(chunk_right.data[i])) continue;
             vector::vector_ops::copy(chunk_right.data[i],
                                      chunk_res.data[indices_right_.at(i)],
                                      right_indexing,
@@ -218,6 +256,7 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(output_->resource(), copy_indices_left.data());
         vector::indexing_vector_t right_indexing(output_->resource(), copy_indices_right.data());
         for (size_t i = 0; i < chunk_left.column_count(); i++) {
+            if (is_placeholder(chunk_left.data[i])) continue;
             vector::vector_ops::copy(chunk_left.data[i],
                                      chunk_res.data[indices_left_.at(i)],
                                      left_indexing,
@@ -226,6 +265,7 @@ namespace components::operators {
                                      0);
         }
         for (size_t i = 0; i < chunk_right.column_count(); i++) {
+            if (is_placeholder(chunk_right.data[i])) continue;
             vector::vector_ops::copy(chunk_right.data[i],
                                      chunk_res.data[indices_right_.at(i)],
                                      right_indexing,
@@ -271,6 +311,7 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(output_->resource(), copy_indices_left.data());
         vector::indexing_vector_t right_indexing(output_->resource(), copy_indices_right.data());
         for (size_t i = 0; i < chunk_left.column_count(); i++) {
+            if (is_placeholder(chunk_left.data[i])) continue;
             vector::vector_ops::copy(chunk_left.data[i],
                                      chunk_res.data[indices_left_.at(i)],
                                      left_indexing,
@@ -282,6 +323,7 @@ namespace components::operators {
             }
         }
         for (size_t i = 0; i < chunk_right.column_count(); i++) {
+            if (is_placeholder(chunk_right.data[i])) continue;
             vector::vector_ops::copy(chunk_right.data[i],
                                      chunk_res.data[indices_right_.at(i)],
                                      right_indexing,
@@ -314,6 +356,7 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(output_->resource(), copy_indices_left.data());
         vector::indexing_vector_t right_indexing(output_->resource(), copy_indices_right.data());
         for (size_t i = 0; i < chunk_left.column_count(); i++) {
+            if (is_placeholder(chunk_left.data[i])) continue;
             vector::vector_ops::copy(chunk_left.data[i],
                                      chunk_res.data[indices_left_.at(i)],
                                      left_indexing,
@@ -322,6 +365,7 @@ namespace components::operators {
                                      0);
         }
         for (size_t i = 0; i < chunk_right.column_count(); i++) {
+            if (is_placeholder(chunk_right.data[i])) continue;
             vector::vector_ops::copy(chunk_right.data[i],
                                      chunk_res.data[indices_right_.at(i)],
                                      right_indexing,

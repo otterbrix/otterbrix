@@ -356,6 +356,14 @@ namespace components::operators {
             key_col_indices.push_back(key.full_path.front());
         }
 
+        // Store source column types for key columns (needed to build result chunk with correct types even when first group is null)
+        key_col_types_.clear();
+        if (use_fast_path) {
+            for (size_t col_idx : key_col_indices) {
+                key_col_types_.push_back(chunk.data[col_idx].type());
+            }
+        }
+
         if (use_fast_path && !key_col_indices.empty()) {
             // Batch hash all rows at once using type-dispatched vector_ops::hash
             vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, num_rows);
@@ -364,18 +372,6 @@ namespace components::operators {
             auto* hashes = hash_vec.data<uint64_t>();
 
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
-                // Check for NULL keys via validity mask (no logical_value_t creation)
-                bool is_valid = true;
-                for (size_t col_idx : key_col_indices) {
-                    if (chunk.data[col_idx].is_null(row_idx)) {
-                        is_valid = false;
-                        break;
-                    }
-                }
-                if (!is_valid) {
-                    continue;
-                }
-
                 auto hash_val = static_cast<size_t>(hashes[row_idx]);
                 auto it = group_index_.find(hash_val);
                 bool is_new = true;
@@ -408,19 +404,10 @@ namespace components::operators {
             // Slow path: handles coalesce, case_when, wildcards, nested paths
             for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
                 std::pmr::vector<types::logical_value_t> key_vals(resource_);
-                bool is_valid = true;
 
                 for (const auto& key : keys_) {
                     auto val = extract_key_value(resource_, key, chunk, row_idx);
-                    if (val.is_null() && key.type == group_key_t::kind::column) {
-                        is_valid = false;
-                        break;
-                    }
                     key_vals.push_back(std::move(val));
-                }
-
-                if (!is_valid) {
-                    continue;
                 }
 
                 size_t hash_val = types::hash_row(key_vals);
@@ -645,7 +632,12 @@ namespace components::operators {
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         if (num_groups > 0) {
             for (size_t k = 0; k < key_count; k++) {
-                out_types.push_back(group_keys_[0][k].type());
+                // Use the source column type if available (handles null groups where first group may have NA type)
+                if (k < key_col_types_.size()) {
+                    out_types.push_back(key_col_types_[k]);
+                } else {
+                    out_types.push_back(group_keys_[0][k].type());
+                }
             }
         }
         for (size_t a = 0; a < values_.size(); a++) {

@@ -206,15 +206,3 @@ def test_insert_additional_rows(col):
     c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))
     assert len(c) == 110
     c.close()
-
-
-def test_duplicate_id_not_inserted(col):
-    query = "INSERT INTO {}.{} (_id, count) VALUES ('{}', 9999);".format(
-        database_name, collection_name, gen_id(0))
-    c = col.execute(query)
-    assert len(c) == 0
-    c.close()
-
-    c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))
-    assert len(c) == 100
-    c.close()

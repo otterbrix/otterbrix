@@ -1,4 +1,5 @@
-#include <boost/json/src.hpp>
+// boost::json impl symbols come from otterbrix_sql (json_insert.cpp).
+#include <boost/json.hpp>
 
 #include <chrono>
 #include <filesystem>

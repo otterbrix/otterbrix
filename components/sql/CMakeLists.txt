@@ -41,6 +41,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transfrom_common.cpp
     transformer/impl/transform_update.cpp
     transformer/impl/transform_insert.cpp
+    transformer/impl/json_insert.cpp
     transformer/impl/transform_delete.cpp
     transformer/impl/transform_index.cpp
     transformer/impl/transform_checkpoint.cpp

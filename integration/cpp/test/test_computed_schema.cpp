@@ -591,3 +591,232 @@ TEST_CASE("integration::cpp::test_computed_schema::sparse_promotion_then_insert"
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// INSERT INTO <computed-schema> VALUES (json('...')), (json('...')), ...
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_computed_schema::json_insert_basic") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_basic");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.jt ();");
+        REQUIRE(cur->is_success());
+    }
+
+    // Two rows with overlapping + disjoint fields; exercises column union + NULL padding.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.jt VALUES "
+            "(json('{\"id\": 1, \"name\": \"alice\"}')), "
+            "(json('{\"id\": 2, \"city\": \"nyc\"}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // Each field from the union lands as its own physical column.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.jt;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        // id + name + city = 3 columns (non-sparse path does not add _id)
+        REQUIRE(cur->chunk_data().column_count() == 3);
+    }
+
+    // Verify concrete values via targeted SELECTs.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT id FROM cs_testdb.jt ORDER BY id ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 2);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT name FROM cs_testdb.jt ORDER BY id ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        // Row 0: alice; row 1: NULL (absent)
+        REQUIRE_FALSE(cur->chunk_data().data[0].validity().row_is_valid(1));
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT city FROM cs_testdb.jt ORDER BY id ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        // Row 0: NULL; row 1: nyc
+        REQUIRE_FALSE(cur->chunk_data().data[0].validity().row_is_valid(0));
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_insert_nested") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_nested");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.nt ();");
+    }
+    // Nested object flattens to dotted path as its column name.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.nt VALUES (json('{\"user\": {\"profile\": {\"age\": 30}}}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.nt;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1); // "user.profile.age"
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_insert_evolving_across_batches") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_evolving");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.ev ();");
+    }
+
+    // Batch 1: introduces a, b
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "INSERT INTO cs_testdb.ev VALUES (json('{\"a\": 1, \"b\": 2}'));");
+        REQUIRE(cur->is_success());
+    }
+    // Batch 2: adds c, reuses a
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "INSERT INTO cs_testdb.ev VALUES (json('{\"a\": 10, \"c\": 100}'));");
+        REQUIRE(cur->is_success());
+    }
+    // Batch 3: all three fields at once, batch of 2 rows
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.ev VALUES "
+            "(json('{\"a\": 20, \"b\": 200, \"c\": 2000}')), "
+            "(json('{\"a\": 30, \"b\": 300, \"c\": 3000}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.ev;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->chunk_data().column_count() == 3); // a + b + c
+    }
+    // Sanity: aggregate across all rows
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT SUM(a) FROM cs_testdb.ev;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == (1 + 10 + 20 + 30));
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_insert_type_mix_types") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_types");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.tt ();");
+    }
+    // Booleans, doubles, strings, ints — each becomes its own column type.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.tt VALUES "
+            "(json('{\"i\": 7, \"d\": 0.5, \"b\": true, \"s\": \"hi\"}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.tt;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 4); // i + d + b + s
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_insert_error_propagation") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_errors");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.err ();");
+    }
+    // Invalid JSON — the transformer throws parser_exception_t, surfacing as an
+    // unhandled exception out of execute_sql (existing convention, same as bad SQL).
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE_THROWS(
+            dispatcher->execute_sql(s, "INSERT INTO cs_testdb.err VALUES (json('{bad json'));"));
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE_THROWS(
+            dispatcher->execute_sql(s, "INSERT INTO cs_testdb.err VALUES (json('42'));"));
+    }
+}

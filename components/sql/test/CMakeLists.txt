@@ -8,6 +8,7 @@ set(${PROJECT_NAME}_SOURCES
         test_select.cpp
         test_delete.cpp
         test_insert.cpp
+        test_json_insert.cpp
         test_join.cpp
         test_update.cpp
         test_errors.cpp

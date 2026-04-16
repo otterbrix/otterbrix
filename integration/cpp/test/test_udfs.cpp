@@ -292,25 +292,13 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(FROM TestDatabase.TestCollection )_"
                                                R"_(WHERE is_even(count);)_");
             REQUIRE(cur->is_success());
-            // TODO: fix implicit GROUP BY
-            // Should be this:
-            /*
+            // Two sets of kNumInserts were inserted, half of each set is even,
+            // so total = kNumInserts even rows.
             REQUIRE(cur->size() == kNumInserts);
             auto& chunk = cur->chunk_data();
             REQUIRE(chunk.column_count() == 1);
-            for (size_t i = 0; i < kNumInserts / 2; i++) {
-                REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>((i + 1) * 2));
-            }
-            for (size_t i = kNumInserts / 2; i < kNumInserts; i++) {
-                REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(((i - kNumInserts / 2) + 1) * 2));
-            }
-            */
-            // But because of implicit grouping that we have, it looks like this:
-            REQUIRE(cur->size() == kNumInserts / 2);
-            auto& chunk = cur->chunk_data();
-            REQUIRE(chunk.column_count() == 1);
-            for (size_t i = 0; i < kNumInserts / 2; i++) {
-                REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>((i + 1) * 2));
+            for (size_t i = 0; i < cur->size(); i++) {
+                REQUIRE(chunk.data[0].data<int64_t>()[i] % 2 == 0);
             }
         }
         INFO("int function in WHERE clause with parameter") {

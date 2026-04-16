@@ -58,7 +58,7 @@ TEST_CASE("components::sql::join") {
     SECTION("join specifics") {
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from db.col as col1 JOIN col2 on col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $group: {id, id_col1}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $select: {id, id_col1}})_",
             vec());
 
         TEST_JOIN(

@@ -70,12 +70,16 @@ namespace components::sql::transform {
         if (lst.empty()) {
             return column_ref_t(resource);
         } else if (lst.size() == 1) {
+            if (nodeTag(lst.back().data) == T_A_Star) {
+                return column_ref_t{{}, expressions::key_t{resource, "*"}};
+            }
             return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
         } else {
             auto it = lst.begin();
             std::string table_name;
             std::pmr::vector<std::pmr::string> field_path(resource);
             expressions::side_t side = expressions::side_t::undefined;
+            bool ends_with_star = nodeTag(lst.back().data) == T_A_Star;
 
             if (names.is_left_table(strVal(lst.begin()->data))) {
                 table_name = strVal(it->data);
@@ -85,6 +89,9 @@ namespace components::sql::transform {
                 table_name = strVal(it->data);
                 ++it;
                 side = expressions::side_t::right;
+            }
+            if (ends_with_star && !table_name.empty()) {
+                field_path.emplace_back(std::pmr::string{table_name, resource});
             }
             for (; it != lst.end(); ++it) {
                 if (nodeTag(it->data) == T_A_Star) {

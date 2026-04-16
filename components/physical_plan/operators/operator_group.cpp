@@ -121,6 +121,7 @@ namespace components::operators {
                                                  size_t row_idx) {
             switch (key.type) {
                 case group_key_t::kind::column: {
+                    assert(!key.full_path.empty() && "group key path must be resolved before execution");
                     types::logical_value_t val = chunk.value(key.full_path, row_idx);
                     val.set_alias(std::string{key.name});
                     return val;
@@ -217,7 +218,6 @@ namespace components::operators {
         , post_aggregates_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
-        , select_order_(resource_)
         , row_ids_per_group_(resource_)
         , group_keys_(resource_)
         , group_index_(resource_) {}
@@ -242,8 +242,6 @@ namespace components::operators {
     void operator_group_t::add_post_aggregate(post_aggregate_column_t&& col) {
         post_aggregates_.emplace_back(std::move(col));
     }
-
-    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) { select_order_ = std::move(order); }
 
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
@@ -298,18 +296,7 @@ namespace components::operators {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Reorder columns to match SELECT clause order
-            if (!select_order_.empty()) {
-                std::vector<vector::vector_t> reordered;
-                reordered.reserve(select_order_.size());
-                for (size_t idx : select_order_) {
-                    reordered.emplace_back(std::move(result.data[idx]));
-                }
-                result.data.assign(std::make_move_iterator(reordered.begin()),
-                                   std::make_move_iterator(reordered.end()));
-            }
-
-            // Phase 8: Output
+            // Phase 7: Output
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
 
             // Clear temporary grouping state

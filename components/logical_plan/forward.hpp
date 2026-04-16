@@ -25,6 +25,7 @@ namespace components::logical_plan {
         limit_t,
         match_t,
         group_t,
+        select_t,
         sort_t,
         update_t,
         union_t,

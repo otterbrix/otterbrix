@@ -7,6 +7,7 @@
 #include "impl/create_plan_insert.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
+#include "impl/create_plan_select.hpp"
 #include "impl/create_plan_sort.hpp"
 #include "impl/create_plan_update.hpp"
 
@@ -34,6 +35,8 @@ namespace services::planner {
                 return impl::create_plan_having(context, node, std::move(limit));
             case node_type::group_t:
                 return impl::create_plan_group(context, function_registry, node, params);
+            case node_type::select_t:
+                return impl::create_plan_select(context, function_registry, node, params);
             case node_type::sort_t:
                 return impl::create_plan_sort(context, node);
             case node_type::update_t:

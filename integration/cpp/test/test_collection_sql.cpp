@@ -97,6 +97,48 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 2);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT *, * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 4);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT *, TestCollection.name, count, TestCollection.* FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 6);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT *, table_alias.name, count, table_alias.* FROM TestDatabase.TestCollection AS table_alias;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 6);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -433,8 +475,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
     }
 
-    // TODO: fix
-    /*
     INFO("unknown function") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -445,7 +485,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
-    */
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {

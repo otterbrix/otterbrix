@@ -1,4 +1,5 @@
 #include "create_plan_aggregate.hpp"
+#include "create_plan_select.hpp"
 
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
@@ -30,10 +31,11 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         auto* plan_resource = context.has_collection(coll_name) ? context.resource : node->resource();
 
-        // Build operator chain directly: scan/child → match → group → sort
+        // Build operator chain: scan/child → match → group → sort → select
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
         components::operators::operator_ptr sort_op;
+        components::operators::operator_ptr select_op;
         components::operators::operator_ptr child_op;
 
         for (const components::logical_plan::node_ptr& child : node->children()) {
@@ -49,13 +51,16 @@ namespace services::planner::impl {
                 case node_type::sort_t:
                     sort_op = create_plan(context, function_registry, child, limit, params);
                     break;
+                case node_type::select_t:
+                    select_op = create_plan_select(context, function_registry, child, params);
+                    break;
                 default:
                     child_op = create_plan(context, function_registry, child, limit, params);
                     break;
             }
         }
 
-        // Build chain: base → match → group → sort
+        // Build chain: base → match → group → sort → select
         // When sort is present, scan all rows — limit is applied after sort
         auto scan_limit = sort_op ? components::logical_plan::limit_t::unlimit() : limit;
 
@@ -76,20 +81,12 @@ namespace services::planner::impl {
             executor = std::move(group_op);
         }
         if (sort_op) {
-            // Pass visible_select_count to sort operator for post-sort column truncation
-            for (const auto& child : node->children()) {
-                if (child->type() == node_type::group_t) {
-                    if (auto* gn = dynamic_cast<const components::logical_plan::node_group_t*>(child.get())) {
-                        if (gn->visible_select_count > 0) {
-                            static_cast<components::operators::operator_sort_t*>(sort_op.get())
-                                ->set_expected_output_count(gn->visible_select_count);
-                        }
-                    }
-                    break;
-                }
-            }
             sort_op->set_children(std::move(executor));
             executor = std::move(sort_op);
+        }
+        if (select_op) {
+            select_op->set_children(std::move(executor));
+            executor = std::move(select_op);
         }
 
         // Check if DISTINCT flag is set on the aggregate node

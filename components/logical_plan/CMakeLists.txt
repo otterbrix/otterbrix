@@ -28,6 +28,7 @@ set(SOURCE_${PROJECT_NAME}
         node_join.cpp
         node_limit.cpp
         node_match.cpp
+        node_select.cpp
         node_sort.cpp
         node_update.cpp
         node_vacuum.cpp

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "compute_result.hpp"
+#include <core/result_wrapper.hpp>
 
 #include <components/types/types.hpp>
 #include <functional>
@@ -45,13 +45,15 @@ namespace components::compute {
     };
 
     using fixed_t = types::complex_logical_type;
-    using type_resolver_fn = std::function<compute_result<fixed_t>(const std::pmr::vector<fixed_t>&)>;
+    using type_resolver_fn = std::function<core::result_wrapper_t<fixed_t>(std::pmr::memory_resource* resource,
+                                                                           const std::pmr::vector<fixed_t>&)>;
 
     struct output_type {
         static output_type fixed(fixed_t type);
         static output_type computed(type_resolver_fn resolver);
 
-        [[nodiscard]] compute_result<fixed_t> resolve(const std::pmr::vector<fixed_t>& input_types) const;
+        [[nodiscard]] core::result_wrapper_t<fixed_t> resolve(std::pmr::memory_resource* resource,
+                                                              const std::pmr::vector<fixed_t>& input_types) const;
 
     private:
         output_type() = default;

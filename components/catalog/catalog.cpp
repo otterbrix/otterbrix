@@ -65,42 +65,46 @@ namespace components::catalog {
         return it->second;
     }
 
-    catalog_error catalog::create_table(const table_id& id, table_metadata meta) {
+    core::error_t catalog::create_table(const table_id& id, table_metadata meta) {
         if (!namespace_exists(id.get_namespace())) {
-            return {catalog_mistake_t::MISSING_NAMESPACE, "Namespace does not exist for table: " + id.to_string()};
+            return core::error_t(core::error_code_t::missing_namespace,
+                                 std::pmr::string{"Namespace does not exist for table: " + id.to_string(), resource_});
         }
 
         if (table_exists(id)) {
-            return {catalog_mistake_t::ALREADY_EXISTS, "Table already exists: " + id.to_string()};
+            return core::error_t(core::error_code_t::already_exists,
+                                 std::pmr::string{"Table already exists: " + id.to_string(), resource_});
         }
 
         namespaces_.get_namespace_info(id.get_namespace()).tables.emplace(id.table_name(), std::move(meta));
-        return {};
+        return core::error_t::no_error();
     }
 
-    catalog_error catalog::create_computing_table(const table_id& id) {
+    core::error_t catalog::create_computing_table(const table_id& id) {
         if (!namespace_exists(id.get_namespace())) {
-            return {catalog_mistake_t::MISSING_NAMESPACE, "Namespace does not exist for table: " + id.to_string()};
+            return core::error_t(core::error_code_t::missing_namespace,
+                                 std::pmr::string{"Namespace does not exist for table: " + id.to_string(), resource_});
         }
 
         if (table_computes(id)) {
-            return {catalog_mistake_t::ALREADY_EXISTS, "Table already being computed: " + id.to_string()};
+            return core::error_t(core::error_code_t::already_exists,
+                                 std::pmr::string{"Table already exists: " + id.to_string(), resource_});
         }
 
         namespaces_.get_namespace_info(id.get_namespace())
             .computing.emplace(id.table_name(), computed_schema(resource_));
-        return {};
+        return core::error_t::no_error();
     }
 
     void catalog::drop_table(const table_id& id) { drop_table_impl<schema_type::REGULAR>(id); }
 
     void catalog::drop_computing_table(const table_id& id) { drop_table_impl<schema_type::COMPUTING>(id); }
 
-    catalog_error catalog::rename_table(const table_id& from, std::pmr::string to) {
+    core::error_t catalog::rename_table(const table_id& from, std::pmr::string to) {
         return rename_table_impl<schema_type::REGULAR>(from, to);
     }
 
-    catalog_error catalog::rename_computing_table(const table_id& from, std::pmr::string to) {
+    core::error_t catalog::rename_computing_table(const table_id& from, std::pmr::string to) {
         return rename_table_impl<schema_type::COMPUTING>(from, to);
     }
 
@@ -158,20 +162,22 @@ namespace components::catalog {
     }
 
     template<catalog::schema_type type>
-    catalog_error catalog::rename_table_impl(const table_id& from, std::pmr::string to) {
+    core::error_t catalog::rename_table_impl(const table_id& from, std::pmr::string to) {
         if (!table_exists_impl<type>(from)) {
-            return {catalog_mistake_t::ALREADY_EXISTS, "Source table does not exist: " + from.to_string()};
+            return core::error_t(core::error_code_t::already_exists,
+                                 std::pmr::string{"Source table does not exist: " + from.to_string(), resource_});
         }
 
         if (table_exists_impl<type>(table_id(resource_, from.get_namespace(), to))) {
-            return {catalog_mistake_t::ALREADY_EXISTS, "Target table already exists: " + std::string(to)};
+            return core::error_t(core::error_code_t::already_exists,
+                                 std::pmr::string{"Target table already exists: " + std::string(to), resource_});
         }
 
         auto& info = get_map_impl<type>(from.get_namespace());
         auto node = info.extract(from.table_name());
         node.key() = to;
         info.insert(std::move(node));
-        return {};
+        return core::error_t::no_error();
     }
 
     template<catalog::schema_type type>
@@ -198,9 +204,10 @@ namespace components::catalog {
 
     transaction_scope catalog::begin_transaction(const table_id& id) {
         if (!table_exists(id)) {
-            return {resource_,
-                    catalog_error(transaction_mistake_t::MISSING_TABLE,
-                                  "Table does not exist: " + std::string(id.table_name()))};
+            return {
+                resource_,
+                core::error_t(core::error_code_t::missing_table,
+                              std::pmr::string{"Table does not exist: " + std::string(id.table_name()), resource_})};
         }
 
         transactions_->add_transaction(id);

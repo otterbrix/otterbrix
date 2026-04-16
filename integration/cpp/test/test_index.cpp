@@ -71,7 +71,7 @@ constexpr int kDocuments = 100;
         node->keys().emplace_back(dispatcher->resource(), KEY);                                                        \
         auto res = dispatcher->create_index(session, node);                                                            \
         REQUIRE(res->is_error() == true);                                                                              \
-        REQUIRE(res->get_error().type == components::cursor::error_code_t::index_create_fail);                         \
+        REQUIRE(res->get_error().type == core::error_code_t::index_create_fail);                                       \
                                                                                                                        \
     } while (false)
 

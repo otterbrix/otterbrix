@@ -285,6 +285,7 @@ local.properties
 ### NetBeans template
 nbproject/private/
 build/
+build_release/
 nbbuild/
 dist/
 nbdist/

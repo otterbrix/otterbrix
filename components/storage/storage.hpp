@@ -50,8 +50,7 @@ namespace components::storage {
                                     const table::table_filter_t* filter,
                                     int limit,
                                     const std::vector<size_t>& projected_cols,
-                                    table::transaction_data txn) {
-            (void) txn;
+                                    table::transaction_data /*txn*/) {
             scan_projected(output, filter, limit, projected_cols);
         }
 

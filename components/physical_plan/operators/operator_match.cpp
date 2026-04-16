@@ -59,8 +59,12 @@ namespace components::operators {
                                          : predicates::create_all_true_predicate(left_->output()->resource());
             vector::indexing_vector_t all_indices(nullptr, nullptr);
             auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());
+            if (results.has_error()) {
+                set_error(results.error());
+                return;
+            }
             for (size_t i = 0; i < chunk.size(); i++) {
-                if (results[i]) {
+                if (results.value()[i]) {
                     for (size_t j : populated_cols) {
                         out_chunk.set_value(j, count, chunk.data[j].value(i));
                     }

@@ -4,6 +4,7 @@
 using namespace components::compute;
 
 TEST_CASE("components::compute::registry::basic") {
+    std::pmr::synchronized_pool_resource resource;
     auto* reg = function_registry_t::get_default();
     REQUIRE(reg != nullptr);
     auto registered_functions = reg->get_functions();

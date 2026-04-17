@@ -113,7 +113,6 @@ namespace services::collection::executor {
                     co_return execute_result_t{
                         make_cursor(resource(),
                                     core::error_t(core::error_code_t::index_create_fail,
-
                                                   std::pmr::string{"index already exists", resource()})),
                         {}};
                 }
@@ -191,7 +190,6 @@ namespace services::collection::executor {
             }
             co_return execute_result_t{make_cursor(resource(),
                                                    core::error_t(core::error_code_t::create_physical_plan_error,
-
                                                                  std::pmr::string{"invalid query plan", resource()})),
                                        {}};
         }
@@ -394,7 +392,6 @@ namespace services::collection::executor {
             if (!plan) {
                 cursor = make_cursor(resource(),
                                      core::error_t(core::error_code_t::create_physical_plan_error,
-
                                                    std::pmr::string{"invalid query plan", resource()}));
                 break;
             }

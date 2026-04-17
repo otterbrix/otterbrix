@@ -59,7 +59,6 @@ namespace components::sql::transform {
             default:
                 error_ = core::error_t(
                     core::error_code_t::sql_parse_error,
-
                     std::pmr::string{"Unsupported node type: " + node_tag_to_string(node.type), resource_});
         }
 

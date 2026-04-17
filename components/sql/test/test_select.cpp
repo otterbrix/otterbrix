@@ -41,6 +41,14 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$limit: -1})_",
                        vec());
 
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT 10 OFFSET 5;)_",
+                       R"_($aggregate: {$limit: 10, $offset: 5})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection OFFSET 20;)_",
+                       R"_($aggregate: {$limit: -1, $offset: 20})_",
+                       vec());
+
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",
@@ -220,6 +228,10 @@ TEST_CASE("components::sql::select_from_order_by") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number ASC, name DESC LIMIT 200;)_",
                        R"_($aggregate: {$sort: {number: 1, name: -1}, $limit: 200})_",
+                       vec());
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number ASC LIMIT 10 OFFSET 5;)_",
+                       R"_($aggregate: {$sort: {number: 1}, $limit: 10, $offset: 5})_",
                        vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number, "count" ASC, name, value DESC;)_",

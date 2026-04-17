@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/expressions/expression.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/sort/sort.hpp>
@@ -29,11 +30,13 @@ namespace components::operators {
         void add_computed(computed_sort_key_t&& key);
 
         void set_expected_output_count(size_t n) { expected_output_count_ = n; }
+        void set_limit(logical_plan::limit_t limit) { limit_ = limit; }
 
     private:
         sort::columnar_sorter_t sorter_;
         std::pmr::vector<computed_sort_key_t> computed_keys_;
         size_t expected_output_count_{0};
+        logical_plan::limit_t limit_;
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
     };

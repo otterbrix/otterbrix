@@ -65,6 +65,19 @@ namespace components::operators {
             chunk.data.erase(chunk.data.begin() + static_cast<ptrdiff_t>(first_computed_col), chunk.data.end());
         }
 
+        // Apply offset and limit to sorted result
+        int64_t offset_val = limit_.offset();
+        int64_t limit_val = limit_.limit();
+        if (offset_val > 0 || limit_val >= 0) {
+            uint64_t total = result.size();
+            uint64_t start = static_cast<uint64_t>(std::min(static_cast<int64_t>(total), offset_val));
+            uint64_t remaining = total - start;
+            uint64_t take = (limit_val >= 0) ? std::min(remaining, static_cast<uint64_t>(limit_val)) : remaining;
+            if (start > 0 || take < total) {
+                result = result.partial_copy(resource_, start, take);
+            }
+        }
+
         output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
     }
 

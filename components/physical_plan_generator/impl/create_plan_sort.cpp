@@ -8,7 +8,8 @@
 namespace services::planner::impl {
 
     components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
-                                                         const components::logical_plan::node_ptr& node) {
+                                                         const components::logical_plan::node_ptr& node,
+                                                         components::logical_plan::limit_t limit) {
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
         auto plan_resource = known ? context.resource : node->resource();
@@ -37,6 +38,7 @@ namespace services::planner::impl {
                 sort->add_computed(std::move(ck));
             }
         }
+        sort->set_limit(limit);
         return sort;
     }
 

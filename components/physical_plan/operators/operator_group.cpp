@@ -256,7 +256,6 @@ namespace components::operators {
                     return;
                 } else if (result_vec.value().type().type() == types::logical_type::NA) {
                     set_error(core::error_t(core::error_code_t::physical_plan_error,
-
                                             std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                     return;
                 }
@@ -577,7 +576,7 @@ namespace components::operators {
             return build_result_chunk(num_groups, key_count, agg_results);
         }
 
-        // Fallback: gather + slice_contiguous per group
+        // Fallback: gather + partial_copy per group
         return calc_aggregate_values_fallback(pipeline_context);
     }
 
@@ -623,7 +622,7 @@ namespace components::operators {
             for (size_t i = 0; i < num_groups; i++) {
                 auto off = group_offsets[i];
                 auto cnt = group_offsets[i + 1] - group_offsets[i];
-                group_chunks.emplace_back(gathered.slice_contiguous(resource_, off, cnt));
+                group_chunks.emplace_back(gathered.partial_copy(resource_, off, cnt));
             }
 
             aggregator->clear();

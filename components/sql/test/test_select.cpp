@@ -49,6 +49,14 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$limit: -1, $offset: 20})_",
                        vec());
 
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number BETWEEN 10 AND 20;)_",
+                       R"_($aggregate: {$match: {$and: ["number": {$gte: #0}, "number": {$lte: #1}]}})_",
+                       vec({v(&resource, 10l), v(&resource, 20l)}));
+
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number NOT BETWEEN 10 AND 20;)_",
+                       R"_($aggregate: {$match: {$or: ["number": {$lt: #0}, "number": {$gt: #1}]}})_",
+                       vec({v(&resource, 10l), v(&resource, 20l)}));
+
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",

@@ -274,8 +274,18 @@ namespace components::operators {
                 }
             }
 
-            // Phase 2: Group by keys (columnar, no transpose)
-            create_list_rows();
+            // Phase 2: Group by keys, or treat entire chunk as one group when there are no keys
+            if (keys_.empty()) {
+                auto num_rows = chunk.size();
+                row_ids_per_group_.resize(1);
+                row_ids_per_group_[0].reserve(num_rows);
+                for (size_t r = 0; r < num_rows; ++r) {
+                    row_ids_per_group_[0].push_back(r);
+                }
+                group_keys_.push_back({});
+            } else {
+                create_list_rows();
+            }
 
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context);
@@ -303,6 +313,30 @@ namespace components::operators {
             row_ids_per_group_.clear();
             group_keys_.clear();
             group_index_.clear();
+        } else if (keys_.empty() && !values_.empty()) {
+            // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
+            // Run each aggregator over zero rows and emit one result row.
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+            agg_results.reserve(values_.size());
+            for (const auto& value : values_) {
+                std::vector<vector::data_chunk_t> empty_chunks;
+                value.aggregator->clear();
+                value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
+                value.aggregator->on_execute(pipeline_context);
+                auto datum = value.aggregator->take_batch_values();
+                std::pmr::vector<types::logical_value_t> results(resource_);
+                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                    types::logical_value_t val =
+                        vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
+                    val.set_alias(std::string(value.name));
+                    results.push_back(std::move(val));
+                }
+                agg_results.push_back(std::move(results));
+            }
+            group_keys_.push_back({});
+            auto result = build_result_chunk(1, 0, agg_results);
+            output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
             std::pmr::vector<types::complex_logical_type> empty_types(resource_);

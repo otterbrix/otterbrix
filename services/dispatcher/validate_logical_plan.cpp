@@ -1059,168 +1059,33 @@ namespace services::dispatcher {
                             }
                         }
 
-                        // Resolve key paths in all node_select scalar expressions.
-                        //
-                        // In global_aggregate mode (any aggregate present) arithmetic params
-                        // reference aggregate output aliases (e.g. "__agg_0"), not table columns.
-                        // Build a schema from aggregates first so those aliases resolve to the
-                        // correct column index in the intermediate chunk produced by accumulate().
-                        size_t select_end = node_select->expressions().size() - node_select->internal_aggregate_count;
-
-                        named_schema agg_schema(resource);
-                        {
-                            size_t agg_slot = 0;
-                            for (const auto& expr : node_select->expressions()) {
-                                if (expr->group() != expression_group::aggregate) {
-                                    continue;
-                                }
-                                auto* agg_expr = reinterpret_cast<const aggregate_expression_t*>(expr.get());
-                                complex_logical_type slot_type(logical_type::NA);
-                                slot_type.set_alias(agg_expr->key().as_string());
-                                agg_schema.emplace_back(type_from_t{node->result_alias(), slot_type});
-                                ++agg_slot;
+                        // Resolve key paths in node_select scalar expressions against incoming schema.
+                        // Aggregates are always in node_group_t now, so only scalar expressions appear here.
+                        for (auto& expr : node_select->expressions()) {
+                            if (expr->group() != expression_group::scalar) {
+                                continue;
                             }
-                        }
-
-                        for (size_t i = 0; i < node_select->expressions().size(); i++) {
-                            auto& expr = node_select->expressions()[i];
-                            if (expr->group() == expression_group::scalar) {
-                                auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
-                                if (scalar_expr->type() == scalar_type::get_field) {
-                                    auto& key =
-                                        scalar_expr->params().empty()
-                                            ? scalar_expr->key()
-                                            : std::get<components::expressions::key_t>(scalar_expr->params().front());
-                                    if (key.path().empty()) {
-                                        auto res =
-                                            impl::validate_key(resource, key, incoming_schema, incoming_schema, true);
-                                        if (res.has_error()) {
-                                            return res.convert_error<named_schema>();
-                                        }
-                                    }
-                                } else if (scalar_expr->type() != scalar_type::constant &&
-                                           scalar_expr->type() != scalar_type::star_expand) {
-                                    // In global_aggregate mode arithmetic params reference aggregate
-                                    // output aliases; resolve against agg_schema.  Otherwise (plain
-                                    // column arithmetic) resolve against incoming_schema.
-                                    const auto& param_schema = agg_schema.empty() ? incoming_schema : agg_schema;
+                            auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
+                            if (scalar_expr->type() == scalar_type::get_field) {
+                                auto& key =
+                                    scalar_expr->params().empty()
+                                        ? scalar_expr->key()
+                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                if (key.path().empty()) {
                                     auto res =
-                                        impl::resolve_key_paths_in_group(resource, scalar_expr->params(), param_schema);
+                                        impl::validate_key(resource, key, incoming_schema, incoming_schema, true);
                                     if (res.has_error()) {
                                         return res.convert_error<named_schema>();
                                     }
                                 }
-                                continue;
-                            }
-                            if (expr->group() != expression_group::aggregate) {
-                                continue;
-                            }
-                            auto* agg_expr = reinterpret_cast<aggregate_expression_t*>(expr.get());
-                            bool is_internal = (i >= select_end);
-                            // Resolve key paths in params
-                            auto res_paths =
-                                impl::resolve_key_paths_in_group(resource, agg_expr->params(), incoming_schema);
-                            if (res_paths.has_error()) {
-                                return res_paths.convert_error<named_schema>();
-                            }
-                            // Build function input types
-                            std::pmr::vector<complex_logical_type> function_input_types(resource);
-                            for (auto& param : agg_expr->params()) {
-                                if (std::holds_alternative<components::expressions::key_t>(param)) {
-                                    auto& key = std::get<components::expressions::key_t>(param);
-                                    auto field = impl::find_types(resource, key, incoming_schema);
-                                    if (field.has_error()) {
-                                        return field.convert_error<named_schema>();
-                                    }
-                                    for (const auto& sub_field : field.value()) {
-                                        function_input_types.emplace_back(sub_field.type);
-                                    }
-                                } else if (std::holds_alternative<core::parameter_id_t>(param)) {
-                                    auto id = std::get<core::parameter_id_t>(param);
-                                    function_input_types.emplace_back(parameters.parameters.at(id).type());
-                                } else {
-                                    // expression_ptr (e.g. arithmetic sub-expression like count+0)
-                                    auto& sub_expr = std::get<expression_ptr>(param);
-                                    if (sub_expr->group() == expression_group::scalar) {
-                                        auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
-                                        core::error_t resolve_error = core::error_t::no_error();
-                                        std::function<complex_logical_type(param_storage&)> resolve_arith_type;
-                                        resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
-                                            if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                                auto& k = std::get<components::expressions::key_t>(p);
-                                                auto f = impl::find_types(resource, k, incoming_schema);
-                                                if (!f.has_error()) {
-                                                    return f.value().front().type;
-                                                }
-                                                resolve_error = f.error();
-                                                return complex_logical_type(logical_type::INVALID);
-                                            } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                return parameters.parameters.at(std::get<core::parameter_id_t>(p))
-                                                    .type();
-                                            } else {
-                                                auto& inner = std::get<expression_ptr>(p);
-                                                if (inner->group() == expression_group::scalar) {
-                                                    auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
-                                                    if (s->params().size() >= 2) {
-                                                        auto lt = resolve_arith_type(s->params()[0]);
-                                                        auto rt = resolve_arith_type(s->params()[1]);
-                                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
-                                                    }
-                                                }
-                                                return complex_logical_type(logical_type::INVALID);
-                                            }
-                                        };
-                                        if (sub_scalar->params().size() >= 2) {
-                                            auto lt = resolve_arith_type(sub_scalar->params()[0]);
-                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
-                                            if (!resolve_error.contains_error()) {
-                                                function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
-                                            }
-                                        } else if (sub_scalar->params().size() == 1) {
-                                            auto lt = resolve_arith_type(sub_scalar->params()[0]);
-                                            if (!resolve_error.contains_error()) {
-                                                function_input_types.emplace_back(lt);
-                                            }
-                                        }
-                                    }
+                            } else if (scalar_expr->type() != scalar_type::constant &&
+                                       scalar_expr->type() != scalar_type::star_expand) {
+                                auto res =
+                                    impl::resolve_key_paths_in_group(resource, scalar_expr->params(), incoming_schema);
+                                if (res.has_error()) {
+                                    return res.convert_error<named_schema>();
                                 }
                             }
-                            // Lookup and assign function UID
-                            if (!catalog.function_name_exists(agg_expr->function_name())) {
-                                return core::error_t(core::error_code_t::unrecognized_function,
-                                                     std::pmr::string{"function: '" + agg_expr->function_name() +
-                                                                          "(...)' was not found by the name",
-                                                                      resource});
-                            }
-                            if (catalog.function_exists(agg_expr->function_name(), function_input_types)) {
-                                auto func = catalog.get_function(agg_expr->function_name(), function_input_types);
-                                std::vector<complex_logical_type> function_output_types;
-                                for (const auto& output_type : func.second.output_types) {
-                                    auto res = output_type.resolve(resource, function_input_types);
-                                    if (res.has_error()) {
-                                        return res.convert_error<named_schema>();
-                                    }
-                                    function_output_types.emplace_back(res.value());
-                                }
-                                if (!is_internal && !function_output_types.empty()) {
-                                    result.emplace_back(
-                                        type_from_t{node->result_alias(), function_output_types.front()});
-                                    auto agg_alias = agg_expr->key().as_string();
-                                    if (!agg_expr->key().is_null()) {
-                                        result.back().type.set_alias(agg_alias);
-                                    }
-                                }
-                                agg_expr->add_function_uid(func.first);
-                            } else {
-                                return core::error_t(
-                                    core::error_code_t::incorrect_function_argument,
-                                    std::pmr::string{"function: '" + agg_expr->function_name() +
-                                                         "(...)' was found but does not accept given arguments",
-                                                     resource});
-                            }
-                        }
-                        if (!result.empty()) {
-                            return result;
                         }
                     }
                     return incoming_schema;
@@ -1326,6 +1191,7 @@ namespace services::dispatcher {
                     named_schema key_schema(resource);
                     named_schema agg_schema(resource);
                     std::vector<size_t> post_agg_indices;
+                    std::vector<size_t> agg_result_positions;
 
                     for (size_t i = 0; i < node_group->expressions().size(); i++) {
                         auto& expr = node_group->expressions()[i];
@@ -1500,6 +1366,7 @@ namespace services::dispatcher {
                                 agg_expr->add_function_uid(func.first);
                                 // Collect for post_agg_schema
                                 if (!is_internal && !function_output_types.empty()) {
+                                    agg_result_positions.push_back(result.size() - 1);
                                     agg_schema.emplace_back(result.back());
                                 } else if (is_internal && !function_output_types.empty()) {
                                     type_from_t entry{node->result_alias(), function_output_types.front()};
@@ -1548,7 +1415,10 @@ namespace services::dispatcher {
                     }
 
                     // Resolve node_select scalar expression key paths against the group output schema.
+                    // GROUP BY key columns are real columns addressable by name (key_schema).
+                    // Computed aggregate columns are internal artifacts — resolve positionally.
                     if (node_select) {
+                        size_t agg_cursor = 0;
                         for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
                                 continue;
@@ -1560,9 +1430,12 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (key.path().empty()) {
-                                    auto res = impl::validate_key(resource, key, result, result, true);
+                                    auto res = impl::validate_key(resource, key, key_schema, key_schema, true);
                                     if (res.has_error()) {
-                                        return res.convert_error<named_schema>();
+                                        if (agg_cursor >= agg_result_positions.size()) {
+                                            return res.convert_error<named_schema>();
+                                        }
+                                        key.set_path({agg_result_positions[agg_cursor++]});
                                     }
                                 }
                             } else if (scalar_expr->type() != scalar_type::constant &&

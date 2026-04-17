@@ -45,6 +45,16 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
         }
     }
 
+    INFO("different \'COUNT\' calls") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*), COUNT(value) FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5);
+        REQUIRE(cur->chunk_data().value(1, 0).value<uint64_t>() == 3);
+    }
+
     INFO("IS NULL") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");

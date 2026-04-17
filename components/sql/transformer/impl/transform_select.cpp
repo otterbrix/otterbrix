@@ -497,19 +497,21 @@ namespace components::sql::transform {
         }
 
         // Route SELECT expressions and pending internal aggregates:
-        //   With GROUP BY   → aggregates from select_node move to group; replaced by get_field refs.
-        //                     pending_internal_aggs_ flush to group.
-        //   Without GROUP BY → aggregates stay in select_node.
-        //                      pending_internal_aggs_ flush to select_node.
-        if (has_group_by && has_non_star) {
-            // Rewrite select_node: move aggregate expressions to group, replace with get_field refs.
+        // Built-in aggregates (count/sum/avg/min/max) move to group_node and are replaced by
+        // get_field refs in select_node. Scalar UDFs stay in select_node as-is.
+        // This applies both with and without an explicit GROUP BY — operator_group_t treats the
+        // entire chunk as one group when its keys_ is empty.
+        if (has_non_star) {
             std::vector<expression_ptr> new_sel_exprs;
             for (auto& expr : select_node->expressions()) {
                 if (expr->group() == expression_group::aggregate) {
+                    // Every aggregate_expression_t represents an aggregate function — always route
+                    // to group_node so that operator_group_t handles it. validate_schema verifies
+                    // the function exists. This covers both built-in (count/sum/avg/min/max) and
+                    // user-registered aggregate functions.
                     auto* agg_expr = static_cast<const aggregate_expression_t*>(expr.get());
                     std::string alias = agg_expr->key().as_string();
                     group->append_expression(expr);
-                    // Replace with get_field reference (resolved by name at runtime)
                     new_sel_exprs.push_back(make_scalar_expression(resource_,
                                                                    scalar_type::get_field,
                                                                    expressions::key_t{resource_, alias}));
@@ -522,21 +524,13 @@ namespace components::sql::transform {
                 select_node->append_expression(expr);
             }
 
-            // Flush pending internal aggregates to group (they are sub-aggregates of arithmetic in select)
+            // Flush pending internal aggregates to group (sub-aggregates of arithmetic in select).
+            // Do NOT set group->internal_aggregate_count: operator_select_t needs these columns
+            // for post-aggregate arithmetic, so they must not be erased by operator_group_t.
             for (auto& internal_agg : pending_internal_aggs_) {
                 group->append_expression(internal_agg);
             }
-            // Do NOT set group->internal_aggregate_count here.
-            // operator_select_t (downstream) needs these columns for post-aggregate arithmetic.
-            // Setting internal_aggregate_count would cause operator_group_t to erase them before
-            // the select operator gets a chance to reference them.
             group->internal_aggregate_count = 0;
-        } else {
-            // No GROUP BY: aggregates stay in select_node; pending internal aggs flush there too.
-            for (auto& internal_agg : pending_internal_aggs_) {
-                select_node->append_expression(internal_agg);
-            }
-            select_node->internal_aggregate_count = pending_internal_aggs_.size();
         }
         pending_internal_aggs_.clear();
 

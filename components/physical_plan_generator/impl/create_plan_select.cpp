@@ -179,55 +179,23 @@ namespace services::planner::impl {
 
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_select(const context_storage_t& context,
-                       const components::compute::function_registry_t& function_registry,
-                       const components::logical_plan::node_ptr& node,
-                       const components::logical_plan::storage_parameters* params) {
+    components::operators::operator_ptr create_plan_select(const context_storage_t& context,
+                                                           const components::logical_plan::node_ptr& node,
+                                                           const components::logical_plan::storage_parameters* params) {
         auto coll_name = node->collection_full_name();
         bool known = context.has_collection(coll_name);
         auto plan_resource = known ? context.resource : node->resource();
         auto plan_log = known ? context.log.clone() : log_t{};
 
-        auto* select_node = static_cast<const components::logical_plan::node_select_t*>(node.get());
+        auto op = boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, plan_log));
 
-        // Determine mode: global_aggregate if any expression is an aggregate
-        bool has_aggregate = false;
+        // Aggregates are always handled by operator_group_t upstream; node_select_t only contains
+        // scalar expressions (get_field, arithmetic, constant, star_expand, coalesce, case_when).
         for (const auto& expr : node->expressions()) {
-            if (expr->group() == expression_group::aggregate) {
-                has_aggregate = true;
-                break;
-            }
-        }
-
-        auto op_mode = has_aggregate ? components::operators::operator_select_t::mode::global_aggregate
-                                     : components::operators::operator_select_t::mode::evaluation;
-
-        auto op = boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, plan_log, op_mode));
-        op->set_internal_aggregate_count(select_node->internal_aggregate_count);
-
-        for (size_t i = 0; i < node->expressions().size(); ++i) {
-            const auto& expr = node->expressions()[i];
-
-            if (expr->group() == expression_group::aggregate) {
-                auto* agg_expr = static_cast<const components::expressions::aggregate_expression_t*>(expr.get());
-                components::operators::select_column_t col(plan_resource);
-                col.type = components::operators::select_column_t::kind::aggregate;
-                col.key.name = std::pmr::string(agg_expr->key().as_string(), plan_resource);
-                col.key.type = components::operators::group_key_t::kind::column;
-                col.aggregator = boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
-                    plan_resource,
-                    plan_log,
-                    function_registry.get_function(agg_expr->function_uid()),
-                    agg_expr->params(),
-                    agg_expr->is_distinct()));
-                op->add_column(std::move(col));
-
-            } else if (expr->group() == expression_group::scalar) {
+            if (expr->group() == expression_group::scalar) {
                 auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
                 op->add_column(make_select_column_scalar(plan_resource, scalar_expr, params));
             }
-            // Other expression groups are ignored (shouldn't appear in node_select_t)
         }
 
         return op;

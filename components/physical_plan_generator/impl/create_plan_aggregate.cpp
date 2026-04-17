@@ -52,7 +52,7 @@ namespace services::planner::impl {
                     sort_op = create_plan(context, function_registry, child, limit, params);
                     break;
                 case node_type::select_t:
-                    select_op = create_plan_select(context, function_registry, child, params);
+                    select_op = create_plan_select(context, child, params);
                     break;
                 default:
                     child_op = create_plan(context, function_registry, child, limit, params);

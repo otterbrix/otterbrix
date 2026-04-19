@@ -415,6 +415,15 @@ namespace {
 
     static core::error_t count_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<count_kernel_state*>(ctx.state());
+        acc->value = 0;
+        for (size_t i = 0; i < in.size(); i++) {
+            acc->value += !in.data[0].is_null(i);
+        }
+        return core::error_t::no_error();
+    }
+
+    static core::error_t count_consume_empty(kernel_context& ctx, const data_chunk_t& in) {
+        auto* acc = static_cast<count_kernel_state*>(ctx.state());
         acc->value = in.size();
         return core::error_t::no_error();
     }
@@ -525,7 +534,7 @@ namespace {
 
         // COUNT(*) — zero-argument kernel
         kernel_signature_t sig_star(function_type_t::aggregate, {}, {output_type::fixed(logical_type::UBIGINT)});
-        aggregate_kernel k_star{std::move(sig_star), count_init, count_consume, count_merge, count_finalize};
+        aggregate_kernel k_star{std::move(sig_star), count_init, count_consume_empty, count_merge, count_finalize};
         fn->add_kernel(resource, std::move(k_star));
 
         return fn;

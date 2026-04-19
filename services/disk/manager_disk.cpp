@@ -1016,7 +1016,7 @@ namespace services::disk {
     manager_disk_t::storage_scan(session_id_t /*session*/,
                                  collection_full_name_t name,
                                  std::unique_ptr<components::table::table_filter_t> filter,
-                                 int limit,
+                                 int64_t limit,
                                  components::table::transaction_data txn) {
         auto* s = get_storage(name);
         if (!s) {
@@ -1598,7 +1598,7 @@ namespace services::disk {
     manager_disk_empty_t::storage_scan(session_id_t /*session*/,
                                        collection_full_name_t name,
                                        std::unique_ptr<components::table::table_filter_t> filter,
-                                       int limit,
+                                       int64_t limit,
                                        components::table::transaction_data txn) {
         auto* s = get_storage(name);
         if (!s) {

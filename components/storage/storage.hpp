@@ -29,10 +29,10 @@ namespace components::storage {
         virtual uint64_t total_rows() const = 0;
         virtual uint64_t calculate_size() = 0;
 
-        virtual void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int limit) = 0;
+        virtual void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) = 0;
         virtual void scan(vector::data_chunk_t& output,
                           const table::table_filter_t* filter,
-                          int limit,
+                          int64_t limit,
                           table::transaction_data /*txn*/) {
             scan(output, filter, limit);
         }

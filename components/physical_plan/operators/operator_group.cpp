@@ -121,6 +121,7 @@ namespace components::operators {
                                                  size_t row_idx) {
             switch (key.type) {
                 case group_key_t::kind::column: {
+                    assert(!key.full_path.empty() && "group key path must be resolved before execution");
                     types::logical_value_t val = chunk.value(key.full_path, row_idx);
                     val.set_alias(std::string{key.name});
                     return val;
@@ -217,7 +218,6 @@ namespace components::operators {
         , post_aggregates_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
-        , select_order_(resource_)
         , row_ids_per_group_(resource_)
         , group_keys_(resource_)
         , group_index_(resource_) {}
@@ -243,8 +243,6 @@ namespace components::operators {
         post_aggregates_.emplace_back(std::move(col));
     }
 
-    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) { select_order_ = std::move(order); }
-
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
@@ -258,7 +256,6 @@ namespace components::operators {
                     return;
                 } else if (result_vec.value().type().type() == types::logical_type::NA) {
                     set_error(core::error_t(core::error_code_t::physical_plan_error,
-
                                             std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                     return;
                 }
@@ -276,8 +273,18 @@ namespace components::operators {
                 }
             }
 
-            // Phase 2: Group by keys (columnar, no transpose)
-            create_list_rows();
+            // Phase 2: Group by keys, or treat entire chunk as one group when there are no keys
+            if (keys_.empty()) {
+                auto num_rows = chunk.size();
+                row_ids_per_group_.resize(1);
+                row_ids_per_group_[0].reserve(num_rows);
+                for (size_t r = 0; r < num_rows; ++r) {
+                    row_ids_per_group_[0].push_back(r);
+                }
+                group_keys_.push_back({});
+            } else {
+                create_list_rows();
+            }
 
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context);
@@ -298,24 +305,37 @@ namespace components::operators {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Reorder columns to match SELECT clause order
-            if (!select_order_.empty()) {
-                std::vector<vector::vector_t> reordered;
-                reordered.reserve(select_order_.size());
-                for (size_t idx : select_order_) {
-                    reordered.emplace_back(std::move(result.data[idx]));
-                }
-                result.data.assign(std::make_move_iterator(reordered.begin()),
-                                   std::make_move_iterator(reordered.end()));
-            }
-
-            // Phase 8: Output
+            // Phase 7: Output
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
 
             // Clear temporary grouping state
             row_ids_per_group_.clear();
             group_keys_.clear();
             group_index_.clear();
+        } else if (keys_.empty() && !values_.empty()) {
+            // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
+            // Run each aggregator over zero rows and emit one result row.
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+            agg_results.reserve(values_.size());
+            for (const auto& value : values_) {
+                std::vector<vector::data_chunk_t> empty_chunks;
+                value.aggregator->clear();
+                value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
+                value.aggregator->on_execute(pipeline_context);
+                auto datum = value.aggregator->take_batch_values();
+                std::pmr::vector<types::logical_value_t> results(resource_);
+                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                    types::logical_value_t val =
+                        vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
+                    val.set_alias(std::string(value.name));
+                    results.push_back(std::move(val));
+                }
+                agg_results.push_back(std::move(results));
+            }
+            group_keys_.push_back({});
+            auto result = build_result_chunk(1, 0, agg_results);
+            output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
             std::pmr::vector<types::complex_logical_type> empty_types(resource_);
@@ -556,7 +576,7 @@ namespace components::operators {
             return build_result_chunk(num_groups, key_count, agg_results);
         }
 
-        // Fallback: gather + slice_contiguous per group
+        // Fallback: gather + partial_copy per group
         return calc_aggregate_values_fallback(pipeline_context);
     }
 
@@ -602,7 +622,7 @@ namespace components::operators {
             for (size_t i = 0; i < num_groups; i++) {
                 auto off = group_offsets[i];
                 auto cnt = group_offsets[i + 1] - group_offsets[i];
-                group_chunks.emplace_back(gathered.slice_contiguous(resource_, off, cnt));
+                group_chunks.emplace_back(gathered.partial_copy(resource_, off, cnt));
             }
 
             aggregator->clear();

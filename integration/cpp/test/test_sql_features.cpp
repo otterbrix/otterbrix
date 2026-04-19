@@ -45,6 +45,16 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
         }
     }
 
+    INFO("different \'COUNT\' calls") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*), COUNT(value) FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5);
+        REQUIRE(cur->chunk_data().value(1, 0).value<uint64_t>() == 3);
+    }
+
     INFO("IS NULL") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
@@ -177,6 +187,82 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
                                            "WHERE count IN (42);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::between") {
+    auto config = test_create_config("/tmp/test_sql_features/between");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_collection(session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int num = 0; num < 100; ++num) {
+                query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+    }
+
+    INFO("BETWEEN inclusive bounds") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 10 AND 20;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 11); // 10,11,...,20
+    }
+
+    INFO("BETWEEN lower bound only (single value)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 50 AND 50;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("BETWEEN full range") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 0 AND 99;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 100);
+    }
+
+    INFO("NOT BETWEEN") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count NOT BETWEEN 10 AND 89;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 20); // 0..9 and 90..99
+    }
+
+    INFO("BETWEEN combined with AND") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 10 AND 50 AND count > 40;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10); // 41..50
     }
 }
 

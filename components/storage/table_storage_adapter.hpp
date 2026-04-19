@@ -28,7 +28,7 @@ namespace components::storage {
 
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
-        void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int limit) override {
+        void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) override {
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());
             for (size_t i = 0; i < table_.column_count(); i++) {
@@ -44,7 +44,7 @@ namespace components::storage {
 
         void scan(vector::data_chunk_t& output,
                   const table::table_filter_t* filter,
-                  int limit,
+                  int64_t limit,
                   table::transaction_data txn) override {
             std::vector<table::storage_index_t> column_indices;
             column_indices.reserve(table_.column_count());

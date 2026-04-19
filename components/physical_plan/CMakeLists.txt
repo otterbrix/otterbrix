@@ -31,6 +31,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_match.cpp
         operators/operator_distinct.cpp
         operators/operator_group.cpp
+        operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
 

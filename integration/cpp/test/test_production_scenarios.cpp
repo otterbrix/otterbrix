@@ -260,10 +260,18 @@ TEST_CASE("integration::cpp::production::null_join_keys") {
         REQUIRE(cur->size() == 2);
     }
 
-    // LEFT JOIN with NULL keys: predicate fix correctly excludes NULL=NULL matches,
-    // producing 5 rows. However, downstream GROUP operator crashes on NULL values
-    // from unmatched right-side rows (logical_value.cpp cast_as assertion).
-    // TODO: fix NULL handling in operator_group_t / logical_value_t::cast_as
+    INFO("LEFT JOIN with NULL keys") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT a.label, b.tag "
+                                           "FROM TestDatabase.table_a a "
+                                           "LEFT JOIN TestDatabase.table_b b ON a.id = b.id;");
+        REQUIRE(cur->is_success());
+        // table_a has 5 rows: a1(id=1), a2(id=2), a4(id=4), a_null_1(id=NULL), a_null_2(id=NULL)
+        // LEFT JOIN: all rows from table_a preserved; NULL keys find no match (NULL=NULL is false)
+        // Expected: (a1,NULL), (a2,b2), (a4,b4), (a_null_1,NULL), (a_null_2,NULL) = 5 rows
+        REQUIRE(cur->size() == 5);
+    }
 
     INFO("verify NULL rows exist in both tables") {
         {

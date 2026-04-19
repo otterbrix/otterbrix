@@ -373,7 +373,7 @@ namespace components::vector {
     }
 
     data_chunk_t
-    data_chunk_t::slice_contiguous(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
+    data_chunk_t::partial_copy(std::pmr::memory_resource* resource, uint64_t offset, uint64_t count) const {
         assert(offset + count <= size());
         data_chunk_t result(resource, std::pmr::vector<types::complex_logical_type>{resource}, 0);
         result.capacity_ = count;

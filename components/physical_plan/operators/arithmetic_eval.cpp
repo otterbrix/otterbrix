@@ -32,7 +32,7 @@ namespace components::operators {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
-                assert(!key.path().empty());
+                assert(!key.path().empty() && "key path must be resolved before execution");
                 result.vec = chunk.at(key.path());
                 if (result.vec) {
                     return result;
@@ -176,13 +176,11 @@ namespace components::operators {
                                                  size_t row_idx) {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
-                // Try path-based lookup first (set during plan validation)
-                if (!key.path().empty()) {
-                    auto* vec = chunk.at(key.path());
-                    if (vec)
-                        return vec->value(row_idx);
+                assert(!key.path().empty() && "key path must be resolved before execution");
+                auto* vec = chunk.at(key.path());
+                if (vec) {
+                    return vec->value(row_idx);
                 }
-                // This error should be caught during validation; defensive check
                 throw std::logic_error("CASE: column not found: " + key.as_string());
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);

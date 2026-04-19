@@ -93,7 +93,6 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"incorrect drop: arguments size", resource_});
                         return nullptr;
                 }
@@ -102,7 +101,6 @@ namespace components::sql::transform {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"incorrect drop: arguments size", resource_});
                     return nullptr;
                 }
@@ -137,7 +135,6 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"incorrect drop: arguments size", resource_});
                         return nullptr;
                 }
@@ -146,7 +143,6 @@ namespace components::sql::transform {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                            std::pmr::string{"incorrect drop: arguments size", resource_});
                     return nullptr;
                 }
@@ -168,7 +164,6 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"incorrect drop: arguments size", resource_});
                         return nullptr;
                 }
@@ -188,7 +183,6 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"incorrect drop: arguments size", resource_});
                         return nullptr;
                 }
@@ -208,14 +202,12 @@ namespace components::sql::transform {
                     }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                                std::pmr::string{"incorrect drop: arguments size", resource_});
                         return nullptr;
                 }
             }
             default:
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
-
                                        std::pmr::string{"Unsupported removeType", resource_});
                 return nullptr;
         }

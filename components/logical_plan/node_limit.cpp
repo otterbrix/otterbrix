@@ -4,16 +4,21 @@
 
 namespace components::logical_plan {
 
-    limit_t::limit_t(int data)
-        : limit_(data) {}
+    limit_t::limit_t(int64_t limit, int64_t offset)
+        : limit_(limit)
+        , offset_(offset) {}
 
     limit_t limit_t::unlimit() { return limit_t(); }
 
     limit_t limit_t::limit_one() { return limit_t(1); }
 
-    int limit_t::limit() const { return limit_; }
+    int64_t limit_t::limit() const { return limit_; }
 
-    bool limit_t::check(int count) const { return limit_ == unlimit_ || limit_ > count; }
+    int64_t limit_t::offset() const { return offset_; }
+
+    bool limit_t::check(int64_t count) const { return limit_ == unlimit_ || count < limit_ + offset_; }
+
+    bool limit_t::is_skipping(int64_t count) const { return count < offset_; }
 
     node_limit_t::node_limit_t(std::pmr::memory_resource* resource,
                                const collection_full_name_t& collection,
@@ -28,6 +33,9 @@ namespace components::logical_plan {
     std::string node_limit_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$limit: " << limit_.limit();
+        if (limit_.offset() > 0) {
+            stream << ", $offset: " << limit_.offset();
+        }
         return stream.str();
     }
 

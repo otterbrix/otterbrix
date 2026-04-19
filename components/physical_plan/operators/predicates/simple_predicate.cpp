@@ -24,7 +24,6 @@ namespace components::operators::predicates {
         core::result_wrapper_t<bool>
         evaluate_comp(std::pmr::memory_resource* resource, T, U) requires(std::is_same_v<COMP, regex<>>) {
             return core::error_t(core::error_code_t::comparison_failure,
-
                                  std::pmr::string{"incorrect argument type for regex", resource});
         }
 

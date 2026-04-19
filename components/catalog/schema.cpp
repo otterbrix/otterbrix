@@ -124,7 +124,6 @@ namespace components::catalog {
         }
 
         error_ = core::error_t(core::error_code_t::missing_field,
-
                                std::pmr::string{"No field with such id: " + std::to_string(id), resource_});
         return std::numeric_limits<size_t>::max();
     }

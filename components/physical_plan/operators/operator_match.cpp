@@ -14,9 +14,9 @@ namespace components::operators {
         , limit_(limit) {}
 
     void operator_match_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        size_t count = 0;
-        if (!limit_.check(static_cast<int>(count))) {
-            return; //limit = 0
+        int64_t total = 0; // total matching rows seen (including skipped)
+        if (!limit_.check(total)) {
+            return; // limit = 0 with no offset
         }
         if (!left_) {
             return;
@@ -39,20 +39,24 @@ namespace components::operators {
                 set_error(results.error());
                 return;
             }
+            int64_t out_count = 0;
             for (size_t i = 0; i < chunk.size(); i++) {
                 if (results.value()[i]) {
-                    for (size_t j = 0; j < chunk.column_count(); j++) {
-                        out_chunk.set_value(j, count, chunk.data[j].value(i));
+                    if (!limit_.is_skipping(total)) {
+                        for (size_t j = 0; j < chunk.column_count(); j++) {
+                            out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
+                        }
+                        out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
+                        ++out_count;
                     }
-                    out_chunk.row_ids.data<int64_t>()[count] = chunk.row_ids.data<int64_t>()[i];
-                    ++count;
-                    if (!limit_.check(static_cast<int>(count))) {
-                        out_chunk.set_cardinality(count);
+                    ++total;
+                    if (!limit_.check(total)) {
+                        out_chunk.set_cardinality(static_cast<uint64_t>(out_count));
                         return;
                     }
                 }
             }
-            out_chunk.set_cardinality(count);
+            out_chunk.set_cardinality(static_cast<uint64_t>(out_count));
         }
     }
 

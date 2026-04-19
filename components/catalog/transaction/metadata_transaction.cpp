@@ -4,23 +4,25 @@ namespace components::catalog {
     metadata_transaction::metadata_transaction(std::pmr::memory_resource* resource)
         : metadata_diff_(resource)
         , schema_diff_(resource)
-        , error_()
-        , savepoints_(resource) {}
+        , error_(core::error_t::no_error())
+        , savepoints_(resource)
+        , resource_(resource) {}
 
-    metadata_transaction::metadata_transaction(std::pmr::memory_resource* resource,
-                                               components::catalog::catalog_error error)
+    metadata_transaction::metadata_transaction(std::pmr::memory_resource* resource, core::error_t error)
         : metadata_diff_(resource)
         , schema_diff_(resource)
         , error_(std::move(error))
-        , savepoints_(resource) {}
+        , savepoints_(resource)
+        , resource_(resource) {}
 
     bool metadata_transaction::ensure_active() {
-        if (static_cast<bool>(error_)) {
+        if (error_.contains_error()) {
             return false;
         }
 
         if (state_ != State::ACTIVE) {
-            error_ = catalog_error(transaction_mistake_t::TRANSACTION_INACTIVE, "Transaction is not active");
+            error_ = core::error_t(core::error_code_t::transaction_inactive,
+                                   std::pmr::string{"Transaction is not active", resource_});
             return false;
         }
 
@@ -99,7 +101,8 @@ namespace components::catalog {
         if (ensure_active()) {
             auto it = savepoints_.find(name);
             if (it == savepoints_.end()) {
-                error_ = catalog_error(transaction_mistake_t::MISSING_SAVEPOINT, "Savepoint not found");
+                error_ = core::error_t(core::error_code_t::missing_savepoint,
+                                       std::pmr::string{"Savepoint not found", resource_});
                 return *this;
             }
 
@@ -111,7 +114,7 @@ namespace components::catalog {
 
     metadata_transaction::State metadata_transaction::state() const { return state_; }
 
-    const catalog_error& metadata_transaction::error() const { return error_; }
+    const core::error_t& metadata_transaction::error() const { return error_; }
 
     void metadata_transaction::abort() {
         if (state_ == State::ACTIVE) {

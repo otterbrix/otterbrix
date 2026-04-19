@@ -97,6 +97,48 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 2);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT *, * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 4);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT *, TestCollection.name, count, TestCollection.* FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 6);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT *, table_alias.name, count, table_alias.* FROM TestDatabase.TestCollection AS table_alias;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->chunk_data().column_count() == 6);
+            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
+            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -286,6 +328,51 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
+    INFO("select with offset") {
+        {
+            // OFFSET 0 is same as no offset: first 5 rows by count order
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "ORDER BY count LIMIT 5 OFFSET 0;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 4);
+        }
+        {
+            // Skip first 5 rows, take next 5: count values 5..9
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "ORDER BY count LIMIT 5 OFFSET 5;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 5);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 9);
+        }
+        {
+            // Last 5 rows: count values 95..99
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "ORDER BY count LIMIT 5 OFFSET 95;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 95);
+            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 99);
+        }
+        {
+            // Offset past end of result set
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "ORDER BY count LIMIT 5 OFFSET 100;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+    }
+
     INFO("delete") {
         {
             auto session = otterbrix::session_id_t();
@@ -433,8 +520,6 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
     }
 
-    // TODO: fix
-    /*
     INFO("unknown function") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -443,9 +528,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                                            R"_(GROUP BY name )_"
                                            R"_(ORDER BY name DESC;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::unrecognized_function);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
-    */
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
@@ -460,7 +544,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::database_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
     }
 
     INFO("create database") {
@@ -472,7 +556,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == cursor::error_code_t::collection_not_exists);
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
     }
 }
 
@@ -571,6 +655,30 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90 LIMIT 1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
+        }
+    }
+
+    INFO("find with limit and offset") {
+        {
+            // count > 90 → 9 rows (91..99); skip 2 (91,92), take 3 → count values 93,94,95
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count > 90 ORDER BY count LIMIT 3 OFFSET 2;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 93);
+            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 95);
+        }
+        {
+            // count > 90 → 9 rows (91..99); skip 8 (91..98), take 5 → only 1 remaining (99)
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT * FROM TestDatabase.TestCollection "
+                                               "WHERE count > 90 ORDER BY count LIMIT 5 OFFSET 8;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 99);
         }
     }
 

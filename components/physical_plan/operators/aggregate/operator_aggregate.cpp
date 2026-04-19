@@ -1,5 +1,7 @@
 #include "operator_aggregate.hpp"
 
+#include <components/physical_plan/operators/operator_batch.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_empty.hpp>
 
 namespace components::operators::aggregate {
@@ -8,16 +10,38 @@ namespace components::operators::aggregate {
         : read_only_operator_t(resource, log, operator_type::aggregate) {}
 
     void operator_aggregate_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        aggregate_result_ = aggregate_impl(pipeline_context);
+        if (left_ && left_->type() == operator_type::batch) {
+            if (auto res = aggregate_batch_impl(pipeline_context); res.has_error()) {
+                set_error(res.error());
+            } else {
+                batch_results_ = std::move(res.value());
+            }
+        } else {
+            if (auto res = aggregate_impl(pipeline_context); res.has_error()) {
+                set_error(res.error());
+            } else {
+                aggregate_result_ = std::move(res.value());
+            }
+        }
     }
 
-    void operator_aggregate_t::execute_on(operator_data_ptr data, pipeline::context_t* pipeline_context) {
-        if (!left_) {
-            left_ = boost::intrusive_ptr(new operator_empty_t(resource_, std::move(data)));
-        } else {
-            left_->set_output(std::move(data));
+    core::result_wrapper_t<compute::datum_t>
+    operator_aggregate_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
+        auto* batch = static_cast<operator_batch_t*>(left_.get());
+        auto& chunks = batch->chunks();
+        std::pmr::vector<types::logical_value_t> results(resource_);
+        results.reserve(chunks.size());
+        for (size_t i = 0; i < chunks.size(); ++i) {
+            auto data = make_operator_data(resource_, std::move(chunks[i]));
+            set_children(boost::intrusive_ptr<operator_t>(new operator_empty_t(resource_, std::move(data))));
+            auto res = aggregate_impl(pipeline_context);
+            if (res.has_error()) {
+                return res.convert_error<compute::datum_t>();
+            }
+            aggregate_result_ = std::move(res.value());
+            results.push_back(aggregate_result_);
         }
-        aggregate_result_ = aggregate_impl(pipeline_context);
+        return compute::datum_t{std::move(results)};
     }
 
     void operator_aggregate_t::set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view alias) const {
@@ -34,4 +58,5 @@ namespace components::operators::aggregate {
     }
 
     types::logical_value_t operator_aggregate_t::value() const { return aggregate_result_; }
+    compute::datum_t operator_aggregate_t::take_batch_values() { return std::move(batch_results_); }
 } // namespace components::operators::aggregate

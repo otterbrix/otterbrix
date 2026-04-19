@@ -3,6 +3,7 @@ project(physical_plan)
 
 set(${PROJECT_NAME}_SOURCES
         operators/operator.cpp
+        operators/operator_batch.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
@@ -30,6 +31,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_match.cpp
         operators/operator_distinct.cpp
         operators/operator_group.cpp
+        operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
 

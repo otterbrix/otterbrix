@@ -24,10 +24,13 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
-        std::vector<components::table::column_definition_t> col_defs;
-        fill_column_definitions(col_defs, resource_, *coldefs);
+        auto col_defs = get_column_definitions(resource_, *coldefs);
+        if (col_defs.has_error()) {
+            error_ = col_defs.error();
+            return nullptr;
+        }
 
-        if (col_defs.empty()) {
+        if (col_defs.value().empty()) {
             return logical_plan::make_node_create_collection(resource_, rangevar_to_collection(node.relation));
         }
 
@@ -52,7 +55,7 @@ namespace components::sql::transform {
 
         return logical_plan::make_node_create_collection(resource_,
                                                          rangevar_to_collection(node.relation),
-                                                         std::move(col_defs),
+                                                         std::move(col_defs.value()),
                                                          std::move(constraints),
                                                          disk_storage);
     }
@@ -89,14 +92,17 @@ namespace components::sql::transform {
                         return logical_plan::make_node_drop_collection(resource_, {uuid, database, schema, collection});
                     }
                     default:
-                        throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_collection(resource_, {});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"incorrect drop: arguments size", resource_});
+                        return nullptr;
                 }
             }
             case OBJECT_INDEX: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    throw parser_exception_t{"incorrect drop: arguments size", ""};
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"incorrect drop: arguments size", resource_});
+                    return nullptr;
                 }
 
                 //when casting to enum -1 is used to account for obligated index name
@@ -128,14 +134,17 @@ namespace components::sql::transform {
                                                                   name);
                     }
                     default:
-                        throw parser_exception_t{"incorrect drop: arguments size", ""};
-                        return logical_plan::make_node_drop_index(resource_, {}, "");
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"incorrect drop: arguments size", resource_});
+                        return nullptr;
                 }
             }
             case OBJECT_TYPE: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
-                    throw parser_exception_t{"incorrect drop: arguments size", ""};
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"incorrect drop: arguments size", resource_});
+                    return nullptr;
                 }
                 return logical_plan::make_node_drop_type(resource_, strVal(drop_name.back().data));
             }
@@ -154,7 +163,9 @@ namespace components::sql::transform {
                         return logical_plan::make_node_drop_sequence(resource_, {database, seq_name});
                     }
                     default:
-                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"incorrect drop: arguments size", resource_});
+                        return nullptr;
                 }
             }
             case OBJECT_VIEW: {
@@ -171,7 +182,9 @@ namespace components::sql::transform {
                         return logical_plan::make_node_drop_view(resource_, {database, view_name});
                     }
                     default:
-                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"incorrect drop: arguments size", resource_});
+                        return nullptr;
                 }
             }
             case OBJECT_FUNCTION: {
@@ -188,11 +201,15 @@ namespace components::sql::transform {
                         return logical_plan::make_node_drop_macro(resource_, {database, macro_name});
                     }
                     default:
-                        throw parser_exception_t{"incorrect drop: arguments size", ""};
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"incorrect drop: arguments size", resource_});
+                        return nullptr;
                 }
             }
             default:
-                throw std::runtime_error("Unsupported removeType");
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"Unsupported removeType", resource_});
+                return nullptr;
         }
     }
 

@@ -15,15 +15,17 @@ namespace components::catalog {
         , descriptions_(descriptions)
         , primary_key_field_ids_(primary_key, resource)
         , id_to_struct_idx_(resource)
+        , error_(core::error_t::no_error())
         , resource_(resource) {
         {
             std::pmr::unordered_set<std::pmr::string> names(resource);
             for (const auto& column : columns_) {
                 std::pmr::string alias(column.name(), resource);
                 if (names.count(alias)) {
-                    error_ = catalog_error(catalog_mistake_t::DUPLICATE_COLUMN,
-                                           "Duplicate column with name \"" + column.type().alias() +
-                                               "\", names must be unique");
+                    error_ = core::error_t(core::error_code_t::duplicate_field,
+                                           std::pmr::string{"Duplicate column with name \"" + column.type().alias() +
+                                                                "\", names must be unique",
+                                                            resource_});
                 }
 
                 names.emplace(std::move(alias));
@@ -35,9 +37,10 @@ namespace components::catalog {
             size_t idx = 0;
             for (const auto& desc : descriptions_) {
                 if (id_to_struct_idx_.find(desc.field_id) != id_to_struct_idx_.end()) {
-                    error_ = catalog_error(catalog_mistake_t::DUPLICATE_COLUMN,
-                                           "Duplicate id in schema: " + std::to_string(desc.field_id) +
-                                               ", ids must be unique");
+                    error_ = core::error_t(core::error_code_t::duplicate_field,
+                                           std::pmr::string{"Duplicate id in schema: " + std::to_string(desc.field_id) +
+                                                                ", ids must be unique",
+                                                            resource_});
                 }
 
                 id_to_struct_idx_.emplace(desc.field_id, idx++);
@@ -46,8 +49,9 @@ namespace components::catalog {
 
             for (field_id_t key : primary_key_field_ids_) {
                 if (id_to_struct_idx_.find(key) == id_to_struct_idx_.end()) {
-                    error_ = catalog_error(catalog_mistake_t::MISSING_PRIMARY_KEY_ID,
-                                           "No field with id from primary key: " + std::to_string(key));
+                    error_ = core::error_t(
+                        core::error_code_t::missing_primary_key_id,
+                        std::pmr::string{"No field with id from primary key: " + std::to_string(key), resource_});
                 }
             }
 
@@ -55,40 +59,41 @@ namespace components::catalog {
         }
     }
 
-    cursor::cursor_t_ptr schema::find_field(field_id_t id) const {
+    core::result_wrapper_t<complex_logical_type> schema::find_field(field_id_t id) const {
         size_t idx = find_idx_by_id(id);
 
-        if (static_cast<bool>(error_)) {
-            return cursor::make_cursor(resource_, cursor::error_code_t::schema_error, error_.what());
+        if (error_.contains_error()) {
+            return error_;
         }
 
-        return cursor::make_cursor(resource_, {columns_[idx].type()});
+        return columns_[idx].type();
     }
 
-    cursor::cursor_t_ptr schema::find_field(const std::pmr::string& name) const {
+    core::result_wrapper_t<complex_logical_type> schema::find_field(const std::pmr::string& name) const {
         size_t idx = find_idx_by_name(name);
 
-        if (static_cast<bool>(error_)) {
-            return cursor::make_cursor(resource_, cursor::error_code_t::schema_error, error_.what());
+        if (error_.contains_error()) {
+            return error_;
         }
 
-        return cursor::make_cursor(resource_, {columns_[idx].type()});
+        return columns_[idx].type();
     }
 
-    std::optional<schema::field_description_cref>
+    core::result_wrapper_t<schema::field_description_cref>
     schema::get_field_description(components::catalog::field_id_t id) const {
         size_t idx = find_idx_by_id(id);
-        if (static_cast<bool>(error_)) {
-            return {};
+        if (error_.contains_error()) {
+            return error_;
         }
 
         return descriptions_[idx];
     }
 
-    std::optional<schema::field_description_cref> schema::get_field_description(const std::pmr::string& name) const {
+    core::result_wrapper_t<schema::field_description_cref>
+    schema::get_field_description(const std::pmr::string& name) const {
         size_t idx = find_idx_by_name(name);
-        if (static_cast<bool>(error_)) {
-            return {};
+        if (error_.contains_error()) {
+            return error_;
         }
 
         return descriptions_[idx];
@@ -102,7 +107,7 @@ namespace components::catalog {
 
     field_id_t schema::highest_field_id() const { return highest_; }
 
-    const catalog_error& schema::error() const { return error_; }
+    const core::error_t& schema::error() const { return error_; }
 
     std::vector<complex_logical_type> schema::types() const {
         std::vector<complex_logical_type> result;
@@ -118,8 +123,9 @@ namespace components::catalog {
             return it->second;
         }
 
-        error_ = catalog_error(catalog_mistake_t::FIELD_MISSING, "No field with such id: " + std::to_string(id));
-        return {};
+        error_ = core::error_t(core::error_code_t::missing_field,
+                               std::pmr::string{"No field with such id: " + std::to_string(id), resource_});
+        return std::numeric_limits<size_t>::max();
     }
 
     size_t schema::find_idx_by_name(const std::pmr::string& name) const {
@@ -132,8 +138,9 @@ namespace components::catalog {
             return static_cast<size_t>(it - columns_.cbegin());
         }
 
-        error_ =
-            catalog_error(catalog_mistake_t::FIELD_MISSING, "No field with such name: \"" + std::string(name) + "\"");
-        return {};
+        error_ = core::error_t(core::error_code_t::missing_field,
+
+                               std::pmr::string{"No field with such name: \"" + std::string(name) + "\"", resource_});
+        return std::numeric_limits<size_t>::max();
     }
 } // namespace components::catalog

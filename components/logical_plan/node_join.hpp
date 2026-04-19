@@ -6,6 +6,7 @@ namespace components::logical_plan {
 
     enum class join_type : uint8_t
     {
+        invalid,
         inner,
         full,
         left,

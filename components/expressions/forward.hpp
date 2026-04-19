@@ -59,7 +59,8 @@ namespace components::expressions {
         case_expr,
         coalesce,
         case_when,
-        unary_minus
+        unary_minus,
+        star_expand
     };
 
     enum class sort_order : std::int8_t

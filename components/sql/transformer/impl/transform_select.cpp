@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -24,8 +25,13 @@ namespace components::sql::transform {
             name_collection_t sub_query_names;
             join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, sub_query_names, params);
             auto prev = node_join;
-            node_join =
-                logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
             node_join->append_child(prev);
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -44,7 +50,13 @@ namespace components::sql::transform {
             assert(!node_join);
             names.left_name = rangevar_to_collection(table_l);
             names.left_alias = construct_alias(table_l->alias);
-            node_join = logical_plan::make_node_join(resource, {}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {}, j_type);
             node_join->append_child(logical_plan::make_node_aggregate(resource, names.left_name));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -57,8 +69,13 @@ namespace components::sql::transform {
             }
         } else if (nodeTag(join->larg) == T_RangeFunction) {
             assert(!node_join);
-            node_join =
-                logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, jointype_to_ql(join));
+            auto j_type = jointype_to_ql(join);
+            if (j_type == logical_plan::join_type::invalid) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"invalid join type", resource_});
+                return;
+            }
+            node_join = logical_plan::make_node_join(resource, {database_name_t(), collection_name_t()}, j_type);
             node_join->append_child(transform_function(*pg_ptr_cast<RangeFunction>(join->larg), names, params));
             if (nodeTag(join->rarg) == T_RangeVar) {
                 auto table_r = pg_ptr_cast<RangeVar>(join->rarg);
@@ -70,8 +87,11 @@ namespace components::sql::transform {
                 node_join->append_child(transform_function(*func, names, params));
             }
         } else {
-            throw parser_exception_t{"incorrect type for join join->larg node",
-                                     node_tag_to_string(nodeTag(join->larg))};
+            error_ = core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"incorrect type for join join->larg node" + node_tag_to_string(nodeTag(join->larg)),
+                                 resource_});
+            return;
         }
         // on
         if (join->quals) {
@@ -84,8 +104,11 @@ namespace components::sql::transform {
             } else if (nodeTag(join->quals) == T_FuncCall) {
                 node_join->append_expression(transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, params));
             } else {
-                throw parser_exception_t{"incorrect type for join join->quals node",
-                                         node_tag_to_string(nodeTag(join->larg))};
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"incorrect type for join join->quals node" +
+                                                            node_tag_to_string(nodeTag(join->quals)),
+                                                        resource_});
+                return;
             }
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
@@ -94,11 +117,17 @@ namespace components::sql::transform {
 
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::parameter_node_t* params) {
         if (node.op == SETOP_UNION) {
-            throw parser_exception_t{"Select with union is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"Select with union is not supported yet", resource_});
+            return nullptr;
         } else if (node.op == SETOP_INTERSECT) {
-            throw parser_exception_t{"Select with intersect is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"Select with intersect is not supported yet", resource_});
+            return nullptr;
         } else if (node.op == SETOP_EXCEPT) {
-            throw parser_exception_t{"Select with except is not supported yet", {}};
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"Select with except is not supported yet", resource_});
+            return nullptr;
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
         logical_plan::node_join_ptr join = nullptr;
@@ -135,7 +164,10 @@ namespace components::sql::transform {
                         auto& chunk =
                             reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get())->data_chunk();
                         if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
-                            throw parser_exception_t{"column names count has to equal actual column count", {}};
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"column names count has to equal actual column count", resource_});
+                            return nullptr;
                         }
                         size_t column_index = 0;
                         for (auto colname : sub_select->alias->colnames->lst) {
@@ -145,7 +177,9 @@ namespace components::sql::transform {
                     }
                 }
             } else {
-                assert(false);
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"encountered unrecognized node", resource_});
+                return nullptr;
             }
         } else {
             agg = logical_plan::make_node_aggregate(resource_, {});
@@ -161,10 +195,14 @@ namespace components::sql::transform {
                 size_t column_index = 0;
                 for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
                     auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                    if (column_index >= chunk.data.size()) {
-                        chunk.data.emplace_back(resource_, value.type(), chunk.capacity());
+                    if (value.has_error()) {
+                        error_ = value.error();
+                        return nullptr;
                     }
-                    chunk.set_value(column_index, row_index, std::move(value));
+                    if (column_index >= chunk.data.size()) {
+                        chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                    }
+                    chunk.set_value(column_index, row_index, std::move(value.value()));
                 }
                 row_index++;
             }
@@ -173,19 +211,23 @@ namespace components::sql::transform {
         }
 
         auto group = logical_plan::make_node_group(resource_, agg->collection_full_name());
-        // fields — collect expressions into group
+        auto select_node = logical_plan::make_node_select(resource_, agg->collection_full_name());
+
+        // fields — collect SELECT expressions into select_node.
+        // Star expressions (*) are skipped; an empty select_node means passthrough (SELECT *).
+        bool has_non_star = false;
         {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
                 switch (nodeTag(res->val)) {
                     case T_FuncCall: {
-                        // group
+                        // Aggregate function in SELECT
                         auto func = pg_ptr_cast<FuncCall>(res->val);
 
                         auto funcname = std::string{strVal(linitial(func->funcname))};
                         std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
-                        // Note: AGGREGATE(*) invoke parameterless aggregate (also agg_star is set to true)
+                        // Note: AGGREGATE(*) invokes parameterless aggregate (agg_star is set to true)
                         for (const auto& arg : func->args->lst) {
                             auto arg_value = pg_ptr_cast<Node>(arg.data);
                             if (nodeTag(arg_value) == T_ColumnRef) {
@@ -224,49 +266,64 @@ namespace components::sql::transform {
                         if (func->agg_distinct) {
                             expr->set_distinct(true);
                         }
-                        group->append_expression(expr);
-
+                        select_node->append_expression(expr);
+                        has_non_star = true;
                         break;
                     }
                     case T_ColumnRef: {
-                        // field
-                        auto table = pg_ptr_cast<ColumnRef>(res->val)->fields->lst;
-
-                        if (nodeTag(table.front().data) == T_A_Star) {
-                            // ???
+                        auto col_ref = pg_ptr_cast<ColumnRef>(res->val);
+                        // Check for star — add a star_expand marker (cleaned up below if it's the only expression)
+                        if (col_ref->fields->lst.size() == 1 && nodeTag(col_ref->fields->lst.back().data) == T_A_Star) {
+                            select_node->append_expression(make_scalar_expression(resource_,
+                                                                                  scalar_type::star_expand,
+                                                                                  expressions::key_t{resource_}));
+                            has_non_star = true;
                             break;
                         }
-                        if (res->name) {
-                            group->append_expression(make_scalar_expression(
-                                resource_,
-                                scalar_type::get_field,
-                                expressions::key_t{resource_, res->name},
-                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), names).field));
-                        } else {
-                            group->append_expression(make_scalar_expression(
-                                resource_,
-                                scalar_type::get_field,
-                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), names).field));
+                        has_non_star = true;
+                        {
+                            auto col = columnref_to_field(resource_, col_ref, names);
+                            // Table-qualified wildcard (table.*) where the prefix is a recognized
+                            // table alias → star_expand. Struct field wildcards (struct_col.*)
+                            // have an unrecognized prefix (col.table is empty) → get_field.
+                            if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && !col.table.empty()) {
+                                select_node->append_expression(make_scalar_expression(resource_,
+                                                                                      scalar_type::star_expand,
+                                                                                      expressions::key_t{resource_}));
+                                break;
+                            }
+                            if (res->name) {
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, res->name},
+                                                           col.field));
+                            } else {
+                                select_node->append_expression(
+                                    make_scalar_expression(resource_, scalar_type::get_field, col.field));
+                            }
                         }
                         break;
                     }
                     case T_ParamRef: {
+                        has_non_star = true;
                         auto expr = make_scalar_expression(
                             resource_,
                             scalar_type::get_field,
                             expressions::key_t{resource_, res->name ? res->name : get_str_value(res->val)});
                         expr->append_param(add_param_value(res->val, params));
-                        group->append_expression(expr);
+                        select_node->append_expression(expr);
                         break;
                     }
                     case T_TypeCast: // fall-through
                     case T_A_Const: {
+                        has_non_star = true;
                         auto expr = make_scalar_expression(resource_,
                                                            scalar_type::constant,
                                                            res->name ? expressions::key_t{resource_, res->name}
                                                                      : expressions::key_t{resource_});
                         expr->append_param(add_param_value(res->val, params));
-                        group->append_expression(expr);
+                        select_node->append_expression(expr);
                         break;
                     }
                     case T_A_Expr: {
@@ -274,12 +331,16 @@ namespace components::sql::transform {
                         if (a_expr->kind == AEXPR_OP) {
                             auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
                             if (is_arithmetic_operator(op_str)) {
-                                logical_plan::node_ptr group_node = group;
-                                transform_select_a_expr(a_expr, res->name, names, params, group_node);
+                                has_non_star = true;
+                                logical_plan::node_ptr sel_node = select_node;
+                                transform_select_a_expr(a_expr, res->name, names, params, sel_node);
                                 break;
                             }
                         }
-                        throw std::runtime_error("Unknown A_Expr kind in field clause");
+
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown A_Expr kind in field clause", resource_});
+                        return nullptr;
                     }
                     case T_A_Indirection: {
                         std::pmr::vector<std::pmr::string> path{resource_};
@@ -303,35 +364,45 @@ namespace components::sql::transform {
                             } else if (nodeTag(indirection->arg) == T_FuncCall) {
                                 // function here is an aggregate_expr and field selection is a scalar_expr
                                 // TODO: proper expression chaining support
-                                throw parser_exception_t(
-                                    "Otterbrix does not support field selection from function results for now",
-                                    {});
+                                error_ = core::error_t(
+                                    core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{
+                                        "Otterbrix does not support field selection from function results for now",
+                                        resource_});
+                                return nullptr;
                             } else if (nodeTag(indirection->arg) == T_ColumnRef) {
                                 path.emplace_back(
                                     pmrStrVal(pg_ptr_cast<ColumnRef>(indirection->arg)->fields->lst.back().data,
                                               resource_));
                                 break;
                             } else {
-                                throw parser_exception_t("Encountered unsupported expression on transform_select", {});
+                                error_ = core::error_t(
+                                    core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{"Encountered unsupported expression on transform_select",
+                                                     resource_});
+                                return nullptr;
                             }
                         }
                         std::reverse(path.begin(), path.end());
 
-                        group->append_expression(make_scalar_expression(resource_,
-                                                                        scalar_type::get_field,
-                                                                        expressions::key_t{std::move(path)}));
+                        // Check for star via path
+                        if (path.size() == 1 && path[0] == "*") {
+                            break; // skip star
+                        }
+                        has_non_star = true;
+                        select_node->append_expression(make_scalar_expression(resource_,
+                                                                              scalar_type::get_field,
+                                                                              expressions::key_t{std::move(path)}));
                         break;
                     }
                     case T_CaseExpr: {
-                        logical_plan::node_ptr group_node = group;
-                        transform_select_case_expr(pg_ptr_cast<CaseExpr>(res->val),
-                                                   res->name,
-                                                   names,
-                                                   params,
-                                                   group_node);
+                        has_non_star = true;
+                        logical_plan::node_ptr sel_node = select_node;
+                        transform_select_case_expr(pg_ptr_cast<CaseExpr>(res->val), res->name, names, params, sel_node);
                         break;
                     }
                     case T_CoalesceExpr: {
+                        has_non_star = true;
                         auto* coalesce = pg_ptr_cast<CoalesceExpr>(res->val);
                         std::string expr_name;
                         if (res->name) {
@@ -352,19 +423,27 @@ namespace components::sql::transform {
                                 expr->append_param(add_param_value(arg_node, params));
                             }
                         }
-                        group->append_expression(expr);
+                        select_node->append_expression(expr);
                         break;
                     }
                     default:
-                        throw std::runtime_error("Unknown node type in field clause: " +
-                                                 node_tag_to_string(nodeTag(res->val)));
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown node type in field clause: " +
+                                                                    node_tag_to_string(nodeTag(res->val)),
+                                                                resource_});
+                        return nullptr;
                 }
             }
-        }
 
-        // Record visible SELECT column count before adding group_field/internal aggs
-        if (auto* group_node = dynamic_cast<logical_plan::node_group_t*>(group.get())) {
-            group_node->visible_select_count = group->expressions().size();
+            // If select_node holds exactly one star_expand (pure SELECT *), treat as passthrough.
+            auto& sel_exprs = select_node->expressions();
+            if (sel_exprs.size() == 1 && sel_exprs[0]->group() == expression_group::scalar) {
+                auto* s = static_cast<const scalar_expression_t*>(sel_exprs[0].get());
+                if (s->type() == scalar_type::star_expand) {
+                    sel_exprs.clear();
+                    has_non_star = false;
+                }
+            }
         }
 
         // where
@@ -382,19 +461,17 @@ namespace components::sql::transform {
             }
         }
 
-        // having (parse before GROUP BY so the group node is created only once)
-        expression_ptr having_expr;
-        if (node.havingClause) {
-            having_expr = transform_having_expr(node.havingClause, names, params, group);
-        }
+        bool has_group_by = node.groupClause && !node.groupClause->lst.empty();
 
-        if (node.groupClause && !node.groupClause->lst.empty()) {
+        if (has_group_by) {
             // TODO: check GROUP BY & SELECT field correctness: every non-agg & non-const field MUST BE in GROUP BY!
-            // Note: right now execution implicitly assumes that every SELECT field is in GROUP BY
             for (auto field : node.groupClause->lst) {
                 if (nodeTag(field.data) != T_ColumnRef) {
-                    throw std::runtime_error("Unknown node type in group by clause: " +
-                                             node_tag_to_string(nodeTag(field.data)));
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in group by clause: " +
+                                                                node_tag_to_string(nodeTag(field.data)),
+                                                            resource_});
+                    return nullptr;
                 }
 
                 group->append_expression(make_scalar_expression(
@@ -404,14 +481,49 @@ namespace components::sql::transform {
             }
         }
 
-        // Flush buffered internal aggregates to end of group expressions
-        for (auto& internal_agg : pending_internal_aggs_) {
-            group->append_expression(internal_agg);
-        }
-        if (auto* group_node = dynamic_cast<logical_plan::node_group_t*>(group.get())) {
-            group_node->internal_aggregate_count = pending_internal_aggs_.size();
+        // Route SELECT expressions and pending internal aggregates:
+        // Built-in aggregates (count/sum/avg/min/max) move to group_node and are replaced by
+        // get_field refs in select_node. Scalar UDFs stay in select_node as-is.
+        // This applies both with and without an explicit GROUP BY — operator_group_t treats the
+        // entire chunk as one group when its keys_ is empty.
+        if (has_non_star) {
+            std::vector<expression_ptr> new_sel_exprs;
+            for (auto& expr : select_node->expressions()) {
+                if (expr->group() == expression_group::aggregate) {
+                    // Every aggregate_expression_t represents an aggregate function — always route
+                    // to group_node so that operator_group_t handles it. validate_schema verifies
+                    // the function exists. This covers both built-in (count/sum/avg/min/max) and
+                    // user-registered aggregate functions.
+                    auto* agg_expr = static_cast<const aggregate_expression_t*>(expr.get());
+                    std::string alias = agg_expr->key().as_string();
+                    group->append_expression(expr);
+                    new_sel_exprs.push_back(make_scalar_expression(resource_,
+                                                                   scalar_type::get_field,
+                                                                   expressions::key_t{resource_, alias}));
+                } else {
+                    new_sel_exprs.push_back(expr);
+                }
+            }
+            select_node->expressions().clear();
+            for (auto& expr : new_sel_exprs) {
+                select_node->append_expression(expr);
+            }
+
+            // Flush pending internal aggregates to group (sub-aggregates of arithmetic in select).
+            // Do NOT set group->internal_aggregate_count: operator_select_t needs these columns
+            // for post-aggregate arithmetic, so they must not be erased by operator_group_t.
+            for (auto& internal_agg : pending_internal_aggs_) {
+                group->append_expression(internal_agg);
+            }
+            group->internal_aggregate_count = 0;
         }
         pending_internal_aggs_.clear();
+
+        // Having is parsed after aggregates are routed to group so resolve_having_operand can find them.
+        expression_ptr having_expr;
+        if (node.havingClause) {
+            having_expr = transform_having_expr(node.havingClause, names, params, group);
+        }
 
         if (!group->expressions().empty()) {
             if (having_expr) {
@@ -419,9 +531,6 @@ namespace components::sql::transform {
                                                                  agg->collection_full_name(),
                                                                  group->expressions(),
                                                                  std::move(having_expr));
-                auto* src_group = dynamic_cast<logical_plan::node_group_t*>(group.get());
-                final_group->internal_aggregate_count = src_group->internal_aggregate_count;
-                final_group->visible_select_count = src_group->visible_select_count;
                 agg->append_child(final_group);
             } else {
                 agg->append_child(group);
@@ -434,58 +543,118 @@ namespace components::sql::transform {
         }
 
         // order by
-        // TODO: validate that ORDER BY expressions reference named columns or SELECT-list aliases;
-        //       sorting by unnamed expressions is non-standard and may produce unexpected results
         if (node.sortClause && !node.sortClause->lst.empty()) {
-            std::vector<expression_ptr> expressions;
-            expressions.reserve(node.sortClause->lst.size());
+            std::vector<expression_ptr> sort_exprs;
+            sort_exprs.reserve(node.sortClause->lst.size());
             for (auto sort_it : node.sortClause->lst) {
                 auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
-                column_ref_t field(resource_);
+                bool is_desc = sortby->sortby_dir == SORTBY_DESC;
                 if (nodeTag(sortby->node) == T_ColumnRef) {
-                    field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
+                    column_ref_t field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
                 } else if (nodeTag(sortby->node) == T_A_Indirection) {
-                    field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                    column_ref_t field =
+                        indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
                 } else if (nodeTag(sortby->node) == T_A_Expr) {
-                    // Arithmetic in ORDER BY: create computed alias, add to group, sort by alias
+                    // Arithmetic ORDER BY: encode as scalar_expression_t with sort order in key.path()[0]
+                    // (0 = ascending, 1 = descending). create_plan_sort detects this and builds a
+                    // computed_sort_key_t instead of a regular sort key.
                     auto a_expr = pg_ptr_cast<A_Expr>(sortby->node);
+                    auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
+                    if (!is_arithmetic_operator(op_str)) {
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unsupported operator in ORDER BY", resource_});
+                        return nullptr;
+                    }
                     std::string sort_alias = "__sort_expr_" + std::to_string(aggregate_counter_++);
-                    logical_plan::node_ptr group_node = group;
-                    transform_select_a_expr(a_expr, sort_alias.c_str(), names, params, group_node);
-                    field.field = expressions::key_t{resource_, sort_alias};
+                    auto stype = get_arithmetic_scalar_type(op_str);
+                    expressions::key_t order_key(resource_);
+                    order_key.set_path({is_desc ? size_t(1) : size_t(0)});
+                    auto computed_sort = make_scalar_expression(resource_, stype, std::move(order_key));
+                    // Resolve operands (without appending to any node — purely for sort)
+                    logical_plan::node_ptr dummy_node = group; // resolve_select_operand needs a node_ptr
+                    computed_sort->append_param(resolve_select_operand(a_expr->lexpr, names, params, dummy_node));
+                    if (a_expr->rexpr) {
+                        computed_sort->append_param(resolve_select_operand(a_expr->rexpr, names, params, dummy_node));
+                    }
+                    sort_exprs.emplace_back(std::move(computed_sort));
                 } else {
-                    throw std::runtime_error("Unknown node type in ORDER BY: " +
-                                             node_tag_to_string(nodeTag(sortby->node)));
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"Unknown node type in ORDER BY: " + node_tag_to_string(nodeTag(sortby->node)),
+                                         resource_});
+                    return nullptr;
                 }
-                expressions.emplace_back(
-                    make_sort_expression(field.field,
-                                         sortby->sortby_dir == SORTBY_DESC ? sort_order::desc : sort_order::asc));
             }
-            agg->append_child(logical_plan::make_node_sort(resource_, agg->collection_full_name(), expressions));
+            agg->append_child(logical_plan::make_node_sort(resource_, agg->collection_full_name(), sort_exprs));
         }
 
-        // limit
-        if (node.limitCount) {
-            if (nodeTag(node.limitCount) != T_A_Const) {
-                throw std::runtime_error("Unknown node type in limit clause: " +
-                                         node_tag_to_string(nodeTag(node.limitCount)));
-            }
+        // Append select_node as a child of agg (only if there are actual SELECT columns — not pure star)
+        if (has_non_star) {
+            agg->append_child(select_node);
+        }
 
-            auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-            logical_plan::limit_t limit;
-            switch (nodeTag(value)) {
-                case T_Null: {
-                    limit = logical_plan::limit_t::unlimit();
-                    break;
+        // limit / offset
+        if (node.limitCount || node.limitOffset) {
+            int64_t limit_val = logical_plan::limit_t::unlimit().limit();
+            int64_t offset_val = 0;
+
+            if (node.limitCount) {
+                if (nodeTag(node.limitCount) != T_A_Const) {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in limit clause: " +
+                                                                node_tag_to_string(nodeTag(node.limitCount)),
+                                                            resource_});
+                    return nullptr;
                 }
-                case T_Integer:
-                    limit = logical_plan::limit_t(intVal(value));
-                    break;
-                default:
-                    throw std::runtime_error("Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL");
+                auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                switch (nodeTag(value)) {
+                    case T_Null:
+                        break; // LIMIT ALL — keep unlimit_
+                    case T_Integer:
+                        limit_val = intVal(value);
+                        break;
+                    default:
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                             resource_});
+                        return nullptr;
+                }
             }
 
-            agg->append_child(logical_plan::make_node_limit(resource_, agg->collection_full_name(), limit));
+            if (node.limitOffset) {
+                if (nodeTag(node.limitOffset) != T_A_Const) {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+
+                                           std::pmr::string{"Unknown node type in offset clause: " +
+                                                                node_tag_to_string(nodeTag(node.limitOffset)),
+                                                            resource_});
+                    return nullptr;
+                }
+                auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
+                switch (nodeTag(value)) {
+                    case T_Null:
+                        break; // OFFSET NULL — treat as 0
+                    case T_Integer:
+                        offset_val = intVal(value);
+                        break;
+                    default:
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+
+                            std::pmr::string{"Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                             resource_});
+                        return nullptr;
+                }
+            }
+
+            agg->append_child(logical_plan::make_node_limit(resource_,
+                                                            agg->collection_full_name(),
+                                                            logical_plan::limit_t(limit_val, offset_val)));
         }
 
         return agg;

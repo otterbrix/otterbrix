@@ -7,6 +7,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
+#include <components/physical_plan/operators/operator_batch.hpp>
 #include <core/operations_helper.hpp>
 #include <type_traits>
 
@@ -120,6 +121,7 @@ namespace components::operators {
                                                  size_t row_idx) {
             switch (key.type) {
                 case group_key_t::kind::column: {
+                    assert(!key.full_path.empty() && "group key path must be resolved before execution");
                     types::logical_value_t val = chunk.value(key.full_path, row_idx);
                     val.set_alias(std::string{key.name});
                     return val;
@@ -216,7 +218,6 @@ namespace components::operators {
         , post_aggregates_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
-        , select_order_(resource_)
         , row_ids_per_group_(resource_)
         , group_keys_(resource_)
         , group_index_(resource_) {}
@@ -242,25 +243,24 @@ namespace components::operators {
         post_aggregates_.emplace_back(std::move(col));
     }
 
-    void operator_group_t::set_select_order(std::pmr::vector<size_t>&& order) { select_order_ = std::move(order); }
-
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
 
             // Phase 1: Pre-compute arithmetic columns (before grouping)
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] =
+                auto result_vec =
                     evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
-                if (!arith_error.empty()) {
-                    set_error(std::move(arith_error));
+                if (result_vec.has_error()) {
+                    set_error(result_vec.error());
                     return;
-                } else if (result_vec.type().type() == types::logical_type::NA) {
-                    set_error("unknown error during evaluate_arithmetic");
+                } else if (result_vec.value().type().type() == types::logical_type::NA) {
+                    set_error(core::error_t(core::error_code_t::physical_plan_error,
+                                            std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
                     return;
                 }
-                result_vec.set_type_alias(std::string(comp.alias));
-                chunk.data.emplace_back(std::move(result_vec));
+                result_vec.value().set_type_alias(std::string(comp.alias));
+                chunk.data.emplace_back(std::move(result_vec.value()));
             }
 
             // Resolve col_index for computed-column keys (they were appended at known positions)
@@ -273,8 +273,18 @@ namespace components::operators {
                 }
             }
 
-            // Phase 2: Group by keys (columnar, no transpose)
-            create_list_rows();
+            // Phase 2: Group by keys, or treat entire chunk as one group when there are no keys
+            if (keys_.empty()) {
+                auto num_rows = chunk.size();
+                row_ids_per_group_.resize(1);
+                row_ids_per_group_[0].reserve(num_rows);
+                for (size_t r = 0; r < num_rows; ++r) {
+                    row_ids_per_group_[0].push_back(r);
+                }
+                group_keys_.push_back({});
+            } else {
+                create_list_rows();
+            }
 
             // Phase 3: Aggregate per group + build result chunk
             auto result = calc_aggregate_values(pipeline_context);
@@ -295,24 +305,37 @@ namespace components::operators {
                 filter_having(pipeline_context, result);
             }
 
-            // Phase 7: Reorder columns to match SELECT clause order
-            if (!select_order_.empty()) {
-                std::vector<vector::vector_t> reordered;
-                reordered.reserve(select_order_.size());
-                for (size_t idx : select_order_) {
-                    reordered.emplace_back(std::move(result.data[idx]));
-                }
-                result.data.assign(std::make_move_iterator(reordered.begin()),
-                                   std::make_move_iterator(reordered.end()));
-            }
-
-            // Phase 8: Output
+            // Phase 7: Output
             output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
 
             // Clear temporary grouping state
             row_ids_per_group_.clear();
             group_keys_.clear();
             group_index_.clear();
+        } else if (keys_.empty() && !values_.empty()) {
+            // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
+            // Run each aggregator over zero rows and emit one result row.
+            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+            agg_results.reserve(values_.size());
+            for (const auto& value : values_) {
+                std::vector<vector::data_chunk_t> empty_chunks;
+                value.aggregator->clear();
+                value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
+                value.aggregator->on_execute(pipeline_context);
+                auto datum = value.aggregator->take_batch_values();
+                std::pmr::vector<types::logical_value_t> results(resource_);
+                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                    types::logical_value_t val =
+                        vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
+                    val.set_alias(std::string(value.name));
+                    results.push_back(std::move(val));
+                }
+                agg_results.push_back(std::move(results));
+            }
+            group_keys_.push_back({});
+            auto result = build_result_chunk(1, 0, agg_results);
+            output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
             std::pmr::vector<types::complex_logical_type> empty_types(resource_);
@@ -320,14 +343,14 @@ namespace components::operators {
             chunk.set_cardinality(1);
 
             for (auto& comp : computed_columns_) {
-                auto [result_vec, arith_error] =
+                auto result_vec =
                     evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, pipeline_context->parameters);
-                if (!arith_error.empty()) {
-                    set_error(std::move(arith_error));
+                if (result_vec.has_error()) {
+                    set_error(result_vec.error());
                     return;
                 }
-                result_vec.set_type_alias(std::string(comp.alias));
-                chunk.data.emplace_back(std::move(result_vec));
+                result_vec.value().set_type_alias(std::string(comp.alias));
+                chunk.data.emplace_back(std::move(result_vec.value()));
             }
 
             output_ = operators::make_operator_data(resource_, std::move(chunk));
@@ -473,6 +496,10 @@ namespace components::operators {
                     can_vectorize = false;
                     break;
                 }
+                if (func_op->distinct()) {
+                    can_vectorize = false;
+                    break;
+                }
 
                 std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
                 types::logical_type col_type = types::logical_type::NA;
@@ -549,7 +576,7 @@ namespace components::operators {
             return build_result_chunk(num_groups, key_count, agg_results);
         }
 
-        // Fallback: gather + slice_contiguous per group
+        // Fallback: gather + partial_copy per group
         return calc_aggregate_values_fallback(pipeline_context);
     }
 
@@ -590,16 +617,40 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> results(resource_);
             results.reserve(num_groups);
 
+            std::vector<vector::data_chunk_t> group_chunks;
+            group_chunks.reserve(num_groups);
             for (size_t i = 0; i < num_groups; i++) {
                 auto off = group_offsets[i];
                 auto cnt = group_offsets[i + 1] - group_offsets[i];
-                auto sub_chunk = gathered.slice_contiguous(resource_, off, cnt);
-                aggregator->execute_on(operators::make_operator_data(left_->output()->resource(), std::move(sub_chunk)),
-                                       pipeline_context);
-                auto agg_val = aggregator->value();
-                agg_val.set_alias(std::string(value.name));
-                results.push_back(std::move(agg_val));
+                group_chunks.emplace_back(gathered.partial_copy(resource_, off, cnt));
             }
+
+            aggregator->clear();
+            aggregator->set_children(make_operator_batch(resource_, std::move(group_chunks)));
+            aggregator->on_execute(pipeline_context);
+
+            auto datum = aggregator->take_batch_values();
+
+            if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                for (auto& v : vals) {
+                    v.set_alias(std::string(value.name));
+                    results.push_back(std::move(v));
+                }
+            } else {
+                // data_chunk_t — each row corresponds to a group
+                auto& result_chunk = std::get<vector::data_chunk_t>(datum);
+                for (size_t i = 0; i < num_groups && i < result_chunk.size(); i++) {
+                    auto val = result_chunk.data.empty() ? types::logical_value_t(resource_, types::logical_type::NA)
+                                                         : result_chunk.value(0, i);
+                    val.set_alias(std::string(value.name));
+                    results.push_back(std::move(val));
+                }
+                while (results.size() < num_groups) {
+                    results.emplace_back(resource_, types::logical_type::NA);
+                }
+            }
+
             agg_results.push_back(std::move(results));
         }
 
@@ -847,6 +898,7 @@ namespace components::operators {
             auto keep_count = static_cast<uint64_t>(keep_indices.size());
             vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(keep_indices.data()));
             result.slice(idx, keep_count);
+            result.flatten();
         }
     }
 

@@ -45,8 +45,14 @@ namespace components::operators {
                                        : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
+                    auto results =
+                        predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+                    if (results.has_error()) {
+                        set_error(results.error());
+                        return;
+                    }
                     for (size_t j = 0; j < chunk_right.size(); j++) {
-                        if (predicate->check(chunk_left, chunk_right, i, j)) {
+                        if (results.value()[j]) {
                             out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
                             // Copy original values to output first (preserves scan data for executor)
                             for (size_t k = 0; k < chunk_left.column_count(); k++) {
@@ -89,7 +95,8 @@ namespace components::operators {
                                        : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
-                    if (predicate->check(chunk, i)) {
+                    auto res = predicate->check(chunk, i);
+                    if (!res.has_error() && res.value()) {
                         if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
                             out_chunk.row_ids.data<int64_t>()[index] =
                                 static_cast<int64_t>(chunk.data.front().indexing().get_index(i));

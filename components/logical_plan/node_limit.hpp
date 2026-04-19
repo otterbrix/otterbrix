@@ -5,20 +5,23 @@
 namespace components::logical_plan {
 
     class limit_t {
-        static constexpr int unlimit_ = -1;
+        static constexpr int64_t unlimit_ = -1;
 
     public:
         limit_t() = default;
-        explicit limit_t(int data);
+        explicit limit_t(int64_t limit, int64_t offset = 0);
 
         static limit_t unlimit();
         static limit_t limit_one();
 
-        int limit() const;
-        bool check(int count) const;
+        int64_t limit() const;
+        int64_t offset() const;
+        bool check(int64_t count) const;
+        bool is_skipping(int64_t count) const;
 
     private:
-        int limit_ = unlimit_;
+        int64_t limit_ = unlimit_;
+        int64_t offset_ = 0;
     };
 
     class node_limit_t final : public node_t {

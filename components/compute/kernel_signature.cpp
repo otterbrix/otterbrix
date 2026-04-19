@@ -22,13 +22,14 @@ namespace components::compute {
         return out;
     }
 
-    compute_result<fixed_t> output_type::resolve(const std::pmr::vector<fixed_t>& input_types) const {
+    core::result_wrapper_t<fixed_t> output_type::resolve(std::pmr::memory_resource* resource,
+                                                         const std::pmr::vector<fixed_t>& input_types) const {
         if (std::holds_alternative<fixed_t>(value_)) {
             return std::get<fixed_t>(value_);
         }
 
         const auto& resolver = std::get<type_resolver_fn>(value_);
-        return resolver(input_types);
+        return resolver(resource, input_types);
     }
 
     kernel_signature_t::kernel_signature_t(function_type_t function_type,
@@ -87,9 +88,12 @@ namespace components::compute {
     }
 
     type_resolver_fn same_type_resolver(size_t input_index) {
-        return [input_index](const std::pmr::vector<fixed_t>& in) -> compute_result<fixed_t> {
-            if (in.size() <= input_index)
-                return compute_status::invalid("No inputs");
+        return [input_index](std::pmr::memory_resource* resource,
+                             const std::pmr::vector<fixed_t>& in) -> core::result_wrapper_t<fixed_t> {
+            if (in.size() <= input_index) {
+                return core::error_t(core::error_code_t::incorrect_function_argument,
+                                     std::pmr::string{"less inputs than expected", resource});
+            }
             return in[input_index];
         };
     }

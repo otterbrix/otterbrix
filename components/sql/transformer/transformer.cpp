@@ -7,7 +7,6 @@ namespace components::sql::transform {
         auto params = logical_plan::make_parameter_node(resource_);
         logical_plan::node_ptr log_node;
 
-        // TODO: Error handling
         switch (node.type) {
             case T_CreatedbStmt:
                 log_node = transform_create_database(pg_cast<CreatedbStmt>(node));
@@ -58,13 +57,22 @@ namespace components::sql::transform {
                 log_node = transform_create_function(pg_cast<CreateFunctionStmt>(node));
                 break;
             default:
-                throw std::runtime_error("Unsupported node type: " + node_tag_to_string(node.type));
+                error_ = core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"Unsupported node type: " + node_tag_to_string(node.type), resource_});
         }
 
-        return {std::move(log_node),
-                std::move(params),
-                std::move(parameter_map_),
-                std::move(parameter_insert_map_),
-                std::move(parameter_insert_rows_)};
+        if (has_error()) {
+            return {resource_, std::move(error_)};
+        } else {
+            return {resource_,
+                    std::move(log_node),
+                    std::move(params),
+                    std::move(parameter_map_),
+                    std::move(parameter_insert_map_),
+                    std::move(parameter_insert_rows_)};
+        }
     }
+
+    bool transformer::has_error() const noexcept { return error_.contains_error(); }
 } // namespace components::sql::transform

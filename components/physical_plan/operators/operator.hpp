@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/context/context.hpp>
@@ -26,9 +28,11 @@ namespace components::operators {
         remove,
         update,
         sort,
+        select,
         join,
         aggregate,
-        raw_data
+        raw_data,
+        batch
     };
 
     inline bool is_scan(operator_type t) {
@@ -42,7 +46,8 @@ namespace components::operators {
         running,
         waiting,
         executed,
-        cleared
+        cleared,
+        failed
     };
 
     class operator_t : public boost::intrusive_ref_counter<operator_t> {
@@ -92,9 +97,10 @@ namespace components::operators {
         void mark_executed();
         void clear(); //todo: replace by copy
 
-        void set_error(std::string msg);
+        void set_error(const core::error_t& error);
+        void set_error(core::error_t&& error);
         bool has_error() const noexcept;
-        const std::string& error_message() const noexcept;
+        const core::error_t& get_error() const noexcept;
 
     protected:
         std::pmr::memory_resource* resource_;
@@ -115,7 +121,7 @@ namespace components::operators {
         operator_state state_{operator_state::created};
         bool root{false};
         bool prepared_{false};
-        std::string error_message_;
+        core::error_t error_;
     };
 
     class read_only_operator_t : public operator_t {

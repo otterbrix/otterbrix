@@ -103,7 +103,6 @@ namespace components::operators {
         void add_value(const std::pmr::string& name, aggregate::operator_aggregate_ptr&& aggregator);
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);
-        void set_select_order(std::pmr::vector<size_t>&& order);
 
     private:
         std::pmr::vector<group_key_t> keys_;
@@ -112,7 +111,6 @@ namespace components::operators {
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
-        std::pmr::vector<size_t> select_order_;
 
         std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;

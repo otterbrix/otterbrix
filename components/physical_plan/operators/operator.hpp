@@ -28,6 +28,7 @@ namespace components::operators {
         remove,
         update,
         sort,
+        select,
         join,
         aggregate,
         raw_data,

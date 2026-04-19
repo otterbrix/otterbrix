@@ -28,13 +28,14 @@ namespace services::planner::impl {
                                                                                             log_t{},
                                                                                             join_node->type(),
                                                                                             node->expressions()[0]));
+        auto child_limit = components::logical_plan::limit_t::unlimit();
         components::operators::operator_ptr left;
         components::operators::operator_ptr right;
         if (node->children().front()) {
-            left = create_plan(context, function_registry, node->children().front(), limit, params);
+            left = create_plan(context, function_registry, node->children().front(), child_limit, params);
         }
         if (node->children().back()) {
-            right = create_plan(context, function_registry, node->children().back(), limit, params);
+            right = create_plan(context, function_registry, node->children().back(), child_limit, params);
         }
         join->set_children(std::move(left), std::move(right));
         return join;

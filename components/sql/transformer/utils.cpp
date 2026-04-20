@@ -64,6 +64,79 @@ namespace components::sql::transform {
         field.set_side(transform::deduce_side(names, table));
     }
 
+    column_ref_t json_arrow_to_field(std::pmr::memory_resource* resource,
+                                     A_Expr* arrow_expr,
+                                     const name_collection_t& names) {
+        std::pmr::vector<std::pmr::string> segments(resource);
+
+        A_Expr* cur = arrow_expr;
+        while (true) {
+            if (!is_json_arrow(cur)) {
+                throw parser_exception_t{"expected -> operator in json path chain", ""};
+            }
+            if (!cur->rexpr || nodeTag(cur->rexpr) != T_A_Const) {
+                throw parser_exception_t{"-> right operand must be a string literal", ""};
+            }
+            auto* rc = pg_ptr_cast<A_Const>(cur->rexpr);
+            if (nodeTag(&rc->val) != T_String) {
+                throw parser_exception_t{"-> right operand must be a string literal", ""};
+            }
+            segments.emplace_back(std::pmr::string(strVal(&rc->val), resource));
+
+            if (!cur->lexpr) {
+                throw parser_exception_t{"-> left operand missing", ""};
+            }
+            if (nodeTag(cur->lexpr) == T_A_Expr) {
+                cur = pg_ptr_cast<A_Expr>(cur->lexpr);
+                continue;
+            }
+            if (nodeTag(cur->lexpr) == T_ColumnRef) {
+                break;
+            }
+            throw parser_exception_t{"-> left operand must be a column reference or another ->", ""};
+        }
+
+        std::reverse(segments.begin(), segments.end());
+
+        auto* base = pg_ptr_cast<ColumnRef>(cur->lexpr);
+        std::pmr::vector<std::pmr::string> full_path(resource);
+        for (auto& cell : base->fields->lst) {
+            if (nodeTag(cell.data) == T_A_Star) {
+                throw parser_exception_t{"* not allowed on left of ->", ""};
+            }
+            full_path.emplace_back(pmrStrVal(cell.data, resource));
+        }
+        for (auto& s : segments) {
+            full_path.emplace_back(std::move(s));
+        }
+
+        std::string table_name;
+        expressions::side_t side = expressions::side_t::undefined;
+        size_t start = 0;
+        if (!full_path.empty()) {
+            std::string first(full_path[0].c_str(), full_path[0].size());
+            if (names.is_left_table(first)) {
+                table_name = first;
+                side = expressions::side_t::left;
+                start = 1;
+            } else if (names.is_right_table(first)) {
+                table_name = first;
+                side = expressions::side_t::right;
+                start = 1;
+            }
+        }
+
+        std::pmr::string dotted(resource);
+        for (size_t i = start; i < full_path.size(); ++i) {
+            if (i > start) {
+                dotted += ".";
+            }
+            dotted += full_path[i];
+        }
+
+        return column_ref_t{std::move(table_name), expressions::key_t(resource, std::move(dotted), side)};
+    }
+
     column_ref_t
     columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names) {
         auto lst = ref->fields->lst;

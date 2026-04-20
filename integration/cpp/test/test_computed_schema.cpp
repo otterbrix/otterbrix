@@ -791,6 +791,94 @@ TEST_CASE("integration::cpp::test_computed_schema::json_insert_type_mix_types") 
     }
 }
 
+TEST_CASE("integration::cpp::test_computed_schema::json_arrow_select") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_arrow");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.ar ();");
+    }
+    // Insert nested json so the flattened column name is "hello.word".
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.ar VALUES (json('{\"hello\": {\"word\": 42}}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    // Bare -> chain resolves to the flattened column.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT ar -> 'hello' -> 'word' FROM cs_testdb.ar;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 42);
+    }
+    // -> chain wrapped in ::int cast.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT (ar -> 'hello' -> 'word')::int FROM cs_testdb.ar;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int32_t>()[0] == 42);
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_arrow_column_base") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_arrow_col");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.at ();");
+    }
+    // Flattened column name is "a.x.y"; leftmost in the -> chain is "a" — a column, not the table.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "INSERT INTO cs_testdb.at VALUES (json('{\"a\": {\"x\": {\"y\": 99}}}'));");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT a -> 'x' -> 'y' FROM cs_testdb.at;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 99);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT (a -> 'x' -> 'y')::int FROM cs_testdb.at;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().data[0].data<int32_t>()[0] == 99);
+    }
+}
+
 TEST_CASE("integration::cpp::test_computed_schema::json_insert_error_propagation") {
     auto config = test_create_config("/tmp/test_computed_schema/json_errors");
     test_clear_directory(config);

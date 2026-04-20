@@ -75,6 +75,20 @@ namespace components::sql::transform {
                                       A_Indirection* indirection,
                                       const name_collection_t& names);
 
+    // Collapse chain of AEXPR_OP "->" into a single column reference with a dotted path.
+    // Leftmost operand must be a ColumnRef; every rhs must be a string literal.
+    // The dotted path matches the flattened column naming produced by json INSERT.
+    column_ref_t json_arrow_to_field(std::pmr::memory_resource* resource,
+                                     A_Expr* arrow_expr,
+                                     const name_collection_t& names);
+
+    inline bool is_json_arrow(const A_Expr* node) {
+        if (!node || node->kind != AEXPR_OP || !node->name || node->name->lst.empty()) {
+            return false;
+        }
+        return std::string_view(strVal(node->name->lst.front().data)) == "->";
+    }
+
     inline logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
             case JOIN_FULL:

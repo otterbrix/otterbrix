@@ -215,6 +215,21 @@ namespace components::sql::transform {
                                                        std::move(col_ref.field)));
                             break;
                         }
+                        if (cast->arg && nodeTag(cast->arg) == T_A_Expr &&
+                            is_json_arrow(pg_ptr_cast<A_Expr>(cast->arg))) {
+                            auto target_type = get_type(cast->typeName);
+                            auto col_ref =
+                                json_arrow_to_field(resource_, pg_ptr_cast<A_Expr>(cast->arg), names);
+                            auto field_name = std::string(col_ref.field.storage().back());
+                            col_ref.field.set_cast_type(target_type);
+                            std::string alias = res->name ? res->name : field_name;
+                            group->append_expression(
+                                make_scalar_expression(resource_,
+                                                       scalar_type::get_field,
+                                                       expressions::key_t{resource_, alias},
+                                                       std::move(col_ref.field)));
+                            break;
+                        }
                         [[fallthrough]];
                     }
                     case T_ParamRef: // fall-through
@@ -235,6 +250,17 @@ namespace components::sql::transform {
                             if (is_arithmetic_operator(op_str)) {
                                 logical_plan::node_ptr group_node = group;
                                 transform_select_a_expr(a_expr, res->name, names, params, group_node);
+                                break;
+                            }
+                            if (is_json_arrow(a_expr)) {
+                                auto col_ref = json_arrow_to_field(resource_, a_expr, names);
+                                auto field_name = std::string(col_ref.field.storage().back());
+                                std::string alias = res->name ? res->name : field_name;
+                                group->append_expression(
+                                    make_scalar_expression(resource_,
+                                                           scalar_type::get_field,
+                                                           expressions::key_t{resource_, alias},
+                                                           std::move(col_ref.field)));
                                 break;
                             }
                         }

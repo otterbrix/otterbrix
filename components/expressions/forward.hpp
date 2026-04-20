@@ -37,7 +37,10 @@ namespace components::expressions {
         all_true,
         all_false,
         is_null,
-        is_not_null
+        is_not_null,
+        // Postgres-style jsonb `?` operator. Same truthiness as is_not_null when
+        // the column exists; evaluates to false (no error) when it does not.
+        json_has_key
     };
 
     enum class scalar_type : uint8_t

@@ -64,77 +64,99 @@ namespace components::sql::transform {
         field.set_side(transform::deduce_side(names, table));
     }
 
+    namespace {
+        // Collect raw path segments root→leaf from a lhs that is a ColumnRef or an AEXPR_OP "->" chain.
+        // Segments are appended to `out` in natural (root-to-leaf) order.
+        void collect_json_lhs_segments(std::pmr::memory_resource* resource,
+                                       Node* lhs,
+                                       std::pmr::vector<std::pmr::string>& out) {
+            if (!lhs) {
+                throw parser_exception_t{"json path: left operand missing", ""};
+            }
+            if (nodeTag(lhs) == T_ColumnRef) {
+                auto* base = pg_ptr_cast<ColumnRef>(lhs);
+                for (auto& cell : base->fields->lst) {
+                    if (nodeTag(cell.data) == T_A_Star) {
+                        throw parser_exception_t{"* not allowed in json path lhs", ""};
+                    }
+                    out.emplace_back(pmrStrVal(cell.data, resource));
+                }
+                return;
+            }
+            if (nodeTag(lhs) == T_A_Expr) {
+                auto* expr = pg_ptr_cast<A_Expr>(lhs);
+                if (!is_json_arrow(expr)) {
+                    throw parser_exception_t{"json path: expected -> in chain", ""};
+                }
+                if (!expr->rexpr || nodeTag(expr->rexpr) != T_A_Const ||
+                    nodeTag(&pg_ptr_cast<A_Const>(expr->rexpr)->val) != T_String) {
+                    throw parser_exception_t{"-> right operand must be a string literal", ""};
+                }
+                collect_json_lhs_segments(resource, expr->lexpr, out);
+                out.emplace_back(
+                    std::pmr::string(strVal(&pg_ptr_cast<A_Const>(expr->rexpr)->val), resource));
+                return;
+            }
+            throw parser_exception_t{"json path lhs must be a column reference or -> chain", ""};
+        }
+
+        column_ref_t segments_to_column_ref(std::pmr::memory_resource* resource,
+                                            std::pmr::vector<std::pmr::string>& full_path,
+                                            const name_collection_t& names) {
+            std::string table_name;
+            expressions::side_t side = expressions::side_t::undefined;
+            size_t start = 0;
+            if (!full_path.empty()) {
+                std::string first(full_path[0].c_str(), full_path[0].size());
+                if (names.is_left_table(first)) {
+                    table_name = first;
+                    side = expressions::side_t::left;
+                    start = 1;
+                } else if (names.is_right_table(first)) {
+                    table_name = first;
+                    side = expressions::side_t::right;
+                    start = 1;
+                }
+            }
+
+            std::pmr::string dotted(resource);
+            for (size_t i = start; i < full_path.size(); ++i) {
+                if (i > start) {
+                    dotted += ".";
+                }
+                dotted += full_path[i];
+            }
+            return column_ref_t{std::move(table_name),
+                                expressions::key_t(resource, std::move(dotted), side)};
+        }
+    } // namespace
+
     column_ref_t json_arrow_to_field(std::pmr::memory_resource* resource,
                                      A_Expr* arrow_expr,
                                      const name_collection_t& names) {
-        std::pmr::vector<std::pmr::string> segments(resource);
-
-        A_Expr* cur = arrow_expr;
-        while (true) {
-            if (!is_json_arrow(cur)) {
-                throw parser_exception_t{"expected -> operator in json path chain", ""};
-            }
-            if (!cur->rexpr || nodeTag(cur->rexpr) != T_A_Const) {
-                throw parser_exception_t{"-> right operand must be a string literal", ""};
-            }
-            auto* rc = pg_ptr_cast<A_Const>(cur->rexpr);
-            if (nodeTag(&rc->val) != T_String) {
-                throw parser_exception_t{"-> right operand must be a string literal", ""};
-            }
-            segments.emplace_back(std::pmr::string(strVal(&rc->val), resource));
-
-            if (!cur->lexpr) {
-                throw parser_exception_t{"-> left operand missing", ""};
-            }
-            if (nodeTag(cur->lexpr) == T_A_Expr) {
-                cur = pg_ptr_cast<A_Expr>(cur->lexpr);
-                continue;
-            }
-            if (nodeTag(cur->lexpr) == T_ColumnRef) {
-                break;
-            }
-            throw parser_exception_t{"-> left operand must be a column reference or another ->", ""};
+        if (!is_json_arrow(arrow_expr)) {
+            throw parser_exception_t{"expected -> operator", ""};
         }
-
-        std::reverse(segments.begin(), segments.end());
-
-        auto* base = pg_ptr_cast<ColumnRef>(cur->lexpr);
         std::pmr::vector<std::pmr::string> full_path(resource);
-        for (auto& cell : base->fields->lst) {
-            if (nodeTag(cell.data) == T_A_Star) {
-                throw parser_exception_t{"* not allowed on left of ->", ""};
-            }
-            full_path.emplace_back(pmrStrVal(cell.data, resource));
-        }
-        for (auto& s : segments) {
-            full_path.emplace_back(std::move(s));
-        }
+        collect_json_lhs_segments(resource, reinterpret_cast<Node*>(arrow_expr), full_path);
+        return segments_to_column_ref(resource, full_path, names);
+    }
 
-        std::string table_name;
-        expressions::side_t side = expressions::side_t::undefined;
-        size_t start = 0;
-        if (!full_path.empty()) {
-            std::string first(full_path[0].c_str(), full_path[0].size());
-            if (names.is_left_table(first)) {
-                table_name = first;
-                side = expressions::side_t::left;
-                start = 1;
-            } else if (names.is_right_table(first)) {
-                table_name = first;
-                side = expressions::side_t::right;
-                start = 1;
-            }
+    column_ref_t json_question_to_field(std::pmr::memory_resource* resource,
+                                        A_Expr* question_expr,
+                                        const name_collection_t& names) {
+        if (!is_json_question(question_expr)) {
+            throw parser_exception_t{"expected ? operator", ""};
         }
-
-        std::pmr::string dotted(resource);
-        for (size_t i = start; i < full_path.size(); ++i) {
-            if (i > start) {
-                dotted += ".";
-            }
-            dotted += full_path[i];
+        if (!question_expr->rexpr || nodeTag(question_expr->rexpr) != T_A_Const ||
+            nodeTag(&pg_ptr_cast<A_Const>(question_expr->rexpr)->val) != T_String) {
+            throw parser_exception_t{"? right operand must be a string literal", ""};
         }
-
-        return column_ref_t{std::move(table_name), expressions::key_t(resource, std::move(dotted), side)};
+        std::pmr::vector<std::pmr::string> full_path(resource);
+        collect_json_lhs_segments(resource, question_expr->lexpr, full_path);
+        full_path.emplace_back(
+            std::pmr::string(strVal(&pg_ptr_cast<A_Const>(question_expr->rexpr)->val), resource));
+        return segments_to_column_ref(resource, full_path, names);
     }
 
     column_ref_t

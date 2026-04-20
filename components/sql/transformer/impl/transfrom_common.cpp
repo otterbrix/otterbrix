@@ -308,6 +308,21 @@ namespace components::sql::transform {
                                                    param_id);
                 }
 
+                // `lhs ? 'key'` — presence check; equivalent to `(lhs + key) IS NOT NULL`
+                // over the flattened column naming produced by json INSERT. Uses the
+                // json_has_key compare_type so missing columns degrade to false instead
+                // of raising a schema error (matches Postgres jsonb `?` semantics).
+                if (op_str == "?") {
+                    auto col_ref = json_question_to_field(resource_, node, names);
+                    col_ref.deduce_side(names);
+                    auto param_id = params->add_parameter(
+                        types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                    return make_compare_expression(params->parameters().resource(),
+                                                   compare_type::json_has_key,
+                                                   col_ref.field,
+                                                   param_id);
+                }
+
                 auto comp_type = get_compare_type(op_str);
 
                 auto get_arg = [this, &names, &params](Node* node) -> param_storage {

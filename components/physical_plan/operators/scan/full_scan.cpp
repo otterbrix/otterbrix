@@ -71,7 +71,8 @@ namespace components::operators {
             case expressions::compare_type::invalid:
                 throw std::runtime_error("unsupported compare_type in expression to filter conversion");
             case expressions::compare_type::is_null:
-            case expressions::compare_type::is_not_null: {
+            case expressions::compare_type::is_not_null:
+            case expressions::compare_type::json_has_key: {
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 return std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices));

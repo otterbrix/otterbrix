@@ -211,8 +211,14 @@ namespace components::table {
                 throw std::logic_error("invalid type for filter selection");
             }
             case expressions::compare_type::is_null:
-            case expressions::compare_type::is_not_null: {
+            case expressions::compare_type::is_not_null:
+            case expressions::compare_type::json_has_key: {
                 auto& null_filter = filter->cast<is_null_filter_t>();
+                // json_has_key over a column that never existed: validator left the
+                // path empty, so we degrade to a constant false match.
+                if (null_filter.table_indices.empty()) {
+                    return false;
+                }
                 column_data_t* column = &get_column(null_filter.table_indices.front());
                 for (size_t i = 1; i < null_filter.table_indices.size(); i++) {
                     column =

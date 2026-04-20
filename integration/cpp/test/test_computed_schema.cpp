@@ -879,6 +879,102 @@ TEST_CASE("integration::cpp::test_computed_schema::json_arrow_column_base") {
     }
 }
 
+TEST_CASE("integration::cpp::test_computed_schema::json_question_where") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_q");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.q ();");
+    }
+    // Row 1 has column "x"; row 2 has column "y". After batch 2, "x" is NULL in row 2.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "INSERT INTO cs_testdb.q VALUES (json('{\"x\": 1}'));");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "INSERT INTO cs_testdb.q VALUES (json('{\"y\": 2}'));");
+        REQUIRE(cur->is_success());
+    }
+    // Sanity: two rows total.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.q;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    // `q ? 'x'` — row where column "x" is not null.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.q WHERE q ? 'x';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.q WHERE q ? 'y';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    // Non-existent column: compare_type::json_has_key degrades to constant false.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.q WHERE q ? 'missing';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+TEST_CASE("integration::cpp::test_computed_schema::json_question_nested") {
+    auto config = test_create_config("/tmp/test_computed_schema/json_q_nested");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE cs_testdb;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE TABLE cs_testdb.qn ();");
+    }
+    // Two rows, different nested subkeys.
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "INSERT INTO cs_testdb.qn VALUES (json('{\"a\": {\"x\": 1}}'));");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "INSERT INTO cs_testdb.qn VALUES (json('{\"a\": {\"y\": 2}}'));");
+    }
+    // `qn -> 'a' ? 'x'` — column "a.x" not null → 1 row.
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.qn WHERE qn -> 'a' ? 'x';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT * FROM cs_testdb.qn WHERE qn -> 'a' ? 'y';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
 TEST_CASE("integration::cpp::test_computed_schema::json_insert_error_propagation") {
     auto config = test_create_config("/tmp/test_computed_schema/json_errors");
     test_clear_directory(config);

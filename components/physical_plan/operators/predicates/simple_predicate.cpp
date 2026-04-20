@@ -235,6 +235,23 @@ namespace components::operators::predicates {
                         size_t index_left,
                         size_t) { return chunk_left.at(column_path)->validity().row_is_valid(index_left); })};
             }
+            case compare_type::json_has_key: {
+                // Postgres jsonb `?` semantics: missing column → false, else is_not_null.
+                auto path = std::get<expressions::key_t>(expr->left()).path();
+                if (path.empty()) {
+                    return {new simple_predicate(
+                        [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) {
+                            return false;
+                        })};
+                }
+                return {new simple_predicate(
+                    [column_path = std::move(path)](const vector::data_chunk_t& chunk_left,
+                                                    const vector::data_chunk_t&,
+                                                    size_t index_left,
+                                                    size_t) {
+                        return chunk_left.at(column_path)->validity().row_is_valid(index_left);
+                    })};
+            }
             case compare_type::all_true:
             default:
                 return {new simple_predicate(

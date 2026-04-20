@@ -635,6 +635,19 @@ namespace services::dispatcher {
                     }
                     break;
                 }
+                case compare_type::json_has_key: {
+                    // Tolerate missing columns: leave key.path() empty so the physical
+                    // layer can evaluate the predicate as always-false instead of raising.
+                    if (std::holds_alternative<components::expressions::key_t>(expr->left())) {
+                        auto key_res = validate_key(resource,
+                                                    std::get<components::expressions::key_t>(expr->left()),
+                                                    schema_left,
+                                                    schema_right,
+                                                    same_schema);
+                        (void) key_res;
+                    }
+                    break;
+                }
                 default:
                     break;
             }

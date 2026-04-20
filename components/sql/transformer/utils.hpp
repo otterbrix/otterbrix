@@ -89,6 +89,20 @@ namespace components::sql::transform {
         return std::string_view(strVal(node->name->lst.front().data)) == "->";
     }
 
+    inline bool is_json_question(const A_Expr* node) {
+        if (!node || node->kind != AEXPR_OP || !node->name || node->name->lst.empty()) {
+            return false;
+        }
+        return std::string_view(strVal(node->name->lst.front().data)) == "?";
+    }
+
+    // For `lhs ? 'key'` — produce column_ref_t whose dotted path is (lhs-path + 'key').
+    // lhs may be a ColumnRef or another -> chain; the chain is collapsed the same way
+    // json_arrow_to_field does.
+    column_ref_t json_question_to_field(std::pmr::memory_resource* resource,
+                                        A_Expr* question_expr,
+                                        const name_collection_t& names);
+
     inline logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
             case JOIN_FULL:

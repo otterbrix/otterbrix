@@ -21,13 +21,15 @@ title = "JSONBench (500к документов)"
 # ─────────────────────────────────────────────────────────────────────────────
 
 x     = np.arange(len(labels))
-width = 0.30
+width = 0.25
 
 fig, ax = plt.subplots(figsize=(10, 5))
 
-bars_otterbrix_old    = ax.bar(x - width / 2, otterbrix_old,    width, label="otterbrix old",
+bars_otterbrix_old    = ax.bar(x - width, otterbrix_old,    width, label="otterbrix old",
                         color="#4C72B0", edgecolor="white", linewidth=0.8)
-bars_duckdb   = ax.bar(x + width / 2,         duckdb,   width, label="duckdb",
+bars_otterbrix_new   = ax.bar(x,         otterbrix_new,   width, label="otterbrix new",
+                              color="#DD8452", edgecolor="white", linewidth=0.8)
+bars_duckdb   = ax.bar(x + width,         duckdb,   width, label="duckdb",
                               color="#D64C18", edgecolor="white", linewidth=0.8)
 
 y_max = max(otterbrix_old)
@@ -35,6 +37,7 @@ y_max = max(otterbrix_old)
 # Значения над столбцами
 for bars, vals, color in [
     (bars_otterbrix_old,    otterbrix_old,    "#4C72B0"),
+    (bars_otterbrix_new,    otterbrix_new,    "#DD8452"),
     (bars_duckdb,    duckdb,    "#D64C18"),
 ]:
     for bar, val in zip(bars, vals):

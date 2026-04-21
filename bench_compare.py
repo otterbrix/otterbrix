@@ -11,31 +11,37 @@ import numpy as np
 # ── Данные ───────────────────────────────────────────────────────────────────
 labels = ["Q1", "Q2", "Q3", "Q4", "Q5"]
 
-duckdb    = [3.5,  4.5, 4.6, 8.3, 8.9]
-mongodb   = [0.486,  1.133, 1.498,  0.582, 0.719]
-otterbrix = [0.021,  0.333, 0.273,  0.077, 0.167]
+otterbrix_old    = [3.5,  4.5, 4.6, 8.3, 8.9]
+otterbrix_new   = [0.486,  1.133, 1.498,  0.582, 0.719]
+otterbrix_new_optimized = [0.021,  0.333, 0.273,  0.077, 0.167]
+duckdb = [0.075,  0.306, 0.262,  0.241, 0.211]
 
 unit  = "sec"
 title = "Время выполнения запросов (500к документов)"
 # ─────────────────────────────────────────────────────────────────────────────
 
 x     = np.arange(len(labels))
-width = 0.25
+width = 0.2
 
 fig, ax = plt.subplots(figsize=(10, 5))
 
-bars_duckdb    = ax.bar(x - width, duckdb,    width, label="old",
+bars_otterbrix_old    = ax.bar(x - width * 2, otterbrix_old,    width, label="old",
                         color="#4C72B0", edgecolor="white", linewidth=0.8)
-bars_mongodb   = ax.bar(x,         mongodb,   width, label="new",
+bars_otterbrix_new   = ax.bar(x - width,         otterbrix_new,   width, label="new",
                         color="#DD8452", edgecolor="white", linewidth=0.8)
+bars_otterbrix_new_optimized   = ax.bar(x,         otterbrix_new_optimized,   width, label="new optimized",
+                              color="#55A868", edgecolor="white", linewidth=0.8)
+bars_duckdb   = ax.bar(x + width,         duckdb,   width, label="duckdb json",
+                              color="#D64C18", edgecolor="white", linewidth=0.8)
 
-all_vals = duckdb + mongodb + otterbrix
-y_max = max(all_vals)
+y_max = max(otterbrix_old)
 
 # Значения над столбцами
 for bars, vals, color in [
+    (bars_otterbrix_old,    otterbrix_old,    "#4C72B0"),
+    (bars_otterbrix_new,    otterbrix_new,    "#4C72B0"),
+    (bars_otterbrix_new_optimized,    otterbrix_new_optimized,    "#4C72B0"),
     (bars_duckdb,    duckdb,    "#4C72B0"),
-    (bars_mongodb,   mongodb,   "#DD8452"),
 ]:
     for bar, val in zip(bars, vals):
         ax.text(bar.get_x() + bar.get_width() / 2,

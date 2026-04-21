@@ -5,6 +5,7 @@
 #include <thread>
 #include <unordered_set>
 
+#include <components/vector/vector_operations.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -1089,18 +1090,23 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<std::vector<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan_segment(session_id_t /*session*/,
                                          collection_full_name_t name,
                                          int64_t start,
                                          uint64_t count) {
+        std::vector<components::vector::data_chunk_t> result;
         auto* s = get_storage(name);
         if (!s) {
-            co_return nullptr;
+            co_return std::move(result);
         }
-        auto types = s->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
+        auto* res = resource();
+        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+        });
         co_return std::move(result);
     }
 
@@ -1717,18 +1723,23 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_empty_t::unique_future<std::vector<components::vector::data_chunk_t>>
     manager_disk_empty_t::storage_scan_segment(session_id_t /*session*/,
                                                collection_full_name_t name,
                                                int64_t start,
                                                uint64_t count) {
+        std::vector<components::vector::data_chunk_t> result;
         auto* s = get_storage(name);
         if (!s) {
-            co_return nullptr;
+            co_return std::move(result);
         }
-        auto types = s->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) { result->append(chunk); });
+        auto* res = resource();
+        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+        });
         co_return std::move(result);
     }
 

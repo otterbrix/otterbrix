@@ -170,11 +170,11 @@ namespace components::operators::aggregate {
 
     core::result_wrapper_t<compute::datum_t>
     operator_func_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
-        auto* batch = static_cast<operator_batch_t*>(left_.get());
+        auto& batch_chunks = left_->output()->chunks();
         std::vector<vector::data_chunk_t> arg_chunks;
-        arg_chunks.reserve(batch->chunks().size());
+        arg_chunks.reserve(batch_chunks.size());
 
-        for (auto& chunk : batch->chunks()) {
+        for (auto& chunk : batch_chunks) {
             std::vector<vector::vector_t> computed_vecs;
             if (!compute_expression_args(resource_, args_, chunk, *this, pipeline_context, computed_vecs)) {
                 // error already set — return empty

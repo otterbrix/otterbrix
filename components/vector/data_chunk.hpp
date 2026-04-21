@@ -45,11 +45,6 @@ namespace components::vector {
 
         void reference(data_chunk_t& chunk);
 
-        void append(const data_chunk_t& other,
-                    bool resize = false,
-                    indexing_vector_t* indexing = nullptr,
-                    uint64_t count = 0);
-
         void destroy();
 
         void copy(data_chunk_t& other, uint64_t offset = 0) const;

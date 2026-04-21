@@ -414,10 +414,10 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::vector<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
-        if (!data || count == 0)
+        if (count == 0)
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -426,8 +426,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (uint64_t i = 0; i < count; i++) {
-            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id);
+        uint64_t global = 0;
+        for (auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && global < count; ++i, ++global) {
+                engine->insert_row(chunk, i, static_cast<int64_t>(start_row_id + global), txn_id);
+            }
+            if (global >= count) {
+                break;
+            }
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -436,9 +442,9 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::delete_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::vector<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
-        if (!data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -447,8 +453,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*data, i, row_ids[i], txn_id);
+        size_t global = 0;
+        for (auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i, ++global) {
+                engine->mark_delete_row(chunk, i, row_ids[global], txn_id);
+            }
+            if (global >= row_ids.size()) {
+                break;
+            }
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -457,11 +469,11 @@ namespace services::index {
 
     manager_index_t::unique_future<void>
     manager_index_t::update_rows(execution_context_t ctx,
-                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                 std::vector<components::vector::data_chunk_t> old_data,
+                                 std::vector<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
                                  int64_t new_start_row_id) {
-        if (!old_data || !new_data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -471,14 +483,26 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Mark old entries as deleted
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id);
-        }
-
-        // Insert new entries
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id);
+        // Iterate both old_data and new_data in parallel with independent chunk cursors.
+        // row_ids[g] names the old row at global index g; new_start_row_id + g names the new row.
+        size_t old_ci = 0, old_ri = 0;
+        size_t new_ci = 0, new_ri = 0;
+        for (size_t g = 0; g < row_ids.size(); ++g) {
+            while (old_ci < old_data.size() && old_ri >= old_data[old_ci].size()) {
+                ++old_ci;
+                old_ri = 0;
+            }
+            while (new_ci < new_data.size() && new_ri >= new_data[new_ci].size()) {
+                ++new_ci;
+                new_ri = 0;
+            }
+            if (old_ci >= old_data.size() || new_ci >= new_data.size()) {
+                break;
+            }
+            engine->mark_delete_row(old_data[old_ci], old_ri, row_ids[g], txn_id);
+            engine->insert_row(new_data[new_ci], new_ri, new_start_row_id + static_cast<int64_t>(g), txn_id);
+            ++old_ri;
+            ++new_ri;
         }
 
         co_return;

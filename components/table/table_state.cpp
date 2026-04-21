@@ -178,24 +178,28 @@ namespace components::table {
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
         while (row_group) {
             row_group->scan(*this, result);
+            const bool rg_exhausted = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >=
+                                      max_row_group_row;
+            if (!rg_exhausted) {
+                continue;
+            }
             if (max_row <= row_group->start + static_cast<int64_t>(row_group->count)) {
                 row_group = nullptr;
                 return false;
-            } else {
-                do {
-                    row_group = row_groups->next_segment(row_group);
-                    if (row_group) {
-                        if (row_group->start >= max_row) {
-                            row_group = nullptr;
-                            break;
-                        }
-                        bool scan_row_group = row_group->initialize_scan(*this);
-                        if (scan_row_group) {
-                            break;
-                        }
-                    }
-                } while (row_group);
             }
+            do {
+                row_group = row_groups->next_segment(row_group);
+                if (row_group) {
+                    if (row_group->start >= max_row) {
+                        row_group = nullptr;
+                        break;
+                    }
+                    bool scan_row_group = row_group->initialize_scan(*this);
+                    if (scan_row_group) {
+                        break;
+                    }
+                }
+            } while (row_group);
         }
         return false;
     }

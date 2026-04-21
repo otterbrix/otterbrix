@@ -22,6 +22,7 @@ namespace components::cursor {
         explicit cursor_t(std::pmr::memory_resource* resource, const core::error_t& error);
         explicit cursor_t(std::pmr::memory_resource* resource, core::error_t&& error);
         explicit cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
+        explicit cursor_t(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks);
         explicit cursor_t(std::pmr::memory_resource* resource,
                           std::pmr::vector<components::types::complex_logical_type>&& types);
 
@@ -59,6 +60,7 @@ namespace components::cursor {
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, const core::error_t& error);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, core::error_t&& error);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
+    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks);
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource,
                              std::pmr::vector<components::types::complex_logical_type>&& types);
 

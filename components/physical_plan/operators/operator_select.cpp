@@ -2,7 +2,6 @@
 
 #include "arithmetic_eval.hpp"
 #include <components/expressions/compare_expression.hpp>
-#include <components/physical_plan/operators/operator_batch.hpp>
 
 namespace components::operators {
 
@@ -120,9 +119,22 @@ namespace components::operators {
             return;
         }
 
-        auto& input = left_->output()->data_chunk();
-        auto result = evaluate(pipeline_context, input);
-        output_ = operators::make_operator_data(left_->output()->resource(), std::move(result));
+        auto* resource = left_->output()->resource();
+        auto& in_chunks = left_->output()->chunks();
+        std::vector<vector::data_chunk_t> out_chunks;
+        out_chunks.reserve(in_chunks.size());
+        for (auto& input : in_chunks) {
+            auto result = evaluate(pipeline_context, input);
+            if (has_error()) {
+                return;
+            }
+            out_chunks.emplace_back(std::move(result));
+        }
+        if (out_chunks.empty()) {
+            std::pmr::vector<types::complex_logical_type> empty_types(resource);
+            out_chunks.emplace_back(resource, empty_types, 0);
+        }
+        output_ = operators::make_operator_data(resource, std::move(out_chunks));
     }
 
     vector::data_chunk_t operator_select_t::evaluate(pipeline::context_t* pipeline_context,

@@ -60,7 +60,7 @@ namespace components::operators {
             } else if (offset_val > 0) {
                 data->set_cardinality(0);
             }
-            output_ = make_operator_data(resource_, std::move(*data));
+            output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
         } else {
             output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
         }

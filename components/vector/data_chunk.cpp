@@ -223,37 +223,6 @@ namespace components::vector {
         set_cardinality(other.size());
     }
 
-    void
-    data_chunk_t::append(const data_chunk_t& other, bool resize, indexing_vector_t* indexing, uint64_t indexing_count) {
-        uint64_t new_size = indexing ? size() + indexing_count : size() + other.size();
-        if (other.size() == 0) {
-            return;
-        }
-        if (column_count() != other.column_count()) {
-            throw std::logic_error("Column counts of appending chunk doesn't match!");
-        }
-        if (new_size > capacity_) {
-            if (resize) {
-                auto new_capacity = next_power_of_two(new_size);
-                for (uint64_t i = 0; i < column_count(); i++) {
-                    data[i].resize(size(), new_capacity);
-                }
-                capacity_ = new_capacity;
-            } else {
-                throw std::logic_error("Can't append chunk to other chunk without resizing");
-            }
-        }
-        for (uint64_t i = 0; i < column_count(); i++) {
-            assert(data[i].get_vector_type() == vector_type::FLAT);
-            if (indexing) {
-                vector_ops::copy(other.data[i], data[i], *indexing, indexing_count, 0, size());
-            } else {
-                vector_ops::copy(other.data[i], data[i], other.size(), 0, size());
-            }
-        }
-        set_cardinality(new_size);
-    }
-
     void data_chunk_t::flatten() {
         for (uint64_t i = 0; i < column_count(); i++) {
             data[i].flatten(size());
@@ -414,7 +383,16 @@ namespace components::vector {
         result.count_ = count;
         result.data.reserve(column_count());
         for (uint64_t c = 0; c < column_count(); c++) {
-            result.data.emplace_back(data[c], offset, count);
+            if (is_unprojected_placeholder(data[c])) {
+                // Preserve placeholder status — slicing nullptr would produce a bogus offset pointer.
+                result.data.emplace_back(resource, data[c].type(), false, false, 0);
+            } else {
+                result.data.emplace_back(data[c], offset, count);
+            }
+        }
+        result.row_ids = vector_t(resource, types::logical_type::BIGINT, count);
+        if (count > 0) {
+            vector::vector_ops::copy(row_ids, result.row_ids, offset + count, offset, 0);
         }
         return result;
     }

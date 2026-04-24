@@ -195,12 +195,14 @@ namespace services::disk {
     // ---- Serialize/Deserialize ----
 
     static constexpr uint32_t CATALOG_MAGIC = 0x5842544F; // "OTBX"
-    static constexpr uint32_t CATALOG_FORMAT_VERSION = 3;
+    static constexpr uint32_t CATALOG_FORMAT_VERSION = 4;
 
-    std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases) {
+    std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases,
+                                             const std::string& timezone) {
         binary_writer_t w;
         w.write_u32(CATALOG_MAGIC);
         w.write_u32(CATALOG_FORMAT_VERSION);
+        w.write_string(timezone);
         w.write_u32(static_cast<uint32_t>(databases.size()));
 
         for (const auto& db : databases) {
@@ -264,7 +266,7 @@ namespace services::disk {
         return std::move(w.data());
     }
 
-    std::vector<catalog_database_entry_t> deserialize_catalog(const std::byte* data, size_t size) {
+    catalog_file_t deserialize_catalog(const std::byte* data, size_t size) {
         if (size < 12) { // magic(4) + version(4) + crc(4) minimum
             throw std::runtime_error("catalog file too small");
         }
@@ -288,8 +290,11 @@ namespace services::disk {
             throw std::runtime_error("catalog checksum mismatch");
         }
 
+        catalog_file_t result;
+        result.timezone = r.read_string();
+
         auto num_databases = r.read_u32();
-        std::vector<catalog_database_entry_t> databases;
+        auto& databases = result.databases;
         databases.reserve(num_databases);
 
         for (uint32_t i = 0; i < num_databases; ++i) {
@@ -359,7 +364,7 @@ namespace services::disk {
             databases.push_back(std::move(db));
         }
 
-        return databases;
+        return result;
     }
 
     // ---- catalog_storage_t ----
@@ -385,11 +390,18 @@ namespace services::disk {
                                                   core::filesystem::file_lock_type::NO_LOCK);
         std::vector<std::byte> buf(file_size);
         handle->read(reinterpret_cast<char*>(buf.data()), file_size);
-        databases_ = deserialize_catalog(buf.data(), buf.size());
+        auto result = deserialize_catalog(buf.data(), buf.size());
+        databases_ = std::move(result.databases);
+        timezone_ = std::move(result.timezone);
+    }
+
+    void catalog_storage_t::set_timezone(std::string tz) {
+        timezone_ = std::move(tz);
+        save_();
     }
 
     void catalog_storage_t::save_() {
-        auto serialized = serialize_catalog(databases_);
+        auto serialized = serialize_catalog(databases_, timezone_);
 
         // Atomic write: tmp → fsync → rename
         auto tmp_path = path_;

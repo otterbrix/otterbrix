@@ -62,6 +62,29 @@ namespace components::serializer {
         end_array();
     }
 
+    void msgpack_serializer_t::append(core::date::date_t val) { packer_.pack(static_cast<int64_t>(val.value.count())); }
+
+    void msgpack_serializer_t::append(core::date::time_t val) { packer_.pack(val.value.count()); }
+
+    void msgpack_serializer_t::append(const core::date::timetz_t& val) {
+        start_array(2);
+        packer_.pack(val.time.count());
+        packer_.pack(static_cast<int64_t>(val.zone.count()));
+        end_array();
+    }
+
+    void msgpack_serializer_t::append(core::date::timestamp_t val) { packer_.pack(val.value.count()); }
+
+    void msgpack_serializer_t::append(core::date::timestamptz_t val) { packer_.pack(val.value.count()); }
+
+    void msgpack_serializer_t::append(const core::date::interval_t& val) {
+        start_array(3);
+        packer_.pack(val.time.count());
+        packer_.pack(static_cast<int64_t>(val.day.count()));
+        packer_.pack(static_cast<int64_t>(val.month.count()));
+        end_array();
+    }
+
     void msgpack_serializer_t::append(core::parameter_id_t val) { packer_.pack(val.t); }
 
     void msgpack_serializer_t::append(const std::string& str) { packer_.pack(str); }

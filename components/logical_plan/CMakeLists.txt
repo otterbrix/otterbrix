@@ -31,6 +31,7 @@ set(SOURCE_${PROJECT_NAME}
         node_select.cpp
         node_sort.cpp
         node_update.cpp
+        node_set_timezone.cpp
         node_vacuum.cpp
         param_storage.cpp
 )

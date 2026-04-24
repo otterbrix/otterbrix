@@ -133,10 +133,6 @@ namespace components::vector::arrow {
             case logical_type::INTEGER:
                 initialize_appender_templated<appender::arrow_scala_data<int32_t>>(append_data);
                 break;
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
             case logical_type::BIGINT:
                 initialize_appender_templated<appender::arrow_scala_data<int64_t>>(append_data);
                 break;

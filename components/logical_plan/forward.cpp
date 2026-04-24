@@ -66,6 +66,8 @@ namespace components::logical_plan {
                 return "vacuum_t";
             case node_type::having_t:
                 return "having_t";
+            case node_type::set_timezone_t:
+                return "set_timezone_t";
             default:
                 return "unused";
         }

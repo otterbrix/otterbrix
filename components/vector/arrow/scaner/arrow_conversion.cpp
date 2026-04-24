@@ -744,11 +744,7 @@ namespace components::vector::arrow::scaner {
             case types::logical_type::UBIGINT:
             case types::logical_type::BIGINT:
             case types::logical_type::HUGEINT:
-            case types::logical_type::UHUGEINT:
-            case types::logical_type::TIMESTAMP_NS:
-            case types::logical_type::TIMESTAMP_US:
-            case types::logical_type::TIMESTAMP_MS:
-            case types::logical_type::TIMESTAMP_SEC: {
+            case types::logical_type::UHUGEINT: {
                 direct_conversion(vector, array, chunk_offset, nested_offset, parent_offset);
                 break;
             }

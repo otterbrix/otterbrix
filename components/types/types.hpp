@@ -1,4 +1,6 @@
 #pragma once
+#include "core/date/date_types.hpp"
+
 #include <absl/numeric/int128.h>
 #include <array>
 #include <chrono>
@@ -47,13 +49,6 @@ namespace components::types {
         STRING = 15,
         // BINARY = 16,                // Variable-length bytes (no guarantee of UTF8-ness)
         // FIXED_SIZE_BINARY = 17,     // Fixed-size binary. Each value occupies the same number of bytes
-        // DATE32 = 18,                // int32_t days since the UNIX epoch
-        // DATE64 = 19,                // int64_t milliseconds since the UNIX epoch
-        // TIMESTAMP = 20,             // Exact timestamp encoded with int64 since UNIX epoch, ms
-        // TIME32 = 21,                // Time as signed 32-bit integer, representing either seconds or us since midnight
-        // TIME64 = 22,                // Time as signed 64-bit integer, representing either us or ns since midnight
-        // INTERVAL = 23,              // YEAR_MONTH or DAY_TIME interval in SQL style
-        // DECIMAL = 24,               // Precision- and scale-based decimal type. Storage type depends on the parameters.
         LIST = 25,   // A list of some logical data type
         STRUCT = 26, // Struct of logical types
         UNION = 27,  // Unions of logical types
@@ -89,24 +84,21 @@ namespace components::types {
         INTEGER = 13,
         BIGINT = 14,
         HUGEINT = 15,
-        // DATE = 16,
-        // TIME = 17,
-        TIMESTAMP_SEC = 18, // seconds
-        TIMESTAMP_MS = 19,  // milliseconds
-        TIMESTAMP_US = 20,  // microseconds
-        TIMESTAMP_NS = 21,  // nanoseconds
+        DATE = 16,
+        TIME = 17,
+        TIME_TZ = 18,
+        TIMESTAMP = 19,
+        TIMESTAMP_TZ = 20,
+        INTERVAL = 21,
         DECIMAL = 22,
         FLOAT = 23,
         DOUBLE = 24,
         BLOB = 25,
-        INTERVAL = 26,
         UTINYINT = 27,
         USMALLINT = 28,
         UINTEGER = 29,
         UBIGINT = 30,
         UHUGEINT = 31,
-        // TIMESTAMP_TZ = 32,
-        // TIME_TZ = 33,
         BIT = 34,
         STRING_LITERAL = 35,  // String literals, used for constant strings
         INTEGER_LITERAL = 36, // Integer literals, used for constant integers
@@ -148,14 +140,12 @@ namespace components::types {
                                                                                            physical_type::LIST,
                                                                                            physical_type::ARRAY};
 
-    [[maybe_unused]] static constexpr std::array<logical_type, 21> DEFAULT_LOGICAL_TYPES{
-        logical_type::BOOLEAN,      logical_type::UTINYINT,       logical_type::TINYINT,
-        logical_type::USMALLINT,    logical_type::SMALLINT,       logical_type::UINTEGER,
-        logical_type::INTEGER,      logical_type::UBIGINT,        logical_type::BIGINT,
-        logical_type::UHUGEINT,     logical_type::HUGEINT,        logical_type::FLOAT,
-        logical_type::DOUBLE,       logical_type::STRING_LITERAL, logical_type::TIMESTAMP_SEC,
-        logical_type::TIMESTAMP_MS, logical_type::TIMESTAMP_US,   logical_type::TIMESTAMP_NS,
-        logical_type::DECIMAL,      logical_type::LIST,           logical_type::ARRAY};
+    [[maybe_unused]] static constexpr std::array<logical_type, 20> DEFAULT_LOGICAL_TYPES{
+        logical_type::BOOLEAN,   logical_type::UTINYINT,       logical_type::TINYINT, logical_type::USMALLINT,
+        logical_type::SMALLINT,  logical_type::UINTEGER,       logical_type::INTEGER, logical_type::UBIGINT,
+        logical_type::BIGINT,    logical_type::UHUGEINT,       logical_type::HUGEINT, logical_type::FLOAT,
+        logical_type::DOUBLE,    logical_type::STRING_LITERAL, logical_type::DATE,    logical_type::TIME,
+        logical_type::TIMESTAMP, logical_type::DECIMAL,        logical_type::LIST,    logical_type::ARRAY};
 
     constexpr logical_type to_logical(physical_type type) {
         switch (type) {
@@ -248,10 +238,12 @@ namespace components::types {
 
     constexpr bool is_duration(logical_type type) {
         switch (type) {
-            case logical_type::TIMESTAMP_SEC:
-            case logical_type::TIMESTAMP_MS:
-            case logical_type::TIMESTAMP_US:
-            case logical_type::TIMESTAMP_NS:
+            case logical_type::DATE:
+            case logical_type::TIME:
+            case logical_type::TIME_TZ:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+            case logical_type::INTERVAL:
                 return true;
             default:
                 return false;
@@ -264,14 +256,18 @@ namespace components::types {
             return logical_type::NA;
         } else if constexpr (std::is_pointer<T>::value) {
             return logical_type::POINTER;
-        } else if constexpr (std::is_same<T, std::chrono::nanoseconds>::value) {
-            return logical_type::TIMESTAMP_NS;
-        } else if constexpr (std::is_same<T, std::chrono::microseconds>::value) {
-            return logical_type::TIMESTAMP_US;
-        } else if constexpr (std::is_same<T, std::chrono::milliseconds>::value) {
-            return logical_type::TIMESTAMP_MS;
-        } else if constexpr (std::is_same<T, std::chrono::seconds>::value) {
-            return logical_type::TIMESTAMP_SEC;
+        } else if constexpr (std::is_same<T, core::date::date_t>::value) {
+            return logical_type::DATE;
+        } else if constexpr (std::is_same<T, core::date::time_t>::value) {
+            return logical_type::TIME;
+        } else if constexpr (std::is_same<T, core::date::timetz_t>::value) {
+            return logical_type::TIME_TZ;
+        } else if constexpr (std::is_same<T, core::date::timestamp_t>::value) {
+            return logical_type::TIMESTAMP;
+        } else if constexpr (std::is_same<T, core::date::timestamptz_t>::value) {
+            return logical_type::TIMESTAMP_TZ;
+        } else if constexpr (std::is_same<T, core::date::interval_t>::value) {
+            return logical_type::INTERVAL;
         } else if constexpr (std::is_same<T, bool>::value) {
             return logical_type::BOOLEAN;
         } else if constexpr (std::is_same<T, int128_t>::value) {
@@ -326,60 +322,7 @@ namespace components::types {
         constexpr uint8_t signage_difference =
             static_cast<uint8_t>(logical_type::UTINYINT) - static_cast<uint8_t>(logical_type::TINYINT);
 
-        if (is_duration(type1) && is_duration(type2)) {
-            switch (type1) {
-                case logical_type::TIMESTAMP_SEC:
-                    switch (type2) {
-                        case logical_type::TIMESTAMP_MS:
-                            return to_logical_type<std::common_type<seconds, milliseconds>::type>();
-                        case logical_type::TIMESTAMP_US:
-                            return to_logical_type<std::common_type<seconds, microseconds>::type>();
-                        case logical_type::TIMESTAMP_NS:
-                            return to_logical_type<std::common_type<seconds, nanoseconds>::type>();
-                        default:
-                            break;
-                    }
-                    break;
-                case logical_type::TIMESTAMP_MS:
-                    switch (type2) {
-                        case logical_type::TIMESTAMP_SEC:
-                            return to_logical_type<std::common_type<milliseconds, seconds>::type>();
-                        case logical_type::TIMESTAMP_US:
-                            return to_logical_type<std::common_type<milliseconds, microseconds>::type>();
-                        case logical_type::TIMESTAMP_NS:
-                            return to_logical_type<std::common_type<milliseconds, nanoseconds>::type>();
-                        default:
-                            break;
-                    }
-                    break;
-                case logical_type::TIMESTAMP_US:
-                    switch (type2) {
-                        case logical_type::TIMESTAMP_SEC:
-                            return to_logical_type<std::common_type<microseconds, seconds>::type>();
-                        case logical_type::TIMESTAMP_MS:
-                            return to_logical_type<std::common_type<microseconds, milliseconds>::type>();
-                        case logical_type::TIMESTAMP_NS:
-                            return to_logical_type<std::common_type<microseconds, nanoseconds>::type>();
-                        default:
-                            break;
-                    }
-                    break;
-                case logical_type::TIMESTAMP_NS:
-                    switch (type2) {
-                        case logical_type::TIMESTAMP_SEC:
-                            return to_logical_type<std::common_type<nanoseconds, seconds>::type>();
-                        case logical_type::TIMESTAMP_MS:
-                            return to_logical_type<std::common_type<nanoseconds, milliseconds>::type>();
-                        case logical_type::TIMESTAMP_US:
-                            return to_logical_type<std::common_type<nanoseconds, microseconds>::type>();
-                        default:
-                            break;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
+        // TODO: duration promotion
 
         // This is dependent on enum encoding values
         if (is_signed(type1) == is_signed(type2) || is_unsigned(type1) == is_unsigned(type2)) {

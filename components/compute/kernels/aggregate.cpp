@@ -126,14 +126,6 @@ namespace {
                 return op.template operator()<uint64_t>(v, count);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v, count);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -202,14 +194,6 @@ namespace {
                 return op.template operator()<uint64_t>(v1, v2);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v1, v2);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v1, v2);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -278,14 +262,6 @@ namespace {
                 return op.template operator()<uint64_t>(v, count);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v, count);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates

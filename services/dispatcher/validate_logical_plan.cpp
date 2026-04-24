@@ -1,5 +1,7 @@
 #include "validate_logical_plan.hpp"
 
+#include <core/date/date_parse.hpp>
+
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
@@ -847,45 +849,101 @@ namespace services::dispatcher {
                         encountered_types.begin(),
                         encountered_types.end(),
                         [&column](const complex_logical_type& type) { return type.alias() == column.type().alias(); });
-                    // if this is a registered type, then conversion is required
-                    if (it != encountered_types.end() && catalog.type_exists(it->type_name())) {
-                        // try to cast to it
-                        if (it->type() == logical_type::STRUCT) {
+                    if (it != encountered_types.end()) {
+                        if (is_duration(it->type()) && column.type().type() == logical_type::STRING_LITERAL) {
                             components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
                             for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                auto val = column.value(i).cast_as(*it);
-                                if (val.type().type() == logical_type::NA) {
+                                auto str = column.data<std::string_view>()[i];
+                                std::optional<logical_value_t> parsed_val;
+                                switch (it->type()) {
+                                    case logical_type::DATE:
+                                        if (auto parsed = core::date::parse_date(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIME:
+                                        if (auto parsed = core::date::parse_time(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIME_TZ:
+                                        if (auto parsed = core::date::parse_timetz(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIMESTAMP:
+                                        if (auto parsed = core::date::parse_timestamp(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::TIMESTAMP_TZ:
+                                        if (auto parsed = core::date::parse_timestamptz(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    case logical_type::INTERVAL:
+                                        if (auto parsed = core::date::parse_interval(str)) {
+                                            parsed_val = logical_value_t(resource, *parsed);
+                                        }
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                if (!parsed_val) {
                                     result = core::error_t(
                                         core::error_code_t::schema_error,
-
-                                        std::pmr::string{"couldn't convert parsed ROW to type: \'" + it->alias() + "\'",
+                                        std::pmr::string{"couldn't convert string to date/time type: \'" + it->alias() +
+                                                             "\', value: \'" + std::string(str) + "\'",
                                                          resource});
                                     return false;
-                                } else {
-                                    new_column.set_value(i, val);
                                 }
+                                new_column.set_value(i, *parsed_val);
                             }
                             column = std::move(new_column);
-                        } else if (it->type() == logical_type::ENUM) {
-                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
-                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                auto val = column.data<std::string_view>()[i];
-                                auto enum_val = logical_value_t::create_enum(resource, *it, val);
-                                if (enum_val.type().type() == logical_type::NA) {
-                                    result = core::error_t(core::error_code_t::schema_error,
+                        } else if (catalog.type_exists(it->type_name())) {
+                            // if this is a registered type, then conversion is required
+                            if (it->type() == logical_type::STRUCT) {
+                                components::vector::vector_t new_column(resource,
+                                                                        *it,
+                                                                        data_node->data_chunk().capacity());
+                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                    auto val = column.value(i).cast_as(*it);
+                                    if (val.type().type() == logical_type::NA) {
+                                        result =
+                                            core::error_t(core::error_code_t::schema_error,
 
-                                                           std::pmr::string{"enum: \'" + it->alias() +
-                                                                                "\' does not contain value: \'" +
-                                                                                std::string(val) + "\'",
-                                                                            resource});
-                                    return false;
-                                } else {
-                                    new_column.set_value(i, enum_val);
+                                                          std::pmr::string{"couldn't convert parsed ROW to type: \'" +
+                                                                               it->alias() + "\'",
+                                                                           resource});
+                                        return false;
+                                    } else {
+                                        new_column.set_value(i, val);
+                                    }
                                 }
+                                column = std::move(new_column);
+                            } else if (it->type() == logical_type::ENUM) {
+                                components::vector::vector_t new_column(resource,
+                                                                        *it,
+                                                                        data_node->data_chunk().capacity());
+                                for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                    auto val = column.data<std::string_view>()[i];
+                                    auto enum_val = logical_value_t::create_enum(resource, *it, val);
+                                    if (enum_val.type().type() == logical_type::NA) {
+                                        result = core::error_t(core::error_code_t::schema_error,
+
+                                                               std::pmr::string{"enum: \'" + it->alias() +
+                                                                                    "\' does not contain value: \'" +
+                                                                                    std::string(val) + "\'",
+                                                                                resource});
+                                        return false;
+                                    } else {
+                                        new_column.set_value(i, enum_val);
+                                    }
+                                }
+                                column = std::move(new_column);
+                            } else {
+                                assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                             }
-                            column = std::move(new_column);
-                        } else {
-                            assert(false && "missing type conversion in dispatcher_t::check_collections_format_");
                         }
                     }
                 }

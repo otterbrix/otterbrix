@@ -4,6 +4,7 @@
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 
+#include <core/date/date_types.hpp>
 #include <core/enum_cast.hpp>
 #include <core/pmr.hpp>
 
@@ -38,6 +39,13 @@ namespace components::serializer {
         void append(double val);
         void append(const absl::int128& val);
         void append(const absl::uint128& val);
+
+        void append(core::date::date_t val);
+        void append(core::date::time_t val);
+        void append(const core::date::timetz_t& val);
+        void append(core::date::timestamp_t val);
+        void append(core::date::timestamptz_t val);
+        void append(const core::date::interval_t& val);
 
         template<typename T>
         void append_enum(T enum_value);

@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_drop_collection.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/utils.hpp>
@@ -265,6 +266,14 @@ namespace otterbrix {
                                                        session,
                                                        ids);
         return wait_future(future);
+    }
+
+    auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
+        std::transform(timezone_name.begin(), timezone_name.end(), timezone_name.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        auto plan = components::logical_plan::make_node_set_timezone(resource(), std::move(timezone_name));
+        return send_plan(session, plan, components::logical_plan::make_parameter_node(resource()));
     }
 
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,

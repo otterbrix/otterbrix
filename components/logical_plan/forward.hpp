@@ -38,6 +38,7 @@ namespace components::logical_plan {
         checkpoint_t,
         vacuum_t,
         having_t,
+        set_timezone_t,
         unused
     };
 

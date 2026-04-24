@@ -41,6 +41,7 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_sequence(CreateSeqStmt& node);
         logical_plan::node_ptr transform_create_view(ViewStmt& node);
         logical_plan::node_ptr transform_create_function(CreateFunctionStmt& node);
+        logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

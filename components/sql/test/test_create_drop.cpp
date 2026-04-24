@@ -118,7 +118,7 @@ TEST_CASE("components::sql::table") {
                                    });
 
     TEST_TRANSFORMER_EXPECT_SCHEMA(
-        "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))",
+        "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp, t5 decimal(5, 4))",
         [](const std::pmr::vector<complex_logical_type>& sch) {
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 return t.alias() == "t1" && t.type() == logical_type::BLOB;
@@ -130,7 +130,7 @@ TEST_CASE("components::sql::table") {
                 return t.alias() == "t3" && t.type() == logical_type::UHUGEINT;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP_SEC;
+                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 if (t.type() != logical_type::DECIMAL)
@@ -180,6 +180,35 @@ TEST_CASE("components::sql::table") {
                                            auto array = static_cast<array_logical_type_extension*>(type.extension());
                                            return type.alias() == "t3" &&
                                                   array->internal_type() == logical_type::FLOAT && array->size() == 100;
+                                       }));
+                                   });
+
+    TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name("
+                                   "  t1 DATE,"
+                                   "  t2 TIME,"
+                                   "  t3 TIME WITH TIME ZONE,"
+                                   "  t4 TIMESTAMP,"
+                                   "  t5 TIMESTAMP WITH TIME ZONE,"
+                                   "  t6 INTERVAL"
+                                   ")",
+                                   [](const std::pmr::vector<complex_logical_type>& sch) {
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t1" && t.type() == logical_type::DATE;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t2" && t.type() == logical_type::TIME;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t3" && t.type() == logical_type::TIME_TZ;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t5" && t.type() == logical_type::TIMESTAMP_TZ;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t6" && t.type() == logical_type::INTERVAL;
                                        }));
                                    });
 

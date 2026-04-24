@@ -152,9 +152,15 @@ namespace services::disk {
     void write_complex_type(binary_writer_t& w, const components::types::complex_logical_type& type);
     components::types::complex_logical_type read_complex_type(binary_reader_t& r);
 
+    struct catalog_file_t {
+        std::vector<catalog_database_entry_t> databases;
+        std::string timezone{"utc"};
+    };
+
     // Serialize/deserialize catalog
-    std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases);
-    std::vector<catalog_database_entry_t> deserialize_catalog(const std::byte* data, size_t size);
+    std::vector<std::byte> serialize_catalog(const std::vector<catalog_database_entry_t>& databases,
+                                             const std::string& timezone);
+    catalog_file_t deserialize_catalog(const std::byte* data, size_t size);
 
     // Catalog storage manager — replaces metadata_t for disk persistence
     class catalog_storage_t {
@@ -200,6 +206,9 @@ namespace services::disk {
         void append_macro(const std::string& db, const catalog_macro_entry_t& entry);
         void remove_macro(const std::string& db, const std::string& name);
 
+        const std::string& timezone() const { return timezone_; }
+        void set_timezone(std::string tz);
+
     private:
         void save_();
 
@@ -211,6 +220,7 @@ namespace services::disk {
         core::filesystem::local_file_system_t& fs_;
         std::filesystem::path path_;
         std::vector<catalog_database_entry_t> databases_;
+        std::string timezone_{"utc"};
     };
 
 } // namespace services::disk

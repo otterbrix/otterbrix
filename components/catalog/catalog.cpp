@@ -1,4 +1,5 @@
 #include "catalog.hpp"
+#include <core/date/timezones.hpp>
 
 namespace components::catalog {
     catalog::catalog(std::pmr::memory_resource* resource)
@@ -200,6 +201,17 @@ namespace components::catalog {
         } else {
             return info.computing;
         }
+    }
+
+    core::error_t catalog::set_timezone(std::string tz) {
+        auto offset = core::date::timezone_to_offset(tz);
+        if (!offset) {
+            return core::error_t(core::error_code_t::do_not_exists,
+                                 std::pmr::string{"timezone not found: '" + tz + "'", resource_});
+        }
+        timezone_offset_ = *offset;
+        timezone_ = std::move(tz);
+        return core::error_t::no_error();
     }
 
     transaction_scope catalog::begin_transaction(const table_id& id) {

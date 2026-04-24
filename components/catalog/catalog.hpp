@@ -3,6 +3,8 @@
 #include "namespace_storage.hpp"
 #include "table_metadata.hpp"
 #include "transaction/transaction_scope.hpp"
+#include <core/date/date_types.hpp>
+#include <string>
 
 namespace components::catalog {
     class catalog : public std::enable_shared_from_this<catalog> {
@@ -61,6 +63,10 @@ namespace components::catalog {
 
         transaction_scope begin_transaction(const table_id& id);
 
+        const std::string& timezone() const { return timezone_; }
+        core::date::timezone_offset_t timezone_offset() const { return timezone_offset_; }
+        core::error_t set_timezone(std::string tz);
+
     private:
         enum class schema_type : uint8_t
         {
@@ -85,6 +91,8 @@ namespace components::catalog {
         mutable namespace_storage namespaces_;
         std::shared_ptr<transaction_list> transactions_; // the ONLY strong ref to list
         std::pmr::memory_resource* resource_;
+        std::string timezone_{"utc"};
+        core::date::timezone_offset_t timezone_offset_{0};
 
         friend class transaction_scope;
     };

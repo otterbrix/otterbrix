@@ -1,6 +1,7 @@
 #include "utils.hpp"
 
 #include <components/types/logical_value.hpp>
+#include <core/date/date_parse.hpp>
 
 #include <cstdlib>
 
@@ -320,13 +321,64 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
-                if (constant->val.type == T_String) {
-                    bool is_true = std::string(strVal(&constant->val)) == "t";
-                    return types::logical_value_t(resource, is_true);
-                } else {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                auto constant = pg_ptr_cast<A_Const>(cast->arg);
+                if (constant->val.type != T_String) {
                     return types::logical_value_t(resource, constant->val.val.ival);
                 }
+                std::string_view str = strVal(&constant->val);
+                auto type_res = get_type(resource, cast->typeName);
+                if (!type_res.has_error() && types::is_duration(type_res.value().type())) {
+                    switch (type_res.value().type()) {
+                        case types::logical_type::DATE:
+                            if (auto parsed = core::date::parse_date(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
+                        case types::logical_type::TIME:
+                            if (auto parsed = core::date::parse_time(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                        case types::logical_type::TIME_TZ:
+                            if (auto parsed = core::date::parse_timetz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP:
+                            if (auto parsed = core::date::parse_timestamp(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP_TZ:
+                            if (auto parsed = core::date::parse_timestamptz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
+                        case types::logical_type::INTERVAL:
+                            if (auto parsed = core::date::parse_interval(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
+                        default:
+                            break;
+                    }
+                }
+                // Original behavior: boolean cast ('t' → true, anything else → false)
+                bool is_true = str == "t";
+                return types::logical_value_t(resource, is_true);
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);

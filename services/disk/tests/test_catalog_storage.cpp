@@ -160,7 +160,7 @@ TEST_CASE("services::disk::catalog_storage::save_and_load_round_trip") {
         t3.name = "events";
         t3.storage_mode = table_storage_mode_t::DISK;
         t3.columns = {
-            {"ts", components::types::complex_logical_type(components::types::logical_type::TIMESTAMP_MS)},
+            {"ts", components::types::complex_logical_type(components::types::logical_type::TIMESTAMP)},
             {"data", components::types::complex_logical_type(components::types::logical_type::BLOB)},
             {"count", components::types::complex_logical_type(components::types::logical_type::UINTEGER)},
         };
@@ -194,7 +194,7 @@ TEST_CASE("services::disk::catalog_storage::save_and_load_round_trip") {
         auto* events = cs.find_table("db2", "events");
         REQUIRE(events != nullptr);
         REQUIRE(events->columns.size() == 3);
-        REQUIRE(events->columns[0].full_type.type() == components::types::logical_type::TIMESTAMP_MS);
+        REQUIRE(events->columns[0].full_type.type() == components::types::logical_type::TIMESTAMP);
         REQUIRE(events->columns[1].full_type.type() == components::types::logical_type::BLOB);
         REQUIRE(events->columns[2].full_type.type() == components::types::logical_type::UINTEGER);
 

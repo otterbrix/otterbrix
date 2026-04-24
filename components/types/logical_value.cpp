@@ -62,6 +62,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 heap_delete(str_ptr());
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -92,6 +94,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -128,6 +132,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -167,6 +173,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -204,6 +212,8 @@ namespace components::types {
                 }
                 break;
             case logical_type::STRING_LITERAL:
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -243,6 +253,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>(*other.str_ptr()));
                 break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -284,6 +296,8 @@ namespace components::types {
                 }
                 break;
             case logical_type::STRING_LITERAL:
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
@@ -357,7 +371,7 @@ namespace components::types {
     };
 
     logical_value_t logical_value_t::cast_as(const complex_logical_type& type) const {
-        using namespace std::chrono;
+        // TODO: duration cast
 
         if (type_ == type) {
             return logical_value_t(*this);
@@ -456,19 +470,6 @@ namespace components::types {
                     return create_numeric.operator()<double>();
                 default:
                     assert(false && "incorrect type for conversion to decimal");
-            }
-        } else if (is_duration(type_.type()) && is_duration(type.type())) {
-            switch (type.type()) {
-                case logical_type::TIMESTAMP_SEC:
-                    return logical_value_t{resource_, value<seconds>()};
-                case logical_type::TIMESTAMP_MS:
-                    return logical_value_t{resource_, value<milliseconds>()};
-                case logical_type::TIMESTAMP_US:
-                    return logical_value_t{resource_, value<microseconds>()};
-                case logical_type::TIMESTAMP_NS:
-                    return logical_value_t{resource_, value<nanoseconds>()};
-                default:
-                    assert(false && "incorrect type for duration conversion");
             }
         } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
             if (type_.child_types().size() != type.child_types().size()) {
@@ -587,6 +588,15 @@ namespace components::types {
                     } else {
                         return data_ == rhs.data_;
                     }
+                case logical_type::DATE:
+                case logical_type::TIME:
+                case logical_type::TIMESTAMP:
+                case logical_type::TIMESTAMP_TZ:
+                    return data_ == rhs.data_;
+                case logical_type::TIME_TZ:
+                    return value<core::date::timetz_t>() == rhs.value<core::date::timetz_t>();
+                case logical_type::INTERVAL:
+                    return value<core::date::interval_t>() == rhs.value<core::date::interval_t>();
                 case logical_type::LIST:
                 case logical_type::ARRAY:
                 case logical_type::MAP:
@@ -651,6 +661,16 @@ namespace components::types {
                     } else {
                         return data_ < rhs.data_;
                     }
+                case logical_type::DATE:
+                    return static_cast<int32_t>(data_) < static_cast<int32_t>(rhs.data_);
+                case logical_type::TIME:
+                case logical_type::TIMESTAMP:
+                case logical_type::TIMESTAMP_TZ:
+                    return static_cast<int64_t>(data_) < static_cast<int64_t>(rhs.data_);
+                case logical_type::TIME_TZ:
+                    return value<core::date::timetz_t>() < rhs.value<core::date::timetz_t>();
+                case logical_type::INTERVAL:
+                    return value<core::date::interval_t>() < rhs.value<core::date::interval_t>();
                 case logical_type::STRUCT:
                 case logical_type::LIST:
                 case logical_type::ARRAY:
@@ -935,14 +955,21 @@ namespace components::types {
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
+            // TODO: required date types can differ between arguments
+            /*
+            case logical_type::DATE:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::date_t>);
+            case logical_type::TIME:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::time_t>);
+            case logical_type::TIME_TZ:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::timetz_t>);
+            case logical_type::TIMESTAMP:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::timestamp_t>);
+            case logical_type::TIMESTAMP_TZ:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::timestamptz_t>);
+            case logical_type::INTERVAL:
+                return op<std::plus<>>(value1, value2, &logical_value_t::value<core::date::interval_t>);
+            */
             case logical_type::FLOAT:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -990,14 +1017,21 @@ namespace components::types {
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::minus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
+            // TODO: required date types can differ between arguments
+            /*
+            case logical_type::DATE:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::date_t>);
+            case logical_type::TIME:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::time_t>);
+            case logical_type::TIME_TZ:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::timetz_t>);
+            case logical_type::TIMESTAMP:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::timestamp_t>);
+            case logical_type::TIMESTAMP_TZ:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::timestamptz_t>);
+            case logical_type::INTERVAL:
+                return op<std::minus<>>(value1, value2, &logical_value_t::value<core::date::interval_t>);
+            */
             case logical_type::FLOAT:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
@@ -1142,14 +1176,6 @@ namespace components::types {
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<int128_t>);
             case logical_type::UHUGEINT:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            case logical_type::TIMESTAMP_SEC:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::seconds>);
-            case logical_type::TIMESTAMP_MS:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::milliseconds>);
-            case logical_type::TIMESTAMP_US:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::microseconds>);
-            case logical_type::TIMESTAMP_NS:
-                return op<std::modulus<>>(value1, value2, &logical_value_t::value<std::chrono::nanoseconds>);
             default:
                 throw std::runtime_error("logical_value_t::divide unable to process given types");
         }
@@ -1632,17 +1658,23 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 result = logical_value_t(r, deserializer->deserialize_uint128(1));
                 break;
-            case logical_type::TIMESTAMP_NS:
-                result = logical_value_t(r, std::chrono::nanoseconds(deserializer->deserialize_int64(1)));
+            case logical_type::DATE:
+                result = logical_value_t(r, deserializer->deserialize_date(1));
                 break;
-            case logical_type::TIMESTAMP_US:
-                result = logical_value_t(r, std::chrono::microseconds(deserializer->deserialize_int64(1)));
+            case logical_type::TIME:
+                result = logical_value_t(r, deserializer->deserialize_time(1));
                 break;
-            case logical_type::TIMESTAMP_MS:
-                result = logical_value_t(r, std::chrono::milliseconds(deserializer->deserialize_int64(1)));
+            case logical_type::TIME_TZ:
+                result = logical_value_t(r, deserializer->deserialize_time_tz(1));
                 break;
-            case logical_type::TIMESTAMP_SEC:
-                result = logical_value_t(r, std::chrono::seconds(deserializer->deserialize_int64(1)));
+            case logical_type::TIMESTAMP:
+                result = logical_value_t(r, deserializer->deserialize_timestamp(1));
+                break;
+            case logical_type::TIMESTAMP_TZ:
+                result = logical_value_t(r, deserializer->deserialize_timestamp_tz(1));
+                break;
+            case logical_type::INTERVAL:
+                result = logical_value_t(r, deserializer->deserialize_interval(1));
                 break;
             case logical_type::DECIMAL: {
                 if (type.to_physical_type() == physical_type::INT128) {

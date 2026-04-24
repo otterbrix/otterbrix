@@ -1,5 +1,6 @@
 #pragma once
 #include <components/types/types.hpp>
+#include <core/operations_helper.hpp>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -107,8 +108,57 @@ namespace components::table {
 
     template<typename T>
     bool constant_filter_t::compare(T value) const {
-        // TODO: do a proper template here:
-        return compare(types::logical_value_t(constant.resource(), value));
+        T predicate;
+        if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            auto const_type = constant.type().type();
+            if (const_type == types::logical_type::DOUBLE) {
+                predicate = static_cast<T>(constant.value<double>());
+            } else if (const_type == types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<float>());
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else if constexpr (std::is_floating_point_v<T>) {
+            auto const_type = constant.type().type();
+            if (const_type != types::logical_type::DOUBLE && const_type != types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<int64_t>());
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else {
+            predicate = constant.value<T>();
+        }
+        if (core::is_equals(value, predicate)) {
+            switch (filter_type) {
+                case expressions::compare_type::eq:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else if (value < predicate) {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::lt:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::gt:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     class is_null_filter_t : public table_filter_t {

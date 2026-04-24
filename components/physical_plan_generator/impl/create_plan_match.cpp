@@ -66,6 +66,9 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
+            if (comp_expr->type() == compare_type::regex) {
+                return false;
+            }
             for (const auto& child : comp_expr->children()) {
                 if (!is_pure_compare(child)) {
                     return false;

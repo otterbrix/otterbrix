@@ -263,6 +263,9 @@ namespace otterbrix {
 
         if (!databases.empty() || !collections.empty()) {
             auto& catalog = manager_dispatcher_->mutable_catalog();
+            if (disk) {
+                catalog.set_timezone(disk->catalog().timezone());
+            }
             for (const auto& db_name : databases) {
                 trace(log_, "spaces::creating namespace: {}", db_name);
                 components::catalog::table_namespace_t ns(&resource);

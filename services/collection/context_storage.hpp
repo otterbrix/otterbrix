@@ -12,13 +12,17 @@ namespace services {
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
+        core::date::timezone_offset_t session_timezone;
         std::unordered_set<collection_full_name_t, collection_name_hash> known_collections;
         std::pmr::vector<components::index::keys_base_storage_t> indexed_keys;
         const components::logical_plan::storage_parameters* parameters = nullptr;
 
-        context_storage_t(std::pmr::memory_resource* resource, log_t log)
+        context_storage_t(std::pmr::memory_resource* resource,
+                          log_t log,
+                          core::date::timezone_offset_t session_timezone)
             : resource(resource)
             , log(std::move(log))
+            , session_timezone(session_timezone)
             , indexed_keys(resource) {}
 
         bool has_collection(const collection_full_name_t& name) const { return known_collections.count(name) > 0; }

@@ -792,7 +792,7 @@ TEST_CASE("optimizer::mirror_compare_symmetric") {
 // ================================================================
 TEST_CASE("optimizer::has_index_on_positive") {
     auto resource = std::pmr::synchronized_pool_resource();
-    services::context_storage_t ctx(&resource, log_t{});
+    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
@@ -806,7 +806,7 @@ TEST_CASE("optimizer::has_index_on_positive") {
 // ================================================================
 TEST_CASE("optimizer::has_index_on_negative") {
     auto resource = std::pmr::synchronized_pool_resource();
-    services::context_storage_t ctx(&resource, log_t{});
+    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
@@ -820,7 +820,7 @@ TEST_CASE("optimizer::has_index_on_negative") {
 // ================================================================
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     auto resource = std::pmr::synchronized_pool_resource();
-    services::context_storage_t ctx(&resource, log_t{});
+    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "a"));
@@ -835,7 +835,7 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
 // ================================================================
 TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = std::pmr::synchronized_pool_resource();
-    services::context_storage_t ctx(&resource, log_t{});
+    services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     REQUIRE(ctx.has_index_on(key(&resource, "any")) == false);
 }

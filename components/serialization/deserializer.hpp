@@ -1,4 +1,5 @@
 #pragma once
+#include "core/date/date_types.hpp"
 #include "serializer.hpp"
 
 #include <msgpack.hpp>
@@ -25,6 +26,13 @@ namespace components::serializer {
         double deserialize_double(size_t index);
         absl::int128 deserialize_int128(size_t index);
         absl::uint128 deserialize_uint128(size_t index);
+
+        core::date::date_t deserialize_date(size_t index);
+        core::date::time_t deserialize_time(size_t index);
+        core::date::timetz_t deserialize_time_tz(size_t index);
+        core::date::timestamp_t deserialize_timestamp(size_t index);
+        core::date::timestamptz_t deserialize_timestamp_tz(size_t index);
+        core::date::interval_t deserialize_interval(size_t index);
 
         template<typename T>
         T deserialize_enum(size_t index);

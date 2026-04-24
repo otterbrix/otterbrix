@@ -71,6 +71,39 @@ namespace components::serializer {
         return res;
     }
 
+    core::date::date_t msgpack_deserializer_t::deserialize_date(size_t index) {
+        return {core::date::days{static_cast<int32_t>(working_tree_.top()->ptr[index].via.i64)}};
+    }
+
+    core::date::time_t msgpack_deserializer_t::deserialize_time(size_t index) {
+        return {core::date::microseconds{working_tree_.top()->ptr[index].via.i64}};
+    }
+
+    core::date::timetz_t msgpack_deserializer_t::deserialize_time_tz(size_t index) {
+        advance_array(index);
+        auto time = core::date::microseconds{working_tree_.top()->ptr[0].via.i64};
+        auto zone = core::date::seconds_i32{static_cast<int32_t>(working_tree_.top()->ptr[1].via.i64)};
+        pop_array();
+        return {time, zone};
+    }
+
+    core::date::timestamp_t msgpack_deserializer_t::deserialize_timestamp(size_t index) {
+        return {core::date::microseconds{working_tree_.top()->ptr[index].via.i64}};
+    }
+
+    core::date::timestamptz_t msgpack_deserializer_t::deserialize_timestamp_tz(size_t index) {
+        return {core::date::microseconds{working_tree_.top()->ptr[index].via.i64}};
+    }
+
+    core::date::interval_t msgpack_deserializer_t::deserialize_interval(size_t index) {
+        advance_array(index);
+        auto time = core::date::microseconds{working_tree_.top()->ptr[0].via.i64};
+        auto day = core::date::days{static_cast<int32_t>(working_tree_.top()->ptr[1].via.i64)};
+        auto month = core::date::months{static_cast<int32_t>(working_tree_.top()->ptr[2].via.i64)};
+        pop_array();
+        return {time, day, month};
+    }
+
     core::parameter_id_t msgpack_deserializer_t::deserialize_param_id(size_t index) {
         core::parameter_id_t::base_type res{0};
         std::memcpy(&res, &(working_tree_.top()->ptr[index].via.u64), sizeof(res));

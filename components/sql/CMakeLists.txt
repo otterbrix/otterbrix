@@ -44,6 +44,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_delete.cpp
     transformer/impl/transform_index.cpp
     transformer/impl/transform_checkpoint.cpp
+    transformer/impl/transform_set_timezone.cpp
     transformer/impl/transform_vacuum.cpp
     transformer/impl/transform_sequence.cpp
     transformer/impl/transform_view.cpp
@@ -59,6 +60,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
     otterbrix_${PROJECT_NAME} PUBLIC
+    otterbrix::date
     otterbrix::expressions
     otterbrix::logical_plan
 

@@ -156,35 +156,58 @@ namespace components::types {
         , resource_(r) {}
 
     template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::nanoseconds value)
-        : type_(to_logical_type<std::chrono::nanoseconds>())
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::date_t value)
+        : type_(to_logical_type<core::date::date_t>())
         , resource_(r) {
         assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
+        data_ = static_cast<uint64_t>(value.value.count());
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::microseconds value)
-        : type_(to_logical_type<std::chrono::microseconds>())
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::time_t value)
+        : type_(to_logical_type<core::date::time_t>())
         , resource_(r) {
         assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
+        data_ = std::bit_cast<uint64_t>(value);
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::milliseconds value)
-        : type_(to_logical_type<std::chrono::milliseconds>())
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::timetz_t value)
+        : type_(to_logical_type<core::date::timetz_t>())
         , resource_(r) {
         assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
+        auto* vec = heap_new<std::vector<logical_value_t>>();
+        vec->emplace_back(r, value.time.count());
+        vec->emplace_back(r, value.zone.count());
+        data_ = reinterpret_cast<uint64_t>(vec);
     }
 
     template<>
-    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, std::chrono::seconds value)
-        : type_(to_logical_type<std::chrono::seconds>())
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::timestamp_t value)
+        : type_(to_logical_type<core::date::timestamp_t>())
         , resource_(r) {
         assert(type_ != logical_type::INVALID);
-        data_ = static_cast<uint64_t>(value.count());
+        data_ = std::bit_cast<uint64_t>(value);
+    }
+
+    template<>
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::timestamptz_t value)
+        : type_(to_logical_type<core::date::timestamptz_t>())
+        , resource_(r) {
+        assert(type_ != logical_type::INVALID);
+        data_ = std::bit_cast<uint64_t>(value);
+    }
+
+    template<>
+    inline logical_value_t::logical_value_t(std::pmr::memory_resource* r, core::date::interval_t value)
+        : type_(to_logical_type<core::date::interval_t>())
+        , resource_(r) {
+        assert(type_ != logical_type::INVALID);
+        auto* vec = heap_new<std::vector<logical_value_t>>();
+        vec->emplace_back(r, value.time.count());
+        vec->emplace_back(r, value.day.count());
+        vec->emplace_back(r, value.month.count());
+        data_ = reinterpret_cast<uint64_t>(vec);
     }
 
     template<>
@@ -292,75 +315,32 @@ namespace components::types {
         return d;
     }
     template<>
-    inline std::chrono::nanoseconds logical_value_t::value<std::chrono::nanoseconds>() const {
-        using namespace std::chrono;
-        switch (type_.type()) {
-            case logical_type::TIMESTAMP_NS:
-                return static_cast<nanoseconds>(static_cast<int64_t>(data_));
-            case logical_type::TIMESTAMP_US:
-                return duration_cast<nanoseconds>(static_cast<microseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_MS:
-                return duration_cast<nanoseconds>(static_cast<milliseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_SEC:
-                return duration_cast<nanoseconds>(static_cast<seconds>(static_cast<int64_t>(data_)));
-            default:
-                throw std::logic_error(
-                    "logical_value_t::value<std::chrono::nanoseconds>(): incorrect value logical type");
-                return nanoseconds{0};
-        }
+    inline core::date::date_t logical_value_t::value<core::date::date_t>() const {
+        return {core::date::days{static_cast<int32_t>(data_)}};
     }
     template<>
-    inline std::chrono::microseconds logical_value_t::value<std::chrono::microseconds>() const {
-        using namespace std::chrono;
-        switch (type_.type()) {
-            case logical_type::TIMESTAMP_NS:
-                return duration_cast<microseconds>(static_cast<nanoseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_US:
-                return static_cast<microseconds>(static_cast<int64_t>(data_));
-            case logical_type::TIMESTAMP_MS:
-                return duration_cast<microseconds>(static_cast<milliseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_SEC:
-                return duration_cast<microseconds>(static_cast<seconds>(static_cast<int64_t>(data_)));
-            default:
-                throw std::logic_error(
-                    "logical_value_t::value<std::chrono::microseconds>(): incorrect value logical type");
-                return microseconds{0};
-        }
+    inline core::date::time_t logical_value_t::value<core::date::time_t>() const {
+        return std::bit_cast<core::date::time_t>(data_);
     }
     template<>
-    inline std::chrono::milliseconds logical_value_t::value<std::chrono::milliseconds>() const {
-        using namespace std::chrono;
-        switch (type_.type()) {
-            case logical_type::TIMESTAMP_NS:
-                return duration_cast<milliseconds>(static_cast<nanoseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_US:
-                return duration_cast<milliseconds>(static_cast<microseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_MS:
-                return static_cast<milliseconds>(static_cast<int64_t>(data_));
-            case logical_type::TIMESTAMP_SEC:
-                return duration_cast<milliseconds>(static_cast<seconds>(static_cast<int64_t>(data_)));
-            default:
-                throw std::logic_error(
-                    "logical_value_t::value<std::chrono::milliseconds>(): incorrect value logical type");
-                return milliseconds{0};
-        }
+    inline core::date::timetz_t logical_value_t::value<core::date::timetz_t>() const {
+        auto& ch = *vec_ptr();
+        return {core::date::microseconds{ch[0].value<int64_t>()}, core::date::seconds_i32{ch[1].value<int32_t>()}};
     }
     template<>
-    inline std::chrono::seconds logical_value_t::value<std::chrono::seconds>() const {
-        using namespace std::chrono;
-        switch (type_.type()) {
-            case logical_type::TIMESTAMP_NS:
-                return duration_cast<seconds>(static_cast<nanoseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_US:
-                return duration_cast<seconds>(static_cast<microseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_MS:
-                return duration_cast<seconds>(static_cast<milliseconds>(static_cast<int64_t>(data_)));
-            case logical_type::TIMESTAMP_SEC:
-                return static_cast<seconds>(static_cast<int64_t>(data_));
-            default:
-                throw std::logic_error("logical_value_t::value<std::chrono::seconds>(): incorrect value logical type");
-                return seconds{0};
-        }
+    inline core::date::timestamp_t logical_value_t::value<core::date::timestamp_t>() const {
+        return std::bit_cast<core::date::timestamp_t>(data_);
+    }
+    template<>
+    inline core::date::timestamptz_t logical_value_t::value<core::date::timestamptz_t>() const {
+        return std::bit_cast<core::date::timestamptz_t>(data_);
+    }
+    template<>
+    inline core::date::interval_t logical_value_t::value<core::date::interval_t>() const {
+        auto& ch = *vec_ptr();
+        return {core::date::microseconds{ch[0].value<int64_t>()},
+                core::date::days{ch[1].value<int32_t>()},
+                core::date::months{ch[2].value<int32_t>()}};
     }
     template<>
     inline void* logical_value_t::value<void*>() const {

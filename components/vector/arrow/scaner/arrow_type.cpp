@@ -191,14 +191,6 @@ namespace components::vector::arrow {
         } else if (format == "vu") {
             return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
                                                 std::make_unique<arrow_string_info>(arrow_variable_size_type::VIEW));
-        } else if (format == "tsn:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_NS);
-        } else if (format == "tsu:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_US);
-        } else if (format == "tsm:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_MS);
-        } else if (format == "tss:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_SEC);
         } else if (format == "tDs") {
             return std::make_unique<arrow_type>(types::logical_type::INTERVAL,
                                                 std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
@@ -239,25 +231,7 @@ namespace components::vector::arrow {
             auto type_info = std::make_unique<arrow_string_info>(fixed_size);
             return std::make_unique<arrow_type>(types::logical_type::BLOB, std::move(type_info));
         } else if (format[0] == 't' && format[1] == 's') {
-            if (format[2] == 'n') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_NS,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::NANOSECONDS));
-            } else if (format[2] == 'u') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_US,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::MICROSECONDS));
-            } else if (format[2] == 'm') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_MS,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
-            } else if (format[2] == 's') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_SEC,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
-            } else {
-                throw std::runtime_error(" Timestamp precision of not accepted");
-            }
+            throw std::runtime_error(" Timestamp precision of not accepted");
         }
         return nullptr;
     }

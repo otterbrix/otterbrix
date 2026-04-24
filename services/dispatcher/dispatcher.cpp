@@ -12,6 +12,7 @@
 #include <components/logical_plan/node_drop_macro.hpp>
 #include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_set_timezone.hpp>
 
 #include <chrono>
 #include <core/executor.hpp>
@@ -309,6 +310,11 @@ namespace services::dispatcher {
                     catalog_.drop_type(n->type().alias());
                     co_return make_cursor(resource(), std::move(error));
                 }
+            }
+            case node_type::set_timezone_t: {
+                const auto& tz_node = reinterpret_cast<node_set_timezone_ptr&>(logic_plan);
+                error = catalog_.set_timezone(tz_node->timezone_name());
+                co_return make_cursor(resource(), std::move(error));
             }
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
@@ -875,7 +881,7 @@ namespace services::dispatcher {
               session.data());
 
         auto dependency_tree_collections_names = logical_plan->collection_dependencies();
-        context_storage_t collections_context_storage(resource(), log_.clone());
+        context_storage_t collections_context_storage(resource(), log_.clone(), catalog_.timezone_offset());
         for (auto& name : dependency_tree_collections_names) {
             if (!name.empty() && collections_.count(name) > 0) {
                 collections_context_storage.known_collections.insert(name);

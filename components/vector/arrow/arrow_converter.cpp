@@ -127,18 +127,6 @@ namespace components::vector::arrow {
             case logical_type::STRING_LITERAL:
                 child.format = "U";
                 break;
-            case logical_type::TIMESTAMP_US:
-                child.format = "tsu:";
-                break;
-            case logical_type::TIMESTAMP_SEC:
-                child.format = "tss:";
-                break;
-            case logical_type::TIMESTAMP_NS:
-                child.format = "tsn:";
-                break;
-            case logical_type::TIMESTAMP_MS:
-                child.format = "tsm:";
-                break;
             case logical_type::DECIMAL: {
                 auto* decimal_extension = static_cast<types::decimal_logical_type_extension*>(type.extension());
                 uint8_t width = decimal_extension->width(), scale = decimal_extension->scale();

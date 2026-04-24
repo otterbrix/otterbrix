@@ -20,10 +20,12 @@ namespace components::types {
             t[uint8_t(logical_type::INTEGER)] = physical_type::INT32;
             t[uint8_t(logical_type::UINTEGER)] = physical_type::UINT32;
             t[uint8_t(logical_type::BIGINT)] = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_SEC)] = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_MS)] = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_US)] = physical_type::INT64;
-            t[uint8_t(logical_type::TIMESTAMP_NS)] = physical_type::INT64;
+            t[uint8_t(logical_type::DATE)] = physical_type::INT32;
+            t[uint8_t(logical_type::TIME)] = physical_type::INT64;
+            t[uint8_t(logical_type::TIME_TZ)] = physical_type::STRUCT;
+            t[uint8_t(logical_type::TIMESTAMP)] = physical_type::INT64;
+            t[uint8_t(logical_type::TIMESTAMP_TZ)] = physical_type::INT64;
+            t[uint8_t(logical_type::INTERVAL)] = physical_type::STRUCT;
             t[uint8_t(logical_type::DECIMAL)] = physical_type::INT64;
             t[uint8_t(logical_type::UBIGINT)] = physical_type::UINT64;
             t[uint8_t(logical_type::UHUGEINT)] = physical_type::UINT128;
@@ -346,11 +348,35 @@ namespace components::types {
     }
 
     std::vector<complex_logical_type>& complex_logical_type::child_types() {
+        if (type_ == logical_type::TIME_TZ) {
+            static std::vector<complex_logical_type> timetz_fields = {complex_logical_type{logical_type::BIGINT},
+                                                                      complex_logical_type{logical_type::INTEGER}};
+            return timetz_fields;
+        }
+        if (type_ == logical_type::INTERVAL) {
+            static std::vector<complex_logical_type> interval_fields = {complex_logical_type{logical_type::BIGINT},
+                                                                        complex_logical_type{logical_type::INTEGER},
+                                                                        complex_logical_type{logical_type::INTEGER}};
+            return interval_fields;
+        }
         assert(extension_);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }
 
     const std::vector<complex_logical_type>& complex_logical_type::child_types() const {
+        if (type_ == logical_type::TIME_TZ) {
+            static const std::vector<complex_logical_type> timetz_fields = {
+                complex_logical_type{logical_type::BIGINT},
+                complex_logical_type{logical_type::INTEGER}};
+            return timetz_fields;
+        }
+        if (type_ == logical_type::INTERVAL) {
+            static const std::vector<complex_logical_type> interval_fields = {
+                complex_logical_type{logical_type::BIGINT},
+                complex_logical_type{logical_type::INTEGER},
+                complex_logical_type{logical_type::INTEGER}};
+            return interval_fields;
+        }
         assert(extension_);
         return static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
     }

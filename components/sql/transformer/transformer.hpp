@@ -86,6 +86,13 @@ namespace components::sql::transform {
                                         logical_plan::parameter_node_t* params,
                                         logical_plan::node_ptr& group);
 
+        // Build a scalar_expression_ptr (type=case_expr) from a CaseExpr
+        expressions::expression_ptr case_expr_to_scalar(CaseExpr* node,
+                                                        const char* alias,
+                                                        const name_collection_t& names,
+                                                        logical_plan::parameter_node_t* params,
+                                                        logical_plan::node_ptr group);
+
         // Resolve a HAVING operand: FuncCall → aggregate alias key
         expressions::param_storage resolve_having_operand(Node* node,
                                                           const name_collection_t& names,

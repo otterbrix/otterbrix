@@ -270,6 +270,13 @@ namespace components::sql::transform {
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 args.emplace_back(
                                     transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, params));
+                            } else if (nodeTag(arg_value) == T_CaseExpr) {
+                                // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
+                                args.emplace_back(case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
+                                                                      nullptr,
+                                                                      names,
+                                                                      params,
+                                                                      select_node));
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }

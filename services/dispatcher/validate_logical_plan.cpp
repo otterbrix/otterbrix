@@ -781,6 +781,73 @@ namespace services::dispatcher {
 
     } // namespace impl
 
+    namespace {
+        complex_logical_type resolve_case_type(std::pmr::memory_resource* resource,
+                                               scalar_expression_t* s,
+                                               const named_schema& incoming_schema,
+                                               const storage_parameters& parameters,
+                                               core::error_t& resolve_error);
+
+        complex_logical_type resolve_arith_type(std::pmr::memory_resource* resource,
+                                                param_storage& p,
+                                                const named_schema& incoming_schema,
+                                                const storage_parameters& parameters,
+                                                core::error_t& resolve_error) {
+            if (std::holds_alternative<components::expressions::key_t>(p)) {
+                auto& k = std::get<components::expressions::key_t>(p);
+                auto f = impl::find_types(resource, k, incoming_schema);
+                if (!f.has_error()) {
+                    return f.value().front().type;
+                }
+                resolve_error = f.error();
+                assert(false);
+                return complex_logical_type(logical_type::INVALID);
+            }
+            if (std::holds_alternative<core::parameter_id_t>(p)) {
+                return parameters.parameters.at(std::get<core::parameter_id_t>(p)).type();
+            }
+            auto& inner = std::get<expression_ptr>(p);
+            if (inner->group() == expression_group::scalar) {
+                auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
+                if (s->type() == components::expressions::scalar_type::case_expr) {
+                    return resolve_case_type(resource, s, incoming_schema, parameters, resolve_error);
+                }
+                if (s->params().size() >= 2) {
+                    auto lt = resolve_arith_type(resource, s->params()[0], incoming_schema, parameters, resolve_error);
+                    auto rt = resolve_arith_type(resource, s->params()[1], incoming_schema, parameters, resolve_error);
+                    return complex_logical_type(promote_type(lt.type(), rt.type()));
+                }
+            }
+            assert(false);
+            return complex_logical_type(logical_type::INVALID);
+        }
+
+        // CASE WHEN params layout: [cond1, result1, cond2, result2, ..., default]
+        complex_logical_type resolve_case_type(std::pmr::memory_resource* resource,
+                                               scalar_expression_t* s,
+                                               const named_schema& incoming_schema,
+                                               const storage_parameters& parameters,
+                                               core::error_t& resolve_error) {
+            auto n = s->params().size();
+            if (n < 2) {
+                resolve_error = core::error_t(core::error_code_t::invalid_parameter,
+                                              std::pmr::string{"empty CASE expression", resource});
+                return complex_logical_type(logical_type::INVALID);
+            }
+            complex_logical_type promoted =
+                resolve_arith_type(resource, s->params()[1], incoming_schema, parameters, resolve_error);
+            for (size_t i = 3; i < n; i += 2) {
+                auto t = resolve_arith_type(resource, s->params()[i], incoming_schema, parameters, resolve_error);
+                promoted = complex_logical_type(promote_type(promoted.type(), t.type()));
+            }
+            if (n % 2 == 1) {
+                auto t = resolve_arith_type(resource, s->params()[n - 1], incoming_schema, parameters, resolve_error);
+                promoted = complex_logical_type(promote_type(promoted.type(), t.type()));
+            }
+            return promoted;
+        }
+    } // namespace
+
     core::error_t
     check_namespace_exists(std::pmr::memory_resource* resource, const catalog& catalog, const table_id& id) {
         if (!catalog.namespace_exists(id.get_namespace())) {
@@ -1281,39 +1348,27 @@ namespace services::dispatcher {
                                     if (sub_expr->group() == expression_group::scalar) {
                                         auto* sub_scalar = reinterpret_cast<scalar_expression_t*>(sub_expr.get());
                                         core::error_t resolve_error = core::error_t::no_error();
-                                        std::function<complex_logical_type(param_storage&)> resolve_arith_type;
-                                        resolve_arith_type = [&](param_storage& p) -> complex_logical_type {
-                                            if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                                auto& k = std::get<components::expressions::key_t>(p);
-                                                auto f = impl::find_types(resource, k, incoming_schema);
-                                                if (!f.has_error()) {
-                                                    return f.value().front().type;
-                                                }
-                                                if (f.has_error()) {
-                                                    resolve_error = f.error();
-                                                }
-                                                assert(false);
-                                                return complex_logical_type(logical_type::INVALID);
-                                            } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                return parameters.parameters.at(std::get<core::parameter_id_t>(p))
-                                                    .type();
-                                            } else {
-                                                auto& inner = std::get<expression_ptr>(p);
-                                                if (inner->group() == expression_group::scalar) {
-                                                    auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
-                                                    if (s->params().size() >= 2) {
-                                                        auto lt = resolve_arith_type(s->params()[0]);
-                                                        auto rt = resolve_arith_type(s->params()[1]);
-                                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
-                                                    }
-                                                }
-                                                assert(false);
-                                                return complex_logical_type(logical_type::INVALID);
+                                        if (sub_scalar->type() == components::expressions::scalar_type::case_expr) {
+                                            auto promoted = resolve_case_type(resource,
+                                                                              sub_scalar,
+                                                                              incoming_schema,
+                                                                              parameters,
+                                                                              resolve_error);
+                                            if (resolve_error.contains_error()) {
+                                                return resolve_error;
                                             }
-                                        };
-                                        if (sub_scalar->params().size() >= 2) {
-                                            auto lt = resolve_arith_type(sub_scalar->params()[0]);
-                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
+                                            function_input_types.emplace_back(promoted);
+                                        } else if (sub_scalar->params().size() >= 2) {
+                                            auto lt = resolve_arith_type(resource,
+                                                                         sub_scalar->params()[0],
+                                                                         incoming_schema,
+                                                                         parameters,
+                                                                         resolve_error);
+                                            auto rt = resolve_arith_type(resource,
+                                                                         sub_scalar->params()[1],
+                                                                         incoming_schema,
+                                                                         parameters,
+                                                                         resolve_error);
                                             if (resolve_error.contains_error()) {
                                                 return resolve_error;
                                             }

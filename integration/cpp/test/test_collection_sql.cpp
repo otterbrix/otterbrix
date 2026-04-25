@@ -776,6 +776,41 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
+    INFO("compare on enum column") {
+        // TODO: push-down filter for ENUM is broken — the planner pushes the WHERE into full_scan as a
+        // constant_filter_t, and storage segments hand the comparator a raw int32_t (fixed_size_check_row<int32_t>)
+        // wrapped as a typeless INTEGER value. The ENUM extension is gone by then. Fix needs the column's logical_type
+        // threaded into constant_filter_t at construction so the literal is pre-resolved into the ordinal once.
+        // Until that lands, plain `WHERE enum_col = 'label'` against a single-table scan returns 0 rows;
+        // the JOIN wrapper here is the workaround.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE oddness = 1;");
+            REQUIRE(cur->is_success());
+            CHECK(cur->size() == 50);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT t.* FROM TestDatabase.TestCollection t "
+                                               "INNER JOIN TestDatabase.CopyTestCollection c "
+                                               "        ON (t.custom_type).f1 = (c.custom_type).f1 "
+                                               "WHERE t.oddness = 'even';");
+            REQUIRE(cur->is_success());
+            CHECK(cur->size() == 50);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT t.* FROM TestDatabase.TestCollection t "
+                                               "INNER JOIN TestDatabase.CopyTestCollection c "
+                                               "        ON (t.custom_type).f1 = (c.custom_type).f1 "
+                                               "WHERE t.oddness = 'even'::custom_enum;");
+            REQUIRE(cur->is_success());
+            CHECK(cur->size() == 50);
+        }
+    }
+
     INFO("order by nested udt field") {
         {
             auto session = otterbrix::session_id_t();

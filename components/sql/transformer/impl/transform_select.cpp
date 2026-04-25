@@ -24,6 +24,31 @@ namespace components::sql::transform {
         if (nodeTag(join->larg) == T_JoinExpr) {
             name_collection_t sub_query_names;
             join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, sub_query_names, params);
+
+            // Snapshot the inner JOIN's full visible scope BEFORE we overwrite
+            // sub_query_names.right_* with the outer JOIN's right side.
+            auto carry_alias = [&](const std::string& alias) {
+                if (!alias.empty()) {
+                    names.extra_left_aliases.push_back(alias);
+                }
+            };
+            auto carry_name = [&](const collection_full_name_t& nm) {
+                if (!nm.collection.empty()) {
+                    names.extra_left_names.push_back(nm);
+                }
+            };
+
+            carry_alias(sub_query_names.left_alias);
+            carry_alias(sub_query_names.right_alias);
+            carry_name(sub_query_names.left_name);
+            carry_name(sub_query_names.right_name);
+            for (const auto& a : sub_query_names.extra_left_aliases) {
+                carry_alias(a);
+            }
+            for (const auto& nm : sub_query_names.extra_left_names) {
+                carry_name(nm);
+            }
+
             auto prev = node_join;
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
@@ -245,6 +270,13 @@ namespace components::sql::transform {
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 args.emplace_back(
                                     transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, params));
+                            } else if (nodeTag(arg_value) == T_CaseExpr) {
+                                // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
+                                args.emplace_back(case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
+                                                                      nullptr,
+                                                                      names,
+                                                                      params,
+                                                                      select_node));
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }

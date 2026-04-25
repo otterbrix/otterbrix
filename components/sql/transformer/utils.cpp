@@ -40,7 +40,20 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
-        return name == left_name.collection || name == left_alias;
+        if (name == left_name.collection || name == left_alias) {
+            return true;
+        }
+        for (const auto& alias : extra_left_aliases) {
+            if (alias == name) {
+                return true;
+            }
+        }
+        for (const auto& nm : extra_left_names) {
+            if (nm.collection == name) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool name_collection_t::is_right_table(const std::string& name) const {
@@ -51,9 +64,9 @@ namespace components::sql::transform {
         if (target_name.empty()) {
             return expressions::side_t::undefined;
         }
-        if (names.left_name.collection == target_name || names.left_alias == target_name) {
+        if (names.is_left_table(target_name)) {
             return expressions::side_t::left;
-        } else if (names.right_name.collection == target_name || names.right_alias == target_name) {
+        } else if (names.is_right_table(target_name)) {
             return expressions::side_t::right;
         } else {
             return expressions::side_t::undefined;
@@ -322,8 +335,11 @@ namespace components::sql::transform {
             case T_TypeCast: {
                 auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
                 if (constant->val.type == T_String) {
-                    bool is_true = std::string(strVal(&constant->val)) == "t";
-                    return types::logical_value_t(resource, is_true);
+                    std::string str = strVal(&constant->val);
+                    if (str == "t" || str == "f") {
+                        return types::logical_value_t(resource, str == "t");
+                    }
+                    return types::logical_value_t(resource, str);
                 } else {
                     return types::logical_value_t(resource, constant->val.val.ival);
                 }

@@ -287,4 +287,43 @@ TEST_CASE("integration::cpp::test_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
+
+    INFO("triple inner join — aliases") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT camp.name, ord.extra "
+                                           "FROM testdatabase.testcollection_1 camp "
+                                           "INNER JOIN testdatabase.col_mid mid "
+                                           "  ON camp.key_1 = mid.key_1 "
+                                           "INNER JOIN testdatabase.col_end ord "
+                                           "  ON mid.linker = ord.linker "
+                                           "ORDER BY ord.extra ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("triple inner join — second JOIN references first table") {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_aux();");
+        {
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "INSERT INTO " + database_name +
+                                            ".col_aux (k, tag) VALUES (50, 'a'), (54, 'b'), (60, 'c'), (200, 'd');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT c.name, x.tag "
+                                               "FROM testdatabase.testcollection_1 c "
+                                               "INNER JOIN testdatabase.col_mid m "
+                                               "  ON c.key_1 = m.key_1 "
+                                               "INNER JOIN testdatabase.col_aux x "
+                                               "  ON c.key_1 = x.k "
+                                               "ORDER BY x.tag ASC;");
+            REQUIRE(cur->is_success());
+            // c.key_1 = {50,52,...,100}, x.k = {50,54,60,200} = {50,54,60} → 3 rows.
+            REQUIRE(cur->size() == 3);
+        }
+    }
 }

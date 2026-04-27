@@ -1,5 +1,6 @@
 #include "validate_logical_plan.hpp"
 
+
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
@@ -20,6 +21,7 @@
 #include <components/logical_plan/node_sort.hpp>
 #include <list>
 #include <queue>
+#include <unordered_set>
 
 namespace services::dispatcher {
 
@@ -154,14 +156,28 @@ namespace services::dispatcher {
                 matches.erase(it);
             }
 
-            // if result contains multiple types, then we have an ambiguous key, which is an error
+            // if result contains multiple types, try to disambiguate via cast_type_ hint
             if (result.size() > 1) {
-                return core::error_t(core::error_code_t::ambiguous_name,
+                if (truncated_key.has_cast_type()) {
+                    auto cast_lt = truncated_key.cast_type().type();
+                    type_paths filtered{resource};
+                    for (auto& tp : result) {
+                        if (tp.type.type() == cast_lt) {
+                            filtered.emplace_back(std::move(tp));
+                            break;
+                        }
+                    }
+                    result = std::move(filtered);
+                }
+                if (result.size() > 1) {
+                    return core::error_t(core::error_code_t::ambiguous_name,
 
-                                     std::pmr::string{"path: \'" + truncated_key.as_string() +
-                                                          "\' is ambiguous. Use aliases or full path",
-                                                      resource});
-            } else {
+                                         std::pmr::string{"path: \'" + truncated_key.as_string() +
+                                                              "\' is ambiguous. Use aliases or full path",
+                                                          resource});
+                }
+            }
+            if (!result.empty()) {
                 if (key.storage().back() == "*") {
                     if (result.empty()) {
                         return core::error_t(
@@ -1073,6 +1089,18 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
+                    // SELECT * — check for duplicate field names (multiple types for same field)
+                    {
+                        std::unordered_set<std::string> seen;
+                        for (const auto& col : incoming_schema) {
+                            if (!seen.insert(col.type.alias()).second) {
+                                return core::error_t(core::error_code_t::schema_error,
+                                                     std::pmr::string{"column '" + col.type.alias() +
+                                                                          "' has multiple types; use explicit column selection",
+                                                                      resource});
+                            }
+                        }
+                    }
                     if (node_sort) {
                         auto res = impl::validate_schema(resource, node_sort, incoming_schema);
                         if (res.has_error()) {
@@ -1646,8 +1674,8 @@ namespace services::dispatcher {
                             table_schema.emplace_back(type_from_t{node->collection_name(), column});
                         }
                     }
-                    if (table_schema.empty() && is_computed) {
-                        // Computing table — accept any INSERT
+                    if (is_computed) {
+                        // Computing table — accept any INSERT (new fields expand schema dynamically)
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return core::error_t(core::error_code_t::schema_error,
 

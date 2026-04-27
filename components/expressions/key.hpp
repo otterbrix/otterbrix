@@ -2,7 +2,9 @@
 
 #include "forward.hpp"
 #include <boost/container_hash/hash.hpp>
+#include <components/types/types.hpp>
 #include <core/pmr.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,7 +20,8 @@ namespace components::expressions {
         key_t(key_t&& key) noexcept
             : side_{key.side_}
             , storage_{std::move(key.storage_)}
-            , path_{std::move(key.path_)} {}
+            , path_{std::move(key.path_)}
+            , cast_type_{std::move(key.cast_type_)} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
@@ -95,6 +98,12 @@ namespace components::expressions {
 
         void set_path(std::pmr::vector<size_t> path) { path_ = std::move(path); }
 
+        bool has_cast_type() const { return cast_type_.has_value(); }
+
+        const types::complex_logical_type& cast_type() const { return *cast_type_; }
+
+        void set_cast_type(types::complex_logical_type type) { cast_type_ = std::move(type); }
+
         auto is_null() const -> bool { return storage_.empty(); }
 
         auto side() const -> side_t { return side_; }
@@ -127,6 +136,7 @@ namespace components::expressions {
         side_t side_;
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
+        std::optional<types::complex_logical_type> cast_type_;
     };
 
     template<class OStream>

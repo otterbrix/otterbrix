@@ -244,6 +244,7 @@ namespace services::dispatcher {
                 // find_types sets a path, but if both left and right are valid, this will be an error and won't matter
                 auto column_path_left = find_types(resource, key, schema_left);
                 auto column_path_right = find_types(resource, key, schema_right);
+                // TODO Stop erasing errors from right and left
                 if (column_path_left.has_error() && column_path_right.has_error()) {
                     return core::error_t(core::error_code_t::field_not_exists,
 
@@ -1089,18 +1090,6 @@ namespace services::dispatcher {
                 }
 
                 if (!node_group) {
-                    // SELECT * — check for duplicate field names (multiple types for same field)
-                    {
-                        std::unordered_set<std::string> seen;
-                        for (const auto& col : incoming_schema) {
-                            if (!seen.insert(col.type.alias()).second) {
-                                return core::error_t(core::error_code_t::schema_error,
-                                                     std::pmr::string{"column '" + col.type.alias() +
-                                                                          "' has multiple types; use explicit column selection",
-                                                                      resource});
-                            }
-                        }
-                    }
                     if (node_sort) {
                         auto res = impl::validate_schema(resource, node_sort, incoming_schema);
                         if (res.has_error()) {
@@ -1180,6 +1169,18 @@ namespace services::dispatcher {
                                 if (res.has_error()) {
                                     return res.convert_error<named_schema>();
                                 }
+                            }
+                        }
+                    } else {
+                        // "SELECT *" or "SELECT t.*" — reject when a logical column
+                        // exists in multiple physical types: cannot be disambiguated without a cast.
+                        std::unordered_set<std::string> seen;
+                        for (const auto& col : incoming_schema) {
+                            if (!seen.insert(col.type.alias()).second) {
+                                return core::error_t(core::error_code_t::schema_error,
+                                                     std::pmr::string{"column '" + col.type.alias() +
+                                                                          "' has multiple types; use explicit type selection",
+                                                                      resource});
                             }
                         }
                     }

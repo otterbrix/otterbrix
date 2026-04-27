@@ -361,7 +361,8 @@ namespace components::sql::transform {
                             auto field_name = std::string(col_ref.field.storage().back());
                             col_ref.field.set_cast_type(target_type_res.value());
                             std::string alias = res->name ? res->name : field_name;
-                            group->append_expression(
+                            has_non_star = true;
+                            select_node->append_expression(
                                 make_scalar_expression(resource_,
                                                        scalar_type::get_field,
                                                        expressions::key_t{resource_, alias},

@@ -25,6 +25,7 @@ namespace components::table {
         column_definition_t& operator=(column_definition_t&&) = default;
 
         const types::logical_value_t& default_value() const;
+        const std::optional<types::logical_value_t>& default_value_opt() const;
         bool has_default_value() const;
         void set_default_value(std::optional<types::logical_value_t> default_value);
 

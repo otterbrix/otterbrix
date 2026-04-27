@@ -402,10 +402,9 @@ namespace components::table {
                                                      row_group_size_);
 
         vector::vector_t default_vector(resource_, new_column.type());
-
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group =
-                current_row_group.add_column(result.get(), new_column, new_column.default_value(), default_vector);
+                current_row_group.add_column(result.get(), new_column, new_column.default_value_opt(), default_vector);
 
             result->row_groups_->append_segment(std::move(new_row_group));
         }

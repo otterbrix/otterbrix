@@ -200,7 +200,15 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t4;");
         REQUIRE_FALSE(cur->is_success());
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().what == "column 'val' has multiple types; use explicit column selection");
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT t4.* FROM cs_testdb.t4;");
+        REQUIRE_FALSE(cur->is_success());
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
     }
 
     // Select val as string: rows 1-2 have NULL for val (no string was inserted), row 3 has "hello"
@@ -240,4 +248,15 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
         REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
     }
+
+    // TODO do correct error
+    // SELECT val (no cast) — val has 2 types, which is error
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT val FROM cs_testdb.t4;");
+        REQUIRE_FALSE(cur->is_success());
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::field_not_exists);
+    }
+
 }

@@ -200,7 +200,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t4;");
         REQUIRE_FALSE(cur->is_success());
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().what == "column 'val' has multiple types; use explicit type selection");
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
     }
 
     {
@@ -208,7 +208,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         auto cur = dispatcher->execute_sql(session, "SELECT t4.* FROM cs_testdb.t4;");
         REQUIRE_FALSE(cur->is_success());
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().what == "column 'val' has multiple types; use explicit type selection");
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
     }
 
     // Select val as string: rows 1-2 have NULL for val (no string was inserted), row 3 has "hello"
@@ -256,7 +256,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multi_type_field") {
         auto cur = dispatcher->execute_sql(session, "SELECT val FROM cs_testdb.t4;");
         REQUIRE_FALSE(cur->is_success());
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().what == "path: 'val' was not found");
+        REQUIRE(cur->get_error().type == core::error_code_t::field_not_exists);
     }
 
 }

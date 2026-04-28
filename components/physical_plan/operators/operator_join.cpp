@@ -29,31 +29,55 @@ namespace components::operators {
             const auto& chunk_left = left_->output()->data_chunk();
             const auto& chunk_right = right_->output()->data_chunk();
 
-            // Build joined schema AND the list of projected indices (slots that have data).
-            // The join output mirrors the sparse pattern of its inputs so downstream operators
-            // see the same placeholder positions, not a fully materialized chunk.
+            // TODO: switch to PostgreSQL-style semantics (validate_logical_plan.cpp:1392)
+            // This dedup is a short-term fix to restore chained-JOIN correctness;
             auto res_types = chunk_left.types();
             auto right_types = chunk_right.types();
-            res_types.insert(res_types.end(), right_types.begin(), right_types.end());
 
-            std::vector<size_t> joined_projected;
-            joined_projected.reserve(chunk_left.column_count() + chunk_right.column_count());
+            indices_left_.clear();
+            indices_right_.clear();
+            indices_left_.reserve(chunk_left.column_count());
+            indices_right_.reserve(chunk_right.column_count());
+            for (size_t i = 0; i < chunk_left.column_count(); i++) {
+                indices_left_.emplace_back(i);
+            }
+            for (size_t i = 0; i < chunk_right.column_count(); i++) {
+                const auto& alias = right_types[i].alias();
+                auto dup =
+                    std::find_if(res_types.begin(), res_types.end(), [&](const auto& t) { return t.alias() == alias; });
+                if (dup != res_types.end()) {
+                    // column with this name already in output (from left): map the
+                    // right-side column onto the existing slot, don't append a copy
+                    indices_right_.emplace_back(static_cast<size_t>(std::distance(res_types.begin(), dup)));
+                } else {
+                    indices_right_.emplace_back(res_types.size());
+                    res_types.push_back(right_types[i]);
+                }
+            }
+
+            // Build the list of projected output slots (those that have data on either side),
+            // so the join output mirrors the sparse pattern of its inputs and downstream operators
+            // see the same placeholder positions, not a fully materialized chunk.
+            std::vector<bool> populated(res_types.size(), false);
             for (size_t i = 0; i < chunk_left.column_count(); i++) {
                 if (!is_placeholder(chunk_left.data[i])) {
-                    joined_projected.push_back(i);
+                    populated[indices_left_[i]] = true;
                 }
             }
             for (size_t i = 0; i < chunk_right.column_count(); i++) {
                 if (!is_placeholder(chunk_right.data[i])) {
-                    joined_projected.push_back(chunk_left.column_count() + i);
+                    populated[indices_right_[i]] = true;
                 }
+            }
+            std::vector<size_t> joined_projected;
+            joined_projected.reserve(res_types.size());
+            for (size_t s = 0; s < populated.size(); s++) {
+                if (populated[s]) joined_projected.push_back(s);
             }
 
             if (joined_projected.size() == res_types.size()) {
-                // Dense inputs — regular chunk.
                 output_ = operators::make_operator_data(left_->output()->resource(), res_types);
             } else {
-                // Sparse inputs — build a sparse output chunk directly and hand it to operator_data.
                 vector::data_chunk_t sparse_chunk(left_->output()->resource(),
                                                   res_types,
                                                   joined_projected,
@@ -64,17 +88,6 @@ namespace components::operators {
             if (log_.is_valid()) {
                 trace(log(), "operator_join::left_size(): {}", chunk_left.size());
                 trace(log(), "operator_join::right_size(): {}", chunk_right.size());
-            }
-
-            indices_left_.clear();
-            indices_right_.clear();
-            indices_left_.reserve(chunk_left.column_count());
-            indices_right_.reserve(chunk_right.column_count());
-            for (size_t i = 0; i < chunk_left.column_count(); i++) {
-                indices_left_.emplace_back(i);
-            }
-            for (size_t i = 0; i < chunk_right.column_count(); i++) {
-                indices_right_.emplace_back(chunk_left.column_count() + i);
             }
 
             auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),

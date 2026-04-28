@@ -53,6 +53,10 @@ namespace components::sql::transform {
         collection_full_name_t right_name;
         std::string right_alias;
 
+        // Additional aliases that belong to the left scope but came in through a nested join.
+        std::vector<collection_full_name_t> extra_left_names;
+        std::vector<std::string> extra_left_aliases;
+
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
     };

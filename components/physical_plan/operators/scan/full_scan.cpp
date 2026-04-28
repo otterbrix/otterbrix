@@ -134,7 +134,9 @@ namespace components::operators {
         auto filter = transform_predicate(expression_, types, &ctx->parameters);
 
         // Scan from storage (projected if columns are specified, otherwise full scan)
-        int limit_val = limit_.limit();
+        int64_t offset_val = limit_.offset();
+        int64_t limit_val = limit_.limit();
+        int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         std::unique_ptr<vector::data_chunk_t> data;
         if (!projected_cols_.empty()) {
             auto [_s, sf] = actor_zeta::send(ctx->disk_address,
@@ -142,7 +144,7 @@ namespace components::operators {
                                              ctx->session,
                                              name_,
                                              std::move(filter),
-                                             limit_val,
+                                             scan_limit,
                                              projected_cols_,
                                              ctx->txn);
             data = co_await std::move(sf);
@@ -152,12 +154,19 @@ namespace components::operators {
                                              ctx->session,
                                              name_,
                                              std::move(filter),
-                                             limit_val,
+                                             scan_limit,
                                              ctx->txn);
             data = co_await std::move(sf);
         }
 
         if (data) {
+            if (offset_val > 0 && static_cast<uint64_t>(offset_val) < data->size()) {
+                *data = data->partial_copy(resource_,
+                                           static_cast<uint64_t>(offset_val),
+                                           data->size() - static_cast<uint64_t>(offset_val));
+            } else if (offset_val > 0) {
+                data->set_cardinality(0);
+            }
             output_ = make_operator_data(resource_, std::move(*data));
         } else {
             output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});

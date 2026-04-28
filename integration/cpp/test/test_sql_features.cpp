@@ -45,6 +45,16 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
         }
     }
 
+    INFO("different \'COUNT\' calls") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*), COUNT(value) FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5);
+        REQUIRE(cur->chunk_data().value(1, 0).value<uint64_t>() == 3);
+    }
+
     INFO("IS NULL") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE value IS NULL;");
@@ -177,6 +187,82 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
                                            "WHERE count IN (42);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::between") {
+    auto config = test_create_config("/tmp/test_sql_features/between");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_collection(session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int num = 0; num < 100; ++num) {
+                query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+    }
+
+    INFO("BETWEEN inclusive bounds") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 10 AND 20;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 11); // 10,11,...,20
+    }
+
+    INFO("BETWEEN lower bound only (single value)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 50 AND 50;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("BETWEEN full range") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 0 AND 99;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 100);
+    }
+
+    INFO("NOT BETWEEN") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count NOT BETWEEN 10 AND 89;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 20); // 0..9 and 90..99
+    }
+
+    INFO("BETWEEN combined with AND") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE count BETWEEN 10 AND 50 AND count > 40;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10); // 41..50
     }
 }
 
@@ -717,6 +803,162 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
+    auto config = test_create_config("/tmp/test_sql_features/case_when_in_aggregate");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->create_collection(session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            // 5 rows: passing (>=70) are Alice 95, Bob 72, Dave 88 — sum 255, count 3
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, score) VALUES "
+                                               "('Alice', 95), ('Bob', 72), ('Charlie', 45), "
+                                               "('Dave', 88), ('Eve', 30);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+    }
+
+    // Passing rows (score >= 70): Alice 95, Bob 72, Dave 88 — sum 255, count 3.
+    INFO("searched CASE inside SUM") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE WHEN score >= 70 THEN score ELSE 0 END) AS s "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 255);
+    }
+
+    INFO("SUM over CASE without ELSE (NULL skipped)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE WHEN score >= 70 THEN score END) AS s "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 255);
+    }
+
+    INFO("counter pattern") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE WHEN score >= 70 THEN 1 ELSE 0 END) AS passing "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+    }
+
+    INFO("multiple branches") {
+        // Alice 95→1, Bob 72→2, Charlie 45→3, Dave 88→2, Eve 30→3 — sum 11.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE WHEN score >= 90 THEN 1 "
+                                           "             WHEN score >= 70 THEN 2 "
+                                           "             ELSE 3 END) AS s "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 11);
+    }
+
+    INFO("per-name aggregation") {
+        // Each name has one row, so 5 groups.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name, SUM(CASE WHEN score >= 70 THEN score ELSE 0 END) AS s "
+                                           "FROM TestDatabase.TestCollection "
+                                           "GROUP BY name;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        // Sum across groups: 95+72+0+88+0 = 255.
+        int64_t group_sum = 0;
+        for (size_t row = 0; row < cur->size(); ++row) {
+            group_sum += cur->chunk_data().value(1, row).value<int64_t>();
+        }
+        REQUIRE(group_sum == 255);
+    }
+
+    INFO("simple CASE col WHEN val inside aggregate") {
+        // CASE name WHEN 'Alice' THEN 1 ELSE 0 — only Alice matches, so SUM = 1.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE name WHEN 'Alice' THEN 1 ELSE 0 END) AS alice_n "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+    }
+
+    // For MIN/MAX/AVG with CASE use ELSE to avoid the NULL skipping (default 0 in unmatched slots)
+    INFO("MIN(CASE WHEN ... THEN col ELSE large_sentinel END) — min over passing rows") {
+        // Passing scores: 95, 72, 88. Non-passing get 999999. MIN over all = 72.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT MIN(CASE WHEN score >= 70 THEN score ELSE 999999 END) AS m "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 72);
+    }
+
+    INFO("MAX(CASE WHEN ... THEN col ELSE -1 END) — max over passing rows") {
+        // Passing scores: 95, 72, 88. Non-passing get -1. MAX = 95.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT MAX(CASE WHEN score >= 70 THEN score ELSE -1 END) AS m "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 95);
+    }
+
+    INFO("AVG(CASE WHEN ... THEN col ELSE 0 END) — average over all rows with zero default") {
+        // (95 + 72 + 0 + 88 + 0) / 5 = 51 (integer division).
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT AVG(CASE WHEN score >= 70 THEN score ELSE 0 END) AS a "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 51);
+    }
+
+    INFO("MIN/MAX/AVG/SUM(CASE) in one query") {
+        // Combined sanity: same WHEN >= 70 condition over score.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT MIN(CASE WHEN score >= 70 THEN score ELSE 999999 END) AS mn, "
+                                           "       MAX(CASE WHEN score >= 70 THEN score ELSE -1 END) AS mx, "
+                                           "       AVG(CASE WHEN score >= 70 THEN score ELSE 0 END) AS av, "
+                                           "       SUM(CASE WHEN score >= 70 THEN score ELSE 0 END) AS sm "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 4);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 72);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 95);
+        REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 51);
+        REQUIRE(cur->chunk_data().value(3, 0).value<int64_t>() == 255);
     }
 }
 

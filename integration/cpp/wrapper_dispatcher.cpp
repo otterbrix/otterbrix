@@ -235,10 +235,9 @@ namespace otterbrix {
         try {
             parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
         } catch (const std::exception& exception) {
-            return make_cursor(resource(),
-                               core::error_t(core::error_code_t::sql_parse_error,
-
-                                             std::pmr::string{exception.what(), resource()}));
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
         }
 
         if (!parse_result) {

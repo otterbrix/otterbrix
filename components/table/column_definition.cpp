@@ -29,10 +29,12 @@ namespace components::table {
         , default_value_(std::move(default_value)) {}
 
     const types::logical_value_t& column_definition_t::default_value() const {
-        if (!has_default_value()) {
-            throw std::logic_error("default_value() called on a column without a default value");
-        }
+        assert(has_default_value() && "default_value() called on a column without a default value");
         return *default_value_;
+    }
+
+    const std::optional<types::logical_value_t>& column_definition_t::default_value_opt() const {
+        return default_value_;
     }
 
     bool column_definition_t::has_default_value() const { return default_value_.has_value(); }

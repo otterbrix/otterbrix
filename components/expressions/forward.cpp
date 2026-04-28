@@ -79,6 +79,8 @@ namespace components::expressions {
                 return "case_when";
             case scalar_type::unary_minus:
                 return "unary_minus";
+            case scalar_type::star_expand:
+                return "star_expand";
             default:
                 return "invalid";
         }

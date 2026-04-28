@@ -15,7 +15,6 @@ namespace components::operators::predicates::impl {
         if (key.side() == expressions::side_t::undefined) {
             return [error = core::result_wrapper_t<types::logical_value_t>{core::error_t(
                         core::error_code_t::comparison_failure,
-
                         std::pmr::string{"create_value_getter: key side is undefined", resource})}](
                        const vector::data_chunk_t&,
                        const vector::data_chunk_t&,
@@ -25,7 +24,6 @@ namespace components::operators::predicates::impl {
         if (key.path().empty()) {
             return [error = core::result_wrapper_t<types::logical_value_t>{core::error_t(
                         core::error_code_t::comparison_failure,
-
                         std::pmr::string{"create_value_getter: key path is empty", resource})}](
                        const vector::data_chunk_t&,
                        const vector::data_chunk_t&,
@@ -149,7 +147,6 @@ namespace components::operators::predicates::impl {
                     return types::logical_value_t::modulus(left_val.value(), right_val.value());
                 default:
                     return core::error_t(core::error_code_t::comparison_failure,
-
                                          std::pmr::string{"Unsupported arithmetic op in predicate", resource});
             }
         };

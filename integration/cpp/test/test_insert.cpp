@@ -69,6 +69,12 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
         }
         for (const auto& type : types) {
+            columns_value_defaults.emplace_back(type.alias(),
+                                               type,
+                                               false,
+                                               types::logical_value_t{dispatcher->resource(), type});
+        }
+        for (const auto& type : types) {
             columns_value_defaults_not_null.emplace_back(type.alias(),
                                                          type,
                                                          true,
@@ -242,17 +248,14 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with 100 nulls
+                // column[1] will be filled with the value default (not null)
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
-                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                for (size_t i = 0; i < kNumInserts * 4; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
-                }
-                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
                 }
             }
         }
@@ -361,17 +364,14 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with 100 nulls
+                // column[1] will be filled with the value default (not null)
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
-                for (size_t i = 0; i < kNumInserts * 3; i++) {
+                for (size_t i = 0; i < kNumInserts * 5; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
-                }
-                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
                 }
             }
         }

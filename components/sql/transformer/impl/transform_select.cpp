@@ -13,6 +13,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
+
 using namespace components::expressions;
 
 namespace components::sql::transform {
@@ -24,6 +25,31 @@ namespace components::sql::transform {
         if (nodeTag(join->larg) == T_JoinExpr) {
             name_collection_t sub_query_names;
             join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, sub_query_names, params);
+
+            // Snapshot the inner JOIN's full visible scope BEFORE we overwrite
+            // sub_query_names.right_* with the outer JOIN's right side.
+            auto carry_alias = [&](const std::string& alias) {
+                if (!alias.empty()) {
+                    names.extra_left_aliases.push_back(alias);
+                }
+            };
+            auto carry_name = [&](const collection_full_name_t& nm) {
+                if (!nm.collection.empty()) {
+                    names.extra_left_names.push_back(nm);
+                }
+            };
+
+            carry_alias(sub_query_names.left_alias);
+            carry_alias(sub_query_names.right_alias);
+            carry_name(sub_query_names.left_name);
+            carry_name(sub_query_names.right_name);
+            for (const auto& a : sub_query_names.extra_left_aliases) {
+                carry_alias(a);
+            }
+            for (const auto& nm : sub_query_names.extra_left_names) {
+                carry_name(nm);
+            }
+
             auto prev = node_join;
             auto j_type = jointype_to_ql(join);
             if (j_type == logical_plan::join_type::invalid) {
@@ -245,6 +271,13 @@ namespace components::sql::transform {
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 args.emplace_back(
                                     transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, params));
+                            } else if (nodeTag(arg_value) == T_CaseExpr) {
+                                // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
+                                args.emplace_back(case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
+                                                                      nullptr,
+                                                                      names,
+                                                                      params,
+                                                                      select_node));
                             } else {
                                 args.emplace_back(add_param_value(arg_value, params));
                             }
@@ -315,7 +348,29 @@ namespace components::sql::transform {
                         select_node->append_expression(expr);
                         break;
                     }
-                    case T_TypeCast: // fall-through
+                    case T_TypeCast: {
+                        auto cast = pg_ptr_cast<TypeCast>(res->val);
+                        if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                            auto target_type_res = get_type(resource_, cast->typeName);
+                            if (target_type_res.has_error()) {
+                                error_ = target_type_res.error();
+                                break;
+                            }
+                            auto col_ref =
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                            auto field_name = std::string(col_ref.field.storage().back());
+                            col_ref.field.set_cast_type(target_type_res.value());
+                            std::string alias = res->name ? res->name : field_name;
+                            has_non_star = true;
+                            select_node->append_expression(
+                                make_scalar_expression(resource_,
+                                                       scalar_type::get_field,
+                                                       expressions::key_t{resource_, alias},
+                                                       std::move(col_ref.field)));
+                            break;
+                        }
+                        [[fallthrough]];
+                    }
                     case T_A_Const: {
                         has_non_star = true;
                         auto expr = make_scalar_expression(resource_,

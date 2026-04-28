@@ -5,6 +5,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
+
 using namespace components::expressions;
 
 namespace components::sql::transform {
@@ -126,9 +127,23 @@ namespace components::sql::transform {
                 key.deduce_side(names);
                 return key.field;
             }
+            case T_TypeCast: {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                    auto target_type_res = get_type(resource_, cast->typeName);
+                    if (target_type_res.has_error()) {
+                        error_ = target_type_res.error();
+                        return nullptr;
+                    }
+                    auto col_ref = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                    col_ref.deduce_side(names);
+                    col_ref.field.set_cast_type(target_type_res.value());
+                    return col_ref.field;
+                }
+                return add_param_value(node, params);
+            }
             case T_ParamRef:
             case T_A_Const:
-            case T_TypeCast:
                 return add_param_value(node, params);
             case T_A_Expr: {
                 auto sub_expr = pg_ptr_cast<A_Expr>(node);
@@ -177,6 +192,10 @@ namespace components::sql::transform {
                             } else {
                                 args.emplace_back(add_param_value(arg_node, params));
                             }
+                        } else if (nodeTag(arg_node) == T_CaseExpr) {
+                            // CASE WHEN ... inside aggregate arg, e.g. SUM(CASE ...)
+                            args.emplace_back(
+                                case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_node), nullptr, names, params, group));
                         } else {
                             args.emplace_back(add_param_value(arg_node, params));
                         }
@@ -368,9 +387,24 @@ namespace components::sql::transform {
                             key.deduce_side(names);
                             return key.field;
                         }
+                        case T_TypeCast: {
+                            auto cast = pg_ptr_cast<TypeCast>(node);
+                            if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
+                                auto target_type_res = get_type(resource_, cast->typeName);
+                                if (target_type_res.has_error()) {
+                                    error_ = target_type_res.error();
+                                    return nullptr;
+                                }
+                                auto col_ref =
+                                    columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names);
+                                col_ref.deduce_side(names);
+                                col_ref.field.set_cast_type(target_type_res.value());
+                                return col_ref.field;
+                            }
+                            return add_param_value(node, params);
+                        }
                         case T_ParamRef:
                         case T_A_Const:
-                        case T_TypeCast:
                         case T_RowExpr:
                         case T_A_ArrayExpr:
                             return add_param_value(node, params);
@@ -583,11 +617,11 @@ namespace components::sql::transform {
         return logical_plan::make_node_function(params->parameters().resource(), std::move(funcname), std::move(args));
     }
 
-    void transformer::transform_select_case_expr(CaseExpr* node,
-                                                 const char* alias,
-                                                 const name_collection_t& names,
-                                                 logical_plan::parameter_node_t* params,
-                                                 logical_plan::node_ptr& group) {
+    expression_ptr transformer::case_expr_to_scalar(CaseExpr* node,
+                                                    const char* alias,
+                                                    const name_collection_t& names,
+                                                    logical_plan::parameter_node_t* params,
+                                                    logical_plan::node_ptr group) {
         std::string expr_name = alias ? alias : "case_" + std::to_string(aggregate_counter_++);
         auto expr = make_scalar_expression(resource_,
                                            scalar_type::case_expr,
@@ -619,7 +653,7 @@ namespace components::sql::transform {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
 
                                            std::pmr::string{"Unsupported WHEN condition type", resource_});
-                    return;
+                    return nullptr;
                 }
             }
 
@@ -634,7 +668,18 @@ namespace components::sql::transform {
             expr->append_param(resolve_select_operand(def_node, names, params, group));
         }
 
-        group->append_expression(expr);
+        return expr;
+    }
+
+    void transformer::transform_select_case_expr(CaseExpr* node,
+                                                 const char* alias,
+                                                 const name_collection_t& names,
+                                                 logical_plan::parameter_node_t* params,
+                                                 logical_plan::node_ptr& group) {
+        auto expr = case_expr_to_scalar(node, alias, names, params, group);
+        if (expr) {
+            group->append_expression(expr);
+        }
     }
 
     // Resolve a HAVING operand: FuncCall → find matching aggregate alias in group

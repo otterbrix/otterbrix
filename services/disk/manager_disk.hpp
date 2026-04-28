@@ -63,6 +63,11 @@ namespace services::disk {
         components::table::data_table_t& table() { return *table_; }
         storage_mode_t mode() const { return mode_; }
 
+        /// Replaces the internal table (used when adding a column to a computing table).
+        void reset_table(std::unique_ptr<components::table::data_table_t> new_table) {
+            table_ = std::move(new_table);
+        }
+
         /// Checkpoint (disk mode only, no-op for in-memory)
         void checkpoint();
 
@@ -168,6 +173,9 @@ namespace services::disk {
                                                 collection_full_name_t name,
                                                 std::vector<components::table::column_definition_t> columns);
         unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
+        unique_future<void> storage_add_column(session_id_t session,
+                                               collection_full_name_t name,
+                                               components::table::column_definition_t new_column);
 
         // Storage queries
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
@@ -234,6 +242,7 @@ namespace services::disk {
                                                        &manager_disk_t::create_storage_with_columns,
                                                        &manager_disk_t::create_storage_disk,
                                                        &manager_disk_t::drop_storage,
+                                                       &manager_disk_t::storage_add_column,
                                                        // Storage queries
                                                        &manager_disk_t::storage_types,
                                                        &manager_disk_t::storage_total_rows,
@@ -272,35 +281,49 @@ namespace services::disk {
 
         // Storage entries per collection
         struct collection_storage_entry_t {
+            std::pmr::memory_resource* resource;
             table_storage_t table_storage;
             std::unique_ptr<components::storage::storage_t> storage;
 
             /// In-memory: schema-less
-            explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
-                : table_storage(resource)
+            explicit collection_storage_entry_t(std::pmr::memory_resource* resource_)
+                : resource(resource_)
+                , table_storage(resource_)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// In-memory: with columns
-            explicit collection_storage_entry_t(std::pmr::memory_resource* resource,
+            explicit collection_storage_entry_t(std::pmr::memory_resource* resource_,
                                                 std::vector<components::table::column_definition_t> columns)
-                : table_storage(resource, std::move(columns))
+                : resource(resource_)
+                , table_storage(resource_, std::move(columns))
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// Disk: create new table.otbx
-            collection_storage_entry_t(std::pmr::memory_resource* resource,
+            collection_storage_entry_t(std::pmr::memory_resource* resource_,
                                        std::vector<components::table::column_definition_t> columns,
                                        const std::filesystem::path& otbx_path)
-                : table_storage(resource, std::move(columns), otbx_path)
+                : resource(resource_)
+                , table_storage(resource_, std::move(columns), otbx_path)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// Disk: load existing table.otbx
-            collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
-                : table_storage(resource, otbx_path)
+            collection_storage_entry_t(std::pmr::memory_resource* resource_, const std::filesystem::path& otbx_path)
+                : resource(resource_)
+                , table_storage(resource_, otbx_path)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
+
+            /// Add a column to a computing (schema-less) table.
+            void add_column(components::table::column_definition_t col_def) {
+                auto new_table =
+                    std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
+                table_storage.reset_table(std::move(new_table));
+                storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                          resource);
+            }
         };
         std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
             storages_;
@@ -424,6 +447,10 @@ namespace services::disk {
             co_return;
         }
         unique_future<void> drop_storage(session_id_t session, collection_full_name_t name);
+        unique_future<void> storage_add_column(session_id_t /*session*/,
+                                               collection_full_name_t name,
+                                               components::table::column_definition_t new_column);
+
 
         // Storage queries
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
@@ -507,6 +534,7 @@ namespace services::disk {
                                                        &manager_disk_empty_t::create_storage_with_columns,
                                                        &manager_disk_empty_t::create_storage_disk,
                                                        &manager_disk_empty_t::drop_storage,
+                                                       &manager_disk_empty_t::storage_add_column,
                                                        // Storage queries
                                                        &manager_disk_empty_t::storage_types,
                                                        &manager_disk_empty_t::storage_total_rows,
@@ -533,35 +561,49 @@ namespace services::disk {
         components::storage::storage_t* get_storage(const collection_full_name_t& name);
 
         struct collection_storage_entry_t {
+            std::pmr::memory_resource* resource;
             table_storage_t table_storage;
             std::unique_ptr<components::storage::storage_t> storage;
 
             /// In-memory: schema-less
-            explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
-                : table_storage(resource)
+            explicit collection_storage_entry_t(std::pmr::memory_resource* resource_)
+                : resource(resource_)
+                , table_storage(resource_)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// In-memory: with columns
-            explicit collection_storage_entry_t(std::pmr::memory_resource* resource,
+            explicit collection_storage_entry_t(std::pmr::memory_resource* resource_,
                                                 std::vector<components::table::column_definition_t> columns)
-                : table_storage(resource, std::move(columns))
+                : resource(resource_)
+                , table_storage(resource_, std::move(columns))
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// Disk: create new table.otbx
-            collection_storage_entry_t(std::pmr::memory_resource* resource,
+            collection_storage_entry_t(std::pmr::memory_resource* resource_,
                                        std::vector<components::table::column_definition_t> columns,
                                        const std::filesystem::path& otbx_path)
-                : table_storage(resource, std::move(columns), otbx_path)
+                : resource(resource_)
+                , table_storage(resource_, std::move(columns), otbx_path)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
 
             /// Disk: load existing table.otbx
-            collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
-                : table_storage(resource, otbx_path)
+            collection_storage_entry_t(std::pmr::memory_resource* resource_, const std::filesystem::path& otbx_path)
+                : resource(resource_)
+                , table_storage(resource_, otbx_path)
                 , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                         resource)) {}
+                                                                                         resource_)) {}
+
+            /// Add a column to a computing (schema-less) table.
+            void add_column(components::table::column_definition_t col_def) {
+                auto new_table =
+                    std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
+                table_storage.reset_table(std::move(new_table));
+                storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                          resource);
+            }
         };
         std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
             storages_;

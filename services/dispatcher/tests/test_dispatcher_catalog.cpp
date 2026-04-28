@@ -182,14 +182,18 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 
     test.execute_sql(query.str());
-    // for now insert transforms it into a regular schema
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
         REQUIRE(cur->is_success());
+        REQUIRE(catalog.table_computes(id));
 
-        REQUIRE(catalog.get_table_schema(id).columns()[0].name() == "name");
-        REQUIRE(catalog.get_table_schema(id).columns()[0].type() == logical_type::STRING_LITERAL);
-        REQUIRE(catalog.get_table_schema(id).columns()[1].name() == "count");
-        REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::BIGINT);
+        auto& sch = catalog.get_computing_table_schema(id);
+        auto name = sch.find_field_versions(std::pmr::string("name"));
+        auto count = sch.find_field_versions(std::pmr::string("count"));
+
+        REQUIRE(name.size() == 1);
+        REQUIRE(name.back().type() == logical_type::STRING_LITERAL);
+        REQUIRE(count.size() == 1);
+        REQUIRE(count.back().type() == logical_type::BIGINT);
     });
     /*
     test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {

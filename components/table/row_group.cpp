@@ -116,7 +116,7 @@ namespace components::table {
 
     std::unique_ptr<row_group_t> row_group_t::add_column(collection_t* new_collection,
                                                          column_definition_t& new_column,
-                                                         const types::logical_value_t& default_value,
+                                                         const std::optional<types::logical_value_t>& default_value,
                                                          vector::vector_t& result) {
         auto added_column = column_data_t::create_column(collection_->resource(),
                                                          block_manager(),
@@ -126,12 +126,17 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
+            const types::logical_value_t fill_value = default_value.has_value()
+                                                          ? *default_value
+                                                          : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
             added_column->initialize_append(state);
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
-                assert(result.type() == default_value.type());
-                result.reference(default_value);
+                result.reference(fill_value);
+                if (!default_value.has_value()) {
+                    result.set_null(true);
+                }
                 added_column->append(state, result, rows_in_this_vector);
             }
         }

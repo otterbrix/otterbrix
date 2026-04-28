@@ -1,4 +1,5 @@
 #include "create_plan_aggregate.hpp"
+#include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
 #include "create_plan_sort.hpp"
 
@@ -32,6 +33,12 @@ namespace services::planner::impl {
         auto coll_name = node->collection_full_name();
         auto* plan_resource = context.has_collection(coll_name) ? context.resource : node->resource();
 
+        // projected_cols is populated by the column_pruning optimizer rule
+        // (components/planner/optimizer/rules/column_pruning.cpp). Empty means
+        // "no projection" → read all columns.
+        const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
+        const auto& projected_cols = agg_node->projected_cols();
+
         // When ORDER BY is present, scan all rows — limit+offset are applied post-sort.
         bool has_sort = false;
         for (const components::logical_plan::node_ptr& child : node->children()) {
@@ -54,7 +61,8 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    match_op = create_plan(context, function_registry, child, scan_limit, params);
+                    // Call create_plan_match directly so we can pass projected_cols
+                    match_op = create_plan_match(context, child, scan_limit, projected_cols);
                     break;
                 case node_type::group_t:
                     group_op = create_plan(context, function_registry, child, limit, params);
@@ -82,7 +90,7 @@ namespace services::planner::impl {
         } else {
             executor = match_op ? std::move(match_op)
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit)));
+                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, projected_cols)));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));
@@ -98,7 +106,6 @@ namespace services::planner::impl {
         }
 
         // Check if DISTINCT flag is set on the aggregate node
-        const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         if (agg_node->is_distinct()) {
             auto distinct_op =
                 context.has_collection(coll_name)

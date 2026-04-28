@@ -118,6 +118,7 @@ namespace components::vector {
             return reinterpret_cast<const T*>(data_);
         }
         std::shared_ptr<vector_buffer_t> auxiliary() { return auxiliary_; }
+        std::shared_ptr<vector_buffer_t> auxiliary() const { return auxiliary_; }
         std::shared_ptr<vector_buffer_t> get_buffer() { return buffer_; }
 
         void reference(const types::logical_value_t& value);

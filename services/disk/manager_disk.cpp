@@ -311,6 +311,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_projected, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch, msg);
                 break;
@@ -1044,6 +1048,32 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::storage_scan_projected(session_id_t /*session*/,
+                                           collection_full_name_t name,
+                                           std::unique_ptr<components::table::table_filter_t> filter,
+                                           int64_t limit,
+                                           std::vector<size_t> projected_cols,
+                                           components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto types = s->types();
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+            s->scan(*result, filter.get(), limit, txn);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                        types,
+                                                                        projected_cols,
+                                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
+            s->scan_projected(*result, filter.get(), limit, projected_cols, txn);
+        }
+        co_return std::move(result);
+    }
+
+    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   collection_full_name_t name,
                                   components::vector::vector_t row_ids,
@@ -1407,6 +1437,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_scan_projected>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_scan_projected, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_empty_t, &manager_disk_empty_t::storage_fetch>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_empty_t::storage_fetch, msg);
                 break;
@@ -1638,6 +1672,32 @@ namespace services::disk {
         auto types = s->types();
         auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
         s->scan(*result, filter.get(), limit, txn);
+        co_return std::move(result);
+    }
+
+    manager_disk_empty_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_empty_t::storage_scan_projected(session_id_t /*session*/,
+                                                 collection_full_name_t name,
+                                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                                 int64_t limit,
+                                                 std::vector<size_t> projected_cols,
+                                                 components::table::transaction_data txn) {
+        auto* s = get_storage(name);
+        if (!s) {
+            co_return nullptr;
+        }
+        auto types = s->types();
+        std::unique_ptr<components::vector::data_chunk_t> result;
+        if (projected_cols.empty()) {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+            s->scan(*result, filter.get(), limit, txn);
+        } else {
+            result = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                        types,
+                                                                        projected_cols,
+                                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
+            s->scan_projected(*result, filter.get(), limit, projected_cols, txn);
+        }
         co_return std::move(result);
     }
 

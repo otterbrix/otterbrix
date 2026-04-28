@@ -97,6 +97,13 @@ namespace services::disk {
                      int64_t limit,
                      components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        storage_scan_projected(session_id_t session,
+                               collection_full_name_t name,
+                               std::unique_ptr<components::table::table_filter_t> filter,
+                               int64_t limit,
+                               std::vector<size_t> projected_cols,
+                               components::table::transaction_data txn);
+        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
                       components::vector::vector_t row_ids,
@@ -154,6 +161,7 @@ namespace services::disk {
                                                             &disk_contract::storage_adopt_schema,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
+                                                            &disk_contract::storage_scan_projected,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,

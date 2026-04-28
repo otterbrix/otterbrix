@@ -95,6 +95,18 @@ namespace components::operators {
         , expression_(expression)
         , limit_(limit) {}
 
+    full_scan::full_scan(std::pmr::memory_resource* resource,
+                         log_t log,
+                         collection_full_name_t name,
+                         const expressions::compare_expression_ptr& expression,
+                         logical_plan::limit_t limit,
+                         std::vector<size_t> projected_cols)
+        : read_only_operator_t(resource, log, operator_type::full_scan)
+        , name_(std::move(name))
+        , expression_(expression)
+        , limit_(limit)
+        , projected_cols_(std::move(projected_cols)) {}
+
     void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (name_.empty())
             return;
@@ -121,18 +133,31 @@ namespace components::operators {
         // Build filter from expression
         auto filter = transform_predicate(expression_, types, &ctx->parameters);
 
-        // Scan from storage
+        // Scan from storage (projected if columns are specified, otherwise full scan)
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
-        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan,
-                                         ctx->session,
-                                         name_,
-                                         std::move(filter),
-                                         scan_limit,
-                                         ctx->txn);
-        auto data = co_await std::move(sf);
+        std::unique_ptr<vector::data_chunk_t> data;
+        if (!projected_cols_.empty()) {
+            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_scan_projected,
+                                             ctx->session,
+                                             name_,
+                                             std::move(filter),
+                                             scan_limit,
+                                             projected_cols_,
+                                             ctx->txn);
+            data = co_await std::move(sf);
+        } else {
+            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_scan,
+                                             ctx->session,
+                                             name_,
+                                             std::move(filter),
+                                             scan_limit,
+                                             ctx->txn);
+            data = co_await std::move(sf);
+        }
 
         if (data) {
             if (offset_val > 0 && static_cast<uint64_t>(offset_val) < data->size()) {

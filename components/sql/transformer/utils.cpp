@@ -389,9 +389,10 @@ namespace components::sql::transform {
                             break;
                     }
                 }
-                // Original behavior: boolean cast ('t' → true, anything else → false)
-                bool is_true = str == "t";
-                return types::logical_value_t(resource, is_true);
+                if (!type_res.has_error() && type_res.value().type() == types::logical_type::BOOLEAN) {
+                    return types::logical_value_t(resource, str == "t");
+                }
+                return types::logical_value_t(resource, std::string(str));
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);

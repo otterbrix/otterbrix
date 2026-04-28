@@ -1,8 +1,8 @@
 #pragma once
 #include "column_data.hpp"
-#include <optional>
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
+#include <optional>
 
 namespace components::vector {
     class data_chunk_t;

@@ -126,9 +126,9 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
-            const types::logical_value_t fill_value = default_value.has_value()
-                                                          ? *default_value
-                                                          : types::logical_value_t{collection_->resource(), new_column.type()};
+            const types::logical_value_t fill_value =
+                default_value.has_value() ? *default_value
+                                          : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
             added_column->initialize_append(state);
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {

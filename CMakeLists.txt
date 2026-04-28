@@ -81,9 +81,6 @@ if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Cla
             -Wredundant-decls
             -Wsign-conversion
             -Wsign-promo
-            # GCC false positive: coroutine promise_type uses operator new(size_t, Args...)
-            # for heap elision but operator delete(void*, size_t) for normal cleanup — correct per C++20
-            $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>
     )
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     add_compile_options(/W4 /WX)

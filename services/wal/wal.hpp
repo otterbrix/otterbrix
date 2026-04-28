@@ -1,145 +1,139 @@
 #pragma once
 
-#include <actor-zeta.hpp>
-#include <actor-zeta/actor/actor_mixin.hpp>
+#include <atomic>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
-#include <boost/filesystem.hpp>
-#include <components/log/log.hpp>
-
 #include <components/configuration/configuration.hpp>
+#include <components/log/log.hpp>
 #include <components/session/session.hpp>
-#include <core/file/file_system.hpp>
-
-#include "dto.hpp"
-#include "forward.hpp"
-#include "record.hpp"
+#include <components/vector/data_chunk.hpp>
+#include <services/wal/base.hpp>
+#include <services/wal/record.hpp>
+#include <services/wal/wal_binary.hpp>
+#include <services/wal/wal_page_reader.hpp>
+#include <services/wal/wal_page_writer.hpp>
+#include <services/wal/wal_sync_mode.hpp>
 
 namespace services::wal {
 
-    class wal_replicate_t : public actor_zeta::basic_actor<wal_replicate_t> {
-        using session_id_t = components::session::session_id_t;
-        using address_t = actor_zeta::address_t;
-        using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
+    class manager_wal_replicate_t;
 
+    using session_id_t = components::session::session_id_t;
+
+    class wal_worker_t final : public actor_zeta::actor::basic_actor<wal_worker_t> {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        wal_replicate_t(std::pmr::memory_resource* resource,
-                        manager_wal_replicate_t* manager,
-                        log_t& log,
-                        configuration::config_wal config,
-                        int worker_index = 0,
-                        int worker_count = 1);
-        virtual ~wal_replicate_t();
+        wal_worker_t(std::pmr::memory_resource* resource,
+                     manager_wal_replicate_t* manager,
+                     log_t& log,
+                     configuration::config_wal config,
+                     const std::string& database_name);
 
-        unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-        unique_future<services::wal::id_t> commit_txn(session_id_t session, uint64_t transaction_id);
-
-        unique_future<void> truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id);
-
-        // Physical WAL write methods
-        unique_future<services::wal::id_t>
-        write_physical_insert(session_id_t session,
-                              std::string database,
-                              std::string collection,
-                              std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-                              uint64_t row_start,
-                              uint64_t row_count,
-                              uint64_t txn_id);
-
-        unique_future<services::wal::id_t> write_physical_delete(session_id_t session,
-                                                                 std::string database,
-                                                                 std::string collection,
-                                                                 std::pmr::vector<int64_t> row_ids,
-                                                                 uint64_t count,
-                                                                 uint64_t txn_id);
-
-        unique_future<services::wal::id_t>
-        write_physical_update(session_id_t session,
-                              std::string database,
-                              std::string collection,
-                              std::pmr::vector<int64_t> row_ids,
-                              std::unique_ptr<components::vector::data_chunk_t> new_data,
-                              uint64_t count,
-                              uint64_t txn_id);
-
-        using dispatch_traits = actor_zeta::dispatch_traits<&wal_replicate_t::load,
-                                                            &wal_replicate_t::commit_txn,
-                                                            &wal_replicate_t::truncate_before,
-                                                            &wal_replicate_t::write_physical_insert,
-                                                            &wal_replicate_t::write_physical_delete,
-                                                            &wal_replicate_t::write_physical_update>;
-
-        services::wal::id_t current_id() const { return id_.load(); }
+        ~wal_worker_t();
 
         auto make_type() const noexcept -> const char*;
+
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
+        // -----------------------------------------------------------------------
+        // Internal methods (called by manager, NOT wal_contract)
+        // -----------------------------------------------------------------------
+
+        unique_future<std::vector<record_t>> load(session_id_t session, wal::id_t after_wal_id);
+
+        unique_future<wal::id_t> commit_txn(session_id_t session,
+                                            uint64_t transaction_id,
+                                            wal_sync_mode sync_mode,
+                                            wal::id_t wal_id);
+
+        unique_future<void> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
+
+        unique_future<wal::id_t> current_wal_id(session_id_t session);
+
+        unique_future<wal::id_t> write_physical_insert(session_id_t session,
+                                                       std::string database,
+                                                       std::string collection,
+                                                       std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                                       uint64_t row_start,
+                                                       uint64_t row_count,
+                                                       uint64_t txn_id,
+                                                       wal::id_t wal_id);
+
+        unique_future<wal::id_t> write_physical_delete(session_id_t session,
+                                                       std::string database,
+                                                       std::string collection,
+                                                       std::pmr::vector<int64_t> row_ids,
+                                                       uint64_t count,
+                                                       uint64_t txn_id,
+                                                       wal::id_t wal_id);
+
+        unique_future<wal::id_t> write_physical_update(session_id_t session,
+                                                       std::string database,
+                                                       std::string collection,
+                                                       std::pmr::vector<int64_t> row_ids,
+                                                       std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                                       uint64_t count,
+                                                       uint64_t txn_id,
+                                                       wal::id_t wal_id);
+
+        using dispatch_traits = actor_zeta::dispatch_traits<
+            &wal_worker_t::load,
+            &wal_worker_t::commit_txn,
+            &wal_worker_t::truncate_before,
+            &wal_worker_t::current_wal_id,
+            &wal_worker_t::write_physical_insert,
+            &wal_worker_t::write_physical_delete,
+            &wal_worker_t::write_physical_update>;
+
     private:
-        virtual void write_buffer(buffer_t& buffer);
-        virtual void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const;
+        // -----------------------------------------------------------------------
+        // Startup helpers
+        // -----------------------------------------------------------------------
 
-        void init_id();
-        bool find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const;
-        services::wal::id_t read_id(std::size_t start_index) const;
-        record_t read_record(std::size_t start_index) const;
-        size_tt read_size(size_t start_index) const;
-        buffer_t read(size_t start_index, size_t finish_index) const;
+        /// Discover existing segment files, recover max wal_id and last CRC.
+        void recover_from_disk();
 
-        mutable log_t log_;
+        /// Build a segment file path for the given segment index.
+        std::filesystem::path segment_path(uint32_t seg_index) const;
+
+        /// Collect all segment file paths sorted by index.
+        std::vector<std::filesystem::path> discover_segments() const;
+
+        /// Parse segment index from filename. Returns (uint32_t)-1 on failure.
+        static uint32_t parse_segment_index(const std::filesystem::path& path,
+                                            const std::string& db_name);
+
+        /// Ensure the page writer is ready; rotate if the current segment is full.
+        void ensure_writer();
+
+        // -----------------------------------------------------------------------
+        // State
+        // -----------------------------------------------------------------------
+        log_t log_;
         configuration::config_wal config_;
-        core::filesystem::local_file_system_t fs_;
-        int worker_index_{0};
-        int worker_count_{1};
+        std::string database_name_;
+        std::filesystem::path database_dir_;
+
         atomic_id_t id_{0};
-        crc32_t last_crc32_{0};
-        file_ptr file_;
-        int current_segment_idx_{0};
+        crc32_t last_crc_{0};
+        uint32_t current_segment_index_{0};
 
-        std::string wal_segment_name_(int segment_idx) const;
-        void rotate_segment_();
-        std::vector<std::filesystem::path> discover_segments_() const;
-        services::wal::id_t last_id_in_file_(const std::filesystem::path& path);
+        std::unique_ptr<wal_page_writer_t> writer_;
 
-        std::pmr::vector<unique_future<std::vector<record_t>>> pending_load_;
-        std::pmr::vector<unique_future<services::wal::id_t>> pending_id_;
-
-        void poll_pending();
-
-#ifdef DEV_MODE
-    public:
-        bool test_find_start_record(services::wal::id_t wal_id, std::size_t& start_index) const;
-        services::wal::id_t test_read_id(std::size_t start_index) const;
-        std::size_t test_next_record(std::size_t start_index) const;
-        record_t test_read_record(std::size_t start_index) const;
-        size_tt test_read_size(size_t start_index) const;
-        buffer_t test_read(size_t start_index, size_t finish_index) const;
-#endif
+        /// Temporary encode buffer, reused across writes to avoid re-allocation.
+        buffer_t encode_buf_;
     };
 
-    class wal_replicate_without_disk_t final : public wal_replicate_t {
-        using session_id_t = components::session::session_id_t;
-        using address_t = actor_zeta::address_t;
+    using wal_worker_ptr = std::unique_ptr<wal_worker_t, actor_zeta::pmr::deleter_t>;
 
-    public:
-        wal_replicate_without_disk_t(std::pmr::memory_resource* resource,
-                                     manager_wal_replicate_t* manager,
-                                     log_t& log,
-                                     configuration::config_wal config,
-                                     int worker_index = 0,
-                                     int worker_count = 1);
-
-        unique_future<std::vector<record_t>> load(session_id_t session, services::wal::id_t wal_id);
-
-    private:
-        void write_buffer(buffer_t&) override;
-        void read_buffer(buffer_t& buffer, size_t start_index, size_t size) const override;
-    };
-
-    using wal_replicate_ptr = std::unique_ptr<wal_replicate_t, actor_zeta::pmr::deleter_t>;
-
-} //namespace services::wal
+} // namespace services::wal

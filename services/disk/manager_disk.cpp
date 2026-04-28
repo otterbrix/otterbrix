@@ -507,13 +507,39 @@ namespace services::disk {
                                                                             wal::id_t current_wal_id) {
         trace(log_, "manager_disk_t::checkpoint_all , session : {} , wal_id : {}", session.data(), current_wal_id);
 
-        // Checkpoint DISK tables and collect schemas from ALL tables
+        // Checkpoint DISK tables with torn-write protection (W-TORN).
+        // For each table: copy current → .prev, checkpoint (in-place write), delete .prev.
+        // On recovery: if .prev exists and current is corrupted, restore from .prev.
         std::vector<catalog_schema_update_t> schemas;
         for (auto& [name, entry] : storages_) {
             if (entry->table_storage.mode() == storage_mode_t::DISK) {
                 trace(log_, "manager_disk_t::checkpoint_all checkpointing : {}", name.to_string());
+
+                auto otbx_path = config_.path / name.database / "main" / name.collection / "table.otbx";
+                auto prev_path = otbx_path;
+                prev_path += ".prev";
+
+                // W-TORN Step 1: backup current checkpoint via copy (file stays open for block_manager)
+                std::error_code copy_error;
+                if (std::filesystem::exists(otbx_path)) {
+                    std::filesystem::copy_file(otbx_path, prev_path,
+                                               std::filesystem::copy_options::overwrite_existing,
+                                               copy_error);
+                    if (copy_error) {
+                        warn(log_, "manager_disk_t::checkpoint_all , failed to copy {} to {} : {}",
+                             otbx_path.string(), prev_path.string(), copy_error.message());
+                    }
+                }
+
+                // W-TORN Step 2: write new checkpoint (in-place, double-header protocol)
                 entry->table_storage.table().compact();
                 entry->table_storage.checkpoint();
+
+                // W-TORN Step 3: delete backup after successful checkpoint
+                if (std::filesystem::exists(prev_path)) {
+                    std::error_code remove_error;
+                    std::filesystem::remove(prev_path, remove_error);
+                }
             }
 
             // Collect schema from all tables (including IN_MEMORY) for catalog persistence

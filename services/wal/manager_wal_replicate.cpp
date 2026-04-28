@@ -1,10 +1,18 @@
 #include "manager_wal_replicate.hpp"
-#include <actor-zeta/spawn.hpp>
+
 #include <algorithm>
-#include <chrono>
-#include <thread>
+#include <filesystem>
+#include <mutex>
+
+#include <actor-zeta/spawn.hpp>
+#include <core/executor.hpp>
+#include <services/wal/wal_page_reader.hpp>
 
 namespace services::wal {
+
+    // -----------------------------------------------------------------------
+    // Constructor / Destructor
+    // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
@@ -15,36 +23,60 @@ namespace services::wal {
         , scheduler_(scheduler)
         , config_(std::move(config))
         , log_(log.clone())
-        , pending_void_(resource)
-        , pending_load_(resource) {
-        create_wal_worker(config_.agent);
-        trace(log_, "manager_wal_replicate_t start thread pool");
+        , enabled_(config_.on)
+        , manager_disk_(actor_zeta::address_t::empty_address())
+        , manager_dispatcher_(actor_zeta::address_t::empty_address()) {
+        trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
+        if (enabled_ && !config_.path.empty()) {
+            std::filesystem::create_directories(config_.path);
+            // Discover existing database directories, recover global_id_, create workers.
+            wal::id_t max_recovered_id = 0;
+            for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
+                if (!entry.is_directory()) {
+                    continue;
+                }
+                auto db_name = entry.path().filename().string();
+                trace(log_, "manager_wal_replicate: recovering database '{}'", db_name);
+
+                // Scan segments to find max wal_id (via reader, no actor messaging).
+                for (const auto& seg : std::filesystem::directory_iterator(entry.path())) {
+                    if (!seg.is_regular_file()) {
+                        continue;
+                    }
+                    wal_page_reader_t reader(seg.path());
+                    auto records = reader.read_all_records(0);
+                    for (const auto& r : records) {
+                        if (r.is_valid() && r.id > max_recovered_id) {
+                            max_recovered_id = r.id;
+                        }
+                    }
+                }
+
+                get_or_create_worker(db_name);
+            }
+            global_id_.store(max_recovered_id, std::memory_order_relaxed);
+        }
+        trace(log_, "manager_wal_replicate finish");
     }
 
-    manager_wal_replicate_t::~manager_wal_replicate_t() { trace(log_, "delete manager_wal_replicate_t"); }
+    manager_wal_replicate_t::~manager_wal_replicate_t() {
+        trace(log_, "delete manager_wal_replicate_t");
+    }
 
-    auto manager_wal_replicate_t::make_type() const noexcept -> const char* { return "manager_wal"; }
+    // -----------------------------------------------------------------------
+    // Actor infrastructure
+    // -----------------------------------------------------------------------
 
-    void manager_wal_replicate_t::poll_pending() {
-        for (auto it = pending_void_.begin(); it != pending_void_.end();) {
-            if (it->available()) {
-                it = pending_void_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        for (auto it = pending_load_.begin(); it != pending_load_.end();) {
-            if (it->available()) {
-                it = pending_load_.erase(it);
-            } else {
-                ++it;
-            }
-        }
+    std::pmr::memory_resource* manager_wal_replicate_t::resource() const noexcept {
+        return resource_;
+    }
+
+    const char* manager_wal_replicate_t::make_type() const noexcept {
+        return "manager_wal_replicate";
     }
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        std::lock_guard<spin_lock> guard(lock_);
         current_behavior_ = behavior(msg.get());
 
         while (current_behavior_.is_busy()) {
@@ -54,7 +86,7 @@ namespace services::wal {
                     cont.resume();
                 }
             } else {
-                std::this_thread::sleep_for(std::chrono::microseconds(10));
+                run_fn_();
             }
         }
 
@@ -62,8 +94,6 @@ namespace services::wal {
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
-        poll_pending();
-
         switch (msg->command()) {
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::load>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::load, msg);
@@ -98,279 +128,257 @@ namespace services::wal {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // sync: receive disk and dispatcher addresses
+    // -----------------------------------------------------------------------
+
     void manager_wal_replicate_t::sync(address_pack pack) {
-        manager_disk_ = std::get<static_cast<uint64_t>(unpack_rules::manager_disk)>(pack);
-        manager_dispatcher_ = std::get<static_cast<uint64_t>(unpack_rules::manager_dispatcher)>(pack);
+        auto [disk_addr, dispatcher_addr] = pack;
+        manager_disk_ = std::move(disk_addr);
+        manager_dispatcher_ = std::move(dispatcher_addr);
+        trace(log_, "manager_wal_replicate::sync done");
     }
 
-    void manager_wal_replicate_t::create_wal_worker(int count_worker) {
-        for (int i = 0; i < count_worker; ++i) {
-            if (config_.sync_to_disk) {
-                trace(log_, "manager_wal_replicate_t::create_wal_worker index={} count={}", i, count_worker);
-                auto worker = actor_zeta::spawn<wal_replicate_t>(resource(), this, log_, config_, i, count_worker);
-                dispatchers_.emplace_back(std::move(worker));
-            } else {
-                trace(log_, "manager_wal_replicate_t::create_wal_worker without disk index={}", i);
-                auto worker =
-                    actor_zeta::spawn<wal_replicate_without_disk_t>(resource(), this, log_, config_, i, count_worker);
-                dispatchers_.emplace_back(std::move(worker));
-            }
-        }
+    // -----------------------------------------------------------------------
+    // Global WAL ID
+    // -----------------------------------------------------------------------
+
+    wal::id_t manager_wal_replicate_t::next_wal_id() {
+        return ++global_id_;
     }
+
+    // -----------------------------------------------------------------------
+    // Worker management
+    // -----------------------------------------------------------------------
+
+    wal_worker_t* manager_wal_replicate_t::get_or_create_worker(const std::string& database) {
+        auto it = wal_actors_.find(database);
+        if (it != wal_actors_.end()) {
+            return it->second.get();
+        }
+
+        trace(log_, "manager_wal_replicate: spawning worker for database '{}'", database);
+        auto worker = actor_zeta::spawn<wal_worker_t>(resource_, this, log_, config_, database);
+        auto* ptr = worker.get();
+        wal_actors_.emplace(database, std::move(worker));
+        return ptr;
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract: load
+    // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<std::vector<record_t>>
-    manager_wal_replicate_t::load(session_id_t session, services::wal::id_t wal_id) {
-        trace(log_, "manager_wal_replicate_t::load, id: {}, workers: {}", wal_id, dispatchers_.size());
-        std::vector<record_t> all_records;
-        for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] =
-                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::load, session, wal_id);
-            if (needs_sched) {
-                scheduler_->enqueue(dispatchers_[i].get());
-            }
-            auto records = co_await std::move(future);
-            all_records.insert(all_records.end(),
-                               std::make_move_iterator(records.begin()),
-                               std::make_move_iterator(records.end()));
+    manager_wal_replicate_t::load(session_id_t session, wal::id_t wal_id) {
+        if (!enabled_) {
+            co_return std::vector<record_t>{};
         }
-        std::sort(all_records.begin(), all_records.end(), [](const record_t& a, const record_t& b) {
-            return a.id < b.id;
-        });
-        co_return all_records;
+
+        // Collect records from ALL workers, merge-sort by wal_id.
+        std::vector<record_t> merged;
+        for (auto& [db_name, worker] : wal_actors_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                              &wal_worker_t::load,
+                                              session,
+                                              wal_id);
+            if (needs_sched) {
+                scheduler_->enqueue(worker.get());
+            }
+            auto records = co_await std::move(fut);
+            merged.insert(merged.end(),
+                          std::make_move_iterator(records.begin()),
+                          std::make_move_iterator(records.end()));
+        }
+
+        std::sort(merged.begin(), merged.end(),
+                  [](const record_t& a, const record_t& b) { return a.id < b.id; });
+
+        co_return std::move(merged);
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::commit_txn(session_id_t session, uint64_t transaction_id) {
-        trace(log_, "manager_wal_replicate_t::commit_txn txn_id={}", transaction_id);
-        // Write commit marker to all workers (any worker might have the DML records)
-        services::wal::id_t last_id{0};
-        for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] =
-                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::commit_txn, session, transaction_id);
-            if (needs_sched) {
-                scheduler_->enqueue(dispatchers_[i].get());
-            }
-            last_id = co_await std::move(future);
+    // -----------------------------------------------------------------------
+    // Contract: commit_txn
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::commit_txn(session_id_t session,
+                                        uint64_t txn_id,
+                                        wal_sync_mode sync_mode,
+                                        std::string database_name) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
         }
-        co_return last_id;
+
+        auto* worker = get_or_create_worker(database_name);
+        auto wal_id = next_wal_id();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                          &wal_worker_t::commit_txn,
+                                          session,
+                                          txn_id,
+                                          sync_mode,
+                                          wal_id);
+        if (needs_sched) {
+            scheduler_->enqueue(worker);
+        }
+        auto result = co_await std::move(fut);
+        co_return result;
     }
+
+    // -----------------------------------------------------------------------
+    // Contract: truncate_before
+    // -----------------------------------------------------------------------
 
     manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::truncate_before(session_id_t session, services::wal::id_t checkpoint_wal_id) {
-        trace(log_, "manager_wal_replicate_t::truncate_before checkpoint_wal_id={}", checkpoint_wal_id);
-        for (std::size_t i = 0; i < dispatchers_.size(); ++i) {
-            auto [needs_sched, future] =
-                actor_zeta::send(dispatchers_[i].get(), &wal_replicate_t::truncate_before, session, checkpoint_wal_id);
+    manager_wal_replicate_t::truncate_before(session_id_t session, wal::id_t checkpoint_wal_id) {
+        if (!enabled_) {
+            co_return;
+        }
+
+        // Send to ALL workers.
+        for (auto& [db_name, worker] : wal_actors_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                              &wal_worker_t::truncate_before,
+                                              session,
+                                              checkpoint_wal_id);
             if (needs_sched) {
-                scheduler_->enqueue(dispatchers_[i].get());
+                scheduler_->enqueue(worker.get());
             }
-            co_await std::move(future);
+            co_await std::move(fut);
         }
         co_return;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::current_wal_id(session_id_t /*session*/) {
-        services::wal::id_t max_id{0};
-        for (const auto& w : dispatchers_) {
-            max_id = std::max(max_id, w->current_id());
+    // -----------------------------------------------------------------------
+    // Contract: current_wal_id
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::current_wal_id(session_id_t session) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+
+        // Take max across all workers.
+        wal::id_t max_id = 0;
+        for (auto& [db_name, worker] : wal_actors_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                              &wal_worker_t::current_wal_id,
+                                              session);
+            if (needs_sched) {
+                scheduler_->enqueue(worker.get());
+            }
+            auto wid = co_await std::move(fut);
+            if (wid > max_id) {
+                max_id = wid;
+            }
         }
         co_return max_id;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::write_physical_insert(session_id_t session,
-                                                   std::string database,
-                                                   std::string collection,
-                                                   std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-                                                   uint64_t row_start,
-                                                   uint64_t row_count,
-                                                   uint64_t txn_id) {
-        trace(log_, "manager_wal_replicate_t::write_physical_insert {}::{}", database, collection);
-        auto coll_name = collection_full_name_t(database, collection);
-        auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
-                                                      &wal_replicate_t::write_physical_insert,
-                                                      session,
-                                                      std::move(database),
-                                                      std::move(collection),
-                                                      std::move(data_chunk),
-                                                      row_start,
-                                                      row_count,
-                                                      txn_id);
+    // -----------------------------------------------------------------------
+    // Contract: write_physical_insert
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::write_physical_insert(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+        uint64_t row_start,
+        uint64_t row_count,
+        uint64_t txn_id) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+
+        auto* worker = get_or_create_worker(database);
+        auto wal_id = next_wal_id();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                          &wal_worker_t::write_physical_insert,
+                                          session,
+                                          std::move(database),
+                                          std::move(collection),
+                                          std::move(data_chunk),
+                                          row_start,
+                                          row_count,
+                                          txn_id,
+                                          wal_id);
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[idx].get());
+            scheduler_->enqueue(worker);
         }
-        co_return co_await std::move(future);
+        auto result = co_await std::move(fut);
+        co_return result;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::write_physical_delete(session_id_t session,
-                                                   std::string database,
-                                                   std::string collection,
-                                                   std::pmr::vector<int64_t> row_ids,
-                                                   uint64_t count,
-                                                   uint64_t txn_id) {
-        trace(log_, "manager_wal_replicate_t::write_physical_delete {}::{}", database, collection);
-        auto coll_name = collection_full_name_t(database, collection);
-        auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
-                                                      &wal_replicate_t::write_physical_delete,
-                                                      session,
-                                                      std::move(database),
-                                                      std::move(collection),
-                                                      std::move(row_ids),
-                                                      count,
-                                                      txn_id);
+    // -----------------------------------------------------------------------
+    // Contract: write_physical_delete
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::write_physical_delete(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::pmr::vector<int64_t> row_ids,
+        uint64_t count,
+        uint64_t txn_id) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+
+        auto* worker = get_or_create_worker(database);
+        auto wal_id = next_wal_id();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                          &wal_worker_t::write_physical_delete,
+                                          session,
+                                          std::move(database),
+                                          std::move(collection),
+                                          std::move(row_ids),
+                                          count,
+                                          txn_id,
+                                          wal_id);
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[idx].get());
+            scheduler_->enqueue(worker);
         }
-        co_return co_await std::move(future);
+        auto result = co_await std::move(fut);
+        co_return result;
     }
 
-    manager_wal_replicate_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_t::write_physical_update(session_id_t session,
-                                                   std::string database,
-                                                   std::string collection,
-                                                   std::pmr::vector<int64_t> row_ids,
-                                                   std::unique_ptr<components::vector::data_chunk_t> new_data,
-                                                   uint64_t count,
-                                                   uint64_t txn_id) {
-        trace(log_, "manager_wal_replicate_t::write_physical_update {}::{}", database, collection);
-        auto coll_name = collection_full_name_t(database, collection);
-        auto idx = worker_index_for(coll_name);
-        auto [needs_sched, future] = actor_zeta::send(dispatchers_[idx].get(),
-                                                      &wal_replicate_t::write_physical_update,
-                                                      session,
-                                                      std::move(database),
-                                                      std::move(collection),
-                                                      std::move(row_ids),
-                                                      std::move(new_data),
-                                                      count,
-                                                      txn_id);
+    // -----------------------------------------------------------------------
+    // Contract: write_physical_update
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::write_physical_update(
+        session_id_t session,
+        std::string database,
+        std::string collection,
+        std::pmr::vector<int64_t> row_ids,
+        std::unique_ptr<components::vector::data_chunk_t> new_data,
+        uint64_t count,
+        uint64_t txn_id) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+
+        auto* worker = get_or_create_worker(database);
+        auto wal_id = next_wal_id();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                          &wal_worker_t::write_physical_update,
+                                          session,
+                                          std::move(database),
+                                          std::move(collection),
+                                          std::move(row_ids),
+                                          std::move(new_data),
+                                          count,
+                                          txn_id,
+                                          wal_id);
         if (needs_sched) {
-            scheduler_->enqueue(dispatchers_[idx].get());
+            scheduler_->enqueue(worker);
         }
-        co_return co_await std::move(future);
+        auto result = co_await std::move(fut);
+        co_return result;
     }
 
-    manager_wal_replicate_empty_t::manager_wal_replicate_empty_t(
-        std::pmr::memory_resource* resource,
-        actor_zeta::scheduler::sharing_scheduler* /*scheduler*/,
-        log_t& log)
-        : actor_zeta::actor::actor_mixin<manager_wal_replicate_empty_t>()
-        , resource_(resource)
-        , log_(log)
-        , pending_void_(resource) {
-        trace(log, "manager_wal_replicate_empty_t");
-    }
-
-    auto manager_wal_replicate_empty_t::make_type() const noexcept -> const char* { return "manager_wal_empty"; }
-
-    actor_zeta::behavior_t manager_wal_replicate_empty_t::behavior(actor_zeta::mailbox::message* msg) {
-        pending_void_.erase(
-            std::remove_if(pending_void_.begin(), pending_void_.end(), [](const auto& f) { return f.available(); }),
-            pending_void_.end());
-
-        switch (msg->command()) {
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::load>:
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::load, msg);
-                break;
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::commit_txn>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::commit_txn, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::truncate_before>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::truncate_before, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t, &manager_wal_replicate_empty_t::current_wal_id>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::current_wal_id, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
-                                    &manager_wal_replicate_empty_t::write_physical_insert>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_insert, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
-                                    &manager_wal_replicate_empty_t::write_physical_delete>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_delete, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_empty_t,
-                                    &manager_wal_replicate_empty_t::write_physical_update>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_empty_t::write_physical_update, msg);
-                break;
-            }
-            default:
-                break;
-        }
-    }
-
-    void manager_wal_replicate_empty_t::sync(address_pack /*pack*/) {
-        trace(log_, "manager_wal_replicate_empty_t::sync - no-op");
-    }
-
-    void manager_wal_replicate_empty_t::create_wal_worker(int) {
-        trace(log_, "manager_wal_replicate_empty_t::create_wal_worker - no-op");
-    }
-
-    manager_wal_replicate_empty_t::unique_future<std::vector<record_t>>
-    manager_wal_replicate_empty_t::load(session_id_t /*session*/, services::wal::id_t /*wal_id*/) {
-        trace(log_, "manager_wal_replicate_empty_t::load - return empty records");
-        co_return std::vector<record_t>{};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::commit_txn(session_id_t /*session*/, uint64_t /*transaction_id*/) {
-        trace(log_, "manager_wal_replicate_empty_t::commit_txn - return success");
-        co_return services::wal::id_t{0};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<void>
-    manager_wal_replicate_empty_t::truncate_before(session_id_t /*session*/,
-                                                   services::wal::id_t /*checkpoint_wal_id*/) {
-        trace(log_, "manager_wal_replicate_empty_t::truncate_before - no-op");
-        co_return;
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::current_wal_id(session_id_t /*session*/) {
-        co_return services::wal::id_t{0};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::write_physical_insert(
-        session_id_t /*session*/,
-        std::string /*database*/,
-        std::string /*collection*/,
-        std::unique_ptr<components::vector::data_chunk_t> /*data_chunk*/,
-        uint64_t /*row_start*/,
-        uint64_t /*row_count*/,
-        uint64_t /*txn_id*/) {
-        co_return services::wal::id_t{0};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::write_physical_delete(session_id_t /*session*/,
-                                                         std::string /*database*/,
-                                                         std::string /*collection*/,
-                                                         std::pmr::vector<int64_t> /*row_ids*/,
-                                                         uint64_t /*count*/,
-                                                         uint64_t /*txn_id*/) {
-        co_return services::wal::id_t{0};
-    }
-
-    manager_wal_replicate_empty_t::unique_future<services::wal::id_t>
-    manager_wal_replicate_empty_t::write_physical_update(session_id_t /*session*/,
-                                                         std::string /*database*/,
-                                                         std::string /*collection*/,
-                                                         std::pmr::vector<int64_t> /*row_ids*/,
-                                                         std::unique_ptr<components::vector::data_chunk_t> /*new_data*/,
-                                                         uint64_t /*count*/,
-                                                         uint64_t /*txn_id*/) {
-        co_return services::wal::id_t{0};
-    }
-
-} //namespace services::wal
+} // namespace services::wal

@@ -78,8 +78,8 @@ namespace components::planner::optimizer {
             if (!expr) return true;
             if (expressions::is_union_compare_condition(expr->type())) {
                 for (const auto& child : expr->children()) {
-                    const auto& ce = reinterpret_cast<const expressions::compare_expression_ptr&>(child);
-                    if (!collect_cols_from_compare(ce, cols)) return false;
+                    expressions::param_storage p{child};
+                    if (!collect_cols_from_param(p, cols)) return false;
                 }
                 return true;
             }

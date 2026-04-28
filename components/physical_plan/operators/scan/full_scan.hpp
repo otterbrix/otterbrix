@@ -19,6 +19,12 @@ namespace components::operators {
                   collection_full_name_t name,
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit);
+        full_scan(std::pmr::memory_resource* resource,
+                  log_t log,
+                  collection_full_name_t name,
+                  const expressions::compare_expression_ptr& expression,
+                  logical_plan::limit_t limit,
+                  std::vector<size_t> projected_cols);
 
         const collection_full_name_t& collection_name() const noexcept { return name_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
@@ -32,6 +38,7 @@ namespace components::operators {
         collection_full_name_t name_;
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
+        std::vector<size_t> projected_cols_;
     };
 
 } // namespace components::operators

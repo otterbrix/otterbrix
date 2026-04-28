@@ -82,7 +82,8 @@ namespace services::planner::impl {
         components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
                                                                const collection_full_name_t& coll_name,
                                                                const components::expressions::expression_ptr& expr,
-                                                               components::logical_plan::limit_t limit) {
+                                                               components::logical_plan::limit_t limit,
+                                                               const std::vector<size_t>& projected_cols) {
             if (context.has_collection(coll_name)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -111,7 +112,8 @@ namespace services::planner::impl {
                                                                                      context.log.clone(),
                                                                                      coll_name,
                                                                                      comp_expr,
-                                                                                     limit));
+                                                                                     limit,
+                                                                                     projected_cols));
                 } else {
                     // For now we do a full scan and apply function after
                     auto match_operator =
@@ -124,7 +126,8 @@ namespace services::planner::impl {
                                                                                   context.log.clone(),
                                                                                   coll_name,
                                                                                   nullptr,
-                                                                                  limit)));
+                                                                                  limit,
+                                                                                  projected_cols)));
                     return match_operator;
                 }
             } else {
@@ -136,16 +139,26 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_match(const context_storage_t& context,
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit) {
+        static const std::vector<size_t> empty_cols;
+        return create_plan_match(context, node, limit, empty_cols);
+    }
+
+    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
+                                                          const components::logical_plan::node_ptr& node,
+                                                          components::logical_plan::limit_t limit,
+                                                          const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
             if (context.has_collection(node->collection_full_name())) {
-                return boost::intrusive_ptr(
-                    new components::operators::transfer_scan(context.resource, node->collection_full_name(), limit));
+                return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
+                                                                                     node->collection_full_name(),
+                                                                                     limit,
+                                                                                     projected_cols));
             } else {
                 return boost::intrusive_ptr(
                     new components::operators::transfer_scan(nullptr, node->collection_full_name(), limit));
             }
         } else {
-            return create_plan_match_(context, node->collection_full_name(), node->expressions()[0], limit);
+            return create_plan_match_(context, node->collection_full_name(), node->expressions()[0], limit, projected_cols);
         }
     }
 

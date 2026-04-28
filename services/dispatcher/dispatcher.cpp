@@ -324,7 +324,14 @@ namespace services::dispatcher {
             default: {
                 error = validate_types(resource(), catalog_, logic_plan.get());
                 if (!error.contains_error()) {
-                    error = validate_schema(resource(), catalog_, logic_plan.get(), params->parameters()).error();
+                    auto schema_res = validate_schema(resource(), catalog_, logic_plan.get(), params->parameters());
+                    if (schema_res.has_error()) {
+                        error = schema_res.error();
+                    } else {
+                        // Post-validate optimization pass: column pruning, etc.
+                        // Runs here because it needs paths resolved by the schema validator.
+                        logic_plan = components::planner::post_validate_optimize(resource(), logic_plan, &catalog_);
+                    }
                 }
             }
         }

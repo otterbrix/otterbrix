@@ -52,6 +52,7 @@ target_link_libraries(
         otterbrix::file
         otterbrix::types
         otterbrix::vector
+        otterbrix::session
 
         absl::crc32c
         msgpackc-cxx

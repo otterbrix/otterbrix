@@ -121,15 +121,25 @@ message(STATUS "DCMAKE_TOOLCHAIN_FILE = ${CMAKE_TOOLCHAIN_FILE}")
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 OLD)
 endif()
-find_package(Boost 1.86.0 REQUIRED)
+find_package(Boost 1.86.0 REQUIRED COMPONENTS filesystem json)
 find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
 find_package(msgpack 4.1.1 REQUIRED)
-find_package(Catch2 2.13.7 REQUIRED)
-find_package(benchmark 1.6.1 REQUIRED)
 find_package(ZLIB 1.2.12 REQUIRED)
 find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
+
+# Conan's Boost::boost target links every compiled Boost library. Normalize it to
+# headers-only and require concrete compiled Boost components explicitly where needed.
+set_property(TARGET Boost::boost PROPERTY INTERFACE_LINK_LIBRARIES Boost::headers)
+
+if(ALLOW_BENCHMARK)
+    find_package(benchmark 1.6.1 REQUIRED)
+endif()
+
+if (DEV_MODE)
+    find_package(Catch2 2.13.7 REQUIRED)
+endif()
 
 if (ENABLE_ASAN AND NOT APPLE)
     # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags)

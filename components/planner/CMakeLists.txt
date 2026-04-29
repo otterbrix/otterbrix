@@ -22,7 +22,7 @@ target_link_libraries(
         otterbrix::vector
 
         absl::int128
-        Boost::boost
+        Boost::headers
         msgpackc-cxx
 )
 

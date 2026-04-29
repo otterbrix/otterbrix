@@ -25,7 +25,7 @@ target_link_libraries(
         actor-zeta::actor-zeta
 
         absl::int128
-        Boost::boost
+        Boost::headers
         msgpackc-cxx
 )
 

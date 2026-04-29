@@ -37,7 +37,7 @@ target_link_libraries(
         absl::int128
         absl::flat_hash_map
         absl::node_hash_map
-        Boost::boost
+        Boost::headers
         actor-zeta::actor-zeta
 )
 

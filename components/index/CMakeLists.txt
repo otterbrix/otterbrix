@@ -22,7 +22,7 @@ target_link_libraries(
         otterbrix::logical_plan
         otterbrix::log
         dl
-        Boost::boost
+        Boost::headers
 )
 
 target_include_directories(

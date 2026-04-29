@@ -61,7 +61,7 @@ target_link_libraries(
         absl::flat_hash_map
         absl::node_hash_map
         absl::int128
-        Boost::boost
+        Boost::headers
 )
 
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC

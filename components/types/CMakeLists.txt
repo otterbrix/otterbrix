@@ -25,7 +25,7 @@ target_link_libraries(
         otterbrix::serialization
 
         absl::int128
-        Boost::boost
+        Boost::headers
         msgpackc-cxx
 )
 

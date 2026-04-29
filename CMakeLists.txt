@@ -119,7 +119,7 @@ endif()
 message(STATUS "DCMAKE_TOOLCHAIN_FILE = ${CMAKE_TOOLCHAIN_FILE}")
 
 if(POLICY CMP0167)
-    cmake_policy(SET CMP0167 OLD)
+    cmake_policy(SET CMP0167 NEW)
 endif()
 find_package(Boost 1.86.0 REQUIRED COMPONENTS filesystem json)
 find_package(fmt 11.1.3 REQUIRED)
@@ -133,7 +133,7 @@ find_package(actor-zeta REQUIRED)
 # headers-only and require concrete compiled Boost components explicitly where needed.
 set_property(TARGET Boost::boost PROPERTY INTERFACE_LINK_LIBRARIES Boost::headers)
 
-if(ALLOW_BENCHMARK)
+if(ALLOW_BENCHMARK OR DEV_MODE)
     find_package(benchmark 1.6.1 REQUIRED)
 endif()
 

@@ -97,11 +97,7 @@ namespace {
         struct lv_hash {
             size_t operator()(const types::logical_value_t& v) const noexcept { return v.hash(); }
         };
-        struct lv_eq {
-            bool operator()(const types::logical_value_t& a,
-                            const types::logical_value_t& b) const { return a == b; }
-        };
-        std::unordered_set<types::logical_value_t, lv_hash, lv_eq> seen;
+        std::unordered_set<types::logical_value_t, lv_hash, std::equal_to<>> seen;
         seen.reserve(c.size());
         std::pmr::vector<uint64_t> unique_indices(resource);
         unique_indices.reserve(c.size());

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dto.hpp"
+#include "base.hpp"
 
 #include <components/base/collection_full_name.hpp>
 #include <components/vector/data_chunk.hpp>

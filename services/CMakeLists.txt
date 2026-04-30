@@ -29,7 +29,10 @@ set(${PROJECT_NAME}_SOURCES
         index/manager_index.cpp
 
     # wal
-        wal/dto.cpp
+        wal/wal_binary.cpp
+        wal/wal_page.cpp
+        wal/wal_page_writer.cpp
+        wal/wal_page_reader.cpp
         wal/manager_wal_replicate.cpp
         wal/wal.cpp
         wal/wal_reader.cpp

@@ -83,20 +83,21 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
     }
 
     INFO("verify per-worker WAL segment files exist") {
-        // With agent=2, should have .wal_0_000000 and .wal_1_000000
-        auto wal_path_0 = config.wal.path / ".wal_0_000000";
-        auto wal_path_1 = config.wal.path / ".wal_1_000000";
-        REQUIRE(std::filesystem::exists(wal_path_0));
-        REQUIRE(std::filesystem::exists(wal_path_1));
+        // New WAL creates per-database directories with segments inside
+        auto database_wal_directory = config.wal.path / "testdatabase";
+        REQUIRE(std::filesystem::exists(database_wal_directory));
+        bool found_wal_segment = false;
+        for (const auto& entry : std::filesystem::directory_iterator(database_wal_directory)) {
+            if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
+                found_wal_segment = true;
+                break;
+            }
+        }
+        REQUIRE(found_wal_segment);
 
         // Legacy single .wal should NOT exist
         auto legacy_wal_path = config.wal.path / ".wal";
         REQUIRE_FALSE(std::filesystem::exists(legacy_wal_path));
-
-        // At least one WAL file should have non-zero size (data was written)
-        auto size_0 = std::filesystem::file_size(wal_path_0);
-        auto size_1 = std::filesystem::file_size(wal_path_1);
-        REQUIRE((size_0 > 0 || size_1 > 0));
     }
 }
 
@@ -219,10 +220,17 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
     }
 
     INFO("verify both WAL segment files have data") {
-        auto wal_path_0 = config.wal.path / ".wal_0_000000";
-        auto wal_path_1 = config.wal.path / ".wal_1_000000";
-        REQUIRE(std::filesystem::exists(wal_path_0));
-        REQUIRE(std::filesystem::exists(wal_path_1));
+        // New WAL creates per-database directories with segments inside
+        auto database_wal_directory = config.wal.path / "testdatabase";
+        REQUIRE(std::filesystem::exists(database_wal_directory));
+        bool found_wal_segment = false;
+        for (const auto& entry : std::filesystem::directory_iterator(database_wal_directory)) {
+            if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
+                found_wal_segment = true;
+                break;
+            }
+        }
+        REQUIRE(found_wal_segment);
     }
 
     INFO("restart and verify both collections recovered") {

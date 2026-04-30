@@ -21,7 +21,7 @@ public:
 #endif
 
 // Number of rows to load from the dataset
-static constexpr int N_ROWS = 10'000;
+static constexpr int N_ROWS = 300'000;
 
 static constexpr const char* DB_NAME = "bench";
 static constexpr const char* TABLE_NAME = "events";

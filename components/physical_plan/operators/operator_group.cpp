@@ -2,6 +2,7 @@
 
 #include "arithmetic_eval.hpp"
 #include <cassert>
+#include <chrono>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -648,6 +649,10 @@ namespace components::operators {
         // Build per-group subchunk by gathering (chunk_idx, row_idx) pairs from the
         // multi-chunk source. Consecutive rows from the same source chunk are copied
         // in a single vector_ops::copy() to keep the cost close to a flat memcpy.
+        // Group refs by source chunk, then issue one indexing-based copy per (chunk, column).
+        // This collapses N small per-row copies into N_chunks bulk copies and is much cheaper
+        // when refs are scattered (e.g. typical GROUP BY where each group's rows are spread
+        // across many source chunks).
         auto gather_group = [&](const std::pmr::vector<row_ref_t>& refs) {
             uint64_t cnt = static_cast<uint64_t>(refs.size());
             vector::data_chunk_t grp(resource_, result_types, cnt > 0 ? cnt : 1);
@@ -655,26 +660,35 @@ namespace components::operators {
             if (cnt == 0) {
                 return grp;
             }
+            // refs are inserted in (chunk_idx, row_idx) order during create_list_rows,
+            // so all refs for a given chunk form one contiguous span.
             uint64_t pos = 0;
             while (pos < cnt) {
-                uint32_t run_chunk = refs[pos].first;
-                uint32_t run_start = refs[pos].second;
-                uint64_t run_len = 1;
-                while (pos + run_len < cnt && refs[pos + run_len].first == run_chunk &&
-                       refs[pos + run_len].second == run_start + run_len) {
-                    ++run_len;
+                uint32_t src_chunk = refs[pos].first;
+                uint64_t span_start = pos;
+                while (pos < cnt && refs[pos].first == src_chunk) {
+                    ++pos;
                 }
-                const auto& src = in_chunks[run_chunk];
+                uint64_t span_len = pos - span_start;
+                const auto& src = in_chunks[src_chunk];
+
+                // Build indexing into source chunk's row_idx values for this span.
+                vector::indexing_vector_t indexing(resource_, span_len);
+                auto* idx_data = indexing.data();
+                for (uint64_t i = 0; i < span_len; ++i) {
+                    idx_data[i] = refs[span_start + i].second;
+                }
+
                 for (size_t c = 0; c < col_count; ++c) {
                     if (is_placeholder(src.data[c])) continue;
                     vector::vector_ops::copy(src.data[c],
                                              grp.data[c],
-                                             run_start + run_len,
-                                             run_start,
-                                             pos);
+                                             indexing,
+                                             span_len,
+                                             0,
+                                             span_start);
                 }
-                vector::vector_ops::copy(src.row_ids, grp.row_ids, run_start + run_len, run_start, pos);
-                pos += run_len;
+                vector::vector_ops::copy(src.row_ids, grp.row_ids, indexing, span_len, 0, span_start);
             }
             return grp;
         };

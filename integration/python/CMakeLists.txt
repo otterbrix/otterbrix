@@ -35,7 +35,7 @@ target_link_libraries(
         absl::crc32c
         absl::int128
         actor-zeta::actor-zeta
-        Boost::boost
+        Boost::headers
         fmt::fmt
         #CONAN_PKG::libcurl
         ZLIB::ZLIB

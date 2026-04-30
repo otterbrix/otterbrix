@@ -68,7 +68,8 @@ target_link_libraries(
         absl::flat_hash_map
         absl::node_hash_map
         actor-zeta::actor-zeta
-        Boost::boost
+        Boost::headers
+        Boost::filesystem
         msgpackc-cxx
         spdlog::spdlog
 )

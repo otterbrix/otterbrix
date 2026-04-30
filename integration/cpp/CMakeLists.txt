@@ -23,7 +23,7 @@ set(otterbrix_LIBS
         absl::flat_hash_map
         absl::node_hash_map
         actor-zeta::actor-zeta
-        Boost::boost
+        Boost::headers
         msgpackc-cxx
         spdlog::spdlog
 )
@@ -54,7 +54,7 @@ target_link_libraries(
         absl::crc32c
         absl::int128
         actor-zeta::actor-zeta
-        Boost::boost
+        Boost::headers
         fmt::fmt
         #CONAN_PKG::libcurl
         ZLIB::ZLIB
@@ -95,7 +95,7 @@ if (DEV_MODE OR ALLOW_BENCHMARK)
             absl::crc32c
             absl::int128
             actor-zeta::actor-zeta
-            Boost::boost
+            Boost::headers
             fmt::fmt
             #CONAN_PKG::libcurl
             ZLIB::ZLIB

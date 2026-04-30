@@ -34,7 +34,7 @@ target_link_libraries(
         otterbrix::vector
         otterbrix::types
         absl::int128
-        Boost::boost
+        Boost::headers
         msgpackc-cxx
 )
 

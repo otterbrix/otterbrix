@@ -1,0 +1,72 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/cpp
+{
+	"name": "Otterbrix Dev Container",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+
+	"runArgs": [
+		"--dns", "8.8.8.8",
+		"--dns", "8.8.4.4"
+	],
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "conan profile detect --force && (conan remote list | grep -q otterbrix || conan remote add otterbrix http://conan.otterbrix.com) && if ! grep -q 'otterbrix history sync' /home/vscode/.bashrc; then printf '\n# otterbrix history sync\nexport HISTFILE=~/.bash_history\nshopt -s histappend\nPROMPT_COMMAND=\"history -a; history -n; ${PROMPT_COMMAND}\"\n' >> /home/vscode/.bashrc; fi && if ! grep -q 'otterbrix history sync' /home/vscode/.zshrc; then printf '\n# otterbrix history sync\nexport HISTFILE=~/.zsh_history\nsetopt APPEND_HISTORY SHARE_HISTORY\n' >> /home/vscode/.zshrc; fi",
+
+	"containerEnv": {
+		"CONAN_USER_HOME": "/conan",
+		"CONAN_HOME": "/conan/.conan2"
+	},
+
+	"mounts": [
+		"source=${env:HOME}/.bash_history,target=/home/vscode/.bash_history,type=bind,consistency=cached",
+		"source=${env:HOME}/.zsh_history,target=/home/vscode/.zsh_history,type=bind,consistency=cached",
+		"source=conan_cache,target=/conan,type=volume,consistency=cached"
+	],
+
+	// Configure tool-specific properties.
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"alibaba.qwen-code",
+				"anthropic.claude-code",
+				"clemenspeters.format-json",
+				"cs128.cs128-clang-tidy",
+				"davidanson.vscode-markdownlint",
+				"esbenp.prettier-vscode",
+				"github.copilot",
+				"github.copilot-chat",
+				"matepek.vscode-catch2-test-adapter",
+				"mechatroner.rainbow-csv",
+				"ms-kubernetes-tools.vscode-kubernetes-tools",
+				"ms-python.debugpy",
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-python.vscode-python-envs",
+				"ms-vscode.cmake-tools",
+				"ms-vscode.cpptools",
+				"oderwat.indent-rainbow",
+				"redhat.vscode-yaml",
+				"saoudrizwan.claude-dev",
+				"tal7aouy.rainbow-bracket",
+				"vadimcn.vscode-lldb",
+				"xaver.clang-format",
+				"zainchen.json"
+			],
+			"settings": {
+				"cmake.ctest.testExplorerIntegrationEnabled": true,
+				"cmake.parallelJobs": 4
+			}
+		}
+	},
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

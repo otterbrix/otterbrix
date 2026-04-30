@@ -1,7 +1,7 @@
 #pragma once
 
-#include "compute/compute_kernel.hpp"
-#include "compute/function.hpp"
+#include <components/compute/compute_kernel.hpp>
+#include <components/compute/function.hpp>
 #include "computed_schema.hpp"
 #include "table_id.hpp"
 #include "table_metadata.hpp"

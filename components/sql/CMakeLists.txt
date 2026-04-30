@@ -3,6 +3,8 @@ project(sql CXX)
 find_package(BISON REQUIRED)
 find_package(FLEX REQUIRED)
 
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/parser)
+
 bison_target(
         Parser
         parser/gram.y

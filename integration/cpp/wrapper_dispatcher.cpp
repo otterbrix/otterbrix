@@ -7,7 +7,9 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/types/logical_value.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <thread>
@@ -254,6 +256,49 @@ namespace otterbrix {
             auto& view = std::move(result).value();
             return execute_plan(session, std::move(view.node), std::move(view.params));
         }
+    }
+
+    cursor_t_ptr
+    wrapper_dispatcher_t::execute_sql_with_params(const components::session::session_id_t& session,
+                                                  const std::string& query,
+                                                  const std::vector<std::pair<size_t, components::types::logical_value_t>>&
+                                                      params) {
+        using namespace components::sql::transform;
+
+        trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
+        std::pmr::monotonic_buffer_resource parser_arena(resource());
+        void* parse_result;
+        try {
+            parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        } catch (const std::exception& exception) {
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        }
+
+        if (!parse_result) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"unknown parser error", resource()}));
+        }
+        transformer local_transformer(resource(), query.c_str());
+        auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));
+        try {
+            for (const auto& [id, value] : params) {
+                binder.bind(id, value);
+            }
+        } catch (const std::exception& exception) {
+            return make_cursor(
+                resource(),
+                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        }
+
+        auto finalized = binder.finalize();
+        if (finalized.has_error()) {
+            return make_cursor(resource(), finalized.error());
+        }
+        auto& view = std::move(finalized).value();
+        return execute_plan(session, std::move(view.node), std::move(view.params));
     }
 
     auto wrapper_dispatcher_t::get_schema(const components::session::session_id_t& session,

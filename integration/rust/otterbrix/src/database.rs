@@ -5,6 +5,92 @@ use crate::utils::{make_sv, string_from_c};
 use std::fmt;
 use std::path::Path;
 
+/// 1-based index matching `$1`, `$2`, … in SQL.
+#[derive(Debug, Clone)]
+pub struct SqlParam<'a> {
+    pub index: i32,
+    pub value: SqlParamValue<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SqlParamValue<'a> {
+    Null,
+    Bool(bool),
+    Int64(i64),
+    UInt64(u64),
+    Double(f64),
+    Str(&'a str),
+}
+
+fn raw_sql_params(params: &[SqlParam<'_>]) -> Vec<otterbrix_sys::sql_param_t> {
+    let empty = make_sv("");
+    params
+        .iter()
+        .map(|p| {
+            let (kind, bool_value, int64_value, uint64_value, double_value, string_value) =
+                match &p.value {
+                    SqlParamValue::Null => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_NULL,
+                        0u8,
+                        0i64,
+                        0u64,
+                        0.0f64,
+                        empty,
+                    ),
+                    SqlParamValue::Bool(b) => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_BOOL,
+                        u8::from(*b),
+                        0,
+                        0,
+                        0.0,
+                        empty,
+                    ),
+                    SqlParamValue::Int64(n) => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_INT64,
+                        0,
+                        *n,
+                        0,
+                        0.0,
+                        empty,
+                    ),
+                    SqlParamValue::UInt64(n) => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_UINT64,
+                        0,
+                        0,
+                        *n,
+                        0.0,
+                        empty,
+                    ),
+                    SqlParamValue::Double(x) => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_DOUBLE,
+                        0,
+                        0,
+                        0,
+                        *x,
+                        empty,
+                    ),
+                    SqlParamValue::Str(s) => (
+                        otterbrix_sys::sql_param_kind_t_SQL_PARAM_STRING,
+                        0,
+                        0,
+                        0,
+                        0.0,
+                        make_sv(s),
+                    ),
+                };
+            otterbrix_sys::sql_param_t {
+                index: p.index,
+                kind,
+                bool_value,
+                int64_value,
+                uint64_value,
+                double_value,
+                string_value,
+            }
+        })
+        .collect()
+}
+
 pub struct Database {
     ptr: otterbrix_sys::otterbrix_ptr,
 }
@@ -68,6 +154,19 @@ impl Database {
         cursor_or_error(ptr)
     }
 
+    pub fn execute_with_params(&self, sql: &str, params: &[SqlParam<'_>]) -> Result<Cursor> {
+        let raw = raw_sql_params(params);
+        let ptr = unsafe {
+            otterbrix_sys::execute_sql_params(
+                self.ptr,
+                make_sv(sql),
+                raw.as_ptr(),
+                raw.len(),
+            )
+        };
+        cursor_or_error(ptr)
+    }
+
     pub fn create_database(&self, name: &str) -> Result<Cursor> {
         let ptr = unsafe { otterbrix_sys::create_database(self.ptr, make_sv(name)) };
         cursor_or_error(ptr)
@@ -76,6 +175,18 @@ impl Database {
     pub fn create_collection(&self, database: &str, collection: &str) -> Result<Cursor> {
         let ptr = unsafe {
             otterbrix_sys::create_collection(self.ptr, make_sv(database), make_sv(collection))
+        };
+        cursor_or_error(ptr)
+    }
+
+    pub fn drop_database(&self, name: &str) -> Result<Cursor> {
+        let ptr = unsafe { otterbrix_sys::drop_database(self.ptr, make_sv(name)) };
+        cursor_or_error(ptr)
+    }
+
+    pub fn drop_collection(&self, database: &str, collection: &str) -> Result<Cursor> {
+        let ptr = unsafe {
+            otterbrix_sys::drop_collection(self.ptr, make_sv(database), make_sv(collection))
         };
         cursor_or_error(ptr)
     }

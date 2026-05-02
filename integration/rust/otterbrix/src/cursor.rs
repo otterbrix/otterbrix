@@ -2,6 +2,10 @@ use crate::utils::{make_sv, string_from_c};
 use crate::value::Value;
 use std::fmt;
 
+pub type LogicalType = i32;
+
+pub const LOGICAL_TYPE_INTEGER: LogicalType = 13;
+
 pub struct Cursor {
     pub(crate) ptr: otterbrix_sys::cursor_ptr,
 }
@@ -21,6 +25,15 @@ impl Cursor {
             return None;
         }
         Some(unsafe { string_from_c(ptr) })
+    }
+
+    pub fn column_logical_type(&self, index: i32) -> Option<LogicalType> {
+        let v = unsafe { otterbrix_sys::cursor_column_logical_type(self.ptr, index) };
+        if v < 0 {
+            None
+        } else {
+            Some(v)
+        }
     }
 
     pub fn has_next(&self) -> bool {

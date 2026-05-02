@@ -174,6 +174,14 @@ namespace components::table {
         const std::vector<storage_index_t>& column_ids();
         const table_filter_t* filter();
         bool scan(vector::data_chunk_t& result);
+        // Batched scan: emit one data_chunk_t per ≤DEFAULT_VECTOR_CAPACITY rows directly,
+        // skipping the accumulate-then-split round-trip. `projected_cols` is a pointer so
+        // callers can pass nullptr for full-schema chunks or a non-null vector to use the
+        // projected (sparse) chunk constructor.
+        void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
+                          const std::vector<size_t>* projected_cols,
+                          std::vector<vector::data_chunk_t>& batches,
+                          std::pmr::memory_resource* resource);
         bool scan_committed(vector::data_chunk_t& result, table_scan_type type);
         bool scan_committed(vector::data_chunk_t& result, std::unique_lock<std::mutex>& l, table_scan_type type);
 

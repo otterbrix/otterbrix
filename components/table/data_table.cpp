@@ -176,6 +176,14 @@ namespace components::table {
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
 
+    void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
+                                    const std::vector<size_t>* projected_cols,
+                                    std::vector<vector::data_chunk_t>& batches,
+                                    table_scan_state& state,
+                                    std::pmr::memory_resource* resource) {
+        state.table_state.scan_batched(types, projected_cols, batches, resource);
+    }
+
     bool data_table_t::create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type) {
         return state.table_state.scan_committed(result, type);
     }

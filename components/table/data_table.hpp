@@ -31,6 +31,12 @@ namespace components::table {
         uint64_t max_threads() const;
 
         void scan(vector::data_chunk_t& result, table_scan_state& state);
+        // Emits ≤DEFAULT_VECTOR_CAPACITY chunks straight from the scan, no concat-then-split.
+        void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
+                          const std::vector<size_t>* projected_cols,
+                          std::vector<vector::data_chunk_t>& batches,
+                          table_scan_state& state,
+                          std::pmr::memory_resource* resource);
 
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,

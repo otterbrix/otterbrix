@@ -204,6 +204,47 @@ namespace components::table {
         return false;
     }
 
+    void collection_scan_state::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
+                                             const std::vector<size_t>* projected_cols,
+                                             std::vector<vector::data_chunk_t>& batches,
+                                             std::pmr::memory_resource* resource) {
+        while (row_group) {
+            vector::data_chunk_t batch =
+                projected_cols
+                    ? vector::data_chunk_t(resource, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY)
+                    : vector::data_chunk_t(resource, types, vector::DEFAULT_VECTOR_CAPACITY);
+            for (auto& cs : column_scans) {
+                cs.result_offset = 0;
+            }
+            row_group->scan(*this, batch);
+            if (batch.size() > 0) {
+                batches.push_back(std::move(batch));
+            }
+            const bool rg_exhausted = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >=
+                                      max_row_group_row;
+            if (!rg_exhausted) {
+                continue;
+            }
+            if (max_row <= row_group->start + static_cast<int64_t>(row_group->count)) {
+                row_group = nullptr;
+                return;
+            }
+            do {
+                row_group = row_groups->next_segment(row_group);
+                if (row_group) {
+                    if (row_group->start >= max_row) {
+                        row_group = nullptr;
+                        break;
+                    }
+                    bool scan_row_group = row_group->initialize_scan(*this);
+                    if (scan_row_group) {
+                        break;
+                    }
+                }
+            } while (row_group);
+        }
+    }
+
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result,
                                                std::unique_lock<std::mutex>& l,
                                                table_scan_type type) {

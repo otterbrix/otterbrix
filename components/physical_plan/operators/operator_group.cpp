@@ -2,7 +2,6 @@
 
 #include "arithmetic_eval.hpp"
 #include <cassert>
-#include <chrono>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>

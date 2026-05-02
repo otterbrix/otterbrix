@@ -10,9 +10,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-ACTOR_ZETA_VERSION="1.0.0a12"
+ACTOR_ZETA_VERSION="1.1.1"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
-CXX_STANDARD="${CXX_STANDARD:-17}"
+CXX_STANDARD="${CXX_STANDARD:-20}"
 JOBS="${JOBS:-$(nproc)}"
 DEV_MODE="${DEV_MODE:-ON}"
 ENABLE_TESTS="${ENABLE_TESTS:-OFF}"
@@ -89,7 +89,7 @@ from conan.tools.files import copy
 
 class ActorZetaConan(ConanFile):
     name = "actor-zeta"
-    version = "1.0.0a12"
+    version = "1.1.1"
     license = "BSD-3-Clause"
     url = "https://github.com/otterbrix/actor-zeta"
     description = "Actor-Zeta is a C++ actor framework"
@@ -104,7 +104,7 @@ class ActorZetaConan(ConanFile):
         "allow_benchmark": [True, False],
     }
     default_options = {
-        "cxx_standard": 17,
+        "cxx_standard": 20,
         "fPIC": True,
         "exceptions_disable": False,
         "rtti_disable": False,
@@ -116,7 +116,7 @@ class ActorZetaConan(ConanFile):
 
     def requirements(self):
         if self.options.allow_tests:
-            self.requires("catch2/2.13.6")
+            self.requires("catch2/2.13.10")
         if self.options.allow_benchmark:
             self.requires("benchmark/1.6.2")
 
@@ -165,7 +165,7 @@ conan create conanfile_temp.py \
     --version="$ACTOR_ZETA_VERSION" \
     --build=missing \
     -s build_type="$BUILD_TYPE" \
-    -s compiler.cppstd="$CXX_STANDARD" \
+    -s compiler.cppstd=gnu"$CXX_STANDARD" \
     -o "actor-zeta/*:cxx_standard=$CXX_STANDARD" \
     -o "actor-zeta/*:fPIC=True" \
     -o "actor-zeta/*:exceptions_disable=False" \

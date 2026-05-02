@@ -203,12 +203,19 @@ namespace services::disk {
                                int64_t limit,
                                std::vector<size_t> projected_cols,
                                components::table::transaction_data txn);
+        unique_future<std::vector<components::vector::data_chunk_t>>
+        storage_scan_batched(session_id_t session,
+                             collection_full_name_t name,
+                             std::unique_ptr<components::table::table_filter_t> filter,
+                             int64_t limit,
+                             std::vector<size_t> projected_cols,
+                             components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        unique_future<std::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
@@ -260,6 +267,7 @@ namespace services::disk {
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
                                                        &manager_disk_t::storage_scan_projected,
+                                                       &manager_disk_t::storage_scan_batched,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
@@ -486,12 +494,19 @@ namespace services::disk {
                                int64_t limit,
                                std::vector<size_t> projected_cols,
                                components::table::transaction_data txn);
+        unique_future<std::vector<components::vector::data_chunk_t>>
+        storage_scan_batched(session_id_t session,
+                             collection_full_name_t name,
+                             std::unique_ptr<components::table::table_filter_t> filter,
+                             int64_t limit,
+                             std::vector<size_t> projected_cols,
+                             components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       collection_full_name_t name,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        unique_future<std::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
@@ -560,6 +575,7 @@ namespace services::disk {
                                                        // Storage data operations
                                                        &manager_disk_empty_t::storage_scan,
                                                        &manager_disk_empty_t::storage_scan_projected,
+                                                       &manager_disk_empty_t::storage_scan_batched,
                                                        &manager_disk_empty_t::storage_fetch,
                                                        &manager_disk_empty_t::storage_scan_segment,
                                                        &manager_disk_empty_t::storage_append,

@@ -112,16 +112,21 @@ namespace components::operators {
         expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
 
-        std::pmr::vector<std::pmr::vector<size_t>> row_ids_per_group_;
+        // Multi-chunk row reference: (chunk_idx, row_idx_in_chunk).
+        // Outer index = group id; inner = list of references that fall into this group.
+        using row_ref_t = std::pair<uint32_t, uint32_t>;
+        std::pmr::vector<std::pmr::vector<row_ref_t>> row_refs_per_group_;
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> group_keys_;
         std::pmr::unordered_map<size_t, std::pmr::vector<size_t>> group_index_;
         std::pmr::vector<types::complex_logical_type> key_col_types_; // source column types for key columns
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        void create_list_rows();
-        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context);
-        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context);
+        void create_list_rows(const std::vector<vector::data_chunk_t>& in_chunks);
+        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context,
+                                                   std::vector<vector::data_chunk_t>& in_chunks);
+        vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
+                                                            std::vector<vector::data_chunk_t>& in_chunks);
         vector::data_chunk_t
         build_result_chunk(size_t num_groups,
                            size_t key_count,

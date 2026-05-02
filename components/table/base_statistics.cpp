@@ -12,42 +12,34 @@ namespace components::table {
         template<typename T>
         void update_numeric_stats(base_statistics_t& stats,
                                   std::pmr::memory_resource* resource,
-                                  const vector::vector_t& vec,
+                                  vector::vector_t& vec,
                                   uint64_t count) {
-            auto data = vec.data<T>();
-            const auto& validity = vec.validity();
+            vector::unified_vector_format uvf(vec.resource(), count);
+            vec.to_unified_format(count, uvf);
+            const auto* data = uvf.get_data<T>();
+            const auto& validity = uvf.validity;
+            const auto* indexing = uvf.referenced_indexing;
             bool found_valid = false;
             T local_min{};
             T local_max{};
             uint64_t null_count = 0;
 
-            if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
-                // CONSTANT vector: data[0] is the single value for all rows
-                if (!validity.row_is_valid(0)) {
-                    null_count = count;
-                } else {
-                    T val = data[0];
+            for (uint64_t i = 0; i < count; i++) {
+                uint64_t idx = indexing->get_index(i);
+                if (!validity.row_is_valid(idx)) {
+                    null_count++;
+                    continue;
+                }
+                T val = data[idx];
+                if (!found_valid) {
                     local_min = val;
                     local_max = val;
                     found_valid = true;
-                }
-            } else {
-                for (uint64_t i = 0; i < count; i++) {
-                    if (!validity.row_is_valid(i)) {
-                        null_count++;
-                        continue;
-                    }
-                    T val = data[i];
-                    if (!found_valid) {
+                } else {
+                    if (val < local_min)
                         local_min = val;
+                    if (val > local_max)
                         local_max = val;
-                        found_valid = true;
-                    } else {
-                        if (val < local_min)
-                            local_min = val;
-                        if (val > local_max)
-                            local_max = val;
-                    }
                 }
             }
 
@@ -71,42 +63,34 @@ namespace components::table {
 
         void update_string_stats(base_statistics_t& stats,
                                  std::pmr::memory_resource* resource,
-                                 const vector::vector_t& vec,
+                                 vector::vector_t& vec,
                                  uint64_t count) {
-            auto data = vec.data<std::string_view>();
-            const auto& validity = vec.validity();
+            vector::unified_vector_format uvf(vec.resource(), count);
+            vec.to_unified_format(count, uvf);
+            const auto* data = uvf.get_data<std::string_view>();
+            const auto& validity = uvf.validity;
+            const auto* indexing = uvf.referenced_indexing;
             bool found_valid = false;
             std::string local_min;
             std::string local_max;
             uint64_t null_count = 0;
 
-            if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
-                // CONSTANT vector: data[0] is the single value for all rows
-                if (!validity.row_is_valid(0)) {
-                    null_count = count;
-                } else {
-                    std::string val(data[0]);
+            for (uint64_t i = 0; i < count; i++) {
+                uint64_t idx = indexing->get_index(i);
+                if (!validity.row_is_valid(idx)) {
+                    null_count++;
+                    continue;
+                }
+                std::string val(data[idx]);
+                if (!found_valid) {
                     local_min = val;
                     local_max = val;
                     found_valid = true;
-                }
-            } else {
-                for (uint64_t i = 0; i < count; i++) {
-                    if (!validity.row_is_valid(i)) {
-                        null_count++;
-                        continue;
-                    }
-                    std::string val(data[i]);
-                    if (!found_valid) {
+                } else {
+                    if (val < local_min)
                         local_min = val;
+                    if (val > local_max)
                         local_max = val;
-                        found_valid = true;
-                    } else {
-                        if (val < local_min)
-                            local_min = val;
-                        if (val > local_max)
-                            local_max = val;
-                    }
                 }
             }
 
@@ -283,7 +267,7 @@ namespace components::table {
         has_stats_ = true;
     }
 
-    void base_statistics_t::update(const vector::vector_t& vec, uint64_t count) {
+    void base_statistics_t::update(vector::vector_t& vec, uint64_t count) {
         if (count == 0) {
             return;
         }

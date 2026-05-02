@@ -203,6 +203,8 @@ if(ALLOW_BENCHMARK)
     add_subdirectory(benchmark)
 endif()
 
+add_subdirectory(JSONBench/otterbrix)
+
 
 
 #set(CPACK_GENERATOR "DEB")

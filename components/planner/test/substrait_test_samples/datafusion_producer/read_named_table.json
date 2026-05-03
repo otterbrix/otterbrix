@@ -1,0 +1,15 @@
+{
+  "name": "read_named_table",
+  "sql": "SELECT * FROM coll",
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

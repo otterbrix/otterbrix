@@ -1,0 +1,21 @@
+{
+  "name": "join_left",
+  "expected_rows": [
+    {
+      "left_id": 10,
+      "right_id": 100
+    },
+    {
+      "left_id": 10,
+      "right_id": 200
+    },
+    {
+      "left_id": 20,
+      "right_id": 100
+    },
+    {
+      "left_id": 20,
+      "right_id": 200
+    }
+  ]
+}

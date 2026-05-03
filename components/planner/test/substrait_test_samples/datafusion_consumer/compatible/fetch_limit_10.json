@@ -1,0 +1,14 @@
+{
+  "name": "fetch_limit_10",
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

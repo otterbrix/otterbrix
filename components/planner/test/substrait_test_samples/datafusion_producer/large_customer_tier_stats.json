@@ -1,0 +1,25 @@
+{
+  "name": "large_customer_tier_stats",
+  "sql": "SELECT c.tier, COUNT(o.order_id) AS orders, MAX(o.amount) AS max_amount, MIN(o.amount) AS min_amount FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.quantity >= 3 GROUP BY c.tier ORDER BY orders DESC, c.tier ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "tier": "bronze",
+      "orders": 1000,
+      "max_amount": 1000,
+      "min_amount": 17
+    },
+    {
+      "tier": "gold",
+      "orders": 1000,
+      "max_amount": 985,
+      "min_amount": 2
+    },
+    {
+      "tier": "silver",
+      "orders": 1000,
+      "max_amount": 992,
+      "min_amount": 9
+    }
+  ]
+}

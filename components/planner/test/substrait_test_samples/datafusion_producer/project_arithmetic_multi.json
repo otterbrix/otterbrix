@@ -1,0 +1,21 @@
+{
+  "name": "project_arithmetic_multi",
+  "sql": "SELECT id, id + 1 AS id_plus_one, id * id AS id_squared FROM coll",
+  "expected_rows": [
+    {
+      "id": 3,
+      "id_plus_one": 4,
+      "id_squared": 9
+    },
+    {
+      "id": 1,
+      "id_plus_one": 2,
+      "id_squared": 1
+    },
+    {
+      "id": 2,
+      "id_plus_one": 3,
+      "id_squared": 4
+    }
+  ]
+}

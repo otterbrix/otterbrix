@@ -1,0 +1,4 @@
+{
+  "name": "drop_database",
+  "expected_rejection": true
+}

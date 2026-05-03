@@ -1,0 +1,57 @@
+{
+  "name": "large_projection_filter_sort_limit",
+  "sql": "SELECT order_id, customer_id, amount * quantity AS gross_amount FROM large_orders WHERE amount >= 990 ORDER BY gross_amount DESC, order_id ASC LIMIT 10",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "order_id": 54,
+      "customer_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "order_id": 1054,
+      "customer_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "order_id": 2054,
+      "customer_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "order_id": 3054,
+      "customer_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "order_id": 4054,
+      "customer_id": 54,
+      "gross_amount": 4995
+    },
+    {
+      "order_id": 189,
+      "customer_id": 189,
+      "gross_amount": 4970
+    },
+    {
+      "order_id": 1189,
+      "customer_id": 189,
+      "gross_amount": 4970
+    },
+    {
+      "order_id": 2189,
+      "customer_id": 189,
+      "gross_amount": 4970
+    },
+    {
+      "order_id": 3189,
+      "customer_id": 189,
+      "gross_amount": 4970
+    },
+    {
+      "order_id": 4189,
+      "customer_id": 189,
+      "gross_amount": 4970
+    }
+  ]
+}

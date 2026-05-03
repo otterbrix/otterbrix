@@ -1,0 +1,13 @@
+{
+  "name": "data_virtual_table",
+  "expected_rows": [
+    {
+      "id": 1,
+      "name": "alice"
+    },
+    {
+      "id": 2,
+      "name": "bob"
+    }
+  ]
+}

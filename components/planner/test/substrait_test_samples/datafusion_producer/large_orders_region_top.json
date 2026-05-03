@@ -1,0 +1,27 @@
+{
+  "name": "large_orders_region_top",
+  "sql": "SELECT c.region, COUNT(o.order_id) AS orders, SUM(o.amount) AS total_amount FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.amount >= 750 GROUP BY c.region ORDER BY total_amount DESC, c.region ASC LIMIT 4",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "region": "west",
+      "orders": 315,
+      "total_amount": 275940
+    },
+    {
+      "region": "east",
+      "orders": 315,
+      "total_amount": 275625
+    },
+    {
+      "region": "south",
+      "orders": 315,
+      "total_amount": 275310
+    },
+    {
+      "region": "north",
+      "orders": 310,
+      "total_amount": 271250
+    }
+  ]
+}

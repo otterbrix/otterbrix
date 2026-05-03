@@ -1,0 +1,16 @@
+{
+  "name": "join_filter_project_sort_limit",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "left_id": 20,
+      "right_id": 200,
+      "pair_sum": 220.0
+    },
+    {
+      "left_id": 10,
+      "right_id": 200,
+      "pair_sum": 210.0
+    }
+  ]
+}

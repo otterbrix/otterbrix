@@ -1,0 +1,12 @@
+{
+  "name": "pipeline_filter_project_sort_limit",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id_alias": 3
+    },
+    {
+      "id_alias": 2
+    }
+  ]
+}

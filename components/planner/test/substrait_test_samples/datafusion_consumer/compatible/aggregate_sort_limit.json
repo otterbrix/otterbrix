@@ -1,0 +1,14 @@
+{
+  "name": "aggregate_sort_limit",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "cnt": 2
+    },
+    {
+      "category": "b",
+      "cnt": 1
+    }
+  ]
+}

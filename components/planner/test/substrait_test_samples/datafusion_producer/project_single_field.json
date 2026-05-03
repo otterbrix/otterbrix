@@ -1,0 +1,15 @@
+{
+  "name": "project_single_field",
+  "sql": "SELECT id + 1 AS id_plus_one FROM coll",
+  "expected_rows": [
+    {
+      "id_plus_one": 4
+    },
+    {
+      "id_plus_one": 2
+    },
+    {
+      "id_plus_one": 3
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "filter_gt",
+  "sql": "SELECT * FROM coll WHERE id > 1",
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 2
+    }
+  ]
+}

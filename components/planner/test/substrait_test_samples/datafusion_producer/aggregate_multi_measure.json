@@ -1,0 +1,20 @@
+{
+  "name": "aggregate_multi_measure",
+  "sql": "SELECT category, COUNT(amount) AS cnt, SUM(amount) AS total_amount, MIN(amount) AS min_amount, MAX(amount) AS max_amount FROM sales GROUP BY category",
+  "expected_rows": [
+    {
+      "category": "a",
+      "cnt": 2,
+      "total_amount": 30,
+      "min_amount": 10,
+      "max_amount": 20
+    },
+    {
+      "category": "b",
+      "cnt": 1,
+      "total_amount": 5,
+      "min_amount": 5,
+      "max_amount": 5
+    }
+  ]
+}

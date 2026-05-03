@@ -1,0 +1,11 @@
+{
+  "name": "aggregate_filter_sort_limit",
+  "sql": "SELECT category, COUNT(amount) AS cnt FROM sales WHERE amount > 5 GROUP BY category ORDER BY cnt DESC LIMIT 2",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "cnt": 2
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "join_inner",
+  "sql": "SELECT * FROM left_table JOIN right_table ON left_table.id = right_table.id",
+  "expected_rows": [
+    {
+      "id": 2
+    }
+  ]
+}

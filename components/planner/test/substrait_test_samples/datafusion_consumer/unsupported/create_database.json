@@ -1,0 +1,4 @@
+{
+  "name": "create_database",
+  "expected_rejection": true
+}

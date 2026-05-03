@@ -11,7 +11,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "components/logical_plan/substrait_adapter/substrait/algebra.pb.h"
+#include "substrait/algebra.pb.h"
 
 namespace components::logical_plan::substrait_adapter {
 

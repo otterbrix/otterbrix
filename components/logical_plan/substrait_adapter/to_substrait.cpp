@@ -37,9 +37,9 @@
 #include <google/protobuf/struct.pb.h>
 #include <google/protobuf/util/json_util.h>
 
-#include "components/logical_plan/substrait_adapter/substrait/algebra.pb.h"
-#include "components/logical_plan/substrait_adapter/substrait/plan.pb.h"
-#include "components/logical_plan/substrait_adapter/substrait/type.pb.h"
+#include "substrait/algebra.pb.h"
+#include "substrait/plan.pb.h"
+#include "substrait/type.pb.h"
 
 #include <algorithm>
 #include <chrono>

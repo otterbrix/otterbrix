@@ -9,8 +9,8 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 
-#include "components/logical_plan/substrait_adapter/substrait/algebra.pb.h"
-#include "components/logical_plan/substrait_adapter/substrait/plan.pb.h"
+#include "substrait/algebra.pb.h"
+#include "substrait/plan.pb.h"
 
 #include <unordered_map>
 

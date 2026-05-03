@@ -1,6 +1,6 @@
 #pragma once
 
-#include "components/logical_plan/substrait_adapter/substrait/type.pb.h"
+#include "substrait/type.pb.h"
 
 #include <components/types/types.hpp>
 

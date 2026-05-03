@@ -6,8 +6,8 @@
 #include "node_drop_index.hpp"
 #include "node_function.hpp"
 
-#include "components/logical_plan/substrait_adapter/substrait/algebra.pb.h"
-#include "components/logical_plan/substrait_adapter/substrait/type.pb.h"
+#include "substrait/algebra.pb.h"
+#include "substrait/type.pb.h"
 
 #include <boost/json/src.hpp>
 #include <google/protobuf/any.pb.h>

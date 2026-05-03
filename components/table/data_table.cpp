@@ -7,6 +7,13 @@
 
 #include "row_group.hpp"
 
+namespace {
+
+    constexpr uint32_t ROW_GROUP_LAYOUTS_MAGIC = 0x31584150U; // "PAX1"
+    constexpr uint32_t TABLE_LAYOUT_METADATA_FLAG = 1U << 31;
+
+}
+
 namespace components::table {
 
     data_table_t::data_table_t(std::pmr::memory_resource* resource,
@@ -441,6 +448,13 @@ namespace components::table {
         storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
 
         auto row_group_pointers = row_groups_->checkpoint(partial_block_manager);
+        bool has_layout_metadata = false;
+        for (const auto& pointer : row_group_pointers) {
+            if (pointer.layout_kind != storage::row_group_layout_kind::COLUMNAR) {
+                has_layout_metadata = true;
+                break;
+            }
+        }
 
         // write table metadata
         writer.write_string(name_);
@@ -454,9 +468,27 @@ namespace components::table {
         }
 
         // write row group count and pointers
-        writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
+        auto row_group_count = static_cast<uint32_t>(row_group_pointers.size());
+        if (has_layout_metadata) {
+            row_group_count |= TABLE_LAYOUT_METADATA_FLAG;
+        }
+        writer.write<uint32_t>(row_group_count);
         for (const auto& rgp : row_group_pointers) {
             rgp.serialize(writer);
+        }
+
+        if (has_layout_metadata) {
+            writer.write<uint32_t>(ROW_GROUP_LAYOUTS_MAGIC);
+            writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
+            for (const auto& rgp : row_group_pointers) {
+                writer.write<uint8_t>(static_cast<uint8_t>(rgp.layout_kind));
+                if (rgp.layout_kind == storage::row_group_layout_kind::PAX_FIXED) {
+                    if (!rgp.pax_fixed_layout.has_value()) {
+                        throw std::logic_error("missing pax_fixed layout metadata for PAX row group");
+                    }
+                    rgp.pax_fixed_layout->serialize(writer);
+                }
+            }
         }
 
         writer.flush();
@@ -481,12 +513,37 @@ namespace components::table {
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));
 
-        uint64_t total_loaded_rows = 0;
-        auto rg_count = reader.read<uint32_t>();
+        auto row_group_count = reader.read<uint32_t>();
+        bool has_layout_metadata = (row_group_count & TABLE_LAYOUT_METADATA_FLAG) != 0;
+        auto rg_count = row_group_count & ~TABLE_LAYOUT_METADATA_FLAG;
+        std::vector<storage::row_group_pointer_t> row_group_pointers;
+        row_group_pointers.reserve(rg_count);
         for (uint32_t i = 0; i < rg_count; i++) {
-            auto pointer = storage::row_group_pointer_t::deserialize(reader);
+            row_group_pointers.push_back(storage::row_group_pointer_t::deserialize(reader));
+        }
 
-            // create a new row group and populate from disk pointer
+        if (has_layout_metadata) {
+            auto magic = reader.read<uint32_t>();
+            if (magic != ROW_GROUP_LAYOUTS_MAGIC) {
+                throw std::logic_error("unknown table metadata extension section");
+            }
+            auto layout_count = reader.read<uint32_t>();
+            if (layout_count != row_group_pointers.size()) {
+                throw std::logic_error("row group layout metadata count mismatch");
+            }
+            for (uint32_t i = 0; i < layout_count; i++) {
+                auto layout_kind = static_cast<storage::row_group_layout_kind>(reader.read<uint8_t>());
+                row_group_pointers[i].layout_kind = layout_kind;
+                if (layout_kind == storage::row_group_layout_kind::PAX_FIXED) {
+                    row_group_pointers[i].pax_fixed_layout = storage::pax_fixed_row_group_layout_t::deserialize(reader);
+                } else {
+                    row_group_pointers[i].pax_fixed_layout.reset();
+                }
+            }
+        }
+
+        uint64_t total_loaded_rows = 0;
+        for (const auto& pointer : row_group_pointers) {
             auto* rg = table->row_groups_->append_row_group(static_cast<int64_t>(pointer.row_start));
             if (rg) {
                 rg->create_from_pointer(pointer);

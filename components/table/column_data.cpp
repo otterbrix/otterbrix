@@ -263,6 +263,7 @@ namespace components::table {
                                              uint64_t count,
                                              vector::vector_t& result) {
         column_scan_state child_state;
+        child_state.initialize(type_);
         initialize_scan_with_offset(child_state, static_cast<int64_t>(row_group_start + offset_in_row_group));
         auto scan_count = scan_vector(child_state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
         if (has_updates()) {

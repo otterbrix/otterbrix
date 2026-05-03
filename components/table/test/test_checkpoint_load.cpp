@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/data_pointer.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
@@ -12,6 +13,9 @@
 #include <unistd.h>
 
 namespace {
+    constexpr uint32_t ROW_GROUP_LAYOUTS_MAGIC = 0x31584150U; // "PAX1"
+    constexpr uint32_t TABLE_LAYOUT_METADATA_FLAG = 1U << 31;
+
     std::string test_db_path() {
         static std::string path = "/tmp/test_otterbrix_checkpoint_load_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -248,6 +252,122 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
                 // DOUBLE
                 auto score_val = chunk.data[2].value(i);
                 REQUIRE(score_val.value<double>() == Approx(static_cast<double>(row) * 1.5));
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == NUM_ROWS);
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("checkpoint_load: fixed integer columns are written as pax") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    constexpr uint64_t NUM_ROWS = 300;
+
+    meta_block_pointer_t table_pointer;
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.create_new_database();
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("id", logical_type::BIGINT);
+        columns.emplace_back("value", logical_type::UINTEGER);
+        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "pax_table");
+
+        auto types = table->copy_types();
+        uint64_t offset = 0;
+        while (offset < NUM_ROWS) {
+            auto batch = std::min<uint64_t>(NUM_ROWS - offset, DEFAULT_VECTOR_CAPACITY);
+            data_chunk_t chunk(&env.resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                auto row = offset + i;
+                chunk.set_value(0, i, logical_value_t{&env.resource, static_cast<int64_t>(row)});
+                chunk.set_value(1, i, logical_value_t{&env.resource, static_cast<uint32_t>(row * 10)});
+                chunk.set_value(2, i, logical_value_t{&env.resource, std::string("row_") + std::to_string(row)});
+            }
+            table_append_state state(&env.resource);
+            table->append_lock(state);
+            table->initialize_append(state);
+            table->append(chunk, state);
+            table->finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        table->checkpoint(writer);
+        table_pointer = writer.get_block_pointer();
+
+        database_header_t header;
+        header.initialize();
+        bm.write_header(header);
+    }
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.load_existing_database();
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+
+        REQUIRE(reader.read_string() == "pax_table");
+        REQUIRE(reader.read<uint32_t>() == 3);
+        for (uint32_t i = 0; i < 3; i++) {
+            (void) reader.read_string();
+            (void) reader.read<uint8_t>();
+            (void) reader.read<uint8_t>();
+        }
+
+        auto row_group_count = reader.read<uint32_t>();
+        REQUIRE((row_group_count & TABLE_LAYOUT_METADATA_FLAG) != 0);
+        REQUIRE((row_group_count & ~TABLE_LAYOUT_METADATA_FLAG) == 1);
+
+        auto row_group = row_group_pointer_t::deserialize(reader);
+        REQUIRE(row_group.columnar_data_pointers.size() == 3);
+        REQUIRE(row_group.columnar_data_pointers[0].size() == 3);
+        REQUIRE(row_group.columnar_data_pointers[1].size() == 3);
+        REQUIRE_FALSE(row_group.columnar_data_pointers[2].empty());
+
+        REQUIRE(reader.read<uint32_t>() == ROW_GROUP_LAYOUTS_MAGIC);
+        REQUIRE(reader.read<uint32_t>() == 1);
+        auto layout_kind = static_cast<row_group_layout_kind>(reader.read<uint8_t>());
+        REQUIRE(layout_kind == row_group_layout_kind::PAX_FIXED);
+
+        auto pax_layout = pax_fixed_row_group_layout_t::deserialize(reader);
+        REQUIRE(pax_layout.rows_per_page == 128);
+        REQUIRE(pax_layout.pages.size() == 3);
+        REQUIRE(pax_layout.pages[0].slices.size() == 2);
+        REQUIRE(pax_layout.pages[0].slices[0].data_pointer.block_pointer.block_id ==
+                pax_layout.pages[0].slices[1].data_pointer.block_pointer.block_id);
+        REQUIRE(pax_layout.pages[0].slices[0].column_index == 0);
+        REQUIRE(pax_layout.pages[0].slices[1].column_index == 1);
+    }
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        bm.load_existing_database();
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+
+        uint64_t scanned = 0;
+        loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                auto row = scanned + i;
+                REQUIRE(chunk.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
+                REQUIRE(chunk.data[1].value(i).value<uint32_t>() == static_cast<uint32_t>(row * 10));
+                REQUIRE(*chunk.data[2].value(i).value<std::string*>() == std::string("row_") + std::to_string(row));
             }
             scanned += chunk.size();
         });

@@ -33,6 +33,8 @@ namespace components::table {
         std::shared_ptr<row_version_manager_t> owned_version_info_;
         uint64_t current_version_ = 0;
         std::vector<std::shared_ptr<column_data_t>> columns_;
+        storage::row_group_layout_kind layout_kind_ = storage::row_group_layout_kind::COLUMNAR;
+        std::optional<storage::pax_fixed_row_group_layout_t> pax_fixed_layout_;
 
     public:
         void move_to_collection(collection_t* collection, int64_t new_start);

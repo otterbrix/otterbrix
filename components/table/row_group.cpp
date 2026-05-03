@@ -10,6 +10,95 @@
 #include "struct_column_data.hpp"
 #include <components/vector/vector_operations.hpp>
 
+namespace {
+
+    constexpr uint16_t PAX_FIXED_ROWS_PER_PAGE = 128;
+
+    bool is_pax_fixed_integer_type(const components::types::complex_logical_type& type) {
+        using components::types::logical_type;
+
+        switch (type.type()) {
+            case logical_type::TINYINT:
+            case logical_type::UTINYINT:
+            case logical_type::SMALLINT:
+            case logical_type::USMALLINT:
+            case logical_type::INTEGER:
+            case logical_type::UINTEGER:
+            case logical_type::BIGINT:
+            case logical_type::UBIGINT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    components::table::storage::pax_fixed_column_type
+    to_pax_fixed_column_type(const components::types::complex_logical_type& type) {
+        using components::table::storage::pax_fixed_column_type;
+        using components::types::logical_type;
+
+        switch (type.type()) {
+            case logical_type::TINYINT:
+                return pax_fixed_column_type::INT8;
+            case logical_type::UTINYINT:
+                return pax_fixed_column_type::UINT8;
+            case logical_type::SMALLINT:
+                return pax_fixed_column_type::INT16;
+            case logical_type::USMALLINT:
+                return pax_fixed_column_type::UINT16;
+            case logical_type::INTEGER:
+                return pax_fixed_column_type::INT32;
+            case logical_type::UINTEGER:
+                return pax_fixed_column_type::UINT32;
+            case logical_type::BIGINT:
+                return pax_fixed_column_type::INT64;
+            case logical_type::UBIGINT:
+                return pax_fixed_column_type::UINT64;
+            default:
+                throw std::logic_error("unsupported logical type for pax_fixed column");
+        }
+    }
+
+    void write_pax_fixed_slice(components::table::column_data_t& column,
+                               uint64_t row_group_start,
+                               uint32_t row_offset,
+                               uint32_t tuple_count,
+                               uint32_t column_index,
+                               components::table::storage::partial_block_manager_t& partial_block_manager,
+                               std::vector<components::table::storage::data_pointer_t>& columnar_pointers,
+                               components::table::storage::pax_fixed_page_t& page) {
+        components::vector::vector_t slice(column.resource(), column.type(), tuple_count);
+        column.scan_committed_range(row_group_start, row_offset, tuple_count, slice);
+        slice.flatten(tuple_count);
+
+        auto slice_size = static_cast<uint64_t>(tuple_count) * column.type().size();
+        auto allocation = partial_block_manager.get_block_allocation(slice_size);
+        if (slice_size > 0) {
+            partial_block_manager.write_to_block(allocation.block_id,
+                                                 allocation.offset_in_block,
+                                                 slice.data(),
+                                                 slice_size);
+        }
+
+        components::table::storage::data_pointer_t pointer;
+        pointer.row_start = row_group_start + row_offset;
+        pointer.tuple_count = tuple_count;
+        pointer.block_pointer =
+            components::table::storage::block_pointer_t(allocation.block_id, allocation.offset_in_block);
+        pointer.compression = components::table::compression::compression_type::UNCOMPRESSED;
+        pointer.segment_size = slice_size;
+
+        columnar_pointers.push_back(pointer);
+
+        components::table::storage::pax_fixed_slice_t slice_desc;
+        slice_desc.column_index = column_index;
+        slice_desc.column_type = to_pax_fixed_column_type(column.type());
+        slice_desc.data_pointer = pointer;
+        page.slices.push_back(std::move(slice_desc));
+    }
+
+} // namespace
+
 namespace components::table {
 
     row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
@@ -760,25 +849,76 @@ namespace components::table {
         pointer.tuple_count = count;
 
         auto col_count = get_column_count();
-        pointer.data_pointers.resize(col_count);
+        pointer.columnar_data_pointers.resize(col_count);
 
+        std::vector<uint64_t> pax_fixed_columns;
+        pax_fixed_columns.reserve(col_count);
         for (uint64_t i = 0; i < col_count; i++) {
-            auto persistent = columns_[i]->checkpoint(partial_block_manager);
-            pointer.data_pointers[i] = std::move(persistent.data_pointers);
+            auto& column = get_column(i);
+            if (is_pax_fixed_integer_type(column.type())) {
+                pax_fixed_columns.push_back(i);
+            } else {
+                auto persistent = column.checkpoint(partial_block_manager);
+                pointer.columnar_data_pointers[i] = std::move(persistent.data_pointers);
+            }
         }
 
+        if (pax_fixed_columns.empty() || pointer.tuple_count == 0) {
+            for (uint64_t i = 0; i < col_count; i++) {
+                if (!pointer.columnar_data_pointers[i].empty()) {
+                    continue;
+                }
+                auto persistent = get_column(i).checkpoint(partial_block_manager);
+                pointer.columnar_data_pointers[i] = std::move(persistent.data_pointers);
+            }
+            pointer.layout_kind = storage::row_group_layout_kind::COLUMNAR;
+            pax_fixed_layout_.reset();
+            layout_kind_ = pointer.layout_kind;
+            return pointer;
+        }
+
+        storage::pax_fixed_row_group_layout_t pax_layout;
+        pax_layout.rows_per_page = PAX_FIXED_ROWS_PER_PAGE;
+
+        for (uint64_t row_offset = 0; row_offset < pointer.tuple_count; row_offset += PAX_FIXED_ROWS_PER_PAGE) {
+            storage::pax_fixed_page_t page;
+            page.row_offset_in_group = static_cast<uint32_t>(row_offset);
+            page.tuple_count = static_cast<uint32_t>(std::min<uint64_t>(PAX_FIXED_ROWS_PER_PAGE,
+                                                                        pointer.tuple_count - row_offset));
+
+            for (auto column_index : pax_fixed_columns) {
+                auto& column = get_column(column_index);
+                write_pax_fixed_slice(column,
+                                      pointer.row_start,
+                                      page.row_offset_in_group,
+                                      page.tuple_count,
+                                      static_cast<uint32_t>(column_index),
+                                      partial_block_manager,
+                                      pointer.columnar_data_pointers[column_index],
+                                      page);
+            }
+
+            pax_layout.pages.push_back(std::move(page));
+        }
+
+        pointer.layout_kind = storage::row_group_layout_kind::PAX_FIXED;
+        pointer.pax_fixed_layout = pax_layout;
+        layout_kind_ = pointer.layout_kind;
+        pax_fixed_layout_ = std::move(pax_layout);
         return pointer;
     }
 
     void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
         count = pointer.tuple_count;
+        layout_kind_ = pointer.layout_kind;
+        pax_fixed_layout_ = pointer.pax_fixed_layout;
         auto col_count = get_column_count();
-        auto ptrs_count = pointer.data_pointers.size();
+        auto ptrs_count = pointer.columnar_data_pointers.size();
         auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
 
         for (uint64_t i = 0; i < min_count; i++) {
             persistent_column_data_t pcd(columns_[i]->resource());
-            pcd.data_pointers = pointer.data_pointers[i];
+            pcd.data_pointers = pointer.columnar_data_pointers[i];
             columns_[i]->initialize_column(pcd);
         }
     }

@@ -2,6 +2,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <array>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
@@ -14,6 +15,7 @@
 namespace services::disk {
 
     using namespace core::filesystem;
+    namespace catalog = components::catalog;
 
     // ---- P1.1: behavior/implements sync check ----
     // Ensures behavior() handles every method registered in dispatch_traits.
@@ -1306,14 +1308,14 @@ namespace services::disk {
                         auto kind_v = chunk.value(3, i);
                         if (oid_v.is_null() || name_v.is_null() || ns_v.is_null())
                             return true;
-                        char relkind = 'r';
+                        char relkind = catalog::relkind::regular;
                         if (!kind_v.is_null()) {
                             auto ks = kind_v.value<std::string_view>();
                             if (!ks.empty()) {
                                 relkind = ks.front();
                             }
                         }
-                        if (relkind != 'r') {
+                        if (relkind != catalog::relkind::regular) {
                             return true;
                         }
                         const auto ns_oid = static_cast<components::catalog::oid_t>(ns_v.value<std::uint32_t>());
@@ -1729,11 +1731,11 @@ namespace services::disk {
         for (auto& dep : deps) {
             if (dep.classid == components::catalog::well_known_oid::pg_class_table) {
                 const char kind = read_relkind(dep.objid);
-                if (kind == 'i') {
+                if (kind == catalog::relkind::index) {
                     co_await ddl_drop_index(ctx, dep.objid, drop_behavior_t::cascade_);
-                } else if (kind == 'S') {
+                } else if (kind == catalog::relkind::sequence) {
                     co_await ddl_drop_sequence(ctx, dep.objid, drop_behavior_t::cascade_);
-                } else if (kind == 'v') {
+                } else if (kind == catalog::relkind::view) {
                     co_await ddl_drop_view(ctx, dep.objid, drop_behavior_t::cascade_);
                 } else if (kind == 'm') {
                     co_await ddl_drop_macro(ctx, dep.objid, drop_behavior_t::cascade_);
@@ -2024,7 +2026,7 @@ namespace services::disk {
         const auto version = ++catalog_version_;
         trace(log_, "manager_disk_t::ddl_create_sequence : {}.{} -> oid {}", namespace_oid, name, oid);
         if (auto* def = components::catalog::find_system_table("pg_class")) {
-            const std::string relkind_str(1, 'S');
+            const std::string relkind_str(1, catalog::relkind::sequence);
             const std::string storagemode_str(1, 'd');
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                 chunk.set_value(0, 0, lv_oid(res, oid));
@@ -2083,7 +2085,7 @@ namespace services::disk {
         const auto version = ++catalog_version_;
         trace(log_, "manager_disk_t::ddl_create_view : {}.{} -> oid {}", namespace_oid, name, oid);
         if (auto* def = components::catalog::find_system_table("pg_class")) {
-            const std::string relkind_str(1, 'v');
+            const std::string relkind_str(1, catalog::relkind::view);
             const std::string storagemode_str(1, 'd');
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                 chunk.set_value(0, 0, lv_oid(res, oid));
@@ -2197,7 +2199,7 @@ namespace services::disk {
         trace(log_, "manager_disk_t::ddl_create_index : {} on {} ({} cols) -> oid {}",
               index_name, table_oid, column_names.size(), index_oid);
         if (auto* def = components::catalog::find_system_table("pg_class")) {
-            const std::string relkind_str(1, 'i');
+            const std::string relkind_str(1, catalog::relkind::index);
             const std::string storagemode_str(1, 'd');
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                 chunk.set_value(0, 0, lv_oid(res, index_oid));
@@ -2621,7 +2623,7 @@ namespace services::disk {
                     fk_tuple.push_back(std::move(v));
                 }
                 const bool all_null = (null_count == fk_tuple.size());
-                if (fk.matchtype == 'f') {
+                if (fk.matchtype == catalog::fk_match::full) {
                     if (all_null) continue;
                     if (null_count > 0) {
                         std::string msg = "INSERT into " + name.database + "." + name.collection +
@@ -2630,7 +2632,7 @@ namespace services::disk {
                                            ") — partial NULL in FK columns";
                         co_return std::optional<std::string>(std::move(msg));
                     }
-                } else if (fk.matchtype == 'p') {
+                } else if (fk.matchtype == catalog::fk_match::partial) {
                     if (all_null) continue;
                     // Partial-NULL OK: matched parent must agree on non-NULL components only.
                 } else {
@@ -2639,7 +2641,7 @@ namespace services::disk {
 
                 bool found = false;
                 std::pmr::synchronized_pool_resource scan_resource;
-                const bool match_partial = (fk.matchtype == 'p');
+                const bool match_partial = (fk.matchtype == catalog::fk_match::partial);
                 inline_scan(parent_it->second->table_storage.table(),
                              parent_scan_cols, &scan_resource,
                              [&](components::vector::data_chunk_t& c, uint64_t i) {
@@ -2960,8 +2962,8 @@ namespace services::disk {
             // deleted-child chunk before direct_delete_sync, recursively calling
             // fk_validate_parent_delete on the child collection with that chunk, plus depth-
             // capped cycle detection (visited (table_oid, conkey) set). Rare in practice.
-            const bool cascade = (fk.deltype == 'c');
-            const bool set_null = (fk.deltype == 'n');
+            const bool cascade = (fk.deltype == catalog::fk_action::cascade);
+            const bool set_null = (fk.deltype == catalog::fk_action::set_null);
             const bool collecting = cascade || set_null;
             std::pmr::vector<std::int64_t> action_rows(resource());
             for (uint64_t r = 0; r < chunk_to_delete->size(); ++r) {
@@ -3084,7 +3086,7 @@ namespace services::disk {
                         if (static_cast<components::catalog::oid_t>(rel_v.value<std::uint32_t>()) != table_oid)
                             return true;
                         auto contype_s = contype_v.value<std::string_view>();
-                        if (contype_s.empty() || contype_s.front() != 'f') return true;
+                        if (contype_s.empty() || contype_s.front() != catalog::contype::foreign_key) return true;
                         fk_constraint_info_t info;
                         info.constraint_oid = static_cast<components::catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
                         auto ref_v = chunk.value(3, i);
@@ -3127,7 +3129,7 @@ namespace services::disk {
                         auto ref_v = chunk.value(3, i);
                         if (contype_v.is_null() || ref_v.is_null()) return true;
                         auto contype_s = contype_v.value<std::string_view>();
-                        if (contype_s.empty() || contype_s.front() != 'f') return true;
+                        if (contype_s.empty() || contype_s.front() != catalog::contype::foreign_key) return true;
                         if (static_cast<components::catalog::oid_t>(ref_v.value<std::uint32_t>()) != ref_table_oid)
                             return true;
                         fk_constraint_info_t info;
@@ -3179,7 +3181,7 @@ namespace services::disk {
                         auto type_v = chunk.value(2, i);
                         if (type_v.is_null()) return true;
                         auto type_s = type_v.value<std::string_view>();
-                        if (type_s.empty() || type_s.front() != 'c') return true;
+                        if (type_s.empty() || type_s.front() != catalog::contype::check) return true;
                         check_constraint_info_t info;
                         info.constraint_oid = static_cast<components::catalog::oid_t>(
                             chunk.value(0, i).value<std::uint32_t>());
@@ -3288,13 +3290,13 @@ namespace services::disk {
                 // Persist FK semantic flags only when this is a FOREIGN_KEY constraint.
                 // Other contypes leave columns 7-9 NULL — fk_constraints_for_table sees that
                 // and falls back to defaults ('s'/'a'/'a').
-                if (contype == 'f') {
+                if (contype == catalog::contype::foreign_key) {
                     chunk.set_value(7, 0, lv_str(res, std::string(1, fk_matchtype)));
                     chunk.set_value(8, 0, lv_str(res, std::string(1, fk_del_action)));
                     chunk.set_value(9, 0, lv_str(res, std::string(1, fk_upd_action)));
                 }
                 // col 10: conexpr — CHECK expr SQL text; NULL for non-CHECK constraints.
-                if (contype == 'c' && !check_expr.empty()) {
+                if (contype == catalog::contype::check && !check_expr.empty()) {
                     chunk.set_value(10, 0, lv_str(res, check_expr));
                 }
             });
@@ -3328,7 +3330,7 @@ namespace services::disk {
         }
         // For FK: also emit constraint→ref_table 'n' normal so DROP TABLE on the referenced
         // table is blocked under RESTRICT.
-        if (contype == 'f' && ref_table_oid != components::catalog::INVALID_OID) {
+        if (contype == catalog::contype::foreign_key && ref_table_oid != components::catalog::INVALID_OID) {
             if (auto* def = components::catalog::find_system_table("pg_depend")) {
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, components::catalog::well_known_oid::pg_constraint_table));
@@ -3837,7 +3839,7 @@ namespace services::disk {
         }
         direct_delete_sync(pg_class_name, rows_to_delete, static_cast<std::uint64_t>(rows_to_delete.size()));
         if (auto* def = components::catalog::find_system_table("pg_class")) {
-            const std::string relkind_str(1, 'r');
+            const std::string relkind_str(1, catalog::relkind::regular);
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                 chunk.set_value(0, 0, lv_oid(res, table_oid));
                 chunk.set_value(1, 0, lv_str(res, found_name));
@@ -4193,7 +4195,7 @@ namespace services::disk {
         // If this is a DISK-backed regular relation whose storage hasn't been instantiated
         // yet, load it from disk now. Skips computing tables (relkind='g') and indexes
         // (relkind='i') — they don't have a .otbx file.
-        if (out.relkind == 'r' && !config_.path.empty()) {
+        if (out.relkind == catalog::relkind::regular && !config_.path.empty()) {
             // Resolve namespace_name from namespace_oid (one extra pg_namespace scan).
             std::string ns_name;
             auto ns_it = storages_.find(pg_namespace_name);
@@ -4235,7 +4237,7 @@ namespace services::disk {
         // Computing tables (relkind='g') store columns in pg_computed_column
         // (versioned + ref-counted). Pick latest attversion per attname where
         // attrefcount > 0, ordered by first appearance.
-        if (out.relkind == 'g') {
+        if (out.relkind == catalog::relkind::computed) {
             auto cc_it = storages_.find(pg_computed_column_name);
             if (cc_it != storages_.end()) {
                 std::pmr::synchronized_pool_resource cc_scan_resource;
@@ -4397,7 +4399,7 @@ namespace services::disk {
                         if (kind_v.is_null())
                             return true;
                         auto kind_s = kind_v.value<std::string_view>();
-                        if (kind_s.empty() || kind_s.front() != 'c')
+                        if (kind_s.empty() || kind_s.front() != catalog::relkind::composite_type)
                             return true;
                         if (!str_equals(chunk.value(1, i), name))
                             return true;
@@ -4625,7 +4627,7 @@ namespace services::disk {
                         const char relkind = kind_s.front();
                         // Only "live storage" kinds: regular tables and computing tables.
                         // Indexes, sequences, views, macros, composites are filtered.
-                        if (relkind != 'r' && relkind != 'g')
+                        if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
                             return true;
                         auto oid_v = chunk.value(0, i);
                         auto name_v = chunk.value(1, i);

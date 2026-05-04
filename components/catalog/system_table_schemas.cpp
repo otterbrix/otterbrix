@@ -1,4 +1,5 @@
 #include "system_table_schemas.hpp"
+#include "catalog_codes.hpp"
 
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
@@ -231,18 +232,18 @@ namespace components::catalog {
         // relation, type, function) is conceptually scoped to a database. The default "main"
         // database row is seeded with well_known_oid::main_database in
         // manager_disk_t::bootstrap_system_tables_sync.
-        tables.push_back({"pg_database",         well_known_oid::pg_database_table,           pg_catalog, 'r', pg_database_columns()});
-        tables.push_back({"pg_namespace",       well_known_oid::pg_namespace_table,        pg_catalog, 'r', pg_namespace_columns()});
-        tables.push_back({"pg_class",            well_known_oid::pg_class_table,             pg_catalog, 'r', pg_class_columns()});
-        tables.push_back({"pg_attribute",        well_known_oid::pg_attribute_table,         pg_catalog, 'r', pg_attribute_columns()});
-        tables.push_back({"pg_type",             well_known_oid::pg_type_table,              pg_catalog, 'r', pg_type_columns()});
-        tables.push_back({"pg_proc",             well_known_oid::pg_proc_table,              pg_catalog, 'r', pg_proc_columns()});
-        tables.push_back({"pg_depend",           well_known_oid::pg_depend_table,            pg_catalog, 'r', pg_depend_columns()});
-        tables.push_back({"pg_constraint",       well_known_oid::pg_constraint_table,        pg_catalog, 'r', pg_constraint_columns()});
-        tables.push_back({"pg_index",            well_known_oid::pg_index_table,             pg_catalog, 'r', pg_index_columns()});
-        tables.push_back({"pg_computed_column",  well_known_oid::pg_computed_column_table,   pg_catalog, 'r', pg_computed_column_columns()});
-        tables.push_back({"pg_sequence",         well_known_oid::pg_sequence_table,          pg_catalog, 'r', pg_sequence_columns()});
-        tables.push_back({"pg_rewrite",          well_known_oid::pg_rewrite_table,           pg_catalog, 'r', pg_rewrite_columns()});
+        tables.push_back({"pg_database",         well_known_oid::pg_database_table,           pg_catalog, relkind::regular, pg_database_columns()});
+        tables.push_back({"pg_namespace",       well_known_oid::pg_namespace_table,        pg_catalog, relkind::regular, pg_namespace_columns()});
+        tables.push_back({"pg_class",            well_known_oid::pg_class_table,             pg_catalog, relkind::regular, pg_class_columns()});
+        tables.push_back({"pg_attribute",        well_known_oid::pg_attribute_table,         pg_catalog, relkind::regular, pg_attribute_columns()});
+        tables.push_back({"pg_type",             well_known_oid::pg_type_table,              pg_catalog, relkind::regular, pg_type_columns()});
+        tables.push_back({"pg_proc",             well_known_oid::pg_proc_table,              pg_catalog, relkind::regular, pg_proc_columns()});
+        tables.push_back({"pg_depend",           well_known_oid::pg_depend_table,            pg_catalog, relkind::regular, pg_depend_columns()});
+        tables.push_back({"pg_constraint",       well_known_oid::pg_constraint_table,        pg_catalog, relkind::regular, pg_constraint_columns()});
+        tables.push_back({"pg_index",            well_known_oid::pg_index_table,             pg_catalog, relkind::regular, pg_index_columns()});
+        tables.push_back({"pg_computed_column",  well_known_oid::pg_computed_column_table,   pg_catalog, relkind::regular, pg_computed_column_columns()});
+        tables.push_back({"pg_sequence",         well_known_oid::pg_sequence_table,          pg_catalog, relkind::regular, pg_sequence_columns()});
+        tables.push_back({"pg_rewrite",          well_known_oid::pg_rewrite_table,           pg_catalog, relkind::regular, pg_rewrite_columns()});
 
         return tables;
     }

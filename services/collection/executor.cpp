@@ -883,6 +883,19 @@ namespace services::collection::executor {
                                 ref_oid = rrt.oid;
                             }
                         }
+                        // P2.5: reject CHECK expressions with unsupported node types
+                        if (cstr->kind() == components::logical_plan::constraint_kind::check
+                            && cstr->check_expr().empty()) {
+                            if (txn_manager_ != nullptr && txn_data.transaction_id != 0)
+                                txn_manager_->abort(session);
+                            co_return execute_result_t{
+                                make_cursor(resource(), error_code_t::other_error,
+                                    "CHECK constraint expression is empty or contains unsupported "
+                                    "constructs (functions, subqueries, and CASE expressions are not "
+                                    "allowed; valid: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                                    "column references, and constants)"),
+                                {}};
+                        }
                         auto [_dc, dcf] = actor_zeta::send(disk_address_,
                                                             &disk::manager_disk_t::ddl_create_constraint,
                                                             ddl_ctx,

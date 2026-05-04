@@ -950,6 +950,57 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
+    // P2.5: Verifies that CHECK constraints with unsupported expression node types
+    // (T_FuncCall) are rejected at creation time with a clear error, not silently stored
+    // as empty conexpr and bypassed on INSERT.
+    auto config = test_create_config("/tmp/test_sql_features/check_constraint_invalid_expr");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.items (id bigint, x bigint);")->is_success());
+        }
+    }
+
+    INFO("CHECK with function call is rejected at constraint creation") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_func CHECK (abs(x) > 0);");
+            REQUIRE(cur->is_error());
+        }
+    }
+
+    INFO("valid CHECK still works after rejection") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_pos CHECK (x > 0);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x) VALUES (1, -1);")->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x) VALUES (2, 5);")->is_success());
+        }
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     // Verifies that ddl_result_t errors are surfaced to the caller rather than
     // silently discarded via (void)co_await. Exercises:

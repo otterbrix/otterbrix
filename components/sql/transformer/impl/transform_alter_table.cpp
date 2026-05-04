@@ -75,6 +75,13 @@ namespace components::sql::transform {
                             node->set_check_expr(std::move(expr_text));
                             return node;
                         }
+                        // CHECK expression contains unsupported constructs (e.g. function calls,
+                        // subqueries, CASE). Reject early rather than silently creating a no-op.
+                        throw parser_exception_t{
+                            "CHECK constraint expression contains unsupported constructs; "
+                            "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                            "column references, and constants",
+                            ""};
                     }
                     break;
                 }

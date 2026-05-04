@@ -1657,6 +1657,19 @@ namespace services::dispatcher {
                             auto rrt = co_await std::move(rrtf);
                             if (rrt.found) ref_oid = rrt.oid;
                         }
+                        // P2.5: reject CHECK expressions containing unsupported node types
+                        // (T_FuncCall, T_SubLink, T_CaseExpr — deparse_check_expr returns ""
+                        // for these, so an empty check_expr means invalid expression)
+                        if (cstr->kind() == components::logical_plan::constraint_kind::check
+                            && cstr->check_expr().empty()) {
+                            if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                            co_return make_cursor(resource(),
+                                components::cursor::error_code_t::other_error,
+                                "CHECK constraint expression is empty or contains unsupported "
+                                "constructs (functions, subqueries, and CASE expressions are not "
+                                "allowed; valid: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                                "column references, and constants)");
+                        }
                         auto [_dc, dcf] = actor_zeta::send(disk_address_,
                                                             &disk::manager_disk_t::ddl_create_constraint,
                                                             ddl_ctx,

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 
 namespace components::catalog {
 
@@ -70,13 +71,31 @@ namespace components::catalog {
 
     // Thread-safe monotonic OID allocator. Single global instance lives in manager_disk_t
     // (one disk actor → one writer); seed() rebases the counter from on-disk max+1 at startup.
+    //
+    // Overflow: oid_t is uint32_t → 4 billion objects per process lifetime.  Restart
+    // reseeds from max(oid)+1, so the bound is per-process, not persistent lifetime.
+    // Wraparound is undetected: if a workload creates >2^32 objects between restarts,
+    // OIDs collide silently.  Near-limit, allocate() aborts to prevent silent corruption
+    // (see OID_HARD_LIMIT below).  Most installations restart at least monthly; 4B
+    // allocations between restarts is not a realistic concern for typical workloads.
+    static constexpr oid_t OID_HARD_LIMIT = 0xFFFF0000u; // ~4.29B - 64k headroom
+
     class oid_generator {
     public:
         explicit oid_generator(oid_t start = FIRST_USER_OID) noexcept
             : next_(start) {}
 
         // Allocate a fresh OID. Lock-free; safe under concurrent allocate() callers.
-        oid_t allocate() noexcept { return next_.fetch_add(1, std::memory_order_relaxed); }
+        // Aborts if the counter approaches wraparound — see OID_HARD_LIMIT.
+        oid_t allocate() noexcept {
+            const oid_t oid = next_.fetch_add(1, std::memory_order_relaxed);
+            if (oid >= OID_HARD_LIMIT) [[unlikely]] {
+                // OID space exhausted — cannot safely continue.
+                // Restart the process to reseed from the on-disk max.
+                std::abort();
+            }
+            return oid;
+        }
 
         // Reset the counter to high_water + 1 (called at startup after scanning pg_class /
         // pg_attribute / pg_type / pg_proc / pg_constraint to find the highest used OID).

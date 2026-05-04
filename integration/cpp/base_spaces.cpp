@@ -111,7 +111,13 @@ namespace otterbrix {
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource, manager_dispatcher_->address(), log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        manager_dispatcher_->sync(std::make_tuple(manager_wal_address, manager_disk_address, manager_index_address));
+        // P2.2/P2.3: when WAL is disabled, pass empty_address so all wal_address_ != empty()
+        // guards in dispatcher and disk manager skip every WAL round-trip at no cost.
+        auto effective_wal_address = config.wal.on
+                                         ? manager_wal_address
+                                         : actor_zeta::address_t::empty_address();
+
+        manager_dispatcher_->sync(std::make_tuple(effective_wal_address, manager_disk_address, manager_index_address));
 
         wal_ptr->sync(std::make_tuple(actor_zeta::address_t(manager_disk_address), manager_dispatcher_->address()));
 
@@ -137,7 +143,7 @@ namespace otterbrix {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
             // append_pg_catalog_row. Previously this was dispatcher's address — only worked
             // because the runtime_txn check skipped WAL writes.
-            disk_ptr->sync(std::make_tuple(manager_wal_address));
+            disk_ptr->sync(std::make_tuple(effective_wal_address));
         }
 
         manager_index_->sync(std::make_tuple(manager_disk_address));

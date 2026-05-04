@@ -1,6 +1,7 @@
 #include "manager_disk.hpp"
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
+#include <array>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/serialization/deserializer.hpp>
 #include <components/serialization/serializer.hpp>
@@ -13,6 +14,109 @@
 namespace services::disk {
 
     using namespace core::filesystem;
+
+    // ---- P1.1: behavior/implements sync check ----
+    // Ensures behavior() handles every method registered in dispatch_traits.
+    // When adding a new method:
+    //   1. Add it to implements<> in manager_disk.hpp
+    //   2. Add a case to the behavior() switch
+    //   3. Add the corresponding msg_id to kBehaviorHandledIds below
+    namespace {
+        template<typename MethodList>
+        struct behavior_expected_ids_t;
+
+        template<auto... Ptrs>
+        struct behavior_expected_ids_t<
+            actor_zeta::type_traits::type_list<actor_zeta::method_map_entry<Ptrs>...>> {
+            static constexpr std::array<actor_zeta::mailbox::message_id, sizeof...(Ptrs)> value{
+                actor_zeta::msg_id<manager_disk_t, Ptrs>...
+            };
+        };
+
+        constexpr auto kImplementedIds =
+            behavior_expected_ids_t<manager_disk_t::dispatch_traits::methods>::value;
+
+        constexpr std::array kBehaviorHandledIds{
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_calculate_size>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_insert>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_update>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_parent_delete>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_append>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_append>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_delete>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_database>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_database>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_namespace>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_namespace>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_table>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_table>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_adopt_computing_schema>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_computing_table>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_append>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_computed_drop>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_sequence>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_sequence>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_view>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_view>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_macro>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_macro>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_index>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_index>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_type>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_type>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_function>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_function>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_index_set_valid>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_add_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_rename_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_create_constraint>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::ddl_drop_constraint>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_table>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_type>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_tables_in_namespace>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::recent_invalidations_since>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::commit_pg_catalog_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::get_check_constraints>,
+        };
+
+        constexpr bool behavior_covers_all_implements() noexcept {
+            if (kImplementedIds.size() != kBehaviorHandledIds.size()) return false;
+            for (auto id : kImplementedIds) {
+                bool found = false;
+                for (auto hid : kBehaviorHandledIds) {
+                    if (id == hid) { found = true; break; }
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
+
+        static_assert(behavior_covers_all_implements(),
+            "behavior() is out of sync with dispatch_traits: "
+            "add a case to behavior() AND an entry to kBehaviorHandledIds");
+    } // namespace
 
     // ---- table_storage_t implementations ----
 

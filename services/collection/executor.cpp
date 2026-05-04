@@ -325,16 +325,31 @@ namespace services::collection::executor {
                                                         result.wal_collection);
                     auto checks = co_await std::move(ccf);
                     if (!checks.empty()) {
-                        components::sql::transform::transformer chk_t(resource());
+                        auto col_count = check_src->column_count();
                         for (const auto& c : checks) {
                             if (c.conexpr.empty()) continue;
-                            auto [expr, params] = chk_t.parse_where_expr(c.conexpr);
-                            if (!expr) continue;
-                            resolve_check_key_paths(expr, *check_src);
-                            auto pred = components::operators::predicates::create_predicate(
-                                resource(), &function_registry_, expr,
-                                check_src->types(), check_src->types(),
-                                &params->parameters());
+                            components::operators::predicates::predicate_ptr pred;
+                            auto cache_it = check_pred_cache_.find(c.constraint_oid);
+                            if (cache_it != check_pred_cache_.end()
+                                && cache_it->second.conexpr == c.conexpr
+                                && cache_it->second.column_count == col_count) {
+                                pred = cache_it->second.pred;
+                            } else {
+                                components::sql::transform::transformer chk_t(resource());
+                                auto [expr, params] = chk_t.parse_where_expr(c.conexpr);
+                                if (!expr) continue;
+                                resolve_check_key_paths(expr, *check_src);
+                                pred = components::operators::predicates::create_predicate(
+                                    resource(), &function_registry_, expr,
+                                    check_src->types(), check_src->types(),
+                                    &params->parameters());
+                                if (check_pred_cache_.size() >= kCheckPredCacheMax) {
+                                    check_pred_cache_.clear();
+                                }
+                                check_pred_cache_.insert_or_assign(
+                                    c.constraint_oid,
+                                    check_pred_entry_t{c.conexpr, col_count, pred});
+                            }
                             for (uint64_t r = 0; r < check_src->size(); ++r) {
                                 if (!pred->check(*check_src, r)) {
                                     txn_manager_->abort(session);

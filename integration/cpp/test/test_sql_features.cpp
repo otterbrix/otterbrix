@@ -1034,3 +1034,82 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
         }
     }
 }
+
+TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
+    // Verifies that the compiled CHECK predicate cache works correctly:
+    //   - repeated inserts hit the cache (cache hit path)
+    //   - violation still detected after many cache-hit inserts
+    //   - after DROP COLUMN (column_count changes), cache is invalidated and
+    //     the constraint is re-evaluated correctly against the new schema
+    auto config = test_create_config("/tmp/test_sql_features/check_pred_cache");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.items (id bigint, x bigint, extra bigint);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_x CHECK (x > 0);")->is_success());
+        }
+    }
+
+    INFO("50 valid inserts hit cache on 2nd+") {
+        for (int i = 1; i <= 50; ++i) {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x, extra) VALUES ("
+                + std::to_string(i) + ", " + std::to_string(i) + ", 0);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("violation still detected after cached inserts") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x, extra) VALUES (99, -1, 0);");
+            REQUIRE(cur->is_error());
+        }
+    }
+
+    INFO("valid insert after violation") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x, extra) VALUES (100, 100, 0);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("drop extra column invalidates cache (column_count changes), constraint still enforced") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.items DROP COLUMN extra;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x) VALUES (101, -5);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.items (id, x) VALUES (102, 5);");
+            REQUIRE(cur->is_success());
+        }
+    }
+}

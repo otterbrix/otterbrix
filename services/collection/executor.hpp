@@ -1,11 +1,13 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/table_metadata.hpp>
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/vector/data_chunk.hpp>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -17,6 +19,8 @@
 #include <core/btree/btree.hpp>
 #include <services/collection/context_storage.hpp>
 #include <stack>
+#include <string>
+#include <unordered_map>
 
 namespace components::table {
     class transaction_manager_t;
@@ -120,6 +124,19 @@ namespace services::collection::executor {
 
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
+
+        // Cache of compiled CHECK predicates keyed by (constraint_oid).
+        // Also stores conexpr and column_count to detect stale entries when
+        // the schema changes (e.g. ALTER TABLE DROP COLUMN compacts columns).
+        // Full invalidation by catalog_version requires exposing that stamp
+        // to the executor — tracked for a future follow-up.
+        struct check_pred_entry_t {
+            std::string conexpr;
+            std::uint64_t column_count{0};
+            components::operators::predicates::predicate_ptr pred;
+        };
+        static constexpr std::size_t kCheckPredCacheMax = 256;
+        std::unordered_map<components::catalog::oid_t, check_pred_entry_t> check_pred_cache_;
 
         void poll_pending();
     };

@@ -1209,6 +1209,10 @@ namespace services::disk {
             parent_scan_cols.reserve(parent_cols.size());
             for (auto c : parent_cols) parent_scan_cols.emplace_back(static_cast<std::int64_t>(c));
 
+            // Hoisted outside the per-row loop: pool slabs are reused across rows without
+            // repeated OS allocation, but pool lifetime matches the FK constraint block.
+            std::pmr::synchronized_pool_resource scan_resource;
+            const bool match_partial = (fk.matchtype == catalog::fk_match::partial);
             for (uint64_t r = 0; r < chunk->size(); ++r) {
                 // Build the FK tuple for this row.
                 //   MATCH SIMPLE ('s', default): any NULL component → row passes (skipped).
@@ -1241,8 +1245,6 @@ namespace services::disk {
                 }
 
                 bool found = false;
-                std::pmr::synchronized_pool_resource scan_resource;
-                const bool match_partial = (fk.matchtype == catalog::fk_match::partial);
                 inline_scan(parent_it->second->table_storage.table(),
                              parent_scan_cols, &scan_resource,
                              [&](components::vector::data_chunk_t& c, uint64_t i) {
@@ -1568,6 +1570,8 @@ namespace services::disk {
             const bool set_null = (fk.deltype == catalog::fk_action::set_null);
             const bool collecting = cascade || set_null;
             std::pmr::vector<std::int64_t> action_rows(resource());
+            // Hoisted outside the per-row loop; pool slabs are reused across parent rows.
+            std::pmr::synchronized_pool_resource scan_resource;
             for (uint64_t r = 0; r < chunk_to_delete->size(); ++r) {
                 std::vector<components::types::logical_value_t> pk_tuple;
                 pk_tuple.reserve(parent_cols.size());
@@ -1580,7 +1584,6 @@ namespace services::disk {
                 if (any_null) continue;
 
                 bool found = false;
-                std::pmr::synchronized_pool_resource scan_resource;
                 inline_scan(child_storage_it->second->table_storage.table(),
                              child_scan_cols, &scan_resource,
                              [&](components::vector::data_chunk_t& c, uint64_t i) {

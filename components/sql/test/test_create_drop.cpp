@@ -107,14 +107,19 @@ TEST_CASE("components::sql::table") {
     TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($drop_collection: db_name.table_name)_");
     TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($drop_collection: .table_name)_");
 
+    // Transformer stores types as UNKNOWN(pg_internal_name); OID resolution happens
+    // later via pg_type in the disk manager (PostgreSQL-style bind-time resolution).
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(test integer, test1 string)",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "test" && type.type() == logical_type::INTEGER;
+                                           return type.alias() == "test" &&
+                                                  type.type() == logical_type::UNKNOWN &&
+                                                  type.type_name() == "int4";
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
                                            return type.alias() == "test1" &&
-                                                  type.type() == logical_type::STRING_LITERAL;
+                                                  type.type() == logical_type::UNKNOWN &&
+                                                  type.type_name() == "string";
                                        }));
                                    });
 
@@ -122,16 +127,16 @@ TEST_CASE("components::sql::table") {
         "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))",
         [](const std::pmr::vector<complex_logical_type>& sch) {
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t1" && t.type() == logical_type::BLOB;
+                return t.alias() == "t1" && t.type() == logical_type::UNKNOWN && t.type_name() == "blob";
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t2" && t.type() == logical_type::UINTEGER;
+                return t.alias() == "t2" && t.type() == logical_type::UNKNOWN && t.type_name() == "uint";
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t3" && t.type() == logical_type::UHUGEINT;
+                return t.alias() == "t3" && t.type() == logical_type::UNKNOWN && t.type_name() == "uhugeint";
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP_SEC;
+                return t.alias() == "t4" && t.type() == logical_type::UNKNOWN && t.type_name() == "timestamp_sec";
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 if (t.type() != logical_type::DECIMAL)
@@ -148,39 +153,50 @@ TEST_CASE("components::sql::table") {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                if (array->internal_type() != logical_type::DECIMAL)
+                if (array->internal_type().type() != logical_type::DECIMAL)
                     return false;
-                auto decimal = static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
-                return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 && array->size() == 10;
+                auto decimal =
+                    static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
+                return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 &&
+                       array->size() == 10;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                return type.alias() == "t2" && array->internal_type() == logical_type::INTEGER && array->size() == 100;
+                return type.alias() == "t2" && array->internal_type().type() == logical_type::UNKNOWN &&
+                       array->internal_type().type_name() == "int4" && array->size() == 100;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& type) {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                return type.alias() == "t3" && array->internal_type() == logical_type::BOOLEAN && array->size() == 8;
+                return type.alias() == "t3" && array->internal_type().type() == logical_type::UNKNOWN &&
+                       array->internal_type().type_name() == "bool" && array->size() == 8;
             }));
         });
 
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(t1 float, t2 double, t3 float[100])",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "t1" && type.type() == logical_type::FLOAT;
+                                           return type.alias() == "t1" &&
+                                                  type.type() == logical_type::UNKNOWN &&
+                                                  type.type_name() == "float4";
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "t2" && type.type() == logical_type::DOUBLE;
+                                           return type.alias() == "t2" &&
+                                                  type.type() == logical_type::UNKNOWN &&
+                                                  type.type_name() == "double";
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
                                            if (type.type() != logical_type::ARRAY)
                                                return false;
-                                           auto array = static_cast<array_logical_type_extension*>(type.extension());
+                                           auto array =
+                                               static_cast<array_logical_type_extension*>(type.extension());
                                            return type.alias() == "t3" &&
-                                                  array->internal_type() == logical_type::FLOAT && array->size() == 100;
+                                                  array->internal_type().type() == logical_type::UNKNOWN &&
+                                                  array->internal_type().type_name() == "float4" &&
+                                                  array->size() == 100;
                                        }));
                                    });
 

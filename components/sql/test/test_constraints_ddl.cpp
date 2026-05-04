@@ -181,6 +181,66 @@ TEST_CASE("components::sql::view") {
     }
 }
 
+TEST_CASE("components::sql::check_constraint_whitelist") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    // Table-level CHECK constraints go through extract_table_constraints → deparse_check_expr.
+    // Column-level CHECK (inside T_ColumnDef) is a separate path not handled yet.
+
+    SECTION("simple comparison is allowed") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > 0))"));
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE(data->constraints()[0].check_expression == "x > 0");
+    }
+
+    SECTION("IS NOT NULL is allowed") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x IS NOT NULL))"));
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
+    }
+
+    SECTION("AND of comparisons is allowed") {
+        auto stmt = linitial(raw_parser(&arena_resource,
+                                        "CREATE TABLE t (x INTEGER, CHECK(x > 0 AND x < 100))"));
+        auto result = std::get<result_view>(transformer.transform(pg_cell_to_node_cast(stmt)).finalize());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(result.node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
+    }
+
+    // Forbidden node kinds must throw parser_exception_t.
+    SECTION("function call in CHECK is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))"));
+        bool threw = false;
+        try {
+            transformer.transform(pg_cell_to_node_cast(stmt));
+        } catch (const parser_exception_t& e) {
+            threw = true;
+            REQUIRE(std::string(e.what()).find("T_FuncCall") != std::string::npos);
+        }
+        REQUIRE(threw);
+    }
+
+    SECTION("subquery in CHECK is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource,
+                                        "CREATE TABLE t (x INTEGER, CHECK(x > (SELECT 1)))"));
+        bool threw = false;
+        try {
+            transformer.transform(pg_cell_to_node_cast(stmt));
+        } catch (const parser_exception_t& e) {
+            threw = true;
+            REQUIRE(std::string(e.what()).find("unsupported expression type") != std::string::npos);
+        }
+        REQUIRE(threw);
+    }
+}
+
 TEST_CASE("components::sql::macro") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);

@@ -236,7 +236,10 @@ namespace components::sql::transform {
             // DECIMAL(w,s) is the only type whose typmods carry semantics (precision, scale).
             // All other types are stored as UNKNOWN(type_name); the disk manager resolves
             // the actual OID via pg_type scan when writing pg_attribute.atttypid.
-            if (!std::strcmp(type_name, "numeric") && list_length(type->typmods) == 2) {
+            if (!std::strcmp(type_name, "numeric")) {
+                if (list_length(type->typmods) != 2) {
+                    throw parser_exception_t{"Incorrect modifiers for DECIMAL, width and scale required", ""};
+                }
                 if (nodeTag(linitial(type->typmods)) != T_A_Const ||
                     nodeTag(lsecond(type->typmods)) != T_A_Const) {
                     throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
@@ -615,7 +618,12 @@ namespace components::sql::transform {
                 return arg + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
             }
             default:
-                return "";
+                throw parser_exception_t{
+                    "CHECK constraint contains unsupported expression type " +
+                        node_tag_to_string(nodeTag(node)) +
+                        "; allowed: column references, constants, comparison/arithmetic operators, "
+                        "AND/OR/NOT, IS NULL/IS NOT NULL",
+                    ""};
         }
     }
 

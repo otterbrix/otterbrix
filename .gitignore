@@ -426,3 +426,5 @@ build
 *.wal
 *.txt.user
 benchmark/data/
+
+CMakeUserPresets.json

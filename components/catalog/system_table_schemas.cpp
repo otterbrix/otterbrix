@@ -16,14 +16,14 @@
 //                                              with PG GENERATED terminology.
 //   pg_attribute  — adds `attoid`            : stable column OID (FK target for indexes,
 //                                              constraints, deps).
-//                 — adds `atttypspec`        : msgpack-encoded complex_logical_type for
+//                 — adds `atttypspec`        : flat-text encoded complex_logical_type for
 //                                              types that don't fit a single pg_type.oid.
-//                 — adds `attdefspec`        : msgpack-encoded default value (replaces
+//                 — adds `attdefspec`        : flat-text encoded default value (replaces
 //                                              text `attdefval` — survives roundtrip).
 //                 — adds `atthasdefault`/`attisdropped` : tombstone; attnum is never reused.
 //                 — no `attstattarget`       : no statistics layer yet.
 //   pg_type       — no `typlen/typbyval/typtype` : not used by current resolution path.
-//                 — adds `typdefspec`        : msgpack-encoded type tree (mirrors
+//                 — adds `typdefspec`        : flat-text encoded type tree (mirrors
 //                                              `pg_attribute.atttypspec`).
 //   pg_proc       — no `proowner`            : same reason as nspowner.
 //                 — `proargmatchers`/`prorettype` as text  : matcher form lets a function
@@ -98,11 +98,11 @@ namespace components::catalog {
             c.emplace_back("atthasdefault", bool_col(), true);
             c.emplace_back("attisdropped", bool_col(), true);     // tombstone; attnum is never reused
             // atttypspec is empty and atttypid alone reconstructs the type. For ARRAY /
-            // DECIMAL / STRUCT / ENUM / UNKNOWN, atttypspec carries the msgpack-serialized
+            // DECIMAL / STRUCT / ENUM / UNKNOWN, atttypspec carries the flat-text encoded
             // complex_logical_type (preserves precision/scale, element types, child types).
             c.emplace_back("atttypspec", str_col(), false);
-            // attdefspec: msgpack-serialized logical_value_t default (pg_attrdef-equivalent
-            // inlined into pg_attribute to avoid an extra system table). Empty when
+            // attdefspec: flat-text encoded logical_value_t default via encode_default_spec
+            // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
             // atthasdefault=false.
             c.emplace_back("attdefspec", str_col(), false);
             return c;
@@ -113,11 +113,11 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("typname", str_col(), true);
             c.emplace_back("typnamespace", oid_col(), true);
-            // typdefspec: msgpack-serialized complex_logical_type (mirrors pg_attribute's
-            // atttypspec). Empty for built-in scalar pg_type entries; STRUCT/ENUM/UDT rows
-            // carry the full child-type tree so catalog_view_t can reconstruct the rich
-            // definition after restart. Optional column; old pg_type rows missing this
-            // field round-trip as UNKNOWN per decode_type_spec's empty-string fallback.
+            // typdefspec: flat-text encoded complex_logical_type via encode_type_spec
+            // (mirrors pg_attribute's atttypspec). Empty for built-in scalar pg_type entries;
+            // STRUCT/ENUM/UDT rows carry the full child-type tree so catalog_view_t can
+            // reconstruct the rich definition after restart. Optional column; rows missing
+            // this field round-trip as UNKNOWN per decode_type_spec's empty-string fallback.
             c.emplace_back("typdefspec", str_col(), false);
             return c;
         }

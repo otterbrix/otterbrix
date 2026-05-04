@@ -1,21 +1,62 @@
 #include "transform_result.hpp"
 
+#include <cstdint>
+#include <limits>
+#include <optional>
+
 #include <core/result_wrapper.hpp>
 
+#include <components/types/logical_value.hpp>
+
 namespace components::sql::transform {
+
+    namespace {
+        std::optional<int64_t> try_value_to_int64(const types::logical_value_t& value) {
+            if (value.is_null()) {
+                return std::nullopt;
+            }
+            switch (value.type().to_physical_type()) {
+                case types::physical_type::INT8:
+                    return static_cast<int64_t>(value.value<int8_t>());
+                case types::physical_type::INT16:
+                    return static_cast<int64_t>(value.value<int16_t>());
+                case types::physical_type::INT32:
+                    return static_cast<int64_t>(value.value<int32_t>());
+                case types::physical_type::INT64:
+                    return value.value<int64_t>();
+                case types::physical_type::UINT8:
+                    return static_cast<int64_t>(value.value<uint8_t>());
+                case types::physical_type::UINT16:
+                    return static_cast<int64_t>(value.value<uint16_t>());
+                case types::physical_type::UINT32:
+                    return static_cast<int64_t>(value.value<uint32_t>());
+                case types::physical_type::UINT64: {
+                    auto u = value.value<uint64_t>();
+                    if (u > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                        return std::nullopt;
+                    }
+                    return static_cast<int64_t>(u);
+                }
+                default:
+                    return std::nullopt;
+            }
+        }
+    } // namespace
 
     transform_result::transform_result(std::pmr::memory_resource* resource,
                                        logical_plan::node_ptr&& node,
                                        logical_plan::parameter_node_ptr&& params,
                                        parameter_map_t&& param_map,
                                        insert_map_t&& param_insert_map,
-                                       insert_rows_t&& param_insert_rows)
+                                       insert_rows_t&& param_insert_rows,
+                                       std::vector<deferred_limit_t> deferred_limits)
         : resource_(resource)
         , node_(std::move(node))
         , params_(std::move(params))
         , param_map_(std::move(param_map))
         , param_insert_map_(std::move(param_insert_map))
         , param_insert_rows_(std::move(param_insert_rows))
+        , deferred_limits_(std::move(deferred_limits))
         , bound_flags_(resource_)
         , taken_params_(resource_)
         , last_error_(core::error_t::no_error())
@@ -56,8 +97,6 @@ namespace components::sql::transform {
         bool prev_finalized = std::exchange(finalized_, false);
         if (node_->type() == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
-                // first bind after finalize - restore "binding" state of data node
-                // cannot move rows out of data node - copy
                 const auto& rows =
                     reinterpret_cast<logical_plan::node_data_ptr&>(node_->children().front())->data_chunk();
                 vector::data_chunk_t new_rows(rows.resource(), rows.types(), rows.size());
@@ -156,6 +195,52 @@ namespace components::sql::transform {
                 node_->children().front() =
                     logical_plan::make_node_raw_data(node_->resource(), std::move(param_insert_rows_));
             }
+        }
+
+        for (auto& deferred : deferred_limits_) {
+            if (!deferred.node) {
+                continue;
+            }
+            int64_t limit_val = deferred.node->limit().limit();
+            int64_t offset_val = deferred.node->limit().offset();
+
+            if (deferred.limit_param) {
+                auto it = taken_params_.parameters.find(*deferred.limit_param);
+                if (it == taken_params_.parameters.end()) {
+                    last_error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"LIMIT parameter was not bound", resource_});
+                    return last_error_;
+                }
+                auto resolved = try_value_to_int64(it->second);
+                if (!resolved) {
+                    last_error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
+                    return last_error_;
+                }
+                limit_val = *resolved;
+            }
+
+            if (deferred.offset_param) {
+                auto it = taken_params_.parameters.find(*deferred.offset_param);
+                if (it == taken_params_.parameters.end()) {
+                    last_error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"OFFSET parameter was not bound", resource_});
+                    return last_error_;
+                }
+                auto resolved = try_value_to_int64(it->second);
+                if (!resolved) {
+                    last_error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
+                    return last_error_;
+                }
+                offset_val = *resolved;
+            }
+
+            deferred.node->set_limit(logical_plan::limit_t(limit_val, offset_val));
         }
 
         finalized_ = true;

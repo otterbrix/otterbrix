@@ -14,7 +14,10 @@ fn insert_with_dollar_params() {
 
     db.execute_with_params(
         "INSERT INTO db.t (id, name) VALUES ($1, $2);",
-        &[p(1, SqlParamValue::Int64(7)), p(2, SqlParamValue::Str("row7"))],
+        &[
+            p(1, SqlParamValue::Int64(7)),
+            p(2, SqlParamValue::Str("row7")),
+        ],
     )
     .unwrap();
 
@@ -103,7 +106,10 @@ fn select_combined_and_or_with_params() {
     let cur = db
         .execute_with_params(
             "SELECT * FROM db.t WHERE count > $1 AND name = $2;",
-            &[p(1, SqlParamValue::Int64(15)), p(2, SqlParamValue::Str("c"))],
+            &[
+                p(1, SqlParamValue::Int64(15)),
+                p(2, SqlParamValue::Str("c")),
+            ],
         )
         .unwrap();
     assert_eq!(cur.size(), 1);
@@ -122,13 +128,14 @@ fn update_with_params() {
 
     db.execute_with_params(
         "UPDATE db.t SET score = $1 WHERE name = $2;",
-        &[p(1, SqlParamValue::Int64(777)), p(2, SqlParamValue::Str("a"))],
+        &[
+            p(1, SqlParamValue::Int64(777)),
+            p(2, SqlParamValue::Str("a")),
+        ],
     )
     .unwrap();
 
-    let cur = db
-        .execute("SELECT * FROM db.t WHERE name = 'a';")
-        .unwrap();
+    let cur = db.execute("SELECT * FROM db.t WHERE name = 'a';").unwrap();
     let score: i64 = cur.get_value_by_name(0, "score").get().unwrap();
     assert_eq!(score, 777);
 }
@@ -363,6 +370,33 @@ fn duplicate_param_index_last_value_wins() {
 }
 
 #[test]
+fn select_limit_offset_with_params() {
+    let db = common::open_test_db();
+    db.create_database("db").unwrap();
+    db.create_collection("db", "t").unwrap();
+
+    for id in 1..=5_i64 {
+        db.execute_with_params(
+            "INSERT INTO db.t (id) VALUES ($1);",
+            &[p(1, SqlParamValue::Int64(id))],
+        )
+        .unwrap();
+    }
+
+    let cur = db
+        .execute_with_params(
+            "SELECT id FROM db.t ORDER BY id LIMIT $1 OFFSET $2;",
+            &[p(1, SqlParamValue::Int64(2)), p(2, SqlParamValue::Int64(1))],
+        )
+        .unwrap();
+    assert_eq!(cur.size(), 2);
+    let a: i64 = cur.get_value_by_name(0, "id").get().unwrap();
+    let b: i64 = cur.get_value_by_name(1, "id").get().unwrap();
+    assert_eq!(a, 2);
+    assert_eq!(b, 3);
+}
+
+#[test]
 fn smoke_thousand_repetitions_does_not_deadlock() {
     let db = common::open_test_db();
     db.create_database("db").unwrap();
@@ -371,10 +405,7 @@ fn smoke_thousand_repetitions_does_not_deadlock() {
     for i in 0..1000_i64 {
         db.execute_with_params(
             "INSERT INTO db.t (id, name) VALUES ($1, $2);",
-            &[
-                p(1, SqlParamValue::Int64(i)),
-                p(2, SqlParamValue::Str("x")),
-            ],
+            &[p(1, SqlParamValue::Int64(i)), p(2, SqlParamValue::Str("x"))],
         )
         .unwrap();
     }

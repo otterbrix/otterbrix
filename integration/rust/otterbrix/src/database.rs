@@ -5,7 +5,6 @@ use crate::utils::{make_sv, string_from_c};
 use std::fmt;
 use std::path::Path;
 
-/// 1-based index matching `$1`, `$2`, … in SQL.
 #[derive(Debug, Clone)]
 pub struct SqlParam<'a> {
     pub index: i32,
@@ -97,9 +96,7 @@ pub struct Database {
 
 impl fmt::Debug for Database {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Database")
-            .field("ptr", &self.ptr)
-            .finish()
+        f.debug_struct("Database").field("ptr", &self.ptr).finish()
     }
 }
 
@@ -157,12 +154,7 @@ impl Database {
     pub fn execute_with_params(&self, sql: &str, params: &[SqlParam<'_>]) -> Result<Cursor> {
         let raw = raw_sql_params(params);
         let ptr = unsafe {
-            otterbrix_sys::execute_sql_params(
-                self.ptr,
-                make_sv(sql),
-                raw.as_ptr(),
-                raw.len(),
-            )
+            otterbrix_sys::execute_sql_params(self.ptr, make_sv(sql), raw.as_ptr(), raw.len())
         };
         cursor_or_error(ptr)
     }
@@ -197,3 +189,6 @@ impl Drop for Database {
         unsafe { otterbrix_sys::otterbrix_destroy(self.ptr) };
     }
 }
+
+unsafe impl Send for Database {}
+unsafe impl Sync for Database {}

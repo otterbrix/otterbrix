@@ -1,6 +1,5 @@
 mod common;
 
-
 #[test]
 fn insert_and_select_single_row() {
     let db = common::open_test_db();
@@ -21,10 +20,8 @@ fn insert_multiple_rows() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Charlie', 35);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Charlie', 35);")
+        .unwrap();
 
     let cursor = db.execute("SELECT * FROM db.t;").unwrap();
     assert_eq!(cursor.size(), 3);
@@ -36,10 +33,8 @@ fn select_with_where() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, count) VALUES ('a', 10), ('b', 20), ('c', 30);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, count) VALUES ('a', 10), ('b', 20), ('c', 30);")
+        .unwrap();
 
     let cursor = db.execute("SELECT * FROM db.t WHERE count > 15;").unwrap();
     assert_eq!(cursor.size(), 2);
@@ -51,17 +46,13 @@ fn update_rows() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);")
+        .unwrap();
 
     db.execute("UPDATE db.t SET score = 100 WHERE score < 15;")
         .unwrap();
 
-    let cursor = db
-        .execute("SELECT * FROM db.t WHERE score = 100;")
-        .unwrap();
+    let cursor = db.execute("SELECT * FROM db.t WHERE score = 100;").unwrap();
     assert_eq!(cursor.size(), 1);
     let name: String = cursor.get_value_by_name(0, "name").get().unwrap();
     assert_eq!(name, "a");
@@ -73,10 +64,8 @@ fn delete_rows() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);")
+        .unwrap();
 
     db.execute("DELETE FROM db.t WHERE score > 15;").unwrap();
 

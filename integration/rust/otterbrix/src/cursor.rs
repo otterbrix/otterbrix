@@ -4,7 +4,19 @@ use std::fmt;
 
 pub type LogicalType = i32;
 
+pub const LOGICAL_TYPE_NA: LogicalType = 0;
+pub const LOGICAL_TYPE_BOOLEAN: LogicalType = 10;
+pub const LOGICAL_TYPE_TINYINT: LogicalType = 11;
+pub const LOGICAL_TYPE_SMALLINT: LogicalType = 12;
 pub const LOGICAL_TYPE_INTEGER: LogicalType = 13;
+pub const LOGICAL_TYPE_BIGINT: LogicalType = 14;
+pub const LOGICAL_TYPE_FLOAT: LogicalType = 23;
+pub const LOGICAL_TYPE_DOUBLE: LogicalType = 24;
+pub const LOGICAL_TYPE_UTINYINT: LogicalType = 27;
+pub const LOGICAL_TYPE_USMALLINT: LogicalType = 28;
+pub const LOGICAL_TYPE_UINTEGER: LogicalType = 29;
+pub const LOGICAL_TYPE_UBIGINT: LogicalType = 30;
+pub const LOGICAL_TYPE_STRING_LITERAL: LogicalType = 35;
 
 pub struct Cursor {
     pub(crate) ptr: otterbrix_sys::cursor_ptr,
@@ -74,6 +86,9 @@ impl Drop for Cursor {
         unsafe { otterbrix_sys::release_cursor(self.ptr) };
     }
 }
+
+unsafe impl Send for Cursor {}
+unsafe impl Sync for Cursor {}
 
 pub struct Row<'a> {
     cursor: &'a Cursor,

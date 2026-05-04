@@ -3,9 +3,15 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum Error {
     NullPointer,
-    Query { code: i32, message: String },
+    Query {
+        code: i32,
+        message: String,
+    },
     InvalidPath(String),
-    TypeMismatch { expected: &'static str, got: &'static str },
+    TypeMismatch {
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 impl fmt::Display for Error {

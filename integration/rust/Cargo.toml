@@ -1,3 +1,3 @@
 [workspace]
-members = ["otterbrix-sys", "otterbrix"]
+members = ["otterbrix-sys", "otterbrix", "seaorm-otterbrix"]
 resolver = "2"

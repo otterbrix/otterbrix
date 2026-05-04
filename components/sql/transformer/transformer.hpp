@@ -129,6 +129,7 @@ namespace components::sql::transform {
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
         vector::data_chunk_t parameter_insert_rows_;
+        std::vector<deferred_limit_t> deferred_limits_;
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};
         core::error_t error_;

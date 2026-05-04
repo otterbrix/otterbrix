@@ -31,6 +31,7 @@ namespace components::logical_plan {
                               const limit_t& limit);
 
         const limit_t& limit() const;
+        void set_limit(const limit_t& limit) { limit_ = limit; }
 
     private:
         limit_t limit_;

@@ -53,8 +53,7 @@ fn extract_double_value() {
     db.execute("CREATE DATABASE db;").unwrap();
     db.execute("CREATE TABLE db.t (val double);").unwrap();
 
-    db.execute("INSERT INTO db.t (val) VALUES (3.14);")
-        .unwrap();
+    db.execute("INSERT INTO db.t (val) VALUES (3.14);").unwrap();
 
     let cursor = db.execute("SELECT * FROM db.t;").unwrap();
     let val = cursor.get_value(0, 0);

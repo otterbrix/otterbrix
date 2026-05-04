@@ -656,60 +656,80 @@ namespace components::sql::transform {
         if (node.limitCount || node.limitOffset) {
             int64_t limit_val = logical_plan::limit_t::unlimit().limit();
             int64_t offset_val = 0;
+            std::optional<core::parameter_id_t> limit_param;
+            std::optional<core::parameter_id_t> offset_param;
 
             if (node.limitCount) {
-                if (nodeTag(node.limitCount) != T_A_Const) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                           std::pmr::string{"Unknown node type in limit clause: " +
-                                                                node_tag_to_string(nodeTag(node.limitCount)),
-                                                            resource_});
-                    return nullptr;
-                }
-                auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-                switch (nodeTag(value)) {
-                    case T_Null:
-                        break; // LIMIT ALL — keep unlimit_
-                    case T_Integer:
-                        limit_val = intVal(value);
+                switch (nodeTag(node.limitCount)) {
+                    case T_A_Const: {
+                        auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                        switch (nodeTag(value)) {
+                            case T_Null:
+                                break;
+                            case T_Integer:
+                                limit_val = intVal(value);
+                                break;
+                            default:
+                                error_ = core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                        resource_});
+                                return nullptr;
+                        }
+                        break;
+                    }
+                    case T_ParamRef:
+                        limit_param = add_param_value(node.limitCount, params);
                         break;
                     default:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                             resource_});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown node type in limit clause: " +
+                                                                    node_tag_to_string(nodeTag(node.limitCount)),
+                                                                resource_});
                         return nullptr;
                 }
             }
 
             if (node.limitOffset) {
-                if (nodeTag(node.limitOffset) != T_A_Const) {
-                    error_ = core::error_t(core::error_code_t::sql_parse_error,
-
-                                           std::pmr::string{"Unknown node type in offset clause: " +
-                                                                node_tag_to_string(nodeTag(node.limitOffset)),
-                                                            resource_});
-                    return nullptr;
-                }
-                auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
-                switch (nodeTag(value)) {
-                    case T_Null:
-                        break; // OFFSET NULL — treat as 0
-                    case T_Integer:
-                        offset_val = intVal(value);
+                switch (nodeTag(node.limitOffset)) {
+                    case T_A_Const: {
+                        auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
+                        switch (nodeTag(value)) {
+                            case T_Null:
+                                break;
+                            case T_Integer:
+                                offset_val = intVal(value);
+                                break;
+                            default:
+                                error_ = core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                        resource_});
+                                return nullptr;
+                        }
+                        break;
+                    }
+                    case T_ParamRef:
+                        offset_param = add_param_value(node.limitOffset, params);
                         break;
                     default:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-
-                            std::pmr::string{"Forbidden expression in offset clause: allowed only OFFSET <integer>",
-                                             resource_});
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"Unknown node type in offset clause: " +
+                                                                    node_tag_to_string(nodeTag(node.limitOffset)),
+                                                                resource_});
                         return nullptr;
                 }
             }
 
-            agg->append_child(logical_plan::make_node_limit(resource_,
+            auto limit_node = logical_plan::make_node_limit(resource_,
                                                             agg->collection_full_name(),
-                                                            logical_plan::limit_t(limit_val, offset_val)));
+                                                            logical_plan::limit_t(limit_val, offset_val));
+            if (limit_param || offset_param) {
+                deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
+            }
+            agg->append_child(std::move(limit_node));
         }
 
         return agg;

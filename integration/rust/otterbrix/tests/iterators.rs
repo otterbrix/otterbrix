@@ -1,6 +1,5 @@
 mod common;
 
-
 #[test]
 fn rows_iterator_count() {
     let db = common::open_test_db();
@@ -21,10 +20,8 @@ fn rows_iterator_values() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, val) VALUES ('a', 1), ('b', 2), ('c', 3);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, val) VALUES ('a', 1), ('b', 2), ('c', 3);")
+        .unwrap();
 
     let cursor = db.execute("SELECT * FROM db.t;").unwrap();
     let names: Vec<String> = cursor

@@ -1,6 +1,5 @@
 mod common;
 
-
 #[test]
 fn count_aggregate() {
     let db = common::open_test_db();
@@ -12,9 +11,7 @@ fn count_aggregate() {
     )
     .unwrap();
 
-    let cursor = db
-        .execute("SELECT COUNT(name) AS cnt FROM db.t;")
-        .unwrap();
+    let cursor = db.execute("SELECT COUNT(name) AS cnt FROM db.t;").unwrap();
     assert_eq!(cursor.size(), 1);
     let cnt = cursor.get_value_by_name(0, "cnt");
     assert!(cnt.is_int() || cnt.is_uint());
@@ -58,10 +55,8 @@ fn group_by() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('a', 30), ('b', 40);",
-    )
-    .unwrap();
+    db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('a', 30), ('b', 40);")
+        .unwrap();
 
     let cursor = db
         .execute("SELECT name, SUM(score) AS total FROM db.t GROUP BY name;")
@@ -87,14 +82,10 @@ fn order_by_asc() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);",
-    )
-    .unwrap();
-
-    let cursor = db
-        .execute("SELECT * FROM db.t ORDER BY val ASC;")
+    db.execute("INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);")
         .unwrap();
+
+    let cursor = db.execute("SELECT * FROM db.t ORDER BY val ASC;").unwrap();
     let vals: Vec<i64> = cursor
         .rows()
         .map(|r| r.get_by_name("val").get().unwrap())
@@ -108,14 +99,10 @@ fn order_by_desc() {
     db.create_database("db").unwrap();
     db.create_collection("db", "t").unwrap();
 
-    db.execute(
-        "INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);",
-    )
-    .unwrap();
-
-    let cursor = db
-        .execute("SELECT * FROM db.t ORDER BY val DESC;")
+    db.execute("INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);")
         .unwrap();
+
+    let cursor = db.execute("SELECT * FROM db.t ORDER BY val DESC;").unwrap();
     let vals: Vec<i64> = cursor
         .rows()
         .map(|r| r.get_by_name("val").get().unwrap())

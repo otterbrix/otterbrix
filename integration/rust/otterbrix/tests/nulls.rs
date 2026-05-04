@@ -1,6 +1,5 @@
 mod common;
 
-
 #[test]
 fn null_from_missing_column() {
     let db = common::open_test_db();
@@ -36,9 +35,7 @@ fn where_is_null() {
     db.execute("INSERT INTO db.t (name) VALUES ('Alice');")
         .unwrap();
 
-    let cursor = db
-        .execute("SELECT * FROM db.t WHERE age IS NULL;")
-        .unwrap();
+    let cursor = db.execute("SELECT * FROM db.t WHERE age IS NULL;").unwrap();
     assert_eq!(cursor.size(), 1);
     let name: String = cursor.get_value_by_name(0, "name").get().unwrap();
     assert_eq!(name, "Alice");

@@ -39,7 +39,8 @@ fn cursor_reports_integer_logical_type() {
     let db = common::open_test_db();
     db.execute("CREATE DATABASE typedb;").unwrap();
     db.execute("CREATE TABLE typedb.nums (n integer);").unwrap();
-    db.execute("INSERT INTO typedb.nums (n) VALUES (42);").unwrap();
+    db.execute("INSERT INTO typedb.nums (n) VALUES (42);")
+        .unwrap();
     let cur = db.execute("SELECT n FROM typedb.nums;").unwrap();
     assert_eq!(cur.column_count(), 1);
     assert_eq!(cur.column_logical_type(0), Some(LOGICAL_TYPE_INTEGER));

@@ -1,5 +1,6 @@
 #include "executor.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -118,6 +119,22 @@ namespace services::collection::executor {
 
     auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
 
+    static execute_result_t make_ddl_error(std::pmr::memory_resource* res, const services::disk::ddl_result_t& r) {
+        std::string msg;
+        if (r.status == services::disk::ddl_status::restrict_blocked) {
+            msg = "cannot drop: other objects depend on it (blocking oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == services::disk::ddl_status::cycle_detected) {
+            msg = "cannot drop: dependency cycle detected (at oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == services::disk::ddl_status::not_found) {
+            msg = "object does not exist";
+        } else {
+            msg = "DDL operation failed";
+        }
+        return execute_result_t{make_cursor(res, error_code_t::other_error, std::move(msg)), {}};
+    }
+
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan(components::session::session_id_t session,
                              components::logical_plan::node_ptr logical_plan,
@@ -215,7 +232,8 @@ namespace services::collection::executor {
                                                                     ddl_ctx,
                                                                     created.created_oid,
                                                                     true);
-                                (void)co_await std::move(svf);
+                                if (auto r = co_await std::move(svf); r.failed())
+                                    trace(log_, "ddl_index_set_valid failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
                             }
                         }
                     }
@@ -260,7 +278,8 @@ namespace services::collection::executor {
                                                             ddl_ctx,
                                                             ri.oid,
                                                             disk::drop_behavior_t::cascade_);
-                        (void)co_await std::move(dif);
+                        if (auto r = co_await std::move(dif); r.failed())
+                            co_return make_ddl_error(resource(), r);
                     }
                 }
             }
@@ -591,21 +610,6 @@ namespace services::collection::executor {
 
     // Variant E: route DDL to disk's ddl_* under a real transaction so the pg_catalog
     // mutations carry MVCC + WAL trace. Begin a txn, dispatch by plan->type, commit.
-    static execute_result_t make_ddl_error(std::pmr::memory_resource* res, const services::disk::ddl_result_t& r) {
-        std::string msg;
-        if (r.status == services::disk::ddl_status::restrict_blocked) {
-            msg = "cannot drop: other objects depend on it (blocking oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == services::disk::ddl_status::cycle_detected) {
-            msg = "cannot drop: dependency cycle detected (at oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == services::disk::ddl_status::not_found) {
-            msg = "object does not exist";
-        } else {
-            msg = "DDL operation failed";
-        }
-        return execute_result_t{make_cursor(res, error_code_t::other_error, std::move(msg)), {}};
-    }
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_ddl_plan(components::session::session_id_t session,
@@ -705,14 +709,16 @@ namespace services::collection::executor {
                 auto rns = co_await std::move(rnf);
                 if (rns.found) {
                     std::vector<components::table::column_definition_t> ddl_cols = cc->column_definitions();
-                    const char relkind = ddl_cols.empty() ? 'g' : 'r';
+                    const char rk = ddl_cols.empty()
+                        ? components::catalog::relkind::computed
+                        : components::catalog::relkind::regular;
                     auto [_dt, dtf] = actor_zeta::send(disk_address_,
                                                         &disk::manager_disk_t::ddl_create_table,
                                                         ddl_ctx,
                                                         rns.oid,
                                                         logical_plan->collection_name(),
                                                         std::move(ddl_cols),
-                                                        relkind);
+                                                        rk);
                     if (auto r = co_await std::move(dtf); r.failed())
                         co_return on_ddl_fail(r);
                 }

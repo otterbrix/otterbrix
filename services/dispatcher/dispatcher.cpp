@@ -2,6 +2,7 @@
 #include "catalog_view.hpp"
 #include "validate_logical_plan.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 
@@ -194,6 +195,23 @@ namespace services::dispatcher {
             collections_.insert(full_name);
         }
         trace(log_, "manager_dispatcher_t::init_from_state: complete - {} collections", collections_.size());
+    }
+
+    static components::cursor::cursor_t_ptr
+    make_ddl_error_cursor(std::pmr::memory_resource* res, const disk::ddl_result_t& r) {
+        std::string msg;
+        if (r.status == disk::ddl_status::restrict_blocked) {
+            msg = "cannot drop: other objects depend on it (blocking oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == disk::ddl_status::cycle_detected) {
+            msg = "cannot drop: dependency cycle detected (at oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == disk::ddl_status::not_found) {
+            msg = "object does not exist";
+        } else {
+            msg = "DDL operation failed";
+        }
+        return make_cursor(res, components::cursor::error_code_t::other_error, msg);
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
@@ -437,8 +455,9 @@ namespace services::dispatcher {
                                                                 target_ns,
                                                                 std::string(n->type().type_name()),
                                                                 std::move(field_cols),
-                                                                char{'c'});
-                            (void)co_await std::move(ctf);
+                                                                relkind::composite_type);
+                            if (auto r = co_await std::move(ctf); r.failed())
+                                co_return make_ddl_error_cursor(resource(), r);
                         } else {
                             // ENUM and other extension types — keep using pg_type with
                             // typdefspec. ENUM serialization is flat (no nested types) and
@@ -449,7 +468,8 @@ namespace services::dispatcher {
                                                                 target_ns,
                                                                 std::string(n->type().type_name()),
                                                                 components::catalog::encode_type_spec(n->type()));
-                            (void)co_await std::move(dtf);
+                            if (auto r = co_await std::move(dtf); r.failed())
+                                co_return make_ddl_error_cursor(resource(), r);
                         }
                     }
                     co_return make_cursor(resource(), operation_status_t::success);
@@ -499,7 +519,8 @@ namespace services::dispatcher {
                                                                 ddl_ctx,
                                                                 rt.oid,
                                                                 disk::drop_behavior_t::cascade_);
-                            (void)co_await std::move(dtf);
+                            if (auto r = co_await std::move(dtf); r.failed())
+                                co_return make_ddl_error_cursor(resource(), r);
                         }
                     }
                     co_return make_cursor(resource(), operation_status_t::success);
@@ -700,7 +721,7 @@ namespace services::dispatcher {
                         if (!tbl) {
                             tbl = co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
                         }
-                        if (tbl && tbl->relkind == 'g') {
+                        if (tbl && tbl->relkind == relkind::computed) {
                             is_computing = true;
                         }
                     }
@@ -741,7 +762,8 @@ namespace services::dispatcher {
                                                             ddl_ctx,
                                                             rt.oid,
                                                             std::move(columns));
-                        (void)co_await std::move(daf);
+                        if (auto r = co_await std::move(daf); r.failed())
+                            trace(log_, "ddl_adopt_computing_schema failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
                         break;
                     }
                 }
@@ -875,7 +897,8 @@ namespace services::dispatcher {
                                                         prouid,
                                                         std::move(proargmatchers),
                                                         std::move(prorettype));
-                    (void)co_await std::move(dff);
+                    if (auto r = co_await std::move(dff); r.failed())
+                        trace(log_, "ddl_create_function failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
                 }
                 co_return true;
             } else {
@@ -933,7 +956,8 @@ namespace services::dispatcher {
                                                         ddl_ctx,
                                                         m.oid,
                                                         disk::drop_behavior_t::cascade_);
-                    (void)co_await std::move(dff);
+                    if (auto r = co_await std::move(dff); r.failed())
+                        trace(log_, "ddl_drop_function failed: status={}, blocker={}", static_cast<int>(r.status), r.blocking_oid);
                 }
             }
             co_return true;
@@ -1010,22 +1034,18 @@ namespace services::dispatcher {
                     }
                 }
             }
-            if (tbl && tbl->relkind != 'g') {
+            if (tbl && tbl->relkind != relkind::computed) {
                 std::vector<complex_logical_type> col_types;
-                std::vector<components::types::field_description> descs;
                 col_types.reserve(tbl->columns.size());
-                descs.reserve(tbl->columns.size());
-                for (size_t i = 0; i < tbl->columns.size(); ++i) {
-                    const auto& c = tbl->columns[i];
+                for (const auto& c : tbl->columns) {
                     auto t = c.type;
                     t.set_alias(c.attname);
                     col_types.push_back(std::move(t));
-                    descs.emplace_back(static_cast<components::catalog::field_id_t>(i));
                 }
-                schemas.push_back(create_struct("schema", col_types, std::move(descs)));
+                schemas.push_back(complex_logical_type::create_struct("schema", col_types));
                 continue;
             }
-            if (tbl && tbl->relkind == 'g') {
+            if (tbl && tbl->relkind == relkind::computed) {
                 // Computing/generated table — surface the latest column types as a "latest_types"
                 // struct to mirror computed_schema::latest_types_struct().
                 std::vector<complex_logical_type> col_types;
@@ -1219,23 +1239,6 @@ namespace services::dispatcher {
         return planner.create_plan(resource(), std::move(plan), nullptr);
     }
 
-    static components::cursor::cursor_t_ptr
-    make_ddl_error_cursor(std::pmr::memory_resource* res, const disk::ddl_result_t& r) {
-        std::string msg;
-        if (r.status == disk::ddl_status::restrict_blocked) {
-            msg = "cannot drop: other objects depend on it (blocking oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == disk::ddl_status::cycle_detected) {
-            msg = "cannot drop: dependency cycle detected (at oid " +
-                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
-        } else if (r.status == disk::ddl_status::not_found) {
-            msg = "object does not exist";
-        } else {
-            msg = "DDL operation failed";
-        }
-        return make_cursor(res, components::cursor::error_code_t::other_error, msg);
-    }
-
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::execute_ddl_inline(components::session::session_id_t session,
                                               node_ptr logical_plan,
@@ -1423,12 +1426,12 @@ namespace services::dispatcher {
                             }
                         }
                     }
-                    const char relkind = ddl_cols.empty() ? 'g' : 'r';
+                    const char rk = ddl_cols.empty() ? relkind::computed : relkind::regular;
                     auto [_dt, dtf] = actor_zeta::send(disk_address_,
                                                         &disk::manager_disk_t::ddl_create_table,
                                                         ddl_ctx, rns.oid,
                                                         logical_plan->collection_name(),
-                                                        std::move(ddl_cols), relkind);
+                                                        std::move(ddl_cols), rk);
                     if (auto r = co_await std::move(dtf); r.failed()) {
                         if (txn_data.transaction_id != 0) txn_manager_.abort(session);
                         co_return make_ddl_error_cursor(resource(), r);

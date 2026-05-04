@@ -7,6 +7,7 @@ set(${PROJECT_NAME}_SOURCES
     test_system_table_bootstrap.cpp
     test_resolve.cpp
     test_pg_depend.cpp
+    test_fk_composite.cpp
     test_ddl_methods.cpp
     test_wal_catalog.cpp
     test_mvcc_ddl.cpp

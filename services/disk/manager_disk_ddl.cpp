@@ -1410,11 +1410,11 @@ namespace services::disk {
 
         for (const auto& fk : fks_in) {
             // Lookup conrelid for this constraint via pg_constraint scan.
-            // pg_constraint cols: 0=oid, 1=conrelid, 2=contype, 3=confrelid, 4=conkey, 5=confkey, ...
+            // pg_constraint cols: 0=oid, 1=conname, 2=conrelid, 3=contype, 4=confrelid, ...
             components::catalog::oid_t child_table_oid = components::catalog::INVALID_OID;
             {
                 std::pmr::synchronized_pool_resource sr;
-                inline_scan(pg_constraint_it->second->table_storage.table(), {0, 1}, &sr,
+                inline_scan(pg_constraint_it->second->table_storage.table(), {0, 2}, &sr,
                             [&](components::vector::data_chunk_t& c, uint64_t i) {
                                 auto oid_v = c.value(0, i);
                                 if (oid_v.is_null()) return true;

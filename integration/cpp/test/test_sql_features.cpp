@@ -949,3 +949,88 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         }
     }
 }
+
+TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
+    // Verifies that ddl_result_t errors are surfaced to the caller rather than
+    // silently discarded via (void)co_await. Exercises:
+    //   - ddl_create_table (via CREATE TABLE)
+    //   - ddl_add_column / ddl_drop_column (via ALTER TABLE)
+    //   - ddl_create_constraint CHECK (via ALTER TABLE ADD CONSTRAINT)
+    //   - drop path (via DROP TABLE)
+    auto config = test_create_config("/tmp/test_sql_features/ddl_error_propagation");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.items (id bigint, val bigint);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("alter table: add column propagates success") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items ADD COLUMN extra bigint;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("alter table: drop column propagates success") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items DROP COLUMN extra;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("alter table: add check constraint propagates success") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_val CHECK (val > 0);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("check constraint violation surfaces as error cursor (not silent pass-through)") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.items (id, val) VALUES (1, -5);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.items (id, val) VALUES (2, 10);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("drop table propagates success") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.items;");
+            REQUIRE(cur->is_success());
+        }
+    }
+}

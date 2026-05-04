@@ -1248,7 +1248,10 @@ namespace services::dispatcher {
                                                   &disk::manager_disk_t::ddl_create_namespace,
                                                   ddl_ctx,
                                                   logical_plan->database_name());
-                (void)co_await std::move(df);
+                if (auto r = co_await std::move(df); r.failed()) {
+                    if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                    co_return make_ddl_error_cursor(resource(), r);
+                }
                 break;
             }
             case node_type::drop_database_t: {
@@ -1276,7 +1279,10 @@ namespace services::dispatcher {
                                                         &disk::manager_disk_t::ddl_drop_namespace,
                                                         ddl_ctx, rns.oid,
                                                         disk::drop_behavior_t::cascade_);
-                    (void)co_await std::move(dnf);
+                    if (auto r = co_await std::move(dnf); r.failed()) {
+                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                        co_return make_ddl_error_cursor(resource(), r);
+                    }
                 }
                 break;
             }
@@ -1423,7 +1429,10 @@ namespace services::dispatcher {
                                                         ddl_ctx, rns.oid,
                                                         logical_plan->collection_name(),
                                                         std::move(ddl_cols), relkind);
-                    (void)co_await std::move(dtf);
+                    if (auto r = co_await std::move(dtf); r.failed()) {
+                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                        co_return make_ddl_error_cursor(resource(), r);
+                    }
                 }
                 break;
             }
@@ -1477,7 +1486,10 @@ namespace services::dispatcher {
                                                         seq->start(), seq->increment(),
                                                         seq->min_value(), seq->max_value(),
                                                         /*cycle=*/false);
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed()) {
+                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                        co_return make_ddl_error_cursor(resource(), r);
+                    }
                 }
                 break;
             }
@@ -1494,7 +1506,10 @@ namespace services::dispatcher {
                                                         ddl_ctx, rns.oid,
                                                         std::string(logical_plan->collection_name()),
                                                         std::string(vw->query_sql()));
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed()) {
+                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                        co_return make_ddl_error_cursor(resource(), r);
+                    }
                 }
                 break;
             }
@@ -1511,7 +1526,10 @@ namespace services::dispatcher {
                                                         ddl_ctx, rns.oid,
                                                         std::string(logical_plan->collection_name()),
                                                         std::string(mc->body_sql()));
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed()) {
+                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                        co_return make_ddl_error_cursor(resource(), r);
+                    }
                 }
                 break;
             }
@@ -1572,7 +1590,10 @@ namespace services::dispatcher {
                                                                         ddl_ctx,
                                                                         rt.oid,
                                                                         sub.column);
-                                    (void)co_await std::move(daf);
+                                    if (auto r = co_await std::move(daf); r.failed()) {
+                                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                                        co_return make_ddl_error_cursor(resource(), r);
+                                    }
                                     break;
                                 }
                                 case alter_table_kind::drop_column: {
@@ -1582,7 +1603,10 @@ namespace services::dispatcher {
                                                                         rt.oid,
                                                                         std::string(sub.column_name),
                                                                         disk::drop_behavior_t::cascade_);
-                                    (void)co_await std::move(dcf);
+                                    if (auto r = co_await std::move(dcf); r.failed()) {
+                                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                                        co_return make_ddl_error_cursor(resource(), r);
+                                    }
                                     break;
                                 }
                                 case alter_table_kind::rename_column: {
@@ -1592,7 +1616,10 @@ namespace services::dispatcher {
                                                                         rt.oid,
                                                                         std::string(sub.column_name),
                                                                         std::string(sub.new_column_name));
-                                    (void)co_await std::move(drf);
+                                    if (auto r = co_await std::move(drf); r.failed()) {
+                                        if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                                        co_return make_ddl_error_cursor(resource(), r);
+                                    }
                                     break;
                                 }
                             }
@@ -1643,7 +1670,10 @@ namespace services::dispatcher {
                                                             cstr->del_action(),
                                                             cstr->upd_action(),
                                                             std::string(cstr->check_expr()));
-                        (void)co_await std::move(dcf);
+                        if (auto r = co_await std::move(dcf); r.failed()) {
+                            if (txn_data.transaction_id != 0) txn_manager_.abort(session);
+                            co_return make_ddl_error_cursor(resource(), r);
+                        }
                     }
                 }
                 break;

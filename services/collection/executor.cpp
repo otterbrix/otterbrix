@@ -576,6 +576,22 @@ namespace services::collection::executor {
 
     // Variant E: route DDL to disk's ddl_* under a real transaction so the pg_catalog
     // mutations carry MVCC + WAL trace. Begin a txn, dispatch by plan->type, commit.
+    static execute_result_t make_ddl_error(std::pmr::memory_resource* res, const services::disk::ddl_result_t& r) {
+        std::string msg;
+        if (r.status == services::disk::ddl_status::restrict_blocked) {
+            msg = "cannot drop: other objects depend on it (blocking oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == services::disk::ddl_status::cycle_detected) {
+            msg = "cannot drop: dependency cycle detected (at oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == services::disk::ddl_status::not_found) {
+            msg = "object does not exist";
+        } else {
+            msg = "DDL operation failed";
+        }
+        return execute_result_t{make_cursor(res, error_code_t::other_error, std::move(msg)), {}};
+    }
+
     executor_t::unique_future<execute_result_t>
     executor_t::execute_ddl_plan(components::session::session_id_t session,
                                   components::logical_plan::node_ptr logical_plan,
@@ -592,6 +608,11 @@ namespace services::collection::executor {
         auto ok_cursor = [&] {
             return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
         };
+        auto on_ddl_fail = [&](const services::disk::ddl_result_t& r) -> execute_result_t {
+            if (txn_manager_ != nullptr && txn_data.transaction_id != 0)
+                txn_manager_->abort(session);
+            return make_ddl_error(resource(), r);
+        };
 
         switch (logical_plan->type()) {
             case node_type::create_database_t: {
@@ -599,7 +620,8 @@ namespace services::collection::executor {
                                                   &disk::manager_disk_t::ddl_create_namespace,
                                                   ddl_ctx,
                                                   logical_plan->database_name());
-                (void)co_await std::move(df);
+                if (auto r = co_await std::move(df); r.failed())
+                    co_return on_ddl_fail(r);
                 break;
             }
             case node_type::drop_database_t: {
@@ -618,7 +640,8 @@ namespace services::collection::executor {
                                                         ddl_ctx,
                                                         rns.oid,
                                                         disk::drop_behavior_t::cascade_);
-                    (void)co_await std::move(dnf);
+                    if (auto r = co_await std::move(dnf); r.failed())
+                        co_return on_ddl_fail(r);
                 }
                 break;
             }
@@ -675,7 +698,8 @@ namespace services::collection::executor {
                                                         logical_plan->collection_name(),
                                                         std::move(ddl_cols),
                                                         relkind);
-                    (void)co_await std::move(dtf);
+                    if (auto r = co_await std::move(dtf); r.failed())
+                        co_return on_ddl_fail(r);
                 }
                 break;
             }
@@ -712,7 +736,8 @@ namespace services::collection::executor {
                                                             ddl_ctx,
                                                             rt.oid,
                                                             disk::drop_behavior_t::cascade_);
-                        (void)co_await std::move(ddf);
+                        if (auto r = co_await std::move(ddf); r.failed())
+                            co_return on_ddl_fail(r);
                     }
                 }
                 break;
@@ -733,7 +758,8 @@ namespace services::collection::executor {
                                                         seq->start(), seq->increment(),
                                                         seq->min_value(), seq->max_value(),
                                                         /*cycle=*/false);
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed())
+                        co_return on_ddl_fail(r);
                 }
                 break;
             }
@@ -751,7 +777,8 @@ namespace services::collection::executor {
                                                         ddl_ctx, rns.oid,
                                                         std::string(logical_plan->collection_name()),
                                                         std::string(vw->query_sql()));
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed())
+                        co_return on_ddl_fail(r);
                 }
                 break;
             }
@@ -769,7 +796,8 @@ namespace services::collection::executor {
                                                         ddl_ctx, rns.oid,
                                                         std::string(logical_plan->collection_name()),
                                                         std::string(mc->body_sql()));
-                    (void)co_await std::move(ddf);
+                    if (auto r = co_await std::move(ddf); r.failed())
+                        co_return on_ddl_fail(r);
                 }
                 break;
             }
@@ -801,7 +829,8 @@ namespace services::collection::executor {
                                                             ddl_ctx,
                                                             rt.oid,
                                                             disk::drop_behavior_t::cascade_);
-                        (void)co_await std::move(ddf);
+                        if (auto r = co_await std::move(ddf); r.failed())
+                            co_return on_ddl_fail(r);
                     }
                 }
                 break;
@@ -852,7 +881,8 @@ namespace services::collection::executor {
                                                             cstr->del_action(),
                                                             cstr->upd_action(),
                                                             std::string(cstr->check_expr()));
-                        (void)co_await std::move(dcf);
+                        if (auto r = co_await std::move(dcf); r.failed())
+                            co_return on_ddl_fail(r);
                     }
                 }
                 break;
@@ -884,7 +914,8 @@ namespace services::collection::executor {
                                                                         ddl_ctx,
                                                                         rt.oid,
                                                                         sub.column);
-                                    (void)co_await std::move(daf);
+                                    if (auto r = co_await std::move(daf); r.failed())
+                                        co_return on_ddl_fail(r);
                                     break;
                                 }
                                 case components::logical_plan::alter_table_kind::drop_column: {
@@ -894,7 +925,8 @@ namespace services::collection::executor {
                                                                         rt.oid,
                                                                         std::string(sub.column_name),
                                                                         disk::drop_behavior_t::cascade_);
-                                    (void)co_await std::move(dcf);
+                                    if (auto r = co_await std::move(dcf); r.failed())
+                                        co_return on_ddl_fail(r);
                                     break;
                                 }
                                 case components::logical_plan::alter_table_kind::rename_column: {
@@ -904,7 +936,8 @@ namespace services::collection::executor {
                                                                         rt.oid,
                                                                         std::string(sub.column_name),
                                                                         std::string(sub.new_column_name));
-                                    (void)co_await std::move(drf);
+                                    if (auto r = co_await std::move(drf); r.failed())
+                                        co_return on_ddl_fail(r);
                                     break;
                                 }
                             }

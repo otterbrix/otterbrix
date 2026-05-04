@@ -260,6 +260,239 @@ namespace components::catalog {
         return nullptr;
     }
 
+    // ── flat-text type spec helpers ──────────────────────────────────────────────
+    // Format (recursive, scalar names match pg_type.typname):
+    //   scalar            →  bool int1 int2 int4 int8 float4 float8 text
+    //                        timestamp date time bytea uuid
+    //   DECIMAL(w,s)
+    //   UNKNOWN(name)
+    //   LIST(inner)
+    //   ARRAY(inner,size)
+    //   MAP(key,val)
+    //   STRUCT(name,f1:t1,f2:t2,...)
+    //   UNION(f1:t1,f2:t2,...)
+    //   VARIANT
+    //   ENUM:name:label=val,...  (legacy flat format; kept unchanged)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // Canonical names match pg_type.typname so they're consistent with the rest of the catalog.
+    static std::string_view scalar_type_to_name(types::logical_type lt) {
+        using LT = types::logical_type;
+        switch (lt) {
+            case LT::BOOLEAN:        return "bool";
+            case LT::TINYINT:        return "int1";   // no PG equivalent; 1-byte signed
+            case LT::UTINYINT:       return "uint1";
+            case LT::SMALLINT:       return "int2";   // pg: int2
+            case LT::USMALLINT:      return "uint2";
+            case LT::INTEGER:        return "int4";   // pg: int4
+            case LT::UINTEGER:       return "uint4";
+            case LT::BIGINT:         return "int8";   // pg: int8
+            case LT::UBIGINT:        return "uint8";
+            case LT::FLOAT:          return "float4"; // pg: float4
+            case LT::DOUBLE:         return "float8"; // pg: float8
+            case LT::STRING_LITERAL: return "text";   // pg: text
+            case LT::TIMESTAMP_SEC:
+            case LT::TIMESTAMP_MS:
+            case LT::TIMESTAMP_US:
+            case LT::TIMESTAMP_NS:   return "timestamp";
+            case LT::DATE:           return "date";
+            case LT::TIME:           return "time";
+            case LT::BLOB:           return "bytea";  // pg: bytea
+            case LT::UUID:           return "uuid";
+            default:                 return "";
+        }
+    }
+
+    static types::logical_type scalar_name_to_type(std::string_view n) {
+        using LT = types::logical_type;
+        // Canonical pg_type.typname names
+        if (n == "bool")      return LT::BOOLEAN;
+        if (n == "int1")      return LT::TINYINT;
+        if (n == "uint1")     return LT::UTINYINT;
+        if (n == "int2")      return LT::SMALLINT;
+        if (n == "uint2")     return LT::USMALLINT;
+        if (n == "int4")      return LT::INTEGER;
+        if (n == "uint4")     return LT::UINTEGER;
+        if (n == "int8")      return LT::BIGINT;
+        if (n == "uint8")     return LT::UBIGINT;
+        if (n == "float4")    return LT::FLOAT;
+        if (n == "float8")    return LT::DOUBLE;
+        if (n == "text")      return LT::STRING_LITERAL;
+        if (n == "timestamp") return LT::TIMESTAMP_MS;
+        if (n == "date")      return LT::DATE;
+        if (n == "time")      return LT::TIME;
+        if (n == "bytea")     return LT::BLOB;
+        if (n == "uuid")      return LT::UUID;
+        // Legacy aliases written by older builds (before PostgreSQL-style names)
+        if (n == "int16")     return LT::SMALLINT;
+        if (n == "int32")     return LT::INTEGER;
+        if (n == "int64")     return LT::BIGINT;
+        if (n == "float32")   return LT::FLOAT;
+        if (n == "float64")   return LT::DOUBLE;
+        if (n == "string")    return LT::STRING_LITERAL;
+        if (n == "blob")      return LT::BLOB;
+        if (n == "boolean")   return LT::BOOLEAN;
+        if (n == "integer")   return LT::INTEGER;
+        if (n == "bigint")    return LT::BIGINT;
+        return LT::UNKNOWN;
+    }
+
+    // Forward declaration for mutual recursion.
+    static std::string encode_type_nested(const types::complex_logical_type& t);
+
+    static std::string encode_type_nested(const types::complex_logical_type& t) {
+        using LT = types::logical_type;
+        auto sn = scalar_type_to_name(t.type());
+        if (!sn.empty()) return std::string(sn);
+
+        if (t.type() == LT::DECIMAL) {
+            const auto* ext = static_cast<const types::decimal_logical_type_extension*>(t.extension());
+            return "DECIMAL(" + std::to_string(ext->width()) + "," + std::to_string(ext->scale()) + ")";
+        }
+        if (t.type() == LT::UNKNOWN) {
+            return "UNKNOWN(" + t.type_name() + ")";
+        }
+        if (t.type() == LT::LIST) {
+            return "LIST(" + encode_type_nested(t.child_type()) + ")";
+        }
+        if (t.type() == LT::ARRAY) {
+            const auto* ext = static_cast<const types::array_logical_type_extension*>(t.extension());
+            return "ARRAY(" + encode_type_nested(ext->internal_type()) + "," +
+                   std::to_string(ext->size()) + ")";
+        }
+        if (t.type() == LT::MAP) {
+            const auto* ext = static_cast<const types::map_logical_type_extension*>(t.extension());
+            return "MAP(" + encode_type_nested(ext->key()) + "," + encode_type_nested(ext->value()) + ")";
+        }
+        if (t.type() == LT::STRUCT) {
+            const auto* ext = static_cast<const types::struct_logical_type_extension*>(t.extension());
+            std::string out = "STRUCT(" + ext->type_name();
+            for (const auto& f : ext->child_types()) {
+                out += ',';
+                out += f.alias();
+                out += ':';
+                out += encode_type_nested(f);
+            }
+            out += ')';
+            return out;
+        }
+        if (t.type() == LT::UNION) {
+            // child_types()[0] is the hidden tag (UTINYINT); real members start at [1]
+            const auto& children = t.child_types();
+            std::string out = "UNION(";
+            bool first = true;
+            for (size_t i = 1; i < children.size(); ++i) {
+                if (!first) out += ',';
+                first = false;
+                out += children[i].alias();
+                out += ':';
+                out += encode_type_nested(children[i]);
+            }
+            out += ')';
+            return out;
+        }
+        if (t.type() == LT::VARIANT) {
+            return "VARIANT";
+        }
+        // Enum handled by the outer encode_type_spec; shouldn't reach here.
+        return "UNKNOWN(" + std::to_string(static_cast<int>(t.type())) + ")";
+    }
+
+    // Recursive descent parser for the flat-text format.
+    static types::complex_logical_type parse_flat_type(std::pmr::memory_resource* resource,
+                                                        const std::string& s,
+                                                        size_t& pos);
+
+    // Read characters until one of the stop chars (at depth 0).
+    static std::string read_token(const std::string& s, size_t& pos) {
+        size_t start = pos;
+        while (pos < s.size() &&
+               s[pos] != '(' && s[pos] != ')' && s[pos] != ',' && s[pos] != ':') {
+            ++pos;
+        }
+        return s.substr(start, pos - start);
+    }
+
+    static types::complex_logical_type parse_flat_type(std::pmr::memory_resource* resource,
+                                                        const std::string& s,
+                                                        size_t& pos) {
+        using LT = types::logical_type;
+        std::string name = read_token(s, pos);
+
+        if (pos >= s.size() || s[pos] != '(') {
+            if (name == "VARIANT") return types::complex_logical_type::create_variant();
+            auto lt = scalar_name_to_type(name);
+            if (lt != LT::UNKNOWN) return types::complex_logical_type{lt};
+            return types::complex_logical_type::create_unknown(name);
+        }
+        ++pos; // consume '('
+
+        if (name == "DECIMAL") {
+            std::string w = read_token(s, pos); ++pos; // ','
+            std::string sc = read_token(s, pos); ++pos; // ')'
+            return types::complex_logical_type::create_decimal(
+                static_cast<uint8_t>(std::stoi(w)), static_cast<uint8_t>(std::stoi(sc)));
+        }
+        if (name == "UNKNOWN") {
+            std::string tname = read_token(s, pos); ++pos; // ')'
+            return types::complex_logical_type::create_unknown(tname);
+        }
+        if (name == "LIST") {
+            auto inner = parse_flat_type(resource, s, pos); ++pos; // ')'
+            return types::complex_logical_type::create_list(inner);
+        }
+        if (name == "ARRAY") {
+            auto inner = parse_flat_type(resource, s, pos); ++pos; // ','
+            std::string sz = read_token(s, pos);             ++pos; // ')'
+            return types::complex_logical_type::create_array(inner, std::stoull(sz));
+        }
+        if (name == "MAP") {
+            auto key = parse_flat_type(resource, s, pos); ++pos; // ','
+            auto val = parse_flat_type(resource, s, pos); ++pos; // ')'
+            return types::complex_logical_type::create_map(key, val);
+        }
+        if (name == "STRUCT") {
+            std::string struct_name = read_token(s, pos);
+            std::vector<types::complex_logical_type> fields;
+            while (pos < s.size() && s[pos] == ',') {
+                ++pos; // ','
+                std::string fname = read_token(s, pos); ++pos; // ':'
+                auto ftype = parse_flat_type(resource, s, pos);
+                ftype.set_alias(fname);
+                fields.push_back(std::move(ftype));
+            }
+            if (pos < s.size() && s[pos] == ')') ++pos;
+            return types::complex_logical_type::create_struct(struct_name, fields);
+        }
+        if (name == "UNION") {
+            std::vector<types::complex_logical_type> fields;
+            // First member
+            if (pos < s.size() && s[pos] != ')') {
+                std::string fname = read_token(s, pos); ++pos; // ':'
+                auto ftype = parse_flat_type(resource, s, pos);
+                ftype.set_alias(fname);
+                fields.push_back(std::move(ftype));
+            }
+            while (pos < s.size() && s[pos] == ',') {
+                ++pos; // ','
+                std::string fname = read_token(s, pos); ++pos; // ':'
+                auto ftype = parse_flat_type(resource, s, pos);
+                ftype.set_alias(fname);
+                fields.push_back(std::move(ftype));
+            }
+            if (pos < s.size() && s[pos] == ')') ++pos;
+            return types::complex_logical_type::create_union(std::move(fields));
+        }
+        // Unknown keyword with args — skip to matching ')'
+        int depth = 1;
+        while (pos < s.size() && depth > 0) {
+            if (s[pos] == '(') ++depth;
+            else if (s[pos] == ')') --depth;
+            ++pos;
+        }
+        return types::complex_logical_type::create_unknown(name);
+    }
+
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
         switch (t.type()) {
@@ -275,10 +508,7 @@ namespace components::catalog {
                 return "";
             default: break;
         }
-        // ENUM: msgpack roundtrip is broken (logical_value_t entries written but
-        // complex_logical_type::deserialize used on read — asymmetric, SEGV-prone).
-        // Use a flat text encoding "ENUM:type_name:label0=val0,label1=val1,..." that's
-        // trivial to round-trip without complex_logical_type recursion.
+        // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
         if (t.type() == LT::ENUM) {
             std::string out = "ENUM:";
             out += t.type_name();
@@ -291,21 +521,15 @@ namespace components::catalog {
                 for (const auto& entry : enum_ext->entries()) {
                     if (!first) out += ',';
                     first = false;
-                    // alias lives on the entry's type (set_alias delegates to type_.set_alias)
                     const auto& etype = entry.type();
                     out += etype.has_alias() ? etype.alias() : std::string{};
                     out += '=';
-                    // entries are integer logical_value_t per the parser counter
                     out += std::to_string(entry.value<std::int32_t>());
                 }
             }
             return out;
         }
-        std::pmr::synchronized_pool_resource res;
-        components::serializer::msgpack_serializer_t ser(&res);
-        t.serialize(&ser);
-        auto pmr_str = ser.result();
-        return std::string(pmr_str.data(), pmr_str.size());
+        return encode_type_nested(t);
     }
 
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
@@ -314,7 +538,7 @@ namespace components::catalog {
         if (spec.empty()) {
             return types::complex_logical_type{LT::UNKNOWN};
         }
-        // Flat ENUM text format → bypass msgpack (round-trip broken for ENUM).
+        // ENUM flat format (pre-existing; kept for backward compat)
         if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
             try {
                 auto rest = spec.substr(5);
@@ -346,6 +570,28 @@ namespace components::catalog {
                 return types::complex_logical_type{LT::UNKNOWN};
             }
         }
+        // Flat-text format for all other types.
+        // If the spec doesn't start with a known flat-text keyword, fall back to msgpack
+        // for backward compatibility with existing .otbx files written by older builds.
+        static constexpr std::string_view flat_prefixes[] = {
+            "DECIMAL(", "UNKNOWN(", "LIST(", "ARRAY(", "MAP(", "STRUCT(", "UNION(", "VARIANT"
+        };
+        bool is_flat = false;
+        for (auto p : flat_prefixes) {
+            if (spec.size() >= p.size() && spec.compare(0, p.size(), p) == 0) {
+                is_flat = true;
+                break;
+            }
+        }
+        if (is_flat) {
+            try {
+                size_t pos = 0;
+                return parse_flat_type(resource, spec, pos);
+            } catch (...) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
+        }
+        // Legacy msgpack fallback for files written before the flat-text migration.
         try {
             std::pmr::string buf(spec, resource);
             components::serializer::msgpack_deserializer_t des(buf);

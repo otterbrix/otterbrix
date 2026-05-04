@@ -348,6 +348,14 @@ namespace services::disk {
     // ========================================================================
 
 
+    // MVCC visibility on bootstrap: restore_user_storages_sync (and rebuild_lookup_indexes)
+    // use inline_scan, which calls scan_committed(COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED).
+    // Only rows with insert_id==0 (direct bootstrap appends) or rows whose txn_id has been
+    // flipped to a commit_id by commit_pg_catalog_appends are visible. Rows written under a
+    // non-zero transaction_id that was never committed — e.g. because the process crashed
+    // before commit_pg_catalog_appends ran — are permanently invisible after restart; the
+    // txn_manager_ is not consulted here and provides no additional visibility.
+
     // Restart helper: scan pg_class for user relations and reattach each collection's
     // storage. Disk-backed tables are loaded from .otbx; in-memory tables are
     // reconstructed from pg_attribute rows so WAL replay can populate them.

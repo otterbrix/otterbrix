@@ -189,3 +189,41 @@ TEST_CASE("test_recovery_ddl_then_dml") {
     }
     cleanup_dir(dir);
 }
+
+// 4. test_recovery_orphaned_uncommitted_ddl — DDL rows written under a non-zero txn_id
+//    but never committed (commit_pg_catalog_appends not called, simulating a crash) must
+//    be invisible after manager restart, because rebuild_lookup_indexes uses inline_scan →
+//    scan_committed which filters any row whose txn_id has not been flipped to a commit_id.
+TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
+    auto dir = recovery_test_dir() + "/orphaned_ddl";
+    cleanup_dir(dir);
+
+    {
+        recovery_fixture fx(dir);
+        // Use txn_id=1 so append_pg_catalog_row marks the pg_namespace row as pending
+        // (not immediately visible). Without commit_pg_catalog_appends the flip never
+        // happens.
+        components::execution_context_t uncommitted_ctx{
+            session_id_t{},
+            components::table::transaction_data{1, 0},
+            {}
+        };
+        auto r = fx.invoke(&manager_disk_t::ddl_create_namespace, uncommitted_ctx,
+                            std::string("orphaned_ns"));
+        REQUIRE(r.created_oid != components::catalog::INVALID_OID);
+        // Intentionally omit commit_pg_catalog_appends — simulates crash before commit.
+    }
+
+    {
+        recovery_fixture fx(dir, /*bootstrap=*/ false);
+        REQUIRE_NOTHROW(fx.disk->load_system_tables_sync());
+        REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
+
+        // ns_name_to_oid_ is rebuilt by rebuild_lookup_indexes via inline_scan →
+        // scan_committed. The uncommitted row (txn_id=1) must not appear.
+        auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
+                              std::string("orphaned_ns"), std::uint64_t{0});
+        REQUIRE_FALSE(res.found);
+    }
+    cleanup_dir(dir);
+}

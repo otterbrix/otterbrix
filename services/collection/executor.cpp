@@ -351,7 +351,8 @@ namespace services::collection::executor {
                             auto cache_it = check_pred_cache_.find(c.constraint_oid);
                             if (cache_it != check_pred_cache_.end()
                                 && cache_it->second.conexpr == c.conexpr
-                                && cache_it->second.column_count == col_count) {
+                                && cache_it->second.column_count == col_count
+                                && cache_it->second.catalog_version == c.catalog_version) {
                                 pred = cache_it->second.pred;
                             } else {
                                 components::sql::transform::transformer chk_t(resource());
@@ -367,7 +368,7 @@ namespace services::collection::executor {
                                 }
                                 check_pred_cache_.insert_or_assign(
                                     c.constraint_oid,
-                                    check_pred_entry_t{c.conexpr, col_count, pred});
+                                    check_pred_entry_t{c.conexpr, col_count, c.catalog_version, pred});
                             }
                             for (uint64_t r = 0; r < check_src->size(); ++r) {
                                 if (!pred->check(*check_src, r)) {

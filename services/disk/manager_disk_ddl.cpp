@@ -1790,6 +1790,7 @@ namespace services::disk {
                         auto expr_v = chunk.value(3, i);
                         if (!expr_v.is_null())
                             info.conexpr = std::string(expr_v.value<std::string_view>());
+                        info.catalog_version = catalog_version_;
                         out.push_back(std::move(info));
                         return true;
                     });

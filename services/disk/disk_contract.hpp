@@ -32,6 +32,7 @@ namespace services::disk {
     struct check_constraint_info_t {
         components::catalog::oid_t constraint_oid{0};
         std::string conexpr;
+        std::uint64_t catalog_version{0};
     };
 
     struct disk_contract {

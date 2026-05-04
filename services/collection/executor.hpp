@@ -124,14 +124,12 @@ namespace services::collection::executor {
         // Keeps fire-and-forget WAL flush futures alive until they resolve.
         std::pmr::vector<unique_future<void>> pending_void_;
 
-        // Cache of compiled CHECK predicates keyed by (constraint_oid).
-        // Also stores conexpr and column_count to detect stale entries when
-        // the schema changes (e.g. ALTER TABLE DROP COLUMN compacts columns).
-        // Full invalidation by catalog_version requires exposing that stamp
-        // to the executor — tracked for a future follow-up.
+        // Cache of compiled CHECK predicates keyed by constraint_oid.
+        // Entries are invalidated when conexpr, column_count, or catalog_version changes.
         struct check_pred_entry_t {
             std::string conexpr;
             std::uint64_t column_count{0};
+            std::uint64_t catalog_version{0};
             components::operators::predicates::predicate_ptr pred;
         };
         static constexpr std::size_t kCheckPredCacheMax = 256;

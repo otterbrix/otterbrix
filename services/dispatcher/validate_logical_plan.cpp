@@ -1,12 +1,17 @@
 #include "validate_logical_plan.hpp"
 
+#include "catalog_view.hpp"
 #include "expressions/function_expression.hpp"
 #include "expressions/update_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_insert.hpp"
 #include "logical_plan/node_update.hpp"
+#include "resolved_objects.hpp"
 
 #include <components/catalog/table_id.hpp>
+#include <components/catalog/table_metadata.hpp>
+#include <components/compute/function.hpp>
+#include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -17,8 +22,10 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/table/column_definition.hpp>
 #include <list>
 #include <queue>
+#include <set>
 
 namespace services::dispatcher {
 
@@ -29,6 +36,48 @@ namespace services::dispatcher {
     using namespace components::catalog;
 
     namespace impl {
+        // V4 helpers. ns_oid_for resolves the namespace_oid for a table_id by looking up
+        // the cached resolved_namespace_t. Returns INVALID_OID if not in cache.
+        inline components::catalog::oid_t ns_oid_for(const services::dispatcher::catalog_view_t& view,
+                                                      const components::catalog::table_id& id) {
+            auto& ns = id.get_namespace();
+            if (ns.empty()) return components::catalog::INVALID_OID;
+            auto* n = view.try_get_namespace(std::string_view(ns.front()));
+            return n ? n->oid : components::catalog::INVALID_OID;
+        }
+
+        // V4 function lookup helper. Returns (uid, signature) for the matching overload, or
+        // {invalid_function_uid, {{}, {}}} if no match found. name_exists set if any function
+        // with this name was registered (for "unrecognized function" vs "wrong args" errors).
+        struct function_lookup_t {
+            components::compute::function_uid uid{components::compute::invalid_function_uid};
+            components::compute::kernel_signature_t signature{{}, {}};
+            bool name_exists{false};
+            bool match_found{false};
+        };
+
+        inline function_lookup_t lookup_function(const std::string& name,
+                                                  const std::pmr::vector<components::types::complex_logical_type>& args) {
+            function_lookup_t out;
+            auto* reg = components::compute::function_registry_t::get_default();
+            if (!reg) return out;
+            for (auto& [n, uid] : reg->get_functions()) {
+                if (n != name) continue;
+                out.name_exists = true;
+                auto* fn = reg->get_function(uid);
+                if (!fn) continue;
+                for (auto& sig : fn->get_signatures()) {
+                    if (sig.matches_inputs(args)) {
+                        out.uid = uid;
+                        out.signature = sig;
+                        out.match_found = true;
+                        return out;
+                    }
+                }
+            }
+            return out;
+        }
+
         struct type_match_t {
             column_path path;
             const complex_logical_type* type;
@@ -230,7 +279,7 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                  const catalog& catalog,
+                                                                  const catalog_view_t& view,
                                                                   function_expression_t* expr,
                                                                   const storage_parameters& parameters,
                                                                   const named_schema& schema_left,
@@ -254,7 +303,7 @@ namespace services::dispatcher {
                     auto& sub_expr = reinterpret_cast<components::expressions::function_expression_ptr&>(
                         std::get<components::expressions::expression_ptr>(field));
                     auto sub_expr_res = validate_schema(resource,
-                                                        catalog,
+                                                        view,
                                                         sub_expr.get(),
                                                         parameters,
                                                         schema_left,
@@ -272,16 +321,16 @@ namespace services::dispatcher {
                     function_input_types.emplace_back(parameters.parameters.at(id).type());
                 }
             }
-            if (!catalog.function_name_exists(expr->name())) {
+            auto fn_lk = lookup_function(expr->name(), function_input_types);
+            if (!fn_lk.name_exists) {
                 return schema_result<named_schema>{
                     resource,
                     components::cursor::error_t{error_code_t::unrecognized_function,
                                                 "function: \'" + expr->name() + "(...)\' was not found by the name"}};
-            } else if (catalog.function_exists(expr->name(), function_input_types)) {
-                auto func = catalog.get_function(expr->name(), function_input_types);
+            } else if (fn_lk.match_found) {
                 std::vector<complex_logical_type> function_output_types;
-                function_output_types.reserve(func.second.output_types.size());
-                for (const auto& output_type : func.second.output_types) {
+                function_output_types.reserve(fn_lk.signature.output_types.size());
+                for (const auto& output_type : fn_lk.signature.output_types) {
                     auto res = output_type.resolve(function_input_types);
                     if (res.status() != components::compute::compute_status::ok()) {
                         return schema_result<named_schema>{
@@ -299,7 +348,7 @@ namespace services::dispatcher {
                     result.emplace_back(type_from_t{expr->result_alias(),
                                                     complex_logical_type::create_struct("", function_output_types)});
                 }
-                expr->add_function_uid(func.first);
+                expr->add_function_uid(fn_lk.uid);
             } else {
                 // function does exist, but can not take this set of arguments
                 // TODO: given arg number and types to error
@@ -491,7 +540,7 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                  const catalog& catalog,
+                                                                  const catalog_view_t& view,
                                                                   compare_expression_t* expr,
                                                                   const storage_parameters& parameters,
                                                                   const named_schema& schema_left,
@@ -506,7 +555,7 @@ namespace services::dispatcher {
                 case compare_type::union_not: {
                     for (auto& nested_expr : expr->children()) {
                         auto nested_res = validate_schema(resource,
-                                                          catalog,
+                                                          view,
                                                           reinterpret_cast<compare_expression_t*>(nested_expr.get()),
                                                           parameters,
                                                           schema_left,
@@ -543,7 +592,7 @@ namespace services::dispatcher {
                             auto& func_expr =
                                 reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
                             auto expr_res = validate_schema(resource,
-                                                            catalog,
+                                                            view,
                                                             func_expr.get(),
                                                             parameters,
                                                             schema_left,
@@ -581,7 +630,7 @@ namespace services::dispatcher {
                             auto& func_expr =
                                 reinterpret_cast<components::expressions::function_expression_ptr&>(sub_expr);
                             auto expr_res = validate_schema(resource,
-                                                            catalog,
+                                                            view,
                                                             func_expr.get(),
                                                             parameters,
                                                             schema_left,
@@ -626,7 +675,7 @@ namespace services::dispatcher {
         }
 
         [[nodiscard]] schema_result<named_schema> validate_schema(std::pmr::memory_resource* resource,
-                                                                  const catalog& catalog,
+                                                                  const catalog_view_t& view,
                                                                   node_match_t* node,
                                                                   const storage_parameters& parameters,
                                                                   const named_schema& schema_left,
@@ -635,20 +684,20 @@ namespace services::dispatcher {
             if (node->expressions().empty()) {
                 // physical plan reinterprets this as default scan
                 table_id id(resource, node->collection_full_name());
-                if (catalog.table_exists(id)) {
+                auto* tbl = view.try_get_table(ns_oid_for(view, id), std::string_view(id.table_name()));
+                if (tbl && tbl->relkind != 'g') {
                     named_schema result(resource);
-                    for (const auto& column : catalog.get_table_schema(id).columns()) {
-                        result.emplace_back(type_from_t{node->collection_name(), column.type()});
+                    for (const auto& column : tbl->columns) {
+                        result.emplace_back(type_from_t{node->collection_name(), column.type});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 }
-                if (catalog.table_computes(id)) {
+                if (tbl && tbl->relkind == 'g') {
                     named_schema result(resource);
-                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
-                    for (const auto& column : sch.child_types()) {
+                    for (const auto& column : tbl->columns) {
                         result.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
-                                        column});
+                                        column.type});
                     }
                     return schema_result<named_schema>{std::move(result)};
                 } else {
@@ -660,11 +709,11 @@ namespace services::dispatcher {
                 assert(node->expressions().size() == 1);
                 if (node->expressions()[0]->group() == expression_group::compare) {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
-                    return validate_schema(resource, catalog, expr, parameters, schema_left, schema_right, same_schema);
+                    return validate_schema(resource, view, expr, parameters, schema_left, schema_right, same_schema);
                 } else if (node->expressions()[0]->group() == expression_group::function) {
                     auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
                     auto expr_res =
-                        validate_schema(resource, catalog, expr, parameters, schema_left, schema_right, same_schema);
+                        validate_schema(resource, view, expr, parameters, schema_left, schema_right, same_schema);
                     if (expr_res.is_error()) {
                         return expr_res;
                     }
@@ -701,56 +750,104 @@ namespace services::dispatcher {
 
     } // namespace impl
 
+    // ---- V4 view-based check_*_exists ----
+
     cursor_t_ptr
-    check_namespace_exists(std::pmr::memory_resource* resource, const catalog& catalog, const table_id& id) {
-        cursor_t_ptr error;
-        if (!catalog.namespace_exists(id.get_namespace())) {
-            error = make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
+    check_namespace_exists(std::pmr::memory_resource* resource,
+                            const catalog_view_t& view,
+                            const components::catalog::table_id& id) {
+        const auto& ns = id.get_namespace();
+        if (ns.empty() || !view.try_get_namespace(std::string_view(ns.front()))) {
+            return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
         }
-        return error;
+        return {};
     }
 
     cursor_t_ptr
-    check_collection_exists(std::pmr::memory_resource* resource, const catalog& catalog, const table_id& id) {
-        cursor_t_ptr error = check_namespace_exists(resource, catalog, id);
-        if (!error) {
-            bool exists = catalog.table_exists(id);
-            bool computes = catalog.table_computes(id);
-            // table can either compute or exist with schema - not both
-            if (exists == computes) {
-                error = make_cursor(resource,
-                                    error_code_t::collection_not_exists,
-                                    exists ? "collection exists and computes schema at the same time"
-                                           : "collection does not exist");
+    check_collection_exists(std::pmr::memory_resource* resource,
+                             const catalog_view_t& view,
+                             const components::catalog::table_id& id) {
+        if (auto err = check_namespace_exists(resource, view, id)) return err;
+        const auto* ns = view.try_get_namespace(std::string_view(id.get_namespace().front()));
+        // ns can't be null here (check_namespace_exists passed) but defensive code:
+        if (!ns) {
+            return make_cursor(resource, error_code_t::database_not_exists, "database does not exist");
+        }
+        const auto* tbl = view.try_get_table(ns->oid, std::string_view(id.table_name()));
+        if (!tbl) {
+            return make_cursor(resource, error_code_t::collection_not_exists, "collection does not exist");
+        }
+        return {};
+    }
+
+    cursor_t_ptr
+    check_type_exists(std::pmr::memory_resource* resource,
+                       const catalog_view_t& view,
+                       const std::string& alias,
+                       std::span<const components::catalog::oid_t> search_path) {
+        // Probe each namespace in search_path order; first hit wins. Empty search_path
+        // falls back to {public, pg_catalog} for callers that don't carry a context-
+        // specific namespace (e.g., implicit type refs in DML where DDL hasn't given a
+        // schema). Caller must have pre-loaded the cache for each ns it intends to probe.
+        if (search_path.empty()) {
+            static constexpr components::catalog::oid_t default_path[] = {
+                components::catalog::well_known_oid::public_namespace,
+                components::catalog::well_known_oid::pg_catalog_namespace,
+            };
+            search_path = std::span<const components::catalog::oid_t>{default_path};
+        }
+        for (auto ns_oid : search_path) {
+            if (view.try_get_type(ns_oid, std::string_view(alias))) {
+                return {};
             }
         }
-
-        return error;
+        return make_cursor(resource,
+                            error_code_t::schema_error,
+                            "type: \'" + alias + "\' is not registered in catalog");
     }
 
-    cursor_t_ptr
-    check_type_exists(std::pmr::memory_resource* resource, const catalog& catalog, const std::string& alias) {
-        cursor_t_ptr error;
-        if (!catalog.type_exists(alias)) {
-            error = make_cursor(resource,
-                                error_code_t::schema_error,
-                                "type: \'" + alias + "\' is not registered in catalog");
+    void walk_user_type_refs(const components::types::complex_logical_type& type,
+                              const std::function<void(std::string_view)>& visit) {
+        // Emit a UDT reference for STRUCT/ENUM/UNKNOWN with a non-empty type_name().
+        // Recursion into child_types() is GUARDED by type==STRUCT — complex_logical_type's
+        // child_types() does an unchecked static_cast to struct_logical_type_extension and
+        // dereferences extension_, which is invalid memory for primitives (INT, STRING, ...).
+        // ENUM stores entries in its own extension and does not reference UDTs through
+        // child_types(); ARRAY/LIST/MAP carry singular child_type(), not a vector.
+        using LT = components::types::logical_type;
+        if (type.type() == LT::STRUCT || type.type() == LT::ENUM || type.type() == LT::UNKNOWN) {
+            auto name = type.type_name();
+            if (!name.empty()) {
+                visit(name);
+            }
         }
-        return error;
+        if (type.type() == LT::STRUCT) {
+            for (const auto& child : type.child_types()) {
+                walk_user_type_refs(child, visit);
+            }
+        }
     }
 
-    cursor_t_ptr validate_types(std::pmr::memory_resource* resource, const catalog& catalog, node_t* logical_plan) {
+    cursor_t_ptr validate_types_sync(std::pmr::memory_resource* resource, const catalog_view_t& view, node_t* logical_plan) {
         std::pmr::vector<complex_logical_type> encountered_types{resource};
+        // Track every table namespace we walked so the data-conversion UDT probe below
+        // can search them in addition to public/pg_catalog. Without this, a UDT registered
+        // only under the user's schema (resolved by prewalk_table_types) wouldn't be
+        // visible here even though prewalk pre-loaded it.
+        std::set<components::catalog::oid_t> table_namespaces;
         cursor_t_ptr result = make_cursor(resource, operation_status_t::success);
 
         auto check_node = [&](node_t* node) {
             if (!node->collection_full_name().empty()) {
                 table_id id(resource, node->collection_full_name());
-                if (auto res = check_collection_exists(resource, catalog, id); !res) {
-                    if (!catalog.table_computes(id)) {
-                        for (const auto& column : catalog.get_table_schema(id).columns()) {
-                            encountered_types.emplace_back(column.type());
+                if (auto res = check_collection_exists(resource, view, id); !res) {
+                    auto* tbl = view.try_get_table(impl::ns_oid_for(view, id),
+                                                    std::string_view(id.table_name()));
+                    if (tbl && tbl->relkind != 'g') {
+                        for (const auto& column : tbl->columns) {
+                            encountered_types.emplace_back(column.type);
                         }
+                        table_namespaces.insert(tbl->namespace_oid);
                     }
                 } else {
                     result = res;
@@ -761,13 +858,23 @@ namespace services::dispatcher {
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
+                auto type_visible = [&](std::string_view name) {
+                    for (auto ns_oid : table_namespaces) {
+                        if (view.try_get_type(ns_oid, name)) return true;
+                    }
+                    return view.try_get_type(components::catalog::well_known_oid::public_namespace, name) ||
+                           view.try_get_type(components::catalog::well_known_oid::pg_catalog_namespace, name);
+                };
+
                 for (auto& column : data_node->data_chunk().data) {
                     auto it = std::find_if(
                         encountered_types.begin(),
                         encountered_types.end(),
                         [&column](const complex_logical_type& type) { return type.alias() == column.type().alias(); });
                     // if this is a registered type, then conversion is required
-                    if (it != encountered_types.end() && catalog.type_exists(it->type_name())) {
+                    bool ty_exists =
+                        it != encountered_types.end() && type_visible(std::string_view(it->type_name()));
+                    if (ty_exists) {
                         // try to cast to it
                         if (it->type() == logical_type::STRUCT) {
                             components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
@@ -828,10 +935,10 @@ namespace services::dispatcher {
     }
 
     [[nodiscard]] schema_result<named_schema>
-    validate_schema(std::pmr::memory_resource* resource,
-                    const catalog& catalog,
-                    node_t* node,
-                    const components::logical_plan::storage_parameters& parameters) {
+    validate_schema_sync(std::pmr::memory_resource* resource,
+                         const catalog_view_t& view,
+                         node_t* node,
+                         const components::logical_plan::storage_parameters& parameters) {
         named_schema result{resource};
 
         switch (node->type()) {
@@ -867,7 +974,7 @@ namespace services::dispatcher {
                 }
 
                 if (node_data) {
-                    auto node_data_res = validate_schema(resource, catalog, node_data, parameters);
+                    auto node_data_res = validate_schema_sync(resource, view, node_data, parameters);
                     if (node_data_res.is_error()) {
                         return node_data_res;
                     } else {
@@ -876,16 +983,17 @@ namespace services::dispatcher {
                 } else if (!node->collection_full_name().database.empty()) {
                     // there will be a scan
                     table_id id(resource, node->collection_full_name());
-                    if (catalog.table_exists(id)) {
-                        for (const auto& column : catalog.get_table_schema(id).columns()) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
+                    auto* tbl = view.try_get_table(impl::ns_oid_for(view, id),
+                                                    std::string_view(id.table_name()));
+                    if (tbl && tbl->relkind != 'g') {
+                        for (const auto& column : tbl->columns) {
+                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
                         }
-                    } else if (catalog.table_computes(id)) {
-                        auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
-                        for (const auto& column : sch.child_types()) {
+                    } else if (tbl && tbl->relkind == 'g') {
+                        for (const auto& column : tbl->columns) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
                                                                                                : node->result_alias(),
-                                                                  column});
+                                                                  column.type});
                         }
                     } else {
                         return schema_result<named_schema>{
@@ -906,7 +1014,7 @@ namespace services::dispatcher {
                 }
                 if (node_match) {
                     auto res = impl::validate_schema(resource,
-                                                     catalog,
+                                                     view,
                                                      node_match,
                                                      parameters,
                                                      table_schema,
@@ -1145,17 +1253,17 @@ namespace services::dispatcher {
                                     }
                                 }
                             }
-                            if (!catalog.function_name_exists(agg_expr->function_name())) {
+                            auto agg_lk = impl::lookup_function(agg_expr->function_name(), function_input_types);
+                            if (!agg_lk.name_exists) {
                                 return schema_result<named_schema>{
                                     resource,
                                     components::cursor::error_t{error_code_t::unrecognized_function,
                                                                 "function: \'" + agg_expr->function_name() +
                                                                     "(...)\' was not found by the name"}};
-                            } else if (catalog.function_exists(agg_expr->function_name(), function_input_types)) {
-                                auto func = catalog.get_function(agg_expr->function_name(), function_input_types);
+                            } else if (agg_lk.match_found) {
                                 std::vector<complex_logical_type> function_output_types;
-                                function_output_types.reserve(func.second.output_types.size());
-                                for (const auto& output_type : func.second.output_types) {
+                                function_output_types.reserve(agg_lk.signature.output_types.size());
+                                for (const auto& output_type : agg_lk.signature.output_types) {
                                     auto res = output_type.resolve(function_input_types);
                                     if (res.status() != components::compute::compute_status::ok()) {
                                         return schema_result<named_schema>{
@@ -1181,7 +1289,7 @@ namespace services::dispatcher {
                                             complex_logical_type::create_struct("", function_output_types, agg_alias)});
                                     }
                                 }
-                                agg_expr->add_function_uid(func.first);
+                                agg_expr->add_function_uid(agg_lk.uid);
                                 // Collect for post_agg_schema
                                 if (!is_internal && !function_output_types.empty()) {
                                     agg_schema.emplace_back(result.back());
@@ -1255,7 +1363,7 @@ namespace services::dispatcher {
                     auto& having = node_group->having();
                     if (having->group() == expression_group::compare) {
                         auto* cmp_expr = reinterpret_cast<compare_expression_t*>(having.get());
-                        auto res = impl::validate_schema(resource, catalog, cmp_expr, parameters, result, result, true);
+                        auto res = impl::validate_schema(resource, view, cmp_expr, parameters, result, result, true);
                         if (res.is_error()) {
                             return res;
                         }
@@ -1274,7 +1382,7 @@ namespace services::dispatcher {
             }
             case node_type::function_t: {
                 auto* function_node = reinterpret_cast<node_function_t*>(node);
-                auto input_schema = validate_schema(resource, catalog, node->children().front().get(), parameters);
+                auto input_schema = validate_schema_sync(resource, view, node->children().front().get(), parameters);
                 if (input_schema.is_error()) {
                     return input_schema;
                 }
@@ -1285,16 +1393,16 @@ namespace services::dispatcher {
                 }
                 // TODO: check for errors between function_node->args() and input_schema (amount of args and name correctness)
                 // Also order could be different
-                if (!catalog.function_name_exists(function_node->name())) {
+                auto fn_lk = impl::lookup_function(function_node->name(), function_input);
+                if (!fn_lk.name_exists) {
                     return schema_result<named_schema>{
                         resource,
                         components::cursor::error_t{error_code_t::unrecognized_function,
                                                     "function: \'" + function_node->name() +
                                                         "(...)\' was not found by the name"}};
-                } else if (catalog.function_exists(function_node->name(), function_input)) {
-                    auto func = catalog.get_function(function_node->name(), function_input);
-                    result.reserve(func.second.output_types.size());
-                    for (const auto& output_type : func.second.output_types) {
+                } else if (fn_lk.match_found) {
+                    result.reserve(fn_lk.signature.output_types.size());
+                    for (const auto& output_type : fn_lk.signature.output_types) {
                         auto res = output_type.resolve(function_input);
                         if (res.status() != components::compute::compute_status::ok()) {
                             return schema_result<named_schema>{
@@ -1305,7 +1413,7 @@ namespace services::dispatcher {
                                         "(...)\' was found but there is an error, resolving output types"}};
                         }
                         result.emplace_back(type_from_t{node->result_alias(), res.value()});
-                        function_node->add_function_uid(func.first);
+                        function_node->add_function_uid(fn_lk.uid);
                     }
                 } else {
                     return schema_result<named_schema>{
@@ -1317,17 +1425,17 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::join_t: {
-                auto left_schema = validate_schema(resource, catalog, node->children().front().get(), parameters);
+                auto left_schema = validate_schema_sync(resource, view, node->children().front().get(), parameters);
                 if (left_schema.is_error()) {
                     return left_schema;
                 }
-                auto right_schema = validate_schema(resource, catalog, node->children().back().get(), parameters);
+                auto right_schema = validate_schema_sync(resource, view, node->children().back().get(), parameters);
                 if (right_schema.is_error()) {
                     return right_schema;
                 }
                 auto expr_res =
                     impl::validate_schema(resource,
-                                          catalog,
+                                          view,
                                           reinterpret_cast<compare_expression_t*>(node->expressions()[0].get()),
                                           parameters,
                                           left_schema.value(),
@@ -1345,27 +1453,28 @@ namespace services::dispatcher {
             case node_type::insert_t: {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 table_id id(resource, node->collection_full_name());
-                if (auto err = check_collection_exists(resource, catalog, id); err) {
+                if (auto err = check_collection_exists(resource, view, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }
 
-                auto incoming_schema = validate_schema(resource, catalog, node->children().front().get(), parameters);
+                auto incoming_schema = validate_schema_sync(resource, view, node->children().front().get(), parameters);
                 if (incoming_schema.is_error()) {
                     return incoming_schema;
                 } else {
                     named_schema table_schema(resource);
                     bool is_computed = false;
-                    if (catalog.table_exists(id)) {
-                        for (const auto& column : catalog.get_table_schema(id).columns()) {
+                    auto* tbl_ins = view.try_get_table(impl::ns_oid_for(view, id),
+                                                        std::string_view(id.table_name()));
+                    if (tbl_ins && tbl_ins->relkind != 'g') {
+                        for (const auto& column : tbl_ins->columns) {
                             table_schema.emplace_back(type_from_t{node->result_alias().empty() ? node->collection_name()
                                                                                                : node->result_alias(),
-                                                                  column.type()});
+                                                                  column.type});
                         }
-                    } else {
+                    } else if (tbl_ins && tbl_ins->relkind == 'g') {
                         is_computed = true;
-                        auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
-                        for (const auto& column : sch.child_types()) {
-                            table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                        for (const auto& column : tbl_ins->columns) {
+                            table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
                         }
                     }
                     if (table_schema.empty() && is_computed) {
@@ -1414,15 +1523,15 @@ namespace services::dispatcher {
                             }
 
                             if (!unchecked_columns.empty()) {
-                                const auto& catalog_schema = catalog.get_table_schema(id).columns();
+                                const auto& cat_columns = tbl_ins ? tbl_ins->columns : std::vector<resolved_column_t>{};
                                 for (auto index : unchecked_columns) {
-                                    if (!catalog_schema[index].has_default_value() &&
-                                        catalog_schema[index].is_not_null()) {
+                                    if (!cat_columns[index].atthasdefault &&
+                                        cat_columns[index].attnotnull) {
                                         return schema_result<named_schema>{
                                             resource,
                                             components::cursor::error_t{
                                                 error_code_t::schema_error,
-                                                "insert_node: can not fill column \'" + catalog_schema[index].name() +
+                                                "insert_node: can not fill column \'" + cat_columns[index].attname +
                                                     "\', because it lacks a default value and do not except null"}};
                                     }
                                 }
@@ -1448,18 +1557,19 @@ namespace services::dispatcher {
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
                 table_id id(resource, node->collection_full_name());
-                if (catalog.table_exists(id)) {
-                    for (const auto& column : catalog.get_table_schema(id).columns()) {
+                auto* tbl_upd = view.try_get_table(impl::ns_oid_for(view, id),
+                                                    std::string_view(id.table_name()));
+                if (tbl_upd && tbl_upd->relkind != 'g') {
+                    for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
-                                        column.type()});
+                                        column.type});
                     }
-                } else if (catalog.table_computes(id)) {
-                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
-                    for (const auto& column : sch.child_types()) {
+                } else if (tbl_upd && tbl_upd->relkind == 'g') {
+                    for (const auto& column : tbl_upd->columns) {
                         table_schema.emplace_back(
                             type_from_t{node->result_alias().empty() ? node->collection_name() : node->result_alias(),
-                                        column});
+                                        column.type});
                     }
                 } else {
                     return schema_result<named_schema>{
@@ -1467,7 +1577,7 @@ namespace services::dispatcher {
                         components::cursor::error_t{error_code_t::collection_not_exists, ""}};
                 }
                 if (node_data) {
-                    auto node_data_res = validate_schema(resource, catalog, node_data, parameters);
+                    auto node_data_res = validate_schema_sync(resource, view, node_data, parameters);
                     if (node_data_res.is_error()) {
                         return schema_result<named_schema>{resource, node_data_res.error()};
                     }
@@ -1494,7 +1604,7 @@ namespace services::dispatcher {
                 }
                 if (node_match) {
                     auto node_match_res = impl::validate_schema(resource,
-                                                                catalog,
+                                                                view,
                                                                 node_match,
                                                                 parameters,
                                                                 table_schema,
@@ -1524,20 +1634,20 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 table_id id(resource, node->collection_full_name());
-                if (auto err = check_collection_exists(resource, catalog, id); err) {
+                if (auto err = check_collection_exists(resource, view, id); err) {
                     return schema_result<named_schema>{resource, err->get_error()};
                 }
 
                 named_schema table_schema{resource};
-                if (catalog.table_computes(id)) {
-                    auto sch = catalog.get_computing_table_schema(id).latest_types_struct();
-                    for (const auto& column : sch.child_types()) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column});
+                auto* tbl_idx = view.try_get_table(impl::ns_oid_for(view, id),
+                                                    std::string_view(id.table_name()));
+                if (tbl_idx && tbl_idx->relkind == 'g') {
+                    for (const auto& column : tbl_idx->columns) {
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
                     }
-                } else {
-                    const auto& sch = catalog.get_table_schema(id).columns();
-                    for (const auto& column : sch) {
-                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type()});
+                } else if (tbl_idx) {
+                    for (const auto& column : tbl_idx->columns) {
+                        table_schema.emplace_back(type_from_t{node->collection_name(), column.type});
                     }
                 }
                 auto& keys = reinterpret_cast<node_create_index_t*>(node)->keys();
@@ -1558,6 +1668,102 @@ namespace services::dispatcher {
         }
 
         return schema_result{std::move(result)};
+    }
+
+    // ===================================================================================
+    // V4 entry points — Phase E.3 of docs/v4-catalog-refactoring.md.
+    // -----------------------------------------------------------------------------------
+    // Pre-walk the plan AST collecting referenced collection names; co_await
+    // catalog_view_t for each (cache hit = no roundtrip; miss = one resolve_*). After the
+    // pre-walk the cache is warm, so the sync internals read it via try_get_*.
+    //
+    // Functions are looked up via components::compute::function_registry_t (built-ins +
+    // registered UDFs) — no catalog roundtrip needed at validate time.
+    //
+    // Types: prewalk_table_types recursively walks every column's complex_logical_type
+    // (STRUCT children at arbitrary depth) and pre-loads each UDT name in {table's
+    // namespace, public, pg_catalog} so the sync probe via try_get_type / check_type_exists
+    // hits the cache regardless of which namespace the type was registered in.
+    // ===================================================================================
+
+    namespace {
+        // Pre-walk helper: warm catalog_view's type cache with every UDT type_name
+        // referenced by `tbl.columns`, walking STRUCT children at arbitrary depth via
+        // walk_user_type_refs. Pre-loads each name in {table's namespace, public,
+        // pg_catalog} so the sync UDT-existence probe (try_get_type) finds it regardless
+        // of where the type was registered.
+        actor_zeta::unique_future<void>
+        prewalk_table_types(catalog_view_t& view,
+                             components::execution_context_t ctx,
+                             const resolved_table_t& tbl) {
+            // Dedupe names — same UDT referenced by multiple columns yields one set entry,
+            // so we issue one pre-load per (name, ns) pair instead of N.
+            std::set<std::string> names;
+            auto collect = [&](std::string_view n) {
+                names.emplace(n);
+            };
+            for (const auto& col : tbl.columns) {
+                walk_user_type_refs(col.type, collect);
+            }
+            const components::catalog::oid_t search_namespaces[] = {
+                tbl.namespace_oid,
+                components::catalog::well_known_oid::public_namespace,
+                components::catalog::well_known_oid::pg_catalog_namespace,
+            };
+            for (const auto& name : names) {
+                for (auto ns : search_namespaces) {
+                    if (ns == components::catalog::INVALID_OID) continue;
+                    (void)co_await view.get_type(ctx, ns, name);
+                }
+            }
+            co_return;
+        }
+
+    } // namespace
+
+    actor_zeta::unique_future<components::cursor::cursor_t_ptr>
+    validate_types(std::pmr::memory_resource* resource,
+                   catalog_view_t& view,
+                   components::execution_context_t ctx,
+                   node_t* logical_plan) {
+        // Pre-walk: gather every collection referenced by the plan (covers tables in
+        // FROM, JOIN, INSERT/UPDATE/DELETE targets, sub-plans). Returns deduplicated set.
+        auto deps = logical_plan->collection_dependencies();
+        for (const auto& cfn : deps) {
+            std::string ns_name = cfn.database;
+            if (ns_name.empty()) continue;
+            const auto* ns = co_await view.get_namespace(ctx, ns_name);
+            if (!ns) {
+                // Namespace miss — validate_types_sync emits the standard not-found error
+                // when it probes the cache and finds nothing.
+                continue;
+            }
+            const auto* tbl = co_await view.get_table(ctx, ns->oid, std::string(cfn.collection));
+            if (tbl) {
+                co_await prewalk_table_types(view, ctx, *tbl);
+            }
+        }
+        co_return validate_types_sync(resource, view, logical_plan);
+    }
+
+    actor_zeta::unique_future<schema_result<named_schema>>
+    validate_schema(std::pmr::memory_resource* resource,
+                    catalog_view_t& view,
+                    components::execution_context_t ctx,
+                    node_t* node,
+                    const components::logical_plan::storage_parameters& parameters) {
+        auto deps = node->collection_dependencies();
+        for (const auto& cfn : deps) {
+            std::string ns_name = cfn.database;
+            if (ns_name.empty()) continue;
+            const auto* ns = co_await view.get_namespace(ctx, ns_name);
+            if (!ns) continue;
+            const auto* tbl = co_await view.get_table(ctx, ns->oid, std::string(cfn.collection));
+            if (tbl) {
+                co_await prewalk_table_types(view, ctx, *tbl);
+            }
+        }
+        co_return validate_schema_sync(resource, view, node, parameters);
     }
 
 } // namespace services::dispatcher

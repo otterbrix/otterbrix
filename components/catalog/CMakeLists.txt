@@ -3,19 +3,17 @@ project(catalog CXX)
 set(SOURCE_${PROJECT_NAME}
         versioned_trie/trie_utils.cpp
 
-        transaction/schema_diff.cpp
-        transaction/metadata_diff.cpp
+        # M6c: transaction/* physically removed — DDL transactional semantics moved to
+        # executor's ctx.txn. The 5 source pairs (transaction_scope/metadata_transaction/
+        # schema_diff/metadata_diff/transaction_list) and tests/test_transactions.cpp
+        # are gone.
 
-        transaction/metadata_transaction.cpp
-        transaction/transaction_scope.cpp
-        transaction/transaction_list.cpp
-
+        catalog_oids.cpp
+        system_table_schemas.cpp
         table_id.cpp
         schema.cpp
         computed_schema.cpp
         table_metadata.cpp
-        namespace_storage.cpp
-        catalog.cpp
         catalog_error.cpp
         catalog_types.cpp
 )
@@ -29,7 +27,7 @@ add_library(otterbrix::${PROJECT_NAME} ALIAS otterbrix_${PROJECT_NAME})
 set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAME})
 
 target_link_libraries(
-        otterbrix_${PROJECT_NAME} PRIVATE
+        otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::compute
         otterbrix::cursor
         otterbrix::vector

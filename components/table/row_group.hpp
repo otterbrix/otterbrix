@@ -110,7 +110,7 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
         uint64_t
-        commited_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
+        committed_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();
         row_version_manager_t* version_info();
         void set_version_info(std::shared_ptr<row_version_manager_t> version);

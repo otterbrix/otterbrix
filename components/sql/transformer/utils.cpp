@@ -443,6 +443,60 @@ namespace components::sql::transform {
                 case CONSTR_UNIQUE:
                     tc.type = table::table_constraint_type::UNIQUE;
                     break;
+                case CONSTR_FOREIGN:
+                    tc.type = table::table_constraint_type::FOREIGN_KEY;
+                    if (constraint->fk_attrs) {
+                        for (auto col : constraint->fk_attrs->lst) {
+                            tc.columns.emplace_back(strVal(col.data));
+                        }
+                    }
+                    if (constraint->pk_attrs) {
+                        for (auto col : constraint->pk_attrs->lst) {
+                            tc.ref_columns.emplace_back(strVal(col.data));
+                        }
+                    }
+                    if (constraint->pktable) {
+                        if (constraint->pktable->catalogname) {
+                            tc.ref_database = constraint->pktable->catalogname;
+                        } else if (constraint->pktable->schemaname) {
+                            tc.ref_database = constraint->pktable->schemaname;
+                        }
+                        if (constraint->pktable->relname) {
+                            tc.ref_collection = constraint->pktable->relname;
+                        }
+                    }
+                    if (constraint->conname) {
+                        tc.name = constraint->conname;
+                    }
+                    // PostgreSQL stores ' ' / '\0' for unspecified MATCH/action; normalize to
+                    // SQL-standard defaults ('s' SIMPLE, 'a' NO ACTION) so downstream code never
+                    // sees an unexpected sentinel.
+                    if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
+                        constraint->fk_matchtype == 's') {
+                        tc.fk_matchtype = constraint->fk_matchtype;
+                    }
+                    {
+                        auto da = constraint->fk_del_action;
+                        if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
+                            tc.fk_del_action = da;
+                        }
+                        auto ua = constraint->fk_upd_action;
+                        if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
+                            tc.fk_upd_action = ua;
+                        }
+                    }
+                    result.push_back(std::move(tc));
+                    continue; // skip the unique-keys-based code below
+                case CONSTR_CHECK:
+                    tc.type = table::table_constraint_type::CHECK;
+                    if (constraint->conname) {
+                        tc.name = constraint->conname;
+                    }
+                    if (constraint->raw_expr) {
+                        tc.check_expression = deparse_check_expr(constraint->raw_expr);
+                    }
+                    result.push_back(std::move(tc));
+                    continue;
                 default:
                     continue;
             }
@@ -484,6 +538,89 @@ namespace components::sql::transform {
         }
         result += '$';
         return result;
+    }
+
+    std::string deparse_check_expr(Node* node) {
+        if (!node) {
+            return "";
+        }
+        switch (nodeTag(node)) {
+            case T_ColumnRef: {
+                auto* cr = pg_ptr_cast<ColumnRef>(node);
+                if (!cr->fields || cr->fields->lst.empty()) {
+                    return "";
+                }
+                // Use only the last field (unqualified column name)
+                return std::string(strVal(cr->fields->lst.back().data));
+            }
+            case T_A_Const: {
+                auto* ac = pg_ptr_cast<A_Const>(node);
+                switch (nodeTag(&ac->val)) {
+                    case T_Integer:
+                        return std::to_string(intVal(&ac->val));
+                    case T_Float:
+                        return std::string(strVal(&ac->val));
+                    case T_String:
+                        return "'" + std::string(strVal(&ac->val)) + "'";
+                    default:
+                        return "";
+                }
+            }
+            case T_A_Expr: {
+                auto* e = pg_ptr_cast<A_Expr>(node);
+                if (e->kind == AEXPR_OP && e->name && !e->name->lst.empty()) {
+                    std::string op = std::string(strVal(e->name->lst.front().data));
+                    std::string left = deparse_check_expr(reinterpret_cast<Node*>(e->lexpr));
+                    std::string right = deparse_check_expr(reinterpret_cast<Node*>(e->rexpr));
+                    if (left.empty() || right.empty()) {
+                        return "";
+                    }
+                    return left + " " + op + " " + right;
+                }
+                if (e->kind == AEXPR_AND || e->kind == AEXPR_OR) {
+                    std::string sep = (e->kind == AEXPR_AND) ? " AND " : " OR ";
+                    std::string left = deparse_check_expr(reinterpret_cast<Node*>(e->lexpr));
+                    std::string right = deparse_check_expr(reinterpret_cast<Node*>(e->rexpr));
+                    if (left.empty() || right.empty()) return "";
+                    return "(" + left + ")" + sep + "(" + right + ")";
+                }
+                return "";
+            }
+            case T_BoolExpr: {
+                auto* b = pg_ptr_cast<BoolExpr>(node);
+                if (!b->args || b->args->lst.empty()) {
+                    return "";
+                }
+                if (b->boolop == NOT_EXPR) {
+                    std::string inner = deparse_check_expr(
+                        reinterpret_cast<Node*>(b->args->lst.front().data));
+                    return inner.empty() ? "" : "NOT (" + inner + ")";
+                }
+                std::string sep = (b->boolop == AND_EXPR) ? " AND " : " OR ";
+                std::string result;
+                for (auto& cell : b->args->lst) {
+                    std::string part = deparse_check_expr(reinterpret_cast<Node*>(cell.data));
+                    if (part.empty()) {
+                        return "";
+                    }
+                    if (!result.empty()) {
+                        result += sep;
+                    }
+                    result += "(" + part + ")";
+                }
+                return result;
+            }
+            case T_NullTest: {
+                auto* nt = pg_ptr_cast<NullTest>(node);
+                std::string arg = deparse_check_expr(reinterpret_cast<Node*>(nt->arg));
+                if (arg.empty()) {
+                    return "";
+                }
+                return arg + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
+            }
+            default:
+                return "";
+        }
     }
 
 } // namespace components::sql::transform

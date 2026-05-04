@@ -1,5 +1,4 @@
 #include <catch2/catch.hpp>
-#include <services/disk/disk.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -154,37 +153,6 @@ TEST_CASE("services::disk::table_storage::mode_query") {
     }
 }
 
-TEST_CASE("services::disk::wal_id_round_trip") {
-    cleanup_test_dir();
-    std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
-
-    // Write WAL ID = 42 and verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        disk.fix_wal_id(42);
-        REQUIRE(disk.wal_id() == 42);
-    }
-
-    // Reopen and verify persisted value
-    {
-        disk_t disk(test_dir(), &resource);
-        REQUIRE(disk.wal_id() == 42);
-    }
-
-    // Overwrite with 999999 and verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        disk.fix_wal_id(999999);
-    }
-    {
-        disk_t disk(test_dir(), &resource);
-        REQUIRE(disk.wal_id() == 999999);
-    }
-
-    cleanup_test_dir();
-}
-
 TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -243,57 +211,6 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
             REQUIRE(id_val.value<int64_t>() == static_cast<int64_t>(i));
             REQUIRE(score_val.value<double>() == Approx(static_cast<double>(i) * 1.5));
         }
-    }
-
-    cleanup_test_dir();
-}
-
-TEST_CASE("services::disk::catalog_schema_update_via_disk") {
-    cleanup_test_dir();
-    std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
-
-    {
-        disk_t disk(test_dir(), &resource);
-
-        // Create database and disk table with columns
-        disk.append_database("test_db");
-        std::vector<catalog_column_entry_t> columns;
-        columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
-        columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
-        disk.append_collection("test_db", "test_table", table_storage_mode_t::DISK, columns);
-
-        // Verify table entry
-        auto entries = disk.table_entries("test_db");
-        REQUIRE(entries.size() == 1);
-        REQUIRE(entries[0].name == "test_table");
-        REQUIRE(entries[0].storage_mode == table_storage_mode_t::DISK);
-        REQUIRE(entries[0].columns.size() == 2);
-        REQUIRE(entries[0].columns[0].name == "id");
-        REQUIRE(entries[0].columns[1].name == "name");
-
-        // Update schema via catalog
-        std::vector<catalog_column_entry_t> new_columns;
-        new_columns.push_back({"id", complex_logical_type(logical_type::BIGINT)});
-        new_columns.push_back({"name", complex_logical_type(logical_type::STRING_LITERAL)});
-        new_columns.push_back({"score", complex_logical_type(logical_type::DOUBLE)});
-        disk.catalog().update_table_columns("test_db", "test_table", new_columns);
-
-        // Verify updated schema
-        auto updated_entries = disk.table_entries("test_db");
-        REQUIRE(updated_entries.size() == 1);
-        REQUIRE(updated_entries[0].columns.size() == 3);
-        REQUIRE(updated_entries[0].columns[2].name == "score");
-        REQUIRE(updated_entries[0].columns[2].full_type.type() == logical_type::DOUBLE);
-    }
-
-    // Verify persistence
-    {
-        disk_t disk(test_dir(), &resource);
-        auto entries = disk.table_entries("test_db");
-        REQUIRE(entries.size() == 1);
-        REQUIRE(entries[0].columns.size() == 3);
-        REQUIRE(entries[0].columns[2].name == "score");
     }
 
     cleanup_test_dir();

@@ -20,7 +20,9 @@
 
 namespace services::index {
 
-    inline constexpr auto INDEXES_METADATA_FILENAME = "indexes_METADATA";
+    // INDEXES_METADATA_FILENAME retired. Index metadata lives in
+    // pg_catalog.pg_index now; this constant is kept as a comment so anyone reading
+    // legacy data dirs can still recognize the filename.
 
     class manager_index_t final : public actor_zeta::actor::actor_mixin<manager_index_t> {
     public:
@@ -37,9 +39,6 @@ namespace services::index {
             std::filesystem::path path_db = {},
             run_fn_t run_fn = [] { std::this_thread::yield(); });
         ~manager_index_t() = default;
-
-        // Synchronous registration for initialization (before schedulers start)
-        void register_collection_sync(session_id_t session, const collection_full_name_t& name);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
@@ -132,15 +131,9 @@ namespace services::index {
         // Per-index disk persistence (child actors)
         std::vector<index_agent_disk_ptr> disk_agents_;
 
-        // Index metadata persistence (indexes_METADATA file)
-        using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
+        // indexes_METADATA file + write/read/remove_indexes_from_metafile retired
+        // — all index metadata lives in pg_catalog.pg_index now.
         core::filesystem::local_file_system_t fs_;
-        file_ptr metafile_indexes_;
-
-        void write_index_to_metafile(const components::logical_plan::node_create_index_ptr& index);
-        void remove_index_from_metafile(const index_name_t& name);
-        void remove_all_indexes_for_collection(const collection_name_t& collection);
-        std::vector<components::logical_plan::node_create_index_ptr> read_indexes_from_metafile() const;
 
         // Address of manager_disk_t (for scan_segment when populating indexes)
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();

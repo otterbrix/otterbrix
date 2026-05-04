@@ -15,7 +15,6 @@
 #include <core/executor.hpp>
 #include <mutex>
 
-#include <components/catalog/catalog.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
@@ -25,22 +24,21 @@
 #include <services/collection/context_storage.hpp>
 #include <services/collection/executor.hpp>
 #include <services/disk/disk_contract.hpp>
-#include <services/disk/result.hpp>
+#include <services/dispatcher/versioned_plan_cache.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_contract.hpp>
 
 namespace services::dispatcher {
 
+    class catalog_view_t;
+
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
-        using database_storage_t = std::pmr::set<database_name_t>;
         using collection_storage_t = std::pmr::set<collection_full_name_t>;
 
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-
-        using recomputed_types = components::operators::operator_write_data_t::updated_types_map_t;
 
         using sync_pack = std::tuple<actor_zeta::address_t, actor_zeta::address_t, actor_zeta::address_t>;
 
@@ -64,10 +62,7 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        void init_from_state(std::pmr::set<database_name_t> databases,
-                             std::pmr::set<collection_full_name_t> collections);
-
-        components::catalog::catalog& mutable_catalog() { return catalog_; }
+        void init_from_state(std::pmr::set<collection_full_name_t> collections);
 
         unique_future<components::cursor::cursor_t_ptr>
         execute_plan(components::session::session_id_t session,
@@ -89,7 +84,6 @@ namespace services::dispatcher {
         unique_future<components::table::transaction_data> begin_transaction(components::session::session_id_t session);
         unique_future<uint64_t> commit_transaction(components::session::session_id_t session);
         unique_future<void> abort_transaction(components::session::session_id_t session);
-        unique_future<uint64_t> lowest_active_start_time(components::session::session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::size,
@@ -99,21 +93,16 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::close_cursor,
                                                             &manager_dispatcher_t::begin_transaction,
                                                             &manager_dispatcher_t::commit_transaction,
-                                                            &manager_dispatcher_t::abort_transaction,
-                                                            &manager_dispatcher_t::lowest_active_start_time>;
-
-        const components::catalog::catalog& current_catalog() const { return catalog_; }
+                                                            &manager_dispatcher_t::abort_transaction>;
 
     private:
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         run_fn_t run_fn_; // Yield function for cooperative scheduling
-        components::catalog::catalog catalog_;
 
         static constexpr std::size_t executor_pool_size_ = 4;
 
-        database_storage_t databases_;
         collection_storage_t collections_;
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
@@ -124,13 +113,26 @@ namespace services::dispatcher {
 
         std::mutex mutex_;
 
-        std::unordered_map<components::session::session_id_t, std::unique_ptr<components::cursor::cursor_t>> cursor_;
-
         components::table::transaction_manager_t txn_manager_;
-        recomputed_types update_result_;
+
+        // M5 plan cache: snapshot-isolated resolution keyed by (plan_hash, catalog_version).
+        // pin_version() in begin_transaction → unpin_version() in commit/abort. Probe/store
+        // wrap validate_* in execute_plan; on a miss, the freshly resolved data is cached at
+        // the current catalog_version_. last_seen_version_ tracks the most-recent disk-side
+        // catalog_version_ — refreshed at the start of every execute_plan via
+        // refresh_invalidations_(), which also reseeds the cache on overflow.
+        versioned_plan_cache_t plan_cache_;
+        std::uint64_t last_seen_version_{0};
+
+        unique_future<void> refresh_invalidations_(components::session::session_id_t session);
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
-        void update_catalog(components::logical_plan::node_ptr node);
+
+        unique_future<components::cursor::cursor_t_ptr>
+        execute_ddl_inline(components::session::session_id_t session,
+                           components::logical_plan::node_ptr logical_plan,
+                           components::table::transaction_data txn,
+                           catalog_view_t& view);
 
         services::collection::executor::execute_result_t
         create_database_(components::logical_plan::node_ptr logical_plan);
@@ -146,14 +148,6 @@ namespace services::dispatcher {
                           components::logical_plan::node_ptr logical_plan,
                           components::logical_plan::storage_parameters parameters,
                           components::table::transaction_data txn);
-
-        std::pmr::vector<unique_future<void>> pending_void_;
-        std::pmr::vector<unique_future<components::cursor::cursor_t_ptr>> pending_cursor_;
-        std::pmr::vector<unique_future<size_t>> pending_size_;
-        std::pmr::vector<unique_future<services::collection::executor::execute_result_t>> pending_execute_;
-        std::pmr::vector<unique_future<services::collection::executor::function_result_t>> pending_signatures_;
-
-        void poll_pending();
 
         actor_zeta::behavior_t current_behavior_;
     };

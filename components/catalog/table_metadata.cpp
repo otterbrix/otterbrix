@@ -1,5 +1,8 @@
 #include "table_metadata.hpp"
 
+#include <sstream>
+#include <stdexcept>
+
 namespace components::catalog {
     table_metadata::table_metadata(std::pmr::memory_resource* resource,
                                    schema schema,
@@ -17,4 +20,24 @@ namespace components::catalog {
     timestamp table_metadata::last_updated_ms() const { return last_updated_ms_; }
 
     const schema& table_metadata::current_schema() const { return schema_struct_; }
+
+    void table_metadata::set_table_oid(oid_t oid) {
+        if (table_oid_ != INVALID_OID && table_oid_ != oid) {
+            std::ostringstream oss;
+            oss << "table_metadata::set_table_oid: OID is immutable after assignment (current="
+                << table_oid_ << ", attempted=" << oid << ")";
+            throw std::logic_error(oss.str());
+        }
+        table_oid_ = oid;
+    }
+
+    void table_metadata::set_next_column_oid(oid_t oid) {
+        if (next_column_oid_ != INVALID_OID && next_column_oid_ != oid) {
+            std::ostringstream oss;
+            oss << "table_metadata::set_next_column_oid: counter seed is immutable after first set"
+                << " (current=" << next_column_oid_ << ", attempted=" << oid << ")";
+            throw std::logic_error(oss.str());
+        }
+        next_column_oid_ = oid;
+    }
 } // namespace components::catalog

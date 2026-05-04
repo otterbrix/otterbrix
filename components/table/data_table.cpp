@@ -176,6 +176,13 @@ namespace components::table {
 
     void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
 
+    void data_table_t::scan_committed(vector::data_chunk_t& result, table_scan_state& state) {
+        // E2.1A: route through committed_version_operator (COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED)
+        // so resolve_* paths drop tombstoned rows. COMMITTED_ROWS skips the visibility filter
+        // entirely and would still see deleted entries.
+        state.table_state.scan_committed(result, table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED);
+    }
+
     bool data_table_t::create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type) {
         return state.table_state.scan_committed(result, type);
     }

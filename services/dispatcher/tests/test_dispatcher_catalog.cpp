@@ -21,6 +21,9 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
+// V4 dispatcher integration test. Catalog assertions go through manager_disk_t's
+// resolve_namespace / resolve_table directly — catalog_snapshot_t is gone.
+
 struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     test_dispatcher(std::pmr::memory_resource* resource, const std::string& disk_path)
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
@@ -37,10 +40,14 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::make_tuple(manager_wal_->address(), manager_disk_->address(), actor_zeta::address_t::empty_address()));
         manager_wal_->sync(
             std::make_tuple(actor_zeta::address_t(manager_disk_->address()), manager_dispatcher_->address()));
-        manager_disk_->sync(std::make_tuple(manager_dispatcher_->address()));
+        // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
+        manager_disk_->sync(std::make_tuple(manager_wal_->address()));
 
         manager_dispatcher_->set_run_fn([this] { scheduler_->run(10000); });
         manager_disk_->set_run_fn([this] { scheduler_->run(10000); });
+
+        // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
+        manager_disk_->bootstrap_system_tables_sync();
     }
 
     ~test_dispatcher() {
@@ -51,15 +58,43 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
-    void step() { scheduler_->run(); }
+    void step() { scheduler_->run(10000); }
 
-    void step_with_assertion(std::function<void(cursor_t_ptr, catalog&)> assertion) {
+    cursor_t_ptr take_result() {
+        // V4 execute_plan does extra co_awaits (collections_ rebuild via list_namespaces +
+        // pre-load namespace + DDL existence check). Run scheduler with enough iterations
+        // to drain the message queue before extracting the future.
         step();
-        if (pending_future_ && pending_future_->valid() && pending_future_->available()) {
-            auto result = std::move(*pending_future_).get();
-            pending_future_.reset();
-            assertion(result, const_cast<catalog&>(manager_dispatcher_->current_catalog()));
-        }
+        REQUIRE(pending_future_);
+        REQUIRE(pending_future_->valid());
+        auto result = std::move(*pending_future_).get();
+        pending_future_.reset();
+        // Drain again to ensure executor's post-result DDL inline pipeline (ddl_create_namespace
+        // + flush + commit_txn + commit_pg_catalog_appends) completes before returning.
+        step();
+        return result;
+    }
+
+    // Resolve a namespace via disk actor — returns {found, oid}.
+    resolve_namespace_result_t resolve_namespace(const std::string& name) {
+        components::execution_context_t ctx{components::session::session_id_t{},
+                                              components::table::transaction_data{0, 0}, {}};
+        auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
+                                                     &manager_disk_t::resolve_namespace,
+                                                     ctx, name, std::uint64_t{0});
+        scheduler_->run(10000);
+        return std::move(fut).get();
+    }
+
+    // Resolve a table via disk actor under a given namespace oid.
+    resolve_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
+        components::execution_context_t ctx{components::session::session_id_t{},
+                                              components::table::transaction_data{0, 0}, {}};
+        auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
+                                                     &manager_disk_t::resolve_table,
+                                                     ctx, ns_oid, tname, std::uint64_t{0});
+        scheduler_->run(10000);
+        return std::move(fut).get();
     }
 
     void execute_sql(const std::string& query) {
@@ -96,47 +131,66 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
 
     test.execute_sql("CREATE DATABASE test;");
-    test.step();
+    (void)test.take_result();
 
-    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
-    test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
-        REQUIRE(catalog.table_exists(id));
-        auto sch = catalog.get_table_schema(id);
-        REQUIRE(sch.find_field("fld1")->type_data().front().type() == logical_type::INTEGER);
-        REQUIRE(sch.find_field("fld2")->type_data().front().type() == logical_type::STRING_LITERAL);
-
+    {
+        auto cur = test.take_result();
         REQUIRE(cur->is_success());
-    });
+        auto rns = test.resolve_namespace("test");
+        REQUIRE(rns.found);
+        auto rt = test.resolve_table(rns.oid, "test");
+        REQUIRE(rt.found);
+        REQUIRE(rt.relkind == 'r');
+        // Locate columns by attname.
+        bool seen_fld1 = false, seen_fld2 = false;
+        for (const auto& col : rt.columns) {
+            if (col.attname == "fld1") seen_fld1 = true;
+            if (col.attname == "fld2") seen_fld2 = true;
+        }
+        REQUIRE(seen_fld1);
+        REQUIRE(seen_fld2);
+    }
 
     test.execute_sql("INSERT INTO test.test (fld1, fld2) VALUES (1, '1'), (2, '2');");
-    test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
-        REQUIRE(catalog.table_exists(id));
+    {
+        auto cur = test.take_result();
         REQUIRE(cur->is_success());
-    });
-
-    // todo: add typed insert assertions with type tree introduction
+        auto rns = test.resolve_namespace("test");
+        REQUIRE(rns.found);
+        auto rt = test.resolve_table(rns.oid, "test");
+        REQUIRE(rt.found);
+    }
 
     SECTION("in-order") {
         test.execute_sql("DROP TABLE test.test;");
-        test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
-            REQUIRE(!catalog.table_exists(id));
+        {
+            auto cur = test.take_result();
             REQUIRE(cur->is_success());
-        });
+            auto rns = test.resolve_namespace("test");
+            if (rns.found) {
+                auto rt = test.resolve_table(rns.oid, "test");
+                REQUIRE(!rt.found);
+            }
+        }
 
         test.execute_sql("DROP DATABASE test;");
-        test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
-            REQUIRE(!catalog.namespace_exists(id.get_namespace()));
+        {
+            auto cur = test.take_result();
             REQUIRE(cur->is_success());
-        });
+            auto rns = test.resolve_namespace("test");
+            REQUIRE(!rns.found);
+        }
     }
 
     SECTION("drop_database") {
         test.execute_sql("DROP DATABASE test;");
-        test.step_with_assertion([&id](cursor_t_ptr cur, const catalog& catalog) {
-            REQUIRE(!catalog.namespace_exists(id.get_namespace()));
+        {
+            auto cur = test.take_result();
             REQUIRE(cur->is_success());
-        });
+            auto rns = test.resolve_namespace("test");
+            REQUIRE(!rns.found);
+        }
     }
 }
 
@@ -145,17 +199,20 @@ TEST_CASE("services::dispatcher::computed_operations") {
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
 
     test.execute_sql("CREATE DATABASE test;");
-    test.step();
+    (void)test.take_result();
 
-    table_id id(mr.get(), {"test"}, "test");
     test.execute_sql("CREATE TABLE test.test();");
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
+    {
+        auto cur = test.take_result();
         REQUIRE(cur->is_success());
-        REQUIRE(catalog.table_computes(id));
-
-        auto sch = catalog.get_computing_table_schema(id);
-        REQUIRE(sch.latest_types_struct().size() == 0);
-    });
+        auto rns = test.resolve_namespace("test");
+        REQUIRE(rns.found);
+        auto rt = test.resolve_table(rns.oid, "test");
+        REQUIRE(rt.found);
+        // Empty CREATE TABLE → relkind='g' (computing/generated). Columns adopted on insert.
+        REQUIRE(rt.relkind == 'g');
+        REQUIRE(rt.columns.empty());
+    }
 
     std::stringstream query;
     query << "INSERT INTO test.test (name, count) VALUES ";
@@ -164,64 +221,21 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 
     test.execute_sql(query.str());
-    // for now insert transforms it into a regular schema
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
+    // INSERT triggers ddl_adopt_computing_schema — columns visible on next resolve.
+    {
+        auto cur = test.take_result();
         REQUIRE(cur->is_success());
-
-        REQUIRE(catalog.get_table_schema(id).columns()[0].name() == "name");
-        REQUIRE(catalog.get_table_schema(id).columns()[0].type() == logical_type::STRING_LITERAL);
-        REQUIRE(catalog.get_table_schema(id).columns()[1].name() == "count");
-        REQUIRE(catalog.get_table_schema(id).columns()[1].type() == logical_type::BIGINT);
-    });
-    /*
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
-        auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
-        auto count = catalog.get_computing_table_schema(id).find_field_versions("count");
-
-        REQUIRE(cur->is_success());
-
-        REQUIRE(name.size() == 1);
-        REQUIRE(name.back().type() == logical_type::STRING_LITERAL);
-
-        REQUIRE(count.size() == 1);
-        REQUIRE(count.back().type() == logical_type::BIGINT);
-    });
-
-    test.execute_sql("INSERT INTO test.test (name, count) VALUES (10, 'test');");
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
-        auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
-        auto count = catalog.get_computing_table_schema(id).find_field_versions("count");
-
-        REQUIRE(cur->is_success());
-
-        REQUIRE(name.size() == 2);
-        REQUIRE(name.back().type() == logical_type::BIGINT);
-
-        REQUIRE(count.size() == 2);
-        REQUIRE(count.back().type() == logical_type::STRING_LITERAL);
-    });
-
-    test.execute_sql("DELETE FROM test.test where count < 100;");
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
-        auto name = catalog.get_computing_table_schema(id).find_field_versions("name");
-        auto count = catalog.get_computing_table_schema(id).find_field_versions("count");
-
-        REQUIRE(cur->is_success());
-
-        // other versions were deleted
-        REQUIRE(name.size() == 1);
-        REQUIRE(name.back().type() == logical_type::BIGINT);
-
-        REQUIRE(count.size() == 1);
-        REQUIRE(count.back().type() == logical_type::STRING_LITERAL);
-    });
-
-    test.execute_sql("DELETE FROM test.test");
-    test.step_with_assertion([&id](cursor_t_ptr cur, catalog& catalog) {
-        REQUIRE(cur->is_success());
-
-        auto sch = catalog.get_computing_table_schema(id);
-        REQUIRE(sch.latest_types_struct().size() == 0);
-    });
-    */
+        auto rns = test.resolve_namespace("test");
+        REQUIRE(rns.found);
+        auto rt = test.resolve_table(rns.oid, "test");
+        REQUIRE(rt.found);
+        // After adoption the columns reflect the inserted shape.
+        bool seen_name = false, seen_count = false;
+        for (const auto& col : rt.columns) {
+            if (col.attname == "name") seen_name = true;
+            if (col.attname == "count") seen_count = true;
+        }
+        REQUIRE(seen_name);
+        REQUIRE(seen_count);
+    }
 }

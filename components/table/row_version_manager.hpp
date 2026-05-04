@@ -45,13 +45,13 @@ namespace components::table {
         virtual uint64_t indexing_vector(transaction_data transaction,
                                          vector::indexing_vector_t& indexing_vector,
                                          uint64_t max_count) = 0;
-        virtual uint64_t commited_indexing_vector(uint64_t min_start_id,
+        virtual uint64_t committed_indexing_vector(uint64_t min_start_id,
                                                   uint64_t min_transaction_id,
                                                   vector::indexing_vector_t& indexing_vector,
                                                   uint64_t max_count) = 0;
         virtual bool fetch(transaction_data transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
-        virtual uint64_t commited_deleted_count(uint64_t max_count) = 0;
+        virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
         virtual bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const;
 
         virtual bool has_deletes() const = 0;
@@ -79,13 +79,13 @@ namespace components::table {
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
-        uint64_t commited_indexing_vector(uint64_t min_start_id,
+        uint64_t committed_indexing_vector(uint64_t min_start_id,
                                           uint64_t min_transaction_id,
                                           vector::indexing_vector_t& indexing_vector,
                                           uint64_t max_count) override;
         bool fetch(transaction_data transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
-        uint64_t commited_deleted_count(uint64_t max_count) override;
+        uint64_t committed_deleted_count(uint64_t max_count) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
 
         bool has_deletes() const override;
@@ -117,14 +117,14 @@ namespace components::table {
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count) override;
-        uint64_t commited_indexing_vector(uint64_t min_start_id,
+        uint64_t committed_indexing_vector(uint64_t min_start_id,
                                           uint64_t min_transaction_id,
                                           vector::indexing_vector_t& indexing_vector,
                                           uint64_t max_count) override;
         bool fetch(transaction_data transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
-        uint64_t commited_deleted_count(uint64_t max_count) override;
+        uint64_t committed_deleted_count(uint64_t max_count) override;
 
         void append(uint64_t start, uint64_t end, uint64_t commit_id);
 
@@ -173,13 +173,13 @@ namespace components::table {
 
         int64_t start() const { return start_; }
         void set_start(int64_t start);
-        uint64_t commited_deleted_count(uint64_t count);
+        uint64_t committed_deleted_count(uint64_t count);
 
         uint64_t indexing_vector(transaction_data transaction,
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        uint64_t commited_indexing_vector(uint64_t start_time,
+        uint64_t committed_indexing_vector(uint64_t start_time,
                                           uint64_t transaction_id,
                                           uint64_t vector_idx,
                                           vector::indexing_vector_t& indexing_vector,

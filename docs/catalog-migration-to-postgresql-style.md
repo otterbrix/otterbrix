@@ -767,7 +767,7 @@ First run (no checkpoint files exist):
   Step 2: INSERT pg_namespace: (1, "pg_catalog"), (2, "public"), (3, "information_schema")
   Step 3: INSERT pg_class: 9 rows (one per system table, self-describing)
   Step 4: INSERT pg_attribute: ~60 rows (columns of all 9 tables)
-  Step 5: INSERT pg_type: built-in types (bool=20, int2=21, int4=23, int8=26, text=25, float8=701)
+  Step 5: INSERT pg_type: built-in types (bool=20, int8=21, int16=22, int32=23, int64=24, float32=25, float64=26, string=27, timestamp=28, date=29, time=30, blob=31, numeric=32, uuid=33)
   Step 6: pg_proc: DEFAULT_FUNCTIONS (sum, min, max, count, avg)
   Step 7: pg_depend, pg_constraint, pg_index, pg_computed_column: empty initially
   Step 8: Checkpoint all system tables + fsync
@@ -1680,6 +1680,9 @@ schema catalog::get_table_schema_at(const table_id& id, uint64_t start_time) con
 
 Optimization: if `cache_.last_mutation_time() < start_time`, the cached schema
 is valid and no scan is needed (covers 99% of cases).
+*[Aspirational — `last_mutation_time` is not yet implemented. DDL and DML
+validation currently share the same path and always see the latest committed
+schema. Prerequisite: §1.1 DDL transaction lifecycle. See remaining-work §1.10.]*
 
 ### Known Bug: Visibility Gap (E2.1A)
 
@@ -1704,7 +1707,7 @@ codebase) which checks `id < TRANSACTION_ID_START`.
 
 1. attnum is **immutable** -- never reuse after DROP COLUMN
 2. Savepoints remain **in-memory** (accumulate changes, apply on commit)
-3. DDL operations are **serialized** per table (single lock on pg_class row)
+3. DDL operations are **globally serialized** via the single-writer `manager_disk_t` actor (stronger than the planned per-table pg_class lock — actor model eliminates lock contention entirely)
 4. Multi-table DDL (CREATE TABLE = pg_class + N pg_attribute) is **atomic** via single transaction
 
 ### Edge Cases
@@ -1951,6 +1954,52 @@ test_catalog_otbx_not_needed            -- old format no longer required
 ---
 
 ## 10. Query Validation and Resolution Path
+
+### V4 Implementation Notes (shipped)
+
+The V4 path shipped via the staged refactor in
+[v4-catalog-refactoring.md](v4-catalog-refactoring.md). Key shipped pieces:
+
+- **Cache** — `services/dispatcher/versioned_plan_cache.hpp` carries object-keyed
+  payloads (`resolved_table_t`, `resolved_function_t`, `resolved_type_t`,
+  `resolved_namespace_t`). Object lookups via `probe_*` / `store_*` next to the
+  pre-existing plan-hash bucket.
+- **View facade** — `services/dispatcher/catalog_view.hpp` (`catalog_view_t`)
+  wraps `(cache, disk_address, pinned_version)`. Async getters (`get_table`,
+  `get_function`, `get_type`, `get_namespace`) probe cache first, send to disk
+  on miss, decode disk's enriched `resolve_*_result_t` (column lists,
+  `kernel_signature_t`, `complex_logical_type`) into the cache, and return the
+  pointer.
+- **Disk-side enrichment** — `resolve_table_result_t.columns` carries full
+  per-column metadata (attname, atttypid, attnum, attnotnull, atthasdefault,
+  atttypspec, attdefspec, attoid). `resolve_function_result_t` carries
+  `prouid`, `pronargs`, `proargmatchers`, `prorettype`. `resolve_type_result_t`
+  carries `typdefspec`. New cross-namespace `resolve_function_by_name` for the
+  UDF admin paths.
+- **Validate** — `validate_types`/`validate_schema` (in
+  `services/dispatcher/validate_logical_plan.cpp`) gained V4 overloads taking
+  `(catalog_view_t&, execution_context_t)`. Bodies are coroutines: pre-walk
+  `node->collection_dependencies()`, `co_await view.get_namespace`/`get_table`
+  per ref, build a sparse `catalog_snapshot_t` from the cached payloads, then
+  delegate to existing sync internals. The 7 internal recursive
+  `validate_schema_sync` sites stay sync — they read the now-warm cache.
+- **Dispatcher** — `manager_dispatcher_t::execute_plan` query path uses the V4
+  validate; UDF register/drop replaced legacy populate-iterate-namespaces with a
+  single `resolve_function_by_name`.
+- **populate retired** — `populate_local_catalog_` (dispatcher) and
+  `populate_catalog_snapshot` (manager_disk_t) deleted entirely.
+  `catalog_snapshot_t` class deleted. Admin enumeration paths (collections_
+  rebuild, UDF namespace pick) now use `manager_disk_t::list_namespaces` /
+  `list_tables_in_namespace` (cache-bypass scans of pg_namespace / pg_class).
+- **Functions via in-memory registry** — Validate's function_name_exists /
+  function_exists / get_function calls bypass catalog entirely and read
+  `compute::function_registry_t::get_default()`. Built-ins + DEFAULT_FUNCTIONS
+  + register_udf-added entries all live there. pg_proc remains the persistent
+  source of truth across restarts via `manager_disk_t::resolve_function_by_name`.
+
+See [v4-catalog-refactoring.md](v4-catalog-refactoring.md) for the multi-phase
+journey from spec-V3 (populate-path) through hybrid V4 to the current pure-V4
+state.
 
 ### Current Path (9 catalog calls for simple SELECT)
 
@@ -2389,6 +2438,10 @@ User: CREATE INDEX idx_age ON mydb.users(age)
                 txn = txn_manager.begin_transaction(session)
 
                 // Step 1: Register in catalog (indisvalid=false)
+                // NOTE: actual shipped order (services/collection/executor.cpp:100-188) is:
+                //   manager_index_t::create_index (in-memory btree) → backfill rows →
+                //   ddl_create_index (indisvalid=false) → ddl_index_set_valid(true).
+                // Functionally equivalent; catalog entry is created after backfill, not before.
                 ddl_result = co_await send(disk, ddl_create_index,
                     table_oid=16385, index={name="idx_age", type="single",
                                             columns=["age"], unique=false, primary=false})
@@ -2550,7 +2603,7 @@ Process restart (clean shutdown or crash):
 | R4    | Schema snapshot not implemented            | HIGH     | 3     | get_schema_at() with MVCC filter           |
 | R5    | attnum reuse after DROP COLUMN            | HIGH     | 3     | Never decrement next_column_id             |
 | R6    | Physical column data survives DROP        | HIGH     | 3     | Schema snapshot -> skip dropped columns    |
-| R7    | Lost DDL updates (concurrent ALTER)       | MEDIUM   | 3     | Serialize DDL per table (pg_class lock)    |
+| R7    | Lost DDL updates (concurrent ALTER)       | MEDIUM   | 3     | Globally serialized via single-writer `manager_disk_t` actor (stronger mitigation than planned pg_class lock) |
 | R8    | Bootstrap circular dependency             | MEDIUM   | 1     | Self-description is data, not structure    |
 | R9    | Types/functions lost on restart           | HIGH     | 5     | Persist in pg_type/pg_proc                 |
 | R10   | Constraints not enforced after restart    | HIGH     | 5     | Persist in pg_constraint                   |

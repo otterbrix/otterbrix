@@ -1,0 +1,250 @@
+#include <catch2/catch.hpp>
+
+#include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_oids.hpp>
+#include <components/context/execution_context.hpp>
+#include <components/log/log.hpp>
+#include <components/session/session.hpp>
+#include <components/table/column_definition.hpp>
+#include <components/types/types.hpp>
+#include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <services/disk/dependency_walker.hpp>
+#include <services/disk/manager_disk.hpp>
+
+#include <filesystem>
+#include <limits>
+#include <unistd.h>
+
+// Edge cases for ddl_*: missing parent, RESTRICT blocks with descriptive error,
+// CASCADE through chains, malformed names, OID monotonicity, drop-by-unknown-oid no-op,
+// dependency cycle detection, etc.
+
+using namespace services::disk;
+using namespace components::catalog;
+using session_id_t = components::session::session_id_t;
+
+namespace {
+    std::string err_dir() {
+        static std::string p = "/tmp/test_otterbrix_err_" + std::to_string(::getpid());
+        return p;
+    }
+    void cleanup() { std::filesystem::remove_all(err_dir()); }
+
+    struct fixture {
+        std::pmr::synchronized_pool_resource resource;
+        log_t log;
+        core::non_thread_scheduler::scheduler_test_t* scheduler;
+        configuration::config_disk disk_config;
+        std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+
+        fixture()
+            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
+            , disk_config([&]() {
+                configuration::config_disk c;
+                c.path = err_dir();
+                return c;
+            }())
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            cleanup();
+            std::filesystem::create_directories(err_dir());
+            manager->set_run_fn([this] { scheduler->run(10000); });
+            manager->bootstrap_system_tables_sync();
+        }
+        ~fixture() {
+            scheduler->stop();
+            delete scheduler;
+            cleanup();
+        }
+
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
+            scheduler->run(10000);
+            return std::move(future).get();
+        }
+
+        components::execution_context_t ctx() {
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        }
+    };
+} // namespace
+
+// 1. resolve_namespace on unknown name returns found=false, no error.
+TEST_CASE("services::disk::error::resolve_unknown_namespace") {
+    fixture fx;
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
+                        std::string("does_not_exist"), std::uint64_t{0});
+    REQUIRE_FALSE(r.found);
+}
+
+// 2. resolve_table with valid namespace_oid but unknown table name returns found=false.
+TEST_CASE("services::disk::error::resolve_unknown_table") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
+                         std::string("not_a_table"), std::uint64_t{0});
+    REQUIRE_FALSE(rt.found);
+}
+
+// 3. resolve_table with INVALID_OID namespace returns found=false.
+TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
+    fixture fx;
+    auto rt = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), INVALID_OID,
+                         std::string("any"), std::uint64_t{0});
+    REQUIRE_FALSE(rt.found);
+}
+
+// 4. ddl_drop_table with unknown OID returns not_found without mutating catalog_version.
+TEST_CASE("services::disk::error::drop_unknown_table_no_op") {
+    fixture fx;
+    auto v_before = fx.manager->catalog_version();
+    auto r = fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(),
+                        oid_t{99999}, drop_behavior_t::cascade_);
+    REQUIRE(r.status == ddl_status::not_found);
+    REQUIRE(fx.manager->catalog_version() == v_before);
+}
+
+// 5. ddl_drop_namespace under RESTRICT with no children succeeds.
+TEST_CASE("services::disk::error::drop_empty_namespace_restrict_ok") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("empty_ns"));
+    auto rd = fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.ctx(),
+                          rns.created_oid, drop_behavior_t::restrict_);
+    REQUIRE(rd.created_oid == rns.created_oid);
+}
+
+// 6. ddl_drop_namespace under RESTRICT with a single table is blocked.
+TEST_CASE("services::disk::error::drop_namespace_restrict_blocked_by_one_table") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
+               std::string("t"), std::move(cols), char{'r'});
+    auto rd = fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.ctx(),
+                          rns.created_oid, drop_behavior_t::restrict_);
+    REQUIRE(rd.status == ddl_status::restrict_blocked);
+    REQUIRE(rd.blocking_oid != INVALID_OID);
+}
+
+// 7a. ddl_drop_table on non-existent OID returns not_found.
+TEST_CASE("services::disk::error::drop_table_not_found") {
+    fixture fx;
+    auto rd = fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(),
+                         oid_t{99999}, drop_behavior_t::restrict_);
+    REQUIRE(rd.status == ddl_status::not_found);
+}
+
+// 7b. ddl_drop_namespace on non-existent OID returns not_found.
+TEST_CASE("services::disk::error::drop_namespace_not_found") {
+    fixture fx;
+    auto rd = fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.ctx(),
+                         oid_t{99999}, drop_behavior_t::restrict_);
+    REQUIRE(rd.status == ddl_status::not_found);
+}
+
+// 7. OIDs are strictly monotonic across ddl_create_* of different relkinds.
+TEST_CASE("services::disk::error::oid_monotonic_across_kinds") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    auto rs = fx.invoke(&manager_disk_t::ddl_create_sequence, fx.ctx(), rns.created_oid,
+                         std::string("seq"),
+                         std::int64_t{1}, std::int64_t{1}, std::int64_t{1},
+                         std::int64_t{std::numeric_limits<std::int64_t>::max()}, bool{false});
+    auto rv = fx.invoke(&manager_disk_t::ddl_create_view, fx.ctx(), rns.created_oid,
+                         std::string("v"), std::string{});
+    auto rty = fx.invoke(&manager_disk_t::ddl_create_type, fx.ctx(), rns.created_oid,
+                          std::string("ty"), std::string{});
+    auto rfn = fx.invoke(&manager_disk_t::ddl_create_function, fx.ctx(), rns.created_oid,
+                          std::string("fn"), std::int32_t{0}, std::int64_t{0}, std::string{}, std::string{});
+    REQUIRE(rs.created_oid < rv.created_oid);
+    REQUIRE(rv.created_oid < rty.created_oid);
+    REQUIRE(rty.created_oid < rfn.created_oid);
+}
+
+// 8. ddl_create_namespace allows duplicate names — name is not enforced unique at the
+//    ddl_* layer (dispatcher checks via catalog_ before calling). Here we just verify it
+//    produces distinct OIDs and pg_namespace ends up with two rows of the same name.
+TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
+    fixture fx;
+    auto a = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("dup"));
+    auto b = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("dup"));
+    REQUIRE(a.created_oid != b.created_oid);
+    // resolve_namespace returns the first match by scan order — non-deterministic but found.
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
+                        std::string("dup"), std::uint64_t{0});
+    REQUIRE(r.found);
+}
+
+// 9. ddl_create_table with empty column list is allowed (computing relkind='g' uses this).
+TEST_CASE("services::disk::error::empty_columns_allowed_for_computing") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
+                         std::string("metrics"),
+                         std::vector<components::table::column_definition_t>{}, char{'g'});
+    REQUIRE(rt.created_oid != INVALID_OID);
+}
+
+// 10. ddl_index_set_valid on unknown index is a no-op (returns the oid back).
+TEST_CASE("services::disk::error::index_set_valid_unknown_no_op") {
+    fixture fx;
+    auto r = fx.invoke(&manager_disk_t::ddl_index_set_valid, fx.ctx(),
+                        oid_t{99999}, true);
+    REQUIRE(r.created_oid == oid_t{99999});
+}
+
+// 11. cycle_detected_error type is constructible and carries the offending oid.
+TEST_CASE("services::disk::error::cycle_detected_error_has_oid") {
+    cycle_detected_error e(oid_t{12345});
+    REQUIRE(std::string(e.what()).find("cycle") != std::string::npos);
+}
+
+// 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.
+TEST_CASE("services::disk::error::topological_drop_empty") {
+    auto edges = [](oid_t /*cls*/, oid_t /*oid*/) { return std::vector<dependency_t>{}; };
+    auto order = topological_drop_order(well_known_oid::pg_namespace_table, oid_t{16384},
+                                         edges);
+    REQUIRE(order.empty());
+}
+
+// 13. ddl_create_namespace with a long name (PostgreSQL's typical 63-byte limit isn't
+//     enforced here — accept arbitrary length).
+TEST_CASE("services::disk::error::long_namespace_name_accepted") {
+    fixture fx;
+    std::string long_name(200, 'x');
+    auto r = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), long_name);
+    REQUIRE(r.created_oid >= FIRST_USER_OID);
+    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(),
+                         long_name, std::uint64_t{0});
+    REQUIRE(rs.found);
+}
+
+// 14. ddl_create_namespace with empty name accepted (no validation at ddl_* layer).
+TEST_CASE("services::disk::error::empty_name_accepted") {
+    fixture fx;
+    auto r = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string(""));
+    REQUIRE(r.created_oid >= FIRST_USER_OID);
+}
+
+// 15. ddl_create_index pointing at a non-existent table OID — pg_class still gets a row;
+//     resolve_table sees the index but indrelid points nowhere. Validation belongs at the
+//     dispatcher layer.
+TEST_CASE("services::disk::error::index_orphan_table_oid_accepted") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    auto r = fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid,
+                        oid_t{99999}, std::string("orphan_idx"),
+                        std::vector<std::string>{"id"});
+    REQUIRE(r.created_oid >= FIRST_USER_OID);
+}
+
+// 16. resolve_function on unknown name in valid namespace returns found=false.
+TEST_CASE("services::disk::error::resolve_unknown_function") {
+    fixture fx;
+    auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
+    auto rf = fx.invoke(&manager_disk_t::resolve_function, fx.ctx(), rns.created_oid,
+                          std::string("unknown_fn"), std::uint64_t{0});
+    REQUIRE_FALSE(rf.found);
+}

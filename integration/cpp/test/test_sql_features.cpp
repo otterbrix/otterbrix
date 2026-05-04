@@ -826,3 +826,126 @@ TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
         }
     }
 }
+
+TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
+    auto config = test_create_config("/tmp/test_sql_features/check_constraint");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.items (id bigint, age bigint, name text);");
+        }
+    }
+
+    INFO("simple check: age > 0") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.items ADD CONSTRAINT chk_age CHECK (age > 0);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, -1, 'bad');");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.items (id, age, name) VALUES (1, 25, 'alice');");
+            INFO("second insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("compound check: x > 0 AND x < 100") {
+        auto config2 = test_create_config("/tmp/test_sql_features/check_constraint_compound");
+        test_clear_directory(config2);
+        config2.disk.on = true;
+        config2.wal.on = false;
+        test_spaces space2(config2);
+        auto* d2 = space2.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            d2->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            d2->execute_sql(session, "CREATE TABLE TestDatabase.scores (id bigint, val bigint);");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.scores ADD CONSTRAINT chk_val CHECK (val > 0 AND val < 100);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.scores (id, val) VALUES (1, 0);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.scores (id, val) VALUES (2, 100);");
+            REQUIRE(cur->is_error());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d2->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.scores (id, val) VALUES (3, 50);");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("IS NOT NULL check") {
+        auto config3 = test_create_config("/tmp/test_sql_features/check_constraint_notnull");
+        test_clear_directory(config3);
+        config3.disk.on = true;
+        config3.wal.on = false;
+        test_spaces space3(config3);
+        auto* d3 = space3.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            d3->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            d3->execute_sql(session, "CREATE TABLE TestDatabase.data (id bigint, val bigint);");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d3->execute_sql(
+                session,
+                "ALTER TABLE TestDatabase.data ADD CONSTRAINT chk_notnull CHECK (val IS NOT NULL);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = d3->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.data (id, val) VALUES (1, 42);");
+            REQUIRE(cur->is_success());
+        }
+    }
+}

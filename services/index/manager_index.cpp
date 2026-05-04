@@ -98,25 +98,12 @@ namespace services::index {
         , log_(log)
         , path_db_(std::move(path_db))
         , engines_(resource)
-        , metafile_indexes_(nullptr)
         , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
-            metafile_indexes_ = open_file(fs_,
-                                          path_db_ / INDEXES_METADATA_FILENAME,
-                                          core::filesystem::file_flags::READ | core::filesystem::file_flags::WRITE |
-                                              core::filesystem::file_flags::FILE_CREATE,
-                                          core::filesystem::file_lock_type::NO_LOCK);
         }
     }
 
-    void manager_index_t::register_collection_sync(session_id_t /*session*/, const collection_full_name_t& name) {
-        trace(log_, "manager_index_t::register_collection_sync: {}", name.to_string());
-        auto it = engines_.find(name);
-        if (it == engines_.end()) {
-            engines_.emplace(name, components::index::make_index_engine(resource_));
-        }
-    }
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
 
@@ -256,7 +243,6 @@ namespace services::index {
         trace(log_, "manager_index_t::unregister_collection: {}", name.to_string());
 
         engines_.erase(name);
-        remove_all_indexes_for_collection(name.collection);
         co_return;
     }
 
@@ -351,11 +337,6 @@ namespace services::index {
                 }
             }
 
-            // Persist index metadata
-            auto node =
-                components::logical_plan::make_node_create_index(resource_, name, std::string(index_name), type);
-            node->keys() = keys;
-            write_index_to_metafile(node);
         }
 
         co_return id_index;
@@ -391,9 +372,6 @@ namespace services::index {
             }
 
             components::index::drop_index(engine, index);
-
-            // Remove from metafile
-            remove_index_from_metafile(index_name);
         }
 
         co_return;
@@ -624,85 +602,6 @@ namespace services::index {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }
         co_return it->second->all_indexed_keys();
-    }
-
-    // --- Index metafile persistence ---
-
-    void manager_index_t::write_index_to_metafile(const components::logical_plan::node_create_index_ptr& index) {
-        if (!metafile_indexes_)
-            return;
-        components::serializer::msgpack_serializer_t serializer(resource_);
-        serializer.start_array(1);
-        index->serialize(&serializer);
-        serializer.end_array();
-        auto buf = serializer.result();
-        auto size = buf.size();
-        metafile_indexes_->write(&size, sizeof(size), metafile_indexes_->file_size());
-        metafile_indexes_->write(buf.data(), buf.size(), metafile_indexes_->file_size());
-    }
-
-    std::vector<components::logical_plan::node_create_index_ptr> manager_index_t::read_indexes_from_metafile() const {
-        std::vector<components::logical_plan::node_create_index_ptr> res;
-        if (!metafile_indexes_)
-            return res;
-
-        constexpr auto count_byte_by_size = sizeof(size_t);
-        size_t size;
-        size_t offset = 0;
-        std::unique_ptr<char[]> size_str(new char[count_byte_by_size]);
-
-        while (true) {
-            metafile_indexes_->seek(offset);
-            auto bytes_read = metafile_indexes_->read(size_str.get(), count_byte_by_size);
-            if (bytes_read == count_byte_by_size) {
-                offset += count_byte_by_size;
-                std::memcpy(&size, size_str.get(), count_byte_by_size);
-                std::pmr::string buf(resource_);
-                buf.resize(size);
-                metafile_indexes_->read(buf.data(), size, offset);
-                offset += size;
-                components::serializer::msgpack_deserializer_t deserializer(buf);
-                deserializer.advance_array(0);
-                auto index = components::logical_plan::node_create_index_t::deserialize(&deserializer);
-                deserializer.pop_array();
-                res.push_back(index);
-            } else {
-                break;
-            }
-        }
-        return res;
-    }
-
-    void manager_index_t::remove_index_from_metafile(const index_name_t& name) {
-        if (!metafile_indexes_)
-            return;
-        auto indexes = read_indexes_from_metafile();
-        indexes.erase(std::remove_if(indexes.begin(),
-                                     indexes.end(),
-                                     [&name](const components::logical_plan::node_create_index_ptr& index) {
-                                         return index->name() == name;
-                                     }),
-                      indexes.end());
-        metafile_indexes_->truncate(0);
-        for (const auto& index : indexes) {
-            write_index_to_metafile(index);
-        }
-    }
-
-    void manager_index_t::remove_all_indexes_for_collection(const collection_name_t& collection) {
-        if (!metafile_indexes_)
-            return;
-        auto indexes = read_indexes_from_metafile();
-        indexes.erase(std::remove_if(indexes.begin(),
-                                     indexes.end(),
-                                     [&collection](const components::logical_plan::node_create_index_ptr& index) {
-                                         return index->collection_name() == collection;
-                                     }),
-                      indexes.end());
-        metafile_indexes_->truncate(0);
-        for (const auto& index : indexes) {
-            write_index_to_metafile(index);
-        }
     }
 
     manager_index_t::unique_future<void> manager_index_t::flush_all_indexes(session_id_t session) {

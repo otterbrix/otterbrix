@@ -1,6 +1,9 @@
 #include "column_definition.hpp"
 #include "table_state.hpp"
 
+#include <sstream>
+#include <stdexcept>
+
 namespace components::table {
 
     column_definition_t::column_definition_t(std::string name, types::complex_logical_type type)
@@ -62,5 +65,15 @@ namespace components::table {
     uint64_t column_definition_t::oid() const { return oid_; }
 
     void column_definition_t::set_oid(uint64_t oid) { oid_ = oid; }
+
+    void column_definition_t::set_attoid(std::uint32_t v) {
+        if (attoid_ != 0 && attoid_ != v) {
+            std::ostringstream oss;
+            oss << "column_definition_t::set_attoid: attoid is immutable after assignment "
+                << "(column=\"" << name_ << "\", current=" << attoid_ << ", attempted=" << v << ")";
+            throw std::logic_error(oss.str());
+        }
+        attoid_ = v;
+    }
 
 } // namespace components::table

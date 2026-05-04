@@ -112,15 +112,20 @@ namespace components::sql::transform {
 
     inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
-            // postgres built-ins
+            // postgres catalog internal names (produced by the PostgreSQL parser for SQL keywords)
             {"int2", types::logical_type::SMALLINT},
             {"int4", types::logical_type::INTEGER},
-            {"int8_t", types::logical_type::BIGINT},
+            {"int8", types::logical_type::BIGINT},
+            {"int8_t", types::logical_type::BIGINT}, // legacy alias
             {"bool", types::logical_type::BOOLEAN},
             {"float4", types::logical_type::FLOAT},
             {"float8", types::logical_type::DOUBLE},
             {"bit", types::logical_type::BIT},
             {"numeric", types::logical_type::DECIMAL},
+            {"text", types::logical_type::STRING_LITERAL},
+            {"varchar", types::logical_type::STRING_LITERAL},
+            {"bpchar", types::logical_type::STRING_LITERAL}, // char(n)
+            {"name", types::logical_type::STRING_LITERAL},   // pg internal name type
 
             {"double", types::logical_type::DOUBLE},
             {"tinyint", types::logical_type::TINYINT},
@@ -169,6 +174,11 @@ namespace components::sql::transform {
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
     std::string like_to_regex(const std::string& pattern);
+
+    // Deparse a CHECK constraint raw expression node back to SQL text.
+    // Handles: column refs, integer/float/string constants, comparison operators,
+    // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
+    std::string deparse_check_expr(Node* node);
 
     types::complex_logical_type get_type(TypeName* type);
     std::vector<types::complex_logical_type> get_types(PGList& list);

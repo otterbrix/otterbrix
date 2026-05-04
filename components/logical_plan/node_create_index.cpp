@@ -1,12 +1,12 @@
 #include "node_create_index.hpp"
 
-#include <components/serialization/deserializer.hpp>
-
-#include <components/serialization/serializer.hpp>
-
 #include <sstream>
 
 namespace components::logical_plan {
+
+    // serialize/deserialize retired together with INDEXES_METADATA — index DDL
+    // now persists through pg_index rows and replays via WAL physical_inserts on
+    // pg_catalog.pg_index, not through this plan-node serialization path.
 
     node_create_index_t::node_create_index_t(std::pmr::memory_resource* resource,
                                              const collection_full_name_t& collection,
@@ -21,16 +21,6 @@ namespace components::logical_plan {
     index_type node_create_index_t::type() const noexcept { return index_type_; }
 
     keys_base_storage_t& node_create_index_t::keys() noexcept { return keys_; }
-
-    node_create_index_ptr node_create_index_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        auto type = deserializer->deserialize_enum<index_type>(1);
-        auto collection = deserializer->deserialize_collection(2);
-        auto name = deserializer->deserialize_string(3);
-        auto keys = deserializer->deserialize_keys(4);
-        auto res = make_node_create_index(deserializer->resource(), collection, name, type);
-        res->keys() = keys;
-        return res;
-    }
 
     hash_t node_create_index_t::hash_impl() const { return 0; }
 
@@ -60,16 +50,6 @@ namespace components::logical_plan {
         }
         stream << "] type:" << name_index_type(index_type_);
         return stream.str();
-    }
-
-    void node_create_index_t::serialize_impl(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(5);
-        serializer->append_enum(serializer::serialization_type::logical_node_create_index);
-        serializer->append_enum(index_type_);
-        serializer->append(collection_);
-        serializer->append(name_);
-        serializer->append(keys_);
-        serializer->end_array();
     }
 
     node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,

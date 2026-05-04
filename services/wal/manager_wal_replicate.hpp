@@ -57,6 +57,8 @@ namespace services::wal {
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
+        unique_future<wal::id_t> auto_checkpoint_wal_id(session_id_t session);
+
         unique_future<wal::id_t>
         write_physical_insert(session_id_t session,
                               std::string database,
@@ -89,12 +91,25 @@ namespace services::wal {
                                    &manager_wal_replicate_t::commit_txn,
                                    &manager_wal_replicate_t::truncate_before,
                                    &manager_wal_replicate_t::current_wal_id,
+                                   &manager_wal_replicate_t::auto_checkpoint_wal_id,
                                    &manager_wal_replicate_t::write_physical_insert,
                                    &manager_wal_replicate_t::write_physical_delete,
                                    &manager_wal_replicate_t::write_physical_update>;
 
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();
+
+        // Returns true (and resets the flag) if WAL bytes since last checkpoint exceeded the
+        // configured threshold. The caller (dispatcher execute_ddl_inline) then triggers
+        // checkpoint_all on disk and calls reset_auto_checkpoint_bytes() after the checkpoint.
+        bool needs_auto_checkpoint() const noexcept {
+            return config_.on && config_.auto_checkpoint_threshold_bytes > 0 &&
+                   wal_bytes_since_checkpoint_ >= config_.auto_checkpoint_threshold_bytes;
+        }
+        void reset_auto_checkpoint_bytes() noexcept { wal_bytes_since_checkpoint_ = 0; }
+
+        // Compute total WAL directory bytes by scanning segment files.
+        std::uintmax_t total_wal_bytes() const noexcept;
 
     private:
         wal_worker_t* get_or_create_worker(const std::string& database);
@@ -105,6 +120,7 @@ namespace services::wal {
         log_t log_;
         bool enabled_;
         atomic_id_t global_id_{0};
+        std::uintmax_t wal_bytes_since_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;

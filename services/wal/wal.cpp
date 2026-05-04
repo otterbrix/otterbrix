@@ -303,6 +303,13 @@ namespace services::wal {
     //
     // Delete segment files where the highest wal_id in the file is
     // <= checkpoint_wal_id.
+    //
+    // W-TORN contract (see docs/wal-analysis.md §7 lines 969–984): the caller
+    // (manager_dispatcher_t after checkpoint_all) must pass min(prev_checkpoint_wal_id_)
+    // across all DISK tables — NOT the latest committed wal_id. Truncating up to the
+    // latest wal_id would discard records still required if any table has to fall back
+    // to its .prev backup at next startup. Using min(prev) keeps WAL coverage for the
+    // worst-case .prev recovery while still trimming records older than every .prev.
     // -----------------------------------------------------------------------
 
     wal_worker_t::unique_future<void>

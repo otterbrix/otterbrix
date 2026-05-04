@@ -111,6 +111,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::current_wal_id, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::auto_checkpoint_wal_id>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::auto_checkpoint_wal_id, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_insert, msg);
                 break;
@@ -221,7 +225,26 @@ namespace services::wal {
             scheduler_->enqueue(worker);
         }
         auto result = co_await std::move(fut);
+        // Track WAL bytes for auto-checkpoint threshold.
+        wal_bytes_since_checkpoint_ = total_wal_bytes();
         co_return result;
+    }
+
+    std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
+        if (!enabled_ || config_.path.empty()) return 0;
+        std::uintmax_t total = 0;
+        std::error_code ec;
+        for (const auto& db_entry : std::filesystem::directory_iterator(config_.path, ec)) {
+            if (ec || !db_entry.is_directory(ec)) { ec.clear(); continue; }
+            for (const auto& seg : std::filesystem::directory_iterator(db_entry.path(), ec)) {
+                if (ec) { ec.clear(); continue; }
+                if (!seg.is_regular_file(ec)) { ec.clear(); continue; }
+                auto sz = std::filesystem::file_size(seg.path(), ec);
+                if (!ec) total += sz;
+                ec.clear();
+            }
+        }
+        return total;
     }
 
     // -----------------------------------------------------------------------
@@ -273,6 +296,19 @@ namespace services::wal {
             }
         }
         co_return max_id;
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract: auto_checkpoint_wal_id
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::auto_checkpoint_wal_id(session_id_t /*session*/) {
+        if (!needs_auto_checkpoint()) {
+            co_return wal::id_t{0};
+        }
+        reset_auto_checkpoint_bytes();
+        co_return global_id_.load(std::memory_order_relaxed);
     }
 
     // -----------------------------------------------------------------------

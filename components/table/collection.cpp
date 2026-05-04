@@ -402,10 +402,17 @@ namespace components::table {
                                                      row_group_size_);
 
         vector::vector_t default_vector(resource_, new_column.type());
+        // Columns without an explicit DEFAULT fill existing rows with a zero-initialized value.
+        // NULL semantics would require a type-NA value which fails vector_t::reference's type
+        // assertion; zero-init is safe and the column is conceptually NULL for old rows.
+        types::logical_value_t default_value =
+            new_column.has_default_value()
+                ? new_column.default_value()
+                : types::logical_value_t(resource_, new_column.type());
 
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group =
-                current_row_group.add_column(result.get(), new_column, new_column.default_value(), default_vector);
+                current_row_group.add_column(result.get(), new_column, default_value, default_vector);
 
             result->row_groups_->append_segment(std::move(new_row_group));
         }

@@ -8,49 +8,13 @@
 #include <limits>
 #include <stdexcept>
 
-namespace std {
-    template<>
-    struct make_signed<components::types::uint128_t> {
-        typedef components::types::int128_t type;
-    };
-    template<>
-    struct make_signed<components::types::int128_t> {
-        typedef components::types::int128_t type;
-    };
-    template<>
-    struct make_signed<float> {
-        typedef float type;
-    };
-    template<>
-    struct make_signed<double> {
-        typedef double type;
-    };
-    template<>
-    struct make_unsigned<components::types::uint128_t> {
-        typedef components::types::uint128_t type;
-    };
-    template<>
-    struct make_unsigned<components::types::int128_t> {
-        typedef components::types::uint128_t type;
-    };
-    template<>
-    struct make_unsigned<float> {
-        typedef float type;
-    };
-    template<>
-    struct make_unsigned<double> {
-        typedef double type;
-    };
-
-    template<>
-    struct is_signed<components::types::int128_t> : true_type {};
-
-    template<>
-    struct is_unsigned<components::types::uint128_t> : true_type {};
-
-} // namespace std
-
 namespace components::types {
+
+    namespace {
+        template<typename T>
+        inline constexpr bool ext_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, int128_t>;
+    }
+
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
 
@@ -321,7 +285,7 @@ namespace components::types {
                     return logical_value_t{r, LeftValueType{1}};
                 }
             } else if constexpr (std::is_same_v<LeftValueType, std::string_view>) {
-                if constexpr (std::is_signed_v<RightValueType>) {
+                if constexpr (ext_is_signed_v<RightValueType>) {
                     return logical_value_t{
                         r,
                         std::to_string(static_cast<int64_t>(value.template value<RightValueType>()))};

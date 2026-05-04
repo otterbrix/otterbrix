@@ -12,24 +12,14 @@ namespace components::operators::predicates::impl {
                                                 const logical_plan::storage_parameters* parameters);
 
     value_getter create_value_getter(const expressions::key_t& key) {
-        if (key.side() == expressions::side_t::undefined) {
-            throw std::logic_error("create_value_getter: key side is undefined");
-        }
         if (key.path().empty()) {
             throw std::logic_error("create_value_getter: key path is empty");
         }
-        if (key.side() == expressions::side_t::left) {
-            return [path = key.path()](const vector::data_chunk_t& chunk_left,
-                                       const vector::data_chunk_t&,
-                                       size_t index_left,
-                                       size_t) -> types::logical_value_t {
-                auto* vec = chunk_left.at(path);
-                if (!vec->validity().row_is_valid(index_left)) {
-                    return types::logical_value_t(chunk_left.resource(), nullptr);
-                }
-                return vec->value(index_left);
-            };
-        } else {
+        // side_t::right → read from chunk_right (join right side).
+        // side_t::left or undefined → read from chunk_left.
+        // undefined arises for bare column references (no table qualifier) in single-table
+        // predicates such as CHECK constraints, where chunk_left == chunk_right anyway.
+        if (key.side() == expressions::side_t::right) {
             return [path = key.path()](const vector::data_chunk_t&,
                                        const vector::data_chunk_t& chunk_right,
                                        size_t,
@@ -41,6 +31,16 @@ namespace components::operators::predicates::impl {
                 return vec->value(index_right);
             };
         }
+        return [path = key.path()](const vector::data_chunk_t& chunk_left,
+                                   const vector::data_chunk_t&,
+                                   size_t index_left,
+                                   size_t) -> types::logical_value_t {
+            auto* vec = chunk_left.at(path);
+            if (!vec->validity().row_is_valid(index_left)) {
+                return types::logical_value_t(chunk_left.resource(), nullptr);
+            }
+            return vec->value(index_left);
+        };
     }
 
     value_getter create_value_getter(core::parameter_id_t id, const logical_plan::storage_parameters* parameters) {

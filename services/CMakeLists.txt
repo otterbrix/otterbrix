@@ -11,17 +11,16 @@ set(${PROJECT_NAME}_SOURCES
         collection/executor.cpp
 
     # disk
-        disk/catalog_storage.cpp
-        disk/command.cpp
-        disk/disk.cpp
+        disk/dependency_walker.cpp
         disk/agent_disk.cpp
+        disk/invalidation_ring_buffer.cpp
         disk/manager_disk.cpp
-        disk/metadata.cpp
-        disk/result.cpp
 
     # dispatcher
+       dispatcher/catalog_view.cpp
        dispatcher/dispatcher.cpp
        dispatcher/validate_logical_plan.cpp
+       dispatcher/versioned_plan_cache.cpp
 
     # index
         index/index_disk.cpp
@@ -59,6 +58,7 @@ target_link_libraries(
         otterbrix::cursor
         otterbrix::session
         otterbrix::planner
+        otterbrix::sql
         otterbrix::index
         otterbrix::b_plus_tree
         otterbrix::log

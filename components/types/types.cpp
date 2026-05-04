@@ -762,8 +762,17 @@ namespace components::types {
             deserializer->pop_array();
         }
         deserializer->pop_array();
-        auto res =
-            std::make_unique<struct_logical_type_extension>(std::move(name), std::move(types), std::move(descriptions));
+        // If serializer wrote empty descriptions (struct created via 2-arg ctor), use the
+        // 2-arg ctor on deserialize too — the 3-arg ctor asserts size parity, which fails
+        // for fields.size() N != descriptions.size() 0. Round-trip preserves no-descriptions.
+        std::unique_ptr<struct_logical_type_extension> res;
+        if (descriptions.empty()) {
+            res = std::make_unique<struct_logical_type_extension>(std::move(name), std::move(types));
+        } else {
+            res = std::make_unique<struct_logical_type_extension>(std::move(name),
+                                                                    std::move(types),
+                                                                    std::move(descriptions));
+        }
         res->set_alias(alias);
         return res;
     }

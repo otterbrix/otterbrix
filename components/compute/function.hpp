@@ -242,6 +242,13 @@ namespace components::compute {
         compute_result<function_uid> add_function(function_ptr function);
         function* get_function(function_uid uid) const;
         std::vector<std::pair<std::string, function_uid>> get_functions() const;
+        // Remove a function by uid (V4 unregister_udf path). No-op if uid not present.
+        bool remove_function(function_uid uid);
+        // Remove the first function whose name matches and that has a signature matching
+        // the given input types. Used by dispatcher::unregister_udf to drop a single
+        // overload from the default registry.
+        bool remove_function_by_signature(const std::string& name,
+                                            const std::pmr::vector<types::complex_logical_type>& inputs);
 
     private:
         void register_builtin_functions();

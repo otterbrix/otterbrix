@@ -93,8 +93,10 @@ namespace components::types {
         constexpr auto operator()(T&& x) const {
             if constexpr (std::is_same_v<std::decay_t<T>, int128_t>) {
                 return x < 0 ? -x : x;
+            } else if constexpr (std::is_floating_point_v<std::decay_t<T>>) {
+                return std::fabs(std::forward<T>(x));
             } else {
-                return std::abs<T>(std::forward<T>(x));
+                return std::abs(std::forward<T>(x));
             }
         }
     };

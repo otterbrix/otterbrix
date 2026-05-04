@@ -217,11 +217,11 @@ namespace components::table {
                 return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
             }
             default: {
-                auto& constant_filter = filter->cast<constant_filter_t>();
-                column_data_t* column = &get_column(constant_filter.table_indices.front());
-                for (size_t i = 1; i < constant_filter.table_indices.size(); i++) {
-                    column =
-                        static_cast<struct_column_data_t*>(column)->sub_columns[constant_filter.table_indices[i]].get();
+                // Works for both constant_filter_t and set_membership_filter_t.
+                const auto& indices = table_filter_table_indices(filter);
+                column_data_t* column = &get_column(indices.front());
+                for (size_t i = 1; i < indices.size(); i++) {
+                    column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
                 return column->check_predicate(row_id, filter);
             }
@@ -237,9 +237,10 @@ namespace components::table {
         if (f->filter_type == expressions::compare_type::eq || f->filter_type == expressions::compare_type::gt ||
             f->filter_type == expressions::compare_type::gte || f->filter_type == expressions::compare_type::lt ||
             f->filter_type == expressions::compare_type::lte) {
-            auto& cf = f->cast<constant_filter_t>();
-            if (!cf.table_indices.empty()) {
-                auto col_idx = cf.table_indices.front();
+            // Support both constant_filter_t and set_membership_filter_t for zonemap pruning.
+            const auto& cf_indices = table_filter_table_indices(f);
+            if (!cf_indices.empty()) {
+                auto col_idx = cf_indices.front();
                 if (col_idx < get_column_count()) {
                     auto& col = get_column(col_idx);
                     column_scan_state dummy;
@@ -306,7 +307,7 @@ namespace components::table {
                     continue;
                 }
             } else if (TYPE == table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) {
-                count = state.row_group->commited_indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                count = state.row_group->committed_indexing_vector(state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -551,7 +552,7 @@ namespace components::table {
     uint64_t row_group_t::committed_row_count() {
         auto* vi = version_info_.load();
         if (vi) {
-            return count - vi->commited_deleted_count(count);
+            return count - vi->committed_deleted_count(count);
         }
         return count;
     }
@@ -602,11 +603,15 @@ namespace components::table {
     };
 
     uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
-        return get_or_create_version_info().delete_rows(vector_idx, ++current_version_, rows, count);
+        const auto delete_id = ++current_version_;
+        auto deleted = get_or_create_version_info().delete_rows(vector_idx, delete_id, rows, count);
+        ++current_version_;
+        return deleted;
     }
 
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        version_delete_state del_state(*this, transaction_id, table, start, true);
+        const bool is_txn = transaction_id != 0;
+        version_delete_state del_state(*this, transaction_id, table, start, is_txn);
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
@@ -630,7 +635,7 @@ namespace components::table {
             vinfo->commit_all_deletes(txn_id, commit_id);
         }
         // Advance current_version_ past commit_id so that committed deletes
-        // are visible to scans using commited_version_operator
+        // are visible to scans using committed_version_operator
         if (commit_id >= current_version_) {
             current_version_ = commit_id + 1;
         }
@@ -677,14 +682,14 @@ namespace components::table {
         return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
     }
 
-    uint64_t row_group_t::commited_indexing_vector(uint64_t vector_idx,
+    uint64_t row_group_t::committed_indexing_vector(uint64_t vector_idx,
                                                    vector::indexing_vector_t& indexing_vector,
                                                    uint64_t max_count) {
         auto vinfo = version_info();
         if (!vinfo) {
             return max_count;
         }
-        return vinfo->commited_indexing_vector(current_version_,
+        return vinfo->committed_indexing_vector(current_version_,
                                                current_version_,
                                                vector_idx,
                                                indexing_vector,

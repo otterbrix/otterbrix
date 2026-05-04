@@ -37,6 +37,8 @@ namespace components::logical_plan {
         checkpoint_t,
         vacuum_t,
         having_t,
+        alter_table_t,
+        create_constraint_t,
         unused
     };
 

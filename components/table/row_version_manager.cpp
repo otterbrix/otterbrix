@@ -16,13 +16,25 @@ namespace components::table {
         }
     };
 
-    struct commited_version_operator {
-        static bool use_inserted_version(uint64_t /* start_time */, uint64_t /* transaction_id */, uint64_t /* id */) {
-            return true;
+    struct committed_version_operator {
+        // A row is visible via a committed scan if it has already been committed
+        // (insert_id < TRANSACTION_ID_START) OR was inserted by the current transaction
+        // (the own-transaction case, handled via id == transaction_id).
+        // Rows with insert_id >= TRANSACTION_ID_START inserted by OTHER transactions are
+        // hidden until they commit — standard PostgreSQL MVCC semantics (spec §7).
+        static bool use_inserted_version(uint64_t /* start_time */, uint64_t transaction_id, uint64_t id) {
+            return id < TRANSACTION_ID_START || id == transaction_id;
         }
 
+        // E2.1A: row is visible if (a) never deleted, (b) deleted by an uncommitted txn
+        // (other readers must NOT see another txn's tombstone before commit), or
+        // (c) deleted-after-snapshot. Previously the uncommitted case was excluded, hiding
+        // the row from ALL readers as soon as any txn issued a tombstone — the bug behind
+        // resolve_*'s incorrect view of pg_catalog during in-flight DDL.
         static bool use_deleted_version(uint64_t min_start_time, uint64_t /* min_transaction_id */, uint64_t id) {
-            return (id >= min_start_time && id < TRANSACTION_ID_START) || id == NOT_DELETED_ID;
+            return id == NOT_DELETED_ID ||
+                   id >= TRANSACTION_ID_START ||
+                   id >= min_start_time;
         }
     };
 
@@ -62,11 +74,11 @@ namespace components::table {
                                                                        max_count);
     }
 
-    uint64_t chunk_constant_info::commited_indexing_vector(uint64_t min_start_id,
+    uint64_t chunk_constant_info::committed_indexing_vector(uint64_t min_start_id,
                                                            uint64_t min_transaction_id,
                                                            vector::indexing_vector_t& indexing_vector,
                                                            uint64_t max_count) {
-        return templated_indexing_vector<commited_version_operator>(min_start_id,
+        return templated_indexing_vector<committed_version_operator>(min_start_id,
                                                                     min_transaction_id,
                                                                     indexing_vector,
                                                                     max_count);
@@ -88,7 +100,7 @@ namespace components::table {
         return is_deleted;
     }
 
-    uint64_t chunk_constant_info::commited_deleted_count(uint64_t max_count) {
+    uint64_t chunk_constant_info::committed_deleted_count(uint64_t max_count) {
         return delete_id < TRANSACTION_ID_START ? max_count : 0;
     }
 
@@ -162,11 +174,11 @@ namespace components::table {
                                                                        max_count);
     }
 
-    uint64_t chunk_vector_info::commited_indexing_vector(uint64_t min_start_id,
+    uint64_t chunk_vector_info::committed_indexing_vector(uint64_t min_start_id,
                                                          uint64_t min_transaction_id,
                                                          vector::indexing_vector_t& indexing_vector,
                                                          uint64_t max_count) {
-        return templated_indexing_vector<commited_version_operator>(min_start_id,
+        return templated_indexing_vector<committed_version_operator>(min_start_id,
                                                                     min_transaction_id,
                                                                     indexing_vector,
                                                                     max_count);
@@ -295,7 +307,7 @@ namespace components::table {
 
     bool chunk_vector_info::has_deletes() const { return any_deleted; }
 
-    uint64_t chunk_vector_info::commited_deleted_count(uint64_t max_count) {
+    uint64_t chunk_vector_info::committed_deleted_count(uint64_t max_count) {
         if (!any_deleted) {
             return 0;
         }
@@ -324,7 +336,7 @@ namespace components::table {
         }
     }
 
-    uint64_t row_version_manager_t::commited_deleted_count(uint64_t count) {
+    uint64_t row_version_manager_t::committed_deleted_count(uint64_t count) {
         std::lock_guard l(version_lock_);
         uint64_t deleted_count = 0;
         for (uint64_t r = 0, i = 0; r < count; r += vector::DEFAULT_VECTOR_CAPACITY, i++) {
@@ -335,7 +347,7 @@ namespace components::table {
             if (max_count == 0) {
                 break;
             }
-            deleted_count += vector_info_[i]->commited_deleted_count(max_count);
+            deleted_count += vector_info_[i]->committed_deleted_count(max_count);
         }
         return deleted_count;
     }
@@ -359,7 +371,7 @@ namespace components::table {
         return chunk_info->indexing_vector(transaction, indexing_vector, max_count);
     }
 
-    uint64_t row_version_manager_t::commited_indexing_vector(uint64_t start_time,
+    uint64_t row_version_manager_t::committed_indexing_vector(uint64_t start_time,
                                                              uint64_t transaction_id,
                                                              uint64_t vector_idx,
                                                              vector::indexing_vector_t& indexing_vector,
@@ -369,7 +381,7 @@ namespace components::table {
         if (!info) {
             return max_count;
         }
-        return info->commited_indexing_vector(start_time, transaction_id, indexing_vector, max_count);
+        return info->committed_indexing_vector(start_time, transaction_id, indexing_vector, max_count);
     }
 
     bool row_version_manager_t::fetch(transaction_data transaction, uint64_t row) {

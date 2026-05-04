@@ -6,7 +6,7 @@ namespace components::planner {
 
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
-                                    const catalog::catalog* /*catalog*/,
+                                    const services::dispatcher::catalog_view_t* /*catalog*/,
                                     logical_plan::parameter_node_t* parameters) {
         if (!node) {
             return nullptr;

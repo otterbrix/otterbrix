@@ -1,5 +1,8 @@
 #include "table_id.hpp"
 
+#include <sstream>
+#include <stdexcept>
+
 namespace components::catalog {
     namespace {
         template<size_t... Idx>
@@ -96,4 +99,14 @@ namespace components::catalog {
     }
 
     std::string table_id::to_string() const { return std::string(to_pmr_string()); }
+
+    void table_id::set_oid(oid_t oid) {
+        if (oid_ != INVALID_OID && oid_ != oid) {
+            std::ostringstream oss;
+            oss << "table_id::set_oid: OID is immutable after assignment (current=" << oid_
+                << ", attempted=" << oid << ", table=" << to_string() << ")";
+            throw std::logic_error(oss.str());
+        }
+        oid_ = oid;
+    }
 } // namespace components::catalog

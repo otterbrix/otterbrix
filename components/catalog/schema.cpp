@@ -1,6 +1,8 @@
 #include "schema.hpp"
 
 #include <memory_resource>
+#include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 
 using namespace components::types;
@@ -75,6 +77,28 @@ namespace components::catalog {
         return cursor::make_cursor(resource_, {columns_[idx].type()});
     }
 
+    std::optional<std::reference_wrapper<const table::column_definition_t>>
+    schema::find_field_by_oid(oid_t oid) const noexcept {
+        if (oid == INVALID_OID) {
+            return std::nullopt;
+        }
+        for (const auto& column : columns_) {
+            if (column.attoid() == oid) {
+                return std::cref(column);
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<oid_t> schema::column_oids() const {
+        std::vector<oid_t> result;
+        result.reserve(columns_.size());
+        for (const auto& column : columns_) {
+            result.push_back(column.attoid());
+        }
+        return result;
+    }
+
     std::optional<schema::field_description_cref>
     schema::get_field_description(components::catalog::field_id_t id) const {
         size_t idx = find_idx_by_id(id);
@@ -120,6 +144,16 @@ namespace components::catalog {
 
         error_ = catalog_error(catalog_mistake_t::FIELD_MISSING, "No field with such id: " + std::to_string(id));
         return {};
+    }
+
+    void schema::set_schema_oid(oid_t oid) {
+        if (schema_oid_ != INVALID_OID && schema_oid_ != oid) {
+            std::ostringstream oss;
+            oss << "schema::set_schema_oid: OID is immutable after assignment (current="
+                << schema_oid_ << ", attempted=" << oid << ")";
+            throw std::logic_error(oss.str());
+        }
+        schema_oid_ = oid;
     }
 
     size_t schema::find_idx_by_name(const std::pmr::string& name) const {

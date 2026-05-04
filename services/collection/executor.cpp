@@ -7,16 +7,55 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_sync_mode.hpp>
 
+#include <components/logical_plan/node_alter_table.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_sequence.hpp>
+#include <components/logical_plan/node_create_type.hpp>
+#include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_drop_index.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
+#include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/sql/transformer/transformer.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <core/executor.hpp>
 
 using namespace components::cursor;
+
+namespace {
+// Resolve key_t string storage (column names) to numeric path indices using the
+// chunk schema.  Must be called on expressions produced by parse_where_expr before
+// passing them to create_predicate, because the SQL transformer builds key_t with
+// only string storage but no path indices.
+void resolve_check_key_paths(const components::expressions::expression_ptr& expr,
+                              const components::vector::data_chunk_t& chunk) {
+    namespace expr_ns = components::expressions;
+    if (!expr || expr->group() != expr_ns::expression_group::compare) {
+        return;
+    }
+    auto* comp = static_cast<expr_ns::compare_expression_t*>(expr.get());
+    for (const auto& child : comp->children()) {
+        resolve_check_key_paths(child, chunk);
+    }
+    auto resolve = [&](expr_ns::param_storage& ps) {
+        if (std::holds_alternative<expr_ns::key_t>(ps)) {
+            auto& key = std::get<expr_ns::key_t>(ps);
+            if (key.path().empty() && !key.storage().empty()) {
+                key.set_path(chunk.sub_column_indices(key.storage()));
+            }
+        }
+    };
+    resolve(comp->left());
+    resolve(comp->right());
+}
+} // namespace
 
 namespace services::collection::executor {
 
@@ -43,17 +82,19 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , txn_manager_(txn_manager)
         , log_(log)
-        , pending_void_(resource)
-        , pending_execute_(resource) {
+        , pending_void_(resource) {
         register_default_functions(function_registry_);
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
         poll_pending();
-
         switch (msg->command()) {
             case actor_zeta::msg_id<executor_t, &executor_t::execute_plan>: {
                 co_await actor_zeta::dispatch(this, &executor_t::execute_plan, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::execute_ddl_plan>: {
+                co_await actor_zeta::dispatch(this, &executor_t::execute_ddl_plan, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
@@ -69,13 +110,6 @@ namespace services::collection::executor {
         for (auto it = pending_void_.begin(); it != pending_void_.end();) {
             if (it->available()) {
                 it = pending_void_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        for (auto it = pending_execute_.begin(); it != pending_execute_.end();) {
-            if (it->available()) {
-                it = pending_execute_.erase(it);
             } else {
                 ++it;
             }
@@ -140,6 +174,52 @@ namespace services::collection::executor {
                         co_await std::move(irf);
                     }
                 }
+
+                // Persist index metadata in pg_class + pg_index + pg_depend so the index
+                // is rediscoverable across restarts via catalog_view_t / resolve_table.
+                if (disk_address_ != actor_zeta::address_t::empty_address()) {
+                    components::execution_context_t ddl_ctx{session, txn, coll_name};
+                    auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_namespace,
+                                                        ddl_ctx,
+                                                        std::string(coll_name.database),
+                                                        std::uint64_t{0});
+                    auto rns = co_await std::move(rnf);
+                    if (rns.found) {
+                        auto [_rt, rtf] = actor_zeta::send(disk_address_,
+                                                            &disk::manager_disk_t::resolve_table,
+                                                            ddl_ctx,
+                                                            rns.oid,
+                                                            std::string(coll_name.collection),
+                                                            std::uint64_t{0});
+                        auto rt = co_await std::move(rtf);
+                        if (rt.found) {
+                            std::vector<std::string> column_names;
+                            column_names.reserve(node_ci->keys().size());
+                            for (auto& key : node_ci->keys()) {
+                                column_names.emplace_back(key.as_string());
+                            }
+                            auto [_di, dif] = actor_zeta::send(disk_address_,
+                                                                &disk::manager_disk_t::ddl_create_index,
+                                                                ddl_ctx,
+                                                                rns.oid,
+                                                                rt.oid,
+                                                                std::string(node_ci->name()),
+                                                                std::move(column_names));
+                            auto created = co_await std::move(dif);
+                            // Decision 3: backfill completed above (insert_rows + index build) —
+                            // flip indisvalid=true so the optimizer starts using this index.
+                            if (created.created_oid != components::catalog::INVALID_OID) {
+                                auto [_sv, svf] = actor_zeta::send(disk_address_,
+                                                                    &disk::manager_disk_t::ddl_index_set_valid,
+                                                                    ddl_ctx,
+                                                                    created.created_oid,
+                                                                    true);
+                                (void)co_await std::move(svf);
+                            }
+                        }
+                    }
+                }
             }
             co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
         }
@@ -155,6 +235,34 @@ namespace services::collection::executor {
                                                    coll_name,
                                                    index::index_name_t(node_di->name()));
                 co_await std::move(ixf);
+            }
+            // pg_index/pg_class teardown for the dropped index. We resolve by name to get
+            // the index oid, then ddl_drop_index handles the cascade.
+            if (disk_address_ != actor_zeta::address_t::empty_address()) {
+                components::execution_context_t ddl_ctx{session, txn, coll_name};
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    std::string(coll_name.database),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_ri, rif] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        std::string(node_di->name()),
+                                                        std::uint64_t{0});
+                    auto ri = co_await std::move(rif);
+                    if (ri.found) {
+                        auto [_di, dif] = actor_zeta::send(disk_address_,
+                                                            &disk::manager_disk_t::ddl_drop_index,
+                                                            ddl_ctx,
+                                                            ri.oid,
+                                                            disk::drop_behavior_t::cascade_);
+                        (void)co_await std::move(dif);
+                    }
+                }
             }
             co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
         }
@@ -200,6 +308,46 @@ namespace services::collection::executor {
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
 
         if (is_dml && result.cursor->is_success()) {
+            // CHECK constraint enforcement — runs regardless of WAL being enabled.
+            if (disk_address_ != actor_zeta::address_t::empty_address()) {
+                auto check_type = logical_plan->type();
+                const components::vector::data_chunk_t* check_src = nullptr;
+                if (check_type == node_type::insert_t && result.wal_insert_data &&
+                    result.append_row_count > 0)
+                    check_src = result.wal_insert_data.get();
+                else if (check_type == node_type::update_t && result.wal_update_data)
+                    check_src = result.wal_update_data.get();
+                if (check_src) {
+                    components::execution_context_t chk_ctx{session, txn_data, result.wal_collection};
+                    auto [_cc, ccf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::get_check_constraints,
+                                                        chk_ctx,
+                                                        result.wal_collection);
+                    auto checks = co_await std::move(ccf);
+                    if (!checks.empty()) {
+                        components::sql::transform::transformer chk_t(resource());
+                        for (const auto& c : checks) {
+                            if (c.conexpr.empty()) continue;
+                            auto [expr, params] = chk_t.parse_where_expr(c.conexpr);
+                            if (!expr) continue;
+                            resolve_check_key_paths(expr, *check_src);
+                            auto pred = components::operators::predicates::create_predicate(
+                                resource(), &function_registry_, expr,
+                                check_src->types(), check_src->types(),
+                                &params->parameters());
+                            for (uint64_t r = 0; r < check_src->size(); ++r) {
+                                if (!pred->check(*check_src, r)) {
+                                    txn_manager_->abort(session);
+                                    co_return execute_result_t{
+                                        make_cursor(resource(), error_code_t::other_error,
+                                                     std::string("CHECK constraint violation: ") + c.conexpr),
+                                        {}};
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Step 3: WAL DATA (physical format — stores post-compute data for direct replay)
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
                 auto& cname = result.wal_collection;
@@ -208,6 +356,36 @@ namespace services::collection::executor {
                         if (result.append_row_count == 0 || !result.wal_insert_data) {
                             trace(log_, "executor::execute_plan: INSERT produced 0 rows, skipping WAL");
                             break;
+                        }
+                        // FK enforcement hook (Plan #100). Currently a no-op stub on the disk
+                        // side; the call shape is in place so wiring real enforcement requires
+                        // only changing the disk method's body. We deep-copy the chunk for the
+                        // hook so the original `wal_insert_data` survives for the WAL write below.
+                        // Skip when wal address is empty (no WAL = no parent storage either).
+                        if (wal_address_ != actor_zeta::address_t::empty_address() && result.wal_insert_data) {
+                            const auto& src = *result.wal_insert_data;
+                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
+                                resource(), src.types(), src.size());
+                            fk_chunk->set_cardinality(src.size());
+                            for (uint64_t col = 0; col < src.column_count(); ++col) {
+                                for (uint64_t r = 0; r < src.size(); ++r) {
+                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
+                                }
+                            }
+                            components::execution_context_t fk_ctx{session, txn_data, cname};
+                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
+                                                                 &disk::manager_disk_t::fk_validate_insert,
+                                                                 fk_ctx,
+                                                                 cname,
+                                                                 std::move(fk_chunk));
+                            auto fk_result = co_await std::move(fkf);
+                            if (fk_result) {
+                                txn_manager_->abort(session);
+                                co_return execute_result_t{
+                                    make_cursor(resource(), error_code_t::other_error,
+                                                 std::string("FK violation: ") + *fk_result),
+                                    {}};
+                            }
                         }
                         trace(log_, "executor::execute_plan: WAL physical_insert");
                         auto [_w1, wf1] = actor_zeta::send(wal_address_,
@@ -226,6 +404,33 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::update_t: {
+                        // FK enforcement on UPDATE — same shape as INSERT path. The post-update
+                        // chunk's FK columns must reference an existing parent row.
+                        if (result.wal_update_data) {
+                            const auto& src = *result.wal_update_data;
+                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
+                                resource(), src.types(), src.size());
+                            fk_chunk->set_cardinality(src.size());
+                            for (uint64_t col = 0; col < src.column_count(); ++col) {
+                                for (uint64_t r = 0; r < src.size(); ++r) {
+                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
+                                }
+                            }
+                            components::execution_context_t fk_ctx{session, txn_data, cname};
+                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
+                                                                 &disk::manager_disk_t::fk_validate_update,
+                                                                 fk_ctx,
+                                                                 cname,
+                                                                 std::move(fk_chunk));
+                            auto fk_result = co_await std::move(fkf);
+                            if (fk_result) {
+                                txn_manager_->abort(session);
+                                co_return execute_result_t{
+                                    make_cursor(resource(), error_code_t::other_error,
+                                                 std::string("FK violation: ") + *fk_result),
+                                    {}};
+                            }
+                        }
                         trace(log_, "executor::execute_plan: WAL physical_update");
                         auto upd_count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w2, wf2] = actor_zeta::send(wal_address_,
@@ -244,6 +449,35 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::delete_t: {
+                        // FK parent-DELETE check — for each row to be deleted, ensure no child
+                        // table references it (RESTRICT). The deleted-rows chunk currently
+                        // isn't materialized in execute_sub_plan_; we pass wal_update_data when
+                        // the planner included a SELECT preview, otherwise skip enforcement.
+                        if (result.wal_update_data) {
+                            const auto& src = *result.wal_update_data;
+                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
+                                resource(), src.types(), src.size());
+                            fk_chunk->set_cardinality(src.size());
+                            for (uint64_t col = 0; col < src.column_count(); ++col) {
+                                for (uint64_t r = 0; r < src.size(); ++r) {
+                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
+                                }
+                            }
+                            components::execution_context_t fk_ctx{session, txn_data, cname};
+                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
+                                                                 &disk::manager_disk_t::fk_validate_parent_delete,
+                                                                 fk_ctx,
+                                                                 cname,
+                                                                 std::move(fk_chunk));
+                            auto fk_result = co_await std::move(fkf);
+                            if (fk_result) {
+                                txn_manager_->abort(session);
+                                co_return execute_result_t{
+                                    make_cursor(resource(), error_code_t::other_error,
+                                                 std::string("FK violation: ") + *fk_result),
+                                    {}};
+                            }
+                        }
                         trace(log_, "executor::execute_plan: WAL physical_delete");
                         auto count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w3, wf3] = actor_zeta::send(wal_address_,
@@ -338,6 +572,385 @@ namespace services::collection::executor {
         }
 
         co_return execute_result_t{std::move(result.cursor), std::move(result.updates)};
+    }
+
+    // Variant E: route DDL to disk's ddl_* under a real transaction so the pg_catalog
+    // mutations carry MVCC + WAL trace. Begin a txn, dispatch by plan->type, commit.
+    executor_t::unique_future<execute_result_t>
+    executor_t::execute_ddl_plan(components::session::session_id_t session,
+                                  components::logical_plan::node_ptr logical_plan,
+                                  components::table::transaction_data /*txn*/) {
+        using namespace components::logical_plan;
+        debug(log_, "executor::execute_ddl_plan ENTRY, session: {}, type: {}",
+              session.data(), to_string(logical_plan->type()));
+
+        components::table::transaction_data txn_data{0, 0};
+        if (txn_manager_ != nullptr) {
+            txn_data = txn_manager_->begin_transaction(session).data();
+        }
+        components::execution_context_t ddl_ctx{session, txn_data, {}};
+        auto ok_cursor = [&] {
+            return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
+        };
+
+        switch (logical_plan->type()) {
+            case node_type::create_database_t: {
+                auto [_d, df] = actor_zeta::send(disk_address_,
+                                                  &disk::manager_disk_t::ddl_create_namespace,
+                                                  ddl_ctx,
+                                                  logical_plan->database_name());
+                (void)co_await std::move(df);
+                break;
+            }
+            case node_type::drop_database_t: {
+                auto db_name = logical_plan->database_name();
+                // Cascade-drop user-side storages (the dispatcher's collections_ set is
+                // not visible from here; rely on pg_class scan via resolve to find them).
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    db_name,
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_dn, dnf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::ddl_drop_namespace,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        disk::drop_behavior_t::cascade_);
+                    (void)co_await std::move(dnf);
+                }
+                break;
+            }
+            case node_type::create_collection_t: {
+                auto cc = boost::static_pointer_cast<node_create_collection_t>(logical_plan);
+                // Create the user-side storage entry (disk).
+                if (cc->column_definitions().empty()) {
+                    auto [_cs, csf] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::create_storage,
+                                                       session,
+                                                       logical_plan->collection_full_name());
+                    co_await std::move(csf);
+                } else {
+                    std::vector<components::table::column_definition_t> storage_columns =
+                        cc->column_definitions();
+                    if (cc->is_disk_storage()) {
+                        auto [_cs, csf] = actor_zeta::send(disk_address_,
+                                                           &disk::manager_disk_t::create_storage_disk,
+                                                           session,
+                                                           logical_plan->collection_full_name(),
+                                                           std::move(storage_columns));
+                        co_await std::move(csf);
+                    } else {
+                        auto [_cs, csf] = actor_zeta::send(disk_address_,
+                                                           &disk::manager_disk_t::create_storage_with_columns,
+                                                           session,
+                                                           logical_plan->collection_full_name(),
+                                                           std::move(storage_columns));
+                        co_await std::move(csf);
+                    }
+                }
+                // Register in index manager.
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_ri, rif] = actor_zeta::send(index_address_,
+                                                       &index::manager_index_t::register_collection,
+                                                       session,
+                                                       logical_plan->collection_full_name());
+                    co_await std::move(rif);
+                }
+                // pg_catalog mutation.
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    std::vector<components::table::column_definition_t> ddl_cols = cc->column_definitions();
+                    const char relkind = ddl_cols.empty() ? 'g' : 'r';
+                    auto [_dt, dtf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::ddl_create_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        logical_plan->collection_name(),
+                                                        std::move(ddl_cols),
+                                                        relkind);
+                    (void)co_await std::move(dtf);
+                }
+                break;
+            }
+            case node_type::drop_collection_t: {
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto [_ui, uif] = actor_zeta::send(index_address_,
+                                                       &index::manager_index_t::unregister_collection,
+                                                       session,
+                                                       logical_plan->collection_full_name());
+                    co_await std::move(uif);
+                }
+                auto [_ds, dsf] = actor_zeta::send(disk_address_,
+                                                   &disk::manager_disk_t::drop_storage,
+                                                   session,
+                                                   logical_plan->collection_full_name());
+                co_await std::move(dsf);
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_rt, rtf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        logical_plan->collection_name(),
+                                                        std::uint64_t{0});
+                    auto rt = co_await std::move(rtf);
+                    if (rt.found) {
+                        auto [_dd, ddf] = actor_zeta::send(disk_address_,
+                                                            &disk::manager_disk_t::ddl_drop_table,
+                                                            ddl_ctx,
+                                                            rt.oid,
+                                                            disk::drop_behavior_t::cascade_);
+                        (void)co_await std::move(ddf);
+                    }
+                }
+                break;
+            }
+            case node_type::create_sequence_t: {
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto* seq = static_cast<const components::logical_plan::node_create_sequence_t*>(logical_plan.get());
+                    auto [_dd, ddf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::ddl_create_sequence,
+                                                        ddl_ctx, rns.oid,
+                                                        std::string(logical_plan->collection_name()),
+                                                        seq->start(), seq->increment(),
+                                                        seq->min_value(), seq->max_value(),
+                                                        /*cycle=*/false);
+                    (void)co_await std::move(ddf);
+                }
+                break;
+            }
+            case node_type::create_view_t: {
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto* vw = static_cast<const components::logical_plan::node_create_view_t*>(logical_plan.get());
+                    auto [_dd, ddf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::ddl_create_view,
+                                                        ddl_ctx, rns.oid,
+                                                        std::string(logical_plan->collection_name()),
+                                                        std::string(vw->query_sql()));
+                    (void)co_await std::move(ddf);
+                }
+                break;
+            }
+            case node_type::create_macro_t: {
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto* mc = static_cast<const components::logical_plan::node_create_macro_t*>(logical_plan.get());
+                    auto [_dd, ddf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::ddl_create_macro,
+                                                        ddl_ctx, rns.oid,
+                                                        std::string(logical_plan->collection_name()),
+                                                        std::string(mc->body_sql()));
+                    (void)co_await std::move(ddf);
+                }
+                break;
+            }
+            case node_type::drop_sequence_t:
+            case node_type::drop_view_t:
+            case node_type::drop_macro_t: {
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_rt, rtf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        std::string(logical_plan->collection_name()),
+                                                        std::uint64_t{0});
+                    auto rt = co_await std::move(rtf);
+                    if (rt.found) {
+                        auto method = logical_plan->type() == node_type::drop_sequence_t
+                                          ? &disk::manager_disk_t::ddl_drop_sequence
+                                      : logical_plan->type() == node_type::drop_view_t
+                                          ? &disk::manager_disk_t::ddl_drop_view
+                                          : &disk::manager_disk_t::ddl_drop_macro;
+                        auto [_dd, ddf] = actor_zeta::send(disk_address_,
+                                                            method,
+                                                            ddl_ctx,
+                                                            rt.oid,
+                                                            disk::drop_behavior_t::cascade_);
+                        (void)co_await std::move(ddf);
+                    }
+                }
+                break;
+            }
+            case node_type::create_constraint_t: {
+                auto* cstr = static_cast<components::logical_plan::node_create_constraint_t*>(logical_plan.get());
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_rt, rtf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        logical_plan->collection_name(),
+                                                        std::uint64_t{0});
+                    auto rt = co_await std::move(rtf);
+                    if (rt.found) {
+                        components::catalog::oid_t ref_oid = components::catalog::INVALID_OID;
+                        if (cstr->kind() == components::logical_plan::constraint_kind::foreign_key &&
+                            !cstr->ref_collection().empty()) {
+                            // Resolve referenced table — same namespace assumed; future work could
+                            // accept a fully-qualified ref_collection.
+                            auto [_rrt, rrtf] = actor_zeta::send(disk_address_,
+                                                                   &disk::manager_disk_t::resolve_table,
+                                                                   ddl_ctx,
+                                                                   rns.oid,
+                                                                   std::string(cstr->ref_collection().collection),
+                                                                   std::uint64_t{0});
+                            auto rrt = co_await std::move(rrtf);
+                            if (rrt.found) {
+                                ref_oid = rrt.oid;
+                            }
+                        }
+                        auto [_dc, dcf] = actor_zeta::send(disk_address_,
+                                                            &disk::manager_disk_t::ddl_create_constraint,
+                                                            ddl_ctx,
+                                                            rt.oid,
+                                                            std::string(cstr->name()),
+                                                            static_cast<char>(cstr->kind()),
+                                                            ref_oid,
+                                                            std::vector<components::catalog::oid_t>{},
+                                                            std::vector<components::catalog::oid_t>{},
+                                                            cstr->match_type(),
+                                                            cstr->del_action(),
+                                                            cstr->upd_action(),
+                                                            std::string(cstr->check_expr()));
+                        (void)co_await std::move(dcf);
+                    }
+                }
+                break;
+            }
+            case node_type::alter_table_t: {
+                auto* alter = static_cast<components::logical_plan::node_alter_table_t*>(logical_plan.get());
+                auto [_rn, rnf] = actor_zeta::send(disk_address_,
+                                                    &disk::manager_disk_t::resolve_namespace,
+                                                    ddl_ctx,
+                                                    logical_plan->database_name(),
+                                                    std::uint64_t{0});
+                auto rns = co_await std::move(rnf);
+                if (rns.found) {
+                    auto [_rt, rtf] = actor_zeta::send(disk_address_,
+                                                        &disk::manager_disk_t::resolve_table,
+                                                        ddl_ctx,
+                                                        rns.oid,
+                                                        logical_plan->collection_name(),
+                                                        std::uint64_t{0});
+                    auto rt = co_await std::move(rtf);
+                    if (rt.found) {
+                        // Iterate every subcommand under one transaction; partial failures
+                        // roll back via WAL abort_txn since we share txn_data across all sub-DDLs.
+                        for (const auto& sub : alter->subcommands()) {
+                            switch (sub.kind) {
+                                case components::logical_plan::alter_table_kind::add_column: {
+                                    auto [_da, daf] = actor_zeta::send(disk_address_,
+                                                                        &disk::manager_disk_t::ddl_add_column,
+                                                                        ddl_ctx,
+                                                                        rt.oid,
+                                                                        sub.column);
+                                    (void)co_await std::move(daf);
+                                    break;
+                                }
+                                case components::logical_plan::alter_table_kind::drop_column: {
+                                    auto [_dc, dcf] = actor_zeta::send(disk_address_,
+                                                                        &disk::manager_disk_t::ddl_drop_column,
+                                                                        ddl_ctx,
+                                                                        rt.oid,
+                                                                        std::string(sub.column_name),
+                                                                        disk::drop_behavior_t::cascade_);
+                                    (void)co_await std::move(dcf);
+                                    break;
+                                }
+                                case components::logical_plan::alter_table_kind::rename_column: {
+                                    auto [_dr, drf] = actor_zeta::send(disk_address_,
+                                                                        &disk::manager_disk_t::ddl_rename_column,
+                                                                        ddl_ctx,
+                                                                        rt.oid,
+                                                                        std::string(sub.column_name),
+                                                                        std::string(sub.new_column_name));
+                                    (void)co_await std::move(drf);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+
+        auto [_f, ff] = actor_zeta::send(disk_address_,
+                                          &disk::manager_disk_t::flush,
+                                          session,
+                                          services::wal::id_t{0});
+        co_await std::move(ff);
+
+        // commit_txn → WAL (FULL fsync) so the DDL records are durable before returning.
+        // Two markers per DDL: pg_catalog (where ddl_* writes its rows) and the user db
+        // (where storage create/drop happened). Both must be committed for replay to
+        // pick up the records.
+        if (wal_address_ != actor_zeta::address_t::empty_address()) {
+            auto [_pc, pcf] = actor_zeta::send(wal_address_,
+                                                &wal::manager_wal_replicate_t::commit_txn,
+                                                session,
+                                                txn_data.transaction_id,
+                                                wal::wal_sync_mode::FULL,
+                                                std::string("pg_catalog"));
+            (void)co_await std::move(pcf);
+
+            auto db = logical_plan->database_name();
+            if (!db.empty() && db != "pg_catalog") {
+                auto [_c, cf] = actor_zeta::send(wal_address_,
+                                                  &wal::manager_wal_replicate_t::commit_txn,
+                                                  session,
+                                                  txn_data.transaction_id,
+                                                  wal::wal_sync_mode::FULL,
+                                                  std::string(db));
+                (void)co_await std::move(cf);
+            }
+        }
+        if (txn_manager_ != nullptr && txn_data.transaction_id != 0) {
+            txn_manager_->commit(session);
+        }
+        co_return ok_cursor();
     }
 
     executor_t::unique_future<function_result_t> executor_t::register_udf(components::session::session_id_t session,

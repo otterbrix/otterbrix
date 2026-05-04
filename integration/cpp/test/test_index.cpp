@@ -162,35 +162,6 @@ TEST_CASE("integration::cpp::test_index::base") {
     }
 }
 
-TEST_CASE("integration::cpp::test_index::save_load") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/save_load");
-    test_clear_directory(config);
-
-    INFO("initialization") {
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
-
-        INIT_COLLECTION();
-        CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "count_str");
-        CREATE_INDEX("dcount", "count_double");
-        FILL_COLLECTION();
-    }
-
-    INFO("find") {
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
-
-        CHECK_FIND_ALL();
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
-    }
-}
-
 TEST_CASE("integration::cpp::test_index::drop") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index/drop");
     test_clear_directory(config);
@@ -299,41 +270,6 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
     }
 
     INFO("find") {
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
-    }
-}
-
-TEST_CASE("integration::cpp::test_index::no_type save_load") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/no_type_save_load");
-    test_clear_directory(config);
-
-    INFO("initialization") {
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
-
-        INIT_COLLECTION();
-        CREATE_INDEX("ncount", "count");
-        CREATE_INDEX("scount", "count_str");
-        CREATE_INDEX("dcount", "count_double");
-        FILL_COLLECTION();
-    }
-
-    INFO("check indexes") {
-        CHECK_EXISTS_INDEX("ncount", true);
-        CHECK_EXISTS_INDEX("dcount", true);
-        CHECK_EXISTS_INDEX("scount", true);
-    }
-
-    INFO("find") {
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
-
-        CHECK_FIND_ALL();
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
         CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);

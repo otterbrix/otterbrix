@@ -1,0 +1,518 @@
+#include "system_table_schemas.hpp"
+
+#include <components/serialization/deserializer.hpp>
+#include <components/serialization/serializer.hpp>
+#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+
+// Intentional schema deviations from PostgreSQL — otterbrix is a single-process actor
+// framework that does not aim for PG wire-protocol compatibility. Each deviation:
+//
+//   pg_namespace  — no `nspowner`           : no role/user system today.
+//   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
+//                 — no `reltype`             : composite-row types not implemented.
+//                 — adds `relstoragemode`    : 'd'/'m' for DISK/IN_MEMORY (otterbrix-specific).
+//                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
+//                                              PG's "composite type" relkind. 'g' aligns
+//                                              with PG GENERATED terminology.
+//   pg_attribute  — adds `attoid`            : stable column OID (FK target for indexes,
+//                                              constraints, deps).
+//                 — adds `atttypspec`        : msgpack-encoded complex_logical_type for
+//                                              types that don't fit a single pg_type.oid.
+//                 — adds `attdefspec`        : msgpack-encoded default value (replaces
+//                                              text `attdefval` — survives roundtrip).
+//                 — adds `atthasdefault`/`attisdropped` : tombstone; attnum is never reused.
+//                 — no `attstattarget`       : no statistics layer yet.
+//   pg_type       — no `typlen/typbyval/typtype` : not used by current resolution path.
+//                 — adds `typdefspec`        : msgpack-encoded type tree (mirrors
+//                                              `pg_attribute.atttypspec`).
+//   pg_proc       — no `proowner`            : same reason as nspowner.
+//                 — `proargmatchers`/`prorettype` as text  : matcher form lets a function
+//                                              declare polymorphic arity without N rows.
+//                 — adds `prouid`            : index into compute::function_registry where
+//                                              kernel_signature_t (function pointers) lives.
+//   pg_constraint — no `conindid`              : constraint→index backlink resolved via
+//                                              pg_index.indrelid instead.
+//                 — adds `conexpr`            : CHECK expr SQL text (stored verbatim;
+//                                              executor-side evaluation not yet wired).
+//                 — adds confrelid/confkey/conf{matchtype,deltype,updtype} : full FK metadata.
+//   pg_index      — no `indisprimary/indisunique/indtype` : PK/uniqueness is enforced via
+//                                              pg_constraint, not pg_index. Index implementation
+//                                              picker not exposed via SQL DDL yet.
+//   pg_depend     — adds `objsubid/refobjsubid` : column-level deps written by
+//                                              ddl_create_index and ddl_create_constraint;
+//                                              consumed by ddl_drop_column RESTRICT/CASCADE.
+//   pg_database   — added                     : full hierarchy database → namespace → relation.
+//                                              10th system table beyond the doc's 9.
+//
+// Reconcile via docs/catalog-migration-to-postgresql-style.md (intentional deltas) — do
+// not "fix" these to match the doc literally without considering the implementation cost.
+
+namespace components::catalog {
+
+    using components::table::column_definition_t;
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+
+    namespace {
+        // OID columns: uint32_t → UINTEGER. Booleans → BOOLEAN. Single-char flags
+        // (relkind, deptype) → STRING_LITERAL.
+
+        complex_logical_type oid_col() { return complex_logical_type{logical_type::UINTEGER}; }
+        complex_logical_type i32_col() { return complex_logical_type{logical_type::INTEGER}; }
+        complex_logical_type i64_col() { return complex_logical_type{logical_type::BIGINT}; }
+        complex_logical_type str_col() { return complex_logical_type{logical_type::STRING_LITERAL}; }
+        complex_logical_type bool_col() { return complex_logical_type{logical_type::BOOLEAN}; }
+
+        std::vector<column_definition_t> pg_database_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);     // pg_database.oid
+            c.emplace_back("datname", str_col(), /*not_null*/ true); // database name (unique)
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_namespace_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);    // pg_namespace.oid
+            c.emplace_back("nspname", str_col(), /*not_null*/ true);
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_class_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), true);
+            c.emplace_back("relname", str_col(), true);
+            c.emplace_back("relnamespace", oid_col(), true);
+            c.emplace_back("relkind", str_col(), true);     // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite type, 'g' generated/computing
+            c.emplace_back("relstoragemode", str_col(), true); // 'd' DISK, 'm' IN_MEMORY (otterbrix-specific)
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_attribute_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("attoid", oid_col(), true);          // pg_attribute identity (== column attoid)
+            c.emplace_back("attrelid", oid_col(), true);         // pg_class.oid (parent relation)
+            c.emplace_back("attname", str_col(), true);
+            c.emplace_back("atttypid", oid_col(), true);         // pg_type.oid (builtin scalar only; complex types use atttypspec)
+            c.emplace_back("attnum", i32_col(), true);            // 1-based ordinal
+            c.emplace_back("attnotnull", bool_col(), true);
+            c.emplace_back("atthasdefault", bool_col(), true);
+            c.emplace_back("attisdropped", bool_col(), true);     // tombstone; attnum is never reused
+            // atttypspec is empty and atttypid alone reconstructs the type. For ARRAY /
+            // DECIMAL / STRUCT / ENUM / UNKNOWN, atttypspec carries the msgpack-serialized
+            // complex_logical_type (preserves precision/scale, element types, child types).
+            c.emplace_back("atttypspec", str_col(), false);
+            // attdefspec: msgpack-serialized logical_value_t default (pg_attrdef-equivalent
+            // inlined into pg_attribute to avoid an extra system table). Empty when
+            // atthasdefault=false.
+            c.emplace_back("attdefspec", str_col(), false);
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_type_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), true);
+            c.emplace_back("typname", str_col(), true);
+            c.emplace_back("typnamespace", oid_col(), true);
+            // typdefspec: msgpack-serialized complex_logical_type (mirrors pg_attribute's
+            // atttypspec). Empty for built-in scalar pg_type entries; STRUCT/ENUM/UDT rows
+            // carry the full child-type tree so catalog_view_t can reconstruct the rich
+            // definition after restart. Optional column; old pg_type rows missing this
+            // field round-trip as UNKNOWN per decode_type_spec's empty-string fallback.
+            c.emplace_back("typdefspec", str_col(), false);
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_proc_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), true);
+            c.emplace_back("proname", str_col(), true);
+            c.emplace_back("pronamespace", oid_col(), true);
+            // pronargs: arity (input count) of the function's first signature.
+            c.emplace_back("pronargs", i32_col(), false);
+            // prouid: opaque function_uid produced by executor's register_udf. Used by the
+            // dispatcher to route execution; restored by populate so the cat's
+            // registered_func_id matches what the executor knows.
+            c.emplace_back("prouid", i64_col(), false);
+            // proargmatchers: encoded per-arg type matcher kinds + parameters. Format is
+            // pipe-separated per arg: "e:N" exact (N=numeric logical_type id), "n" numeric,
+            // "i" integer, "f" floating, "a:N1,N2,..." any_of, "t" always_true. Empty when
+            // no matcher info was persisted (legacy rows / placeholder UDFs). #152 — replaces
+            // std::function-based matchers with a serializable tagged kind.
+            c.emplace_back("proargmatchers", str_col(), false);
+            // prorettype: encoded output_type list. Format is comma-separated: "f:N" fixed
+            // (N=logical_type id), "s:N" same_type_at_index N. Empty falls back to
+            // same_type_at_index(0) — covers the legacy default.
+            c.emplace_back("prorettype", str_col(), false);
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_depend_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("classid", oid_col(), true);      // catalog of dependent (e.g. pg_class.oid)
+            c.emplace_back("objid", oid_col(), true);
+            c.emplace_back("refclassid", oid_col(), true);   // catalog of referenced
+            c.emplace_back("refobjid", oid_col(), true);
+            c.emplace_back("deptype", str_col(), true);      // 'n','a','i','p' — see PG docs
+            c.emplace_back("objsubid", i32_col(), false);    // column ordinal (attnum) in objid, or 0/NULL for whole-object
+            c.emplace_back("refobjsubid", i32_col(), false); // column ordinal in refobjid
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_constraint_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid", oid_col(), true);
+            c.emplace_back("conname", str_col(), true);
+            c.emplace_back("conrelid", oid_col(), true);
+            c.emplace_back("contype", str_col(), true);     // 'p','f','u','c','n'
+            c.emplace_back("confrelid", oid_col(), false);  // FK reference — 0 if not FK
+            c.emplace_back("conkey", str_col(), false);     // CSV of attoids in this constraint
+            c.emplace_back("confkey", str_col(), false);    // CSV of attoids in referenced relation (FK only)
+            // FK match/delete/update behavior — null/empty defaults to ('s','a','a') = MATCH SIMPLE / NO ACTION.
+            //   confmatchtype: 's' SIMPLE (default), 'f' FULL, 'p' PARTIAL
+            //   confdeltype:   'a' NO ACTION (default), 'r' RESTRICT, 'c' CASCADE, 'n' SET NULL, 'd' SET DEFAULT
+            //   confupdtype:   same alphabet as confdeltype
+            c.emplace_back("confmatchtype", str_col(), false);
+            c.emplace_back("confdeltype", str_col(), false);
+            c.emplace_back("confupdtype", str_col(), false);
+            c.emplace_back("conexpr", str_col(), false); // CHECK expr SQL text; NULL for non-CHECK
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_index_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("indexrelid", oid_col(), true);  // pg_class.oid of the index
+            c.emplace_back("indrelid", oid_col(), true);     // pg_class.oid of the indexed table
+            c.emplace_back("indkey", str_col(), true);        // CSV of attoid (compact serialization)
+            c.emplace_back("indisvalid", bool_col(), true);   // false until backfill completes; planner ignores invalid indexes
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_sequence_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("seqrelid",     oid_col(), /*not_null*/ true);  // FK pg_class.oid
+            c.emplace_back("seqstart",     i64_col(), true);
+            c.emplace_back("seqincrement", i64_col(), true);
+            c.emplace_back("seqmin",       i64_col(), true);
+            c.emplace_back("seqmax",       i64_col(), true);
+            c.emplace_back("seqcycle",     bool_col(), true);
+            c.emplace_back("seqlast",      i64_col(), true);
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_rewrite_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("oid",       oid_col(), /*not_null*/ true);   // rule OID
+            c.emplace_back("rulename",  str_col(), true);                // mirrors pg_class.relname
+            c.emplace_back("ev_class",  oid_col(), true);                // FK pg_class.oid
+            c.emplace_back("ev_type",   str_col(), true);                // 'v' or 'm'
+            c.emplace_back("ev_action", str_col(), true);                // SQL or macro body
+            return c;
+        }
+
+        std::vector<column_definition_t> pg_computed_column_columns() {
+            std::vector<column_definition_t> c;
+            c.emplace_back("relid", oid_col(), true);         // pg_class.oid (parent relation, always relkind='g' generated/computing)
+            c.emplace_back("attoid", oid_col(), true);
+            c.emplace_back("attname", str_col(), true);
+            c.emplace_back("atttypid", oid_col(), true);
+            c.emplace_back("attversion", i64_col(), true);   // C1: version counter for trie eviction
+            c.emplace_back("attrefcount", i64_col(), true);  // ref-counted versioned trie
+            return c;
+        }
+    } // namespace
+
+    std::vector<system_table_def_t> all_system_tables() {
+        std::vector<system_table_def_t> tables;
+        tables.reserve(12);
+        const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
+
+        // pg_database is bootstrapped first because every other catalog object (namespace,
+        // relation, type, function) is conceptually scoped to a database. The default "main"
+        // database row is seeded with well_known_oid::main_database in
+        // manager_disk_t::bootstrap_system_tables_sync.
+        tables.push_back({"pg_database",         well_known_oid::pg_database_table,           pg_catalog, 'r', pg_database_columns()});
+        tables.push_back({"pg_namespace",       well_known_oid::pg_namespace_table,        pg_catalog, 'r', pg_namespace_columns()});
+        tables.push_back({"pg_class",            well_known_oid::pg_class_table,             pg_catalog, 'r', pg_class_columns()});
+        tables.push_back({"pg_attribute",        well_known_oid::pg_attribute_table,         pg_catalog, 'r', pg_attribute_columns()});
+        tables.push_back({"pg_type",             well_known_oid::pg_type_table,              pg_catalog, 'r', pg_type_columns()});
+        tables.push_back({"pg_proc",             well_known_oid::pg_proc_table,              pg_catalog, 'r', pg_proc_columns()});
+        tables.push_back({"pg_depend",           well_known_oid::pg_depend_table,            pg_catalog, 'r', pg_depend_columns()});
+        tables.push_back({"pg_constraint",       well_known_oid::pg_constraint_table,        pg_catalog, 'r', pg_constraint_columns()});
+        tables.push_back({"pg_index",            well_known_oid::pg_index_table,             pg_catalog, 'r', pg_index_columns()});
+        tables.push_back({"pg_computed_column",  well_known_oid::pg_computed_column_table,   pg_catalog, 'r', pg_computed_column_columns()});
+        tables.push_back({"pg_sequence",         well_known_oid::pg_sequence_table,          pg_catalog, 'r', pg_sequence_columns()});
+        tables.push_back({"pg_rewrite",          well_known_oid::pg_rewrite_table,           pg_catalog, 'r', pg_rewrite_columns()});
+
+        return tables;
+    }
+
+    const system_table_def_t* find_system_table(std::string_view name) {
+        // Static cache: the schemas are immutable once constructed. all_system_tables() rebuilds
+        // the vector each call, so we cache once. Lifetime tied to translation unit.
+        static const std::vector<system_table_def_t> tables = all_system_tables();
+        for (const auto& t : tables) {
+            if (t.name == name) {
+                return &t;
+            }
+        }
+        return nullptr;
+    }
+
+    std::string encode_type_spec(const types::complex_logical_type& t) {
+        using LT = types::logical_type;
+        switch (t.type()) {
+            case LT::BOOLEAN:
+            case LT::TINYINT: case LT::UTINYINT:
+            case LT::SMALLINT: case LT::USMALLINT:
+            case LT::INTEGER: case LT::UINTEGER:
+            case LT::BIGINT: case LT::UBIGINT:
+            case LT::FLOAT: case LT::DOUBLE:
+            case LT::STRING_LITERAL:
+            case LT::TIMESTAMP_SEC: case LT::TIMESTAMP_MS:
+            case LT::TIMESTAMP_US: case LT::TIMESTAMP_NS:
+                return "";
+            default: break;
+        }
+        // ENUM: msgpack roundtrip is broken (logical_value_t entries written but
+        // complex_logical_type::deserialize used on read — asymmetric, SEGV-prone).
+        // Use a flat text encoding "ENUM:type_name:label0=val0,label1=val1,..." that's
+        // trivial to round-trip without complex_logical_type recursion.
+        if (t.type() == LT::ENUM) {
+            std::string out = "ENUM:";
+            out += t.type_name();
+            out += ':';
+            const auto* ext = t.extension();
+            if (ext != nullptr) {
+                const auto* enum_ext =
+                    static_cast<const components::types::enum_logical_type_extension*>(ext);
+                bool first = true;
+                for (const auto& entry : enum_ext->entries()) {
+                    if (!first) out += ',';
+                    first = false;
+                    // alias lives on the entry's type (set_alias delegates to type_.set_alias)
+                    const auto& etype = entry.type();
+                    out += etype.has_alias() ? etype.alias() : std::string{};
+                    out += '=';
+                    // entries are integer logical_value_t per the parser counter
+                    out += std::to_string(entry.value<std::int32_t>());
+                }
+            }
+            return out;
+        }
+        std::pmr::synchronized_pool_resource res;
+        components::serializer::msgpack_serializer_t ser(&res);
+        t.serialize(&ser);
+        auto pmr_str = ser.result();
+        return std::string(pmr_str.data(), pmr_str.size());
+    }
+
+    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource,
+                                                  const std::string& spec) {
+        using LT = types::logical_type;
+        if (spec.empty()) {
+            return types::complex_logical_type{LT::UNKNOWN};
+        }
+        // Flat ENUM text format → bypass msgpack (round-trip broken for ENUM).
+        if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
+            try {
+                auto rest = spec.substr(5);
+                auto colon = rest.find(':');
+                std::string name = (colon == std::string::npos) ? rest : rest.substr(0, colon);
+                std::vector<components::types::logical_value_t> entries;
+                if (colon != std::string::npos) {
+                    auto entries_str = rest.substr(colon + 1);
+                    std::size_t i = 0;
+                    while (i < entries_str.size()) {
+                        std::size_t comma = entries_str.find(',', i);
+                        std::string token = entries_str.substr(
+                            i, comma == std::string::npos ? std::string::npos : comma - i);
+                        std::size_t eq = token.find('=');
+                        if (eq != std::string::npos) {
+                            std::string label = token.substr(0, eq);
+                            int v = std::stoi(token.substr(eq + 1));
+                            components::types::logical_value_t lv(resource, v);
+                            lv.set_alias(label);
+                            entries.push_back(std::move(lv));
+                        }
+                        if (comma == std::string::npos) break;
+                        i = comma + 1;
+                    }
+                }
+                return components::types::complex_logical_type::create_enum(name,
+                                                                              std::move(entries));
+            } catch (...) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
+        }
+        try {
+            std::pmr::string buf(spec, resource);
+            components::serializer::msgpack_deserializer_t des(buf);
+            return types::complex_logical_type::deserialize(resource, &des);
+        } catch (...) {
+            return types::complex_logical_type{LT::UNKNOWN};
+        }
+    }
+
+    std::string encode_proargmatchers(const std::vector<components::compute::input_type>& matchers) {
+        using K = components::compute::type_matcher_kind;
+        std::string out;
+        for (size_t i = 0; i < matchers.size(); ++i) {
+            if (i > 0) out += '|';
+            const auto& m = matchers[i];
+            switch (m.kind) {
+                case K::exact:
+                    out += "e:";
+                    out += std::to_string(static_cast<int>(m.exact_type));
+                    break;
+                case K::numeric:     out += "n"; break;
+                case K::integer:     out += "i"; break;
+                case K::floating:    out += "f"; break;
+                case K::any_of: {
+                    out += "a:";
+                    for (size_t j = 0; j < m.any_of_list.size(); ++j) {
+                        if (j > 0) out += ',';
+                        out += std::to_string(static_cast<int>(m.any_of_list[j]));
+                    }
+                    break;
+                }
+                case K::always_true: out += "t"; break;
+            }
+        }
+        return out;
+    }
+
+    std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs) {
+        using K = components::compute::output_kind;
+        std::string out;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            if (i > 0) out += ',';
+            const auto& o = outputs[i];
+            switch (o.kind) {
+                case K::fixed:
+                    out += "f:";
+                    out += std::to_string(static_cast<int>(o.fixed_value.type()));
+                    break;
+                case K::same_type_at_index:
+                    out += "s:";
+                    out += std::to_string(o.index);
+                    break;
+                case K::computed_fn:
+                    // Lossy fallback: persist as same_type_at_index(0).
+                    out += "s:0";
+                    break;
+            }
+        }
+        return out;
+    }
+
+    std::vector<components::compute::output_type> decode_prorettype(const std::string& spec) {
+        std::vector<components::compute::output_type> out;
+        if (spec.empty()) return out;
+        size_t pos = 0;
+        while (pos < spec.size()) {
+            size_t end = spec.find(',', pos);
+            if (end == std::string::npos) end = spec.size();
+            std::string tok = spec.substr(pos, end - pos);
+            pos = end + 1;
+            if (tok.size() < 3 || tok[1] != ':') return {};
+            int v = std::atoi(tok.c_str() + 2);
+            if (tok[0] == 'f') {
+                out.push_back(components::compute::output_type::fixed(
+                    types::complex_logical_type{static_cast<types::logical_type>(v)}));
+            } else if (tok[0] == 's') {
+                out.push_back(components::compute::output_type::same_at(static_cast<size_t>(v)));
+            } else {
+                return {};
+            }
+        }
+        return out;
+    }
+
+    std::vector<components::compute::input_type> decode_proargmatchers(const std::string& spec) {
+        using K = components::compute::type_matcher_kind;
+        std::vector<components::compute::input_type> out;
+        if (spec.empty()) return out;
+        size_t pos = 0;
+        while (pos < spec.size()) {
+            size_t end = spec.find('|', pos);
+            if (end == std::string::npos) end = spec.size();
+            std::string tok = spec.substr(pos, end - pos);
+            pos = end + 1;
+            if (tok.empty()) continue;
+            components::compute::input_type m;
+            char tag = tok[0];
+            switch (tag) {
+                case 'e': {
+                    if (tok.size() < 3 || tok[1] != ':') { return {}; }
+                    int v = std::atoi(tok.c_str() + 2);
+                    m.kind = K::exact;
+                    m.exact_type = static_cast<types::logical_type>(v);
+                    break;
+                }
+                case 'n': m.kind = K::numeric;     break;
+                case 'i': m.kind = K::integer;     break;
+                case 'f': m.kind = K::floating;    break;
+                case 'a': {
+                    if (tok.size() < 3 || tok[1] != ':') { return {}; }
+                    m.kind = K::any_of;
+                    size_t p2 = 2;
+                    while (p2 < tok.size()) {
+                        size_t comma = tok.find(',', p2);
+                        if (comma == std::string::npos) comma = tok.size();
+                        int v = std::atoi(tok.c_str() + p2);
+                        m.any_of_list.push_back(static_cast<types::logical_type>(v));
+                        p2 = comma + 1;
+                    }
+                    break;
+                }
+                case 't': m.kind = K::always_true; break;
+                default: return {};
+            }
+            out.push_back(std::move(m));
+        }
+        return out;
+    }
+
+    oid_t builtin_type_to_oid(types::logical_type t) noexcept {
+        using LT = types::logical_type;
+        using namespace well_known_oid;
+        switch (t) {
+            case LT::BOOLEAN: return boolean_type;
+            case LT::TINYINT:
+            case LT::UTINYINT: return int8_type;
+            case LT::SMALLINT:
+            case LT::USMALLINT: return int16_type;
+            case LT::INTEGER:
+            case LT::UINTEGER: return int32_type;
+            case LT::BIGINT:
+            case LT::UBIGINT: return int64_type;
+            case LT::FLOAT: return float32_type;
+            case LT::DOUBLE: return float64_type;
+            case LT::STRING_LITERAL: return string_type;
+            case LT::TIMESTAMP_SEC:
+            case LT::TIMESTAMP_MS:
+            case LT::TIMESTAMP_US:
+            case LT::TIMESTAMP_NS: return timestamp_type;
+            default: return INVALID_OID;
+        }
+    }
+
+    types::logical_type oid_to_builtin_type(oid_t oid) noexcept {
+        using LT = types::logical_type;
+        namespace ns = well_known_oid;
+        switch (oid) {
+            case ns::boolean_type: return LT::BOOLEAN;
+            case ns::int8_type: return LT::TINYINT;
+            case ns::int16_type: return LT::SMALLINT;
+            case ns::int32_type: return LT::INTEGER;
+            case ns::int64_type: return LT::BIGINT;
+            case ns::float32_type: return LT::FLOAT;
+            case ns::float64_type: return LT::DOUBLE;
+            case ns::string_type: return LT::STRING_LITERAL;
+            case ns::timestamp_type: return LT::TIMESTAMP_NS;
+            default: return LT::UNKNOWN;
+        }
+    }
+
+} // namespace components::catalog

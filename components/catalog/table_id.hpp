@@ -1,5 +1,6 @@
 #pragma once
 
+#include "catalog_oids.hpp"
 #include <components/base/collection_full_name.hpp>
 
 #include <memory_resource>
@@ -25,10 +26,20 @@ namespace components::catalog {
         [[nodiscard]] std::pmr::string to_pmr_string() const;
         [[nodiscard]] std::string to_string() const;
 
+        // pg_class.oid for this table. INVALID_OID until assigned by
+        // ddl_create_table (M3) — pre-existing in-memory table_id values stay INVALID_OID, which
+        // is fine: hashing/equality is by name, the OID is purely an identity tag for catalog
+        // joins (pg_attribute.attrelid, pg_depend.refobjid, etc).
+        [[nodiscard]] oid_t oid() const noexcept { return oid_; }
+        // Immutable after first non-INVALID assignment: re-stamping the same value is a no-op,
+        // changing to a different value throws std::logic_error.
+        void set_oid(oid_t oid);
+
     private:
         table_namespace_t namespace_parts_;
         std::pmr::string name_;
         std::pmr::memory_resource* resource_;
+        oid_t oid_{INVALID_OID};
     };
 } // namespace components::catalog
 

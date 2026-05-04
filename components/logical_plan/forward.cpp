@@ -66,6 +66,10 @@ namespace components::logical_plan {
                 return "vacuum_t";
             case node_type::having_t:
                 return "having_t";
+            case node_type::alter_table_t:
+                return "alter_table_t";
+            case node_type::create_constraint_t:
+                return "create_constraint_t";
             default:
                 return "unused";
         }

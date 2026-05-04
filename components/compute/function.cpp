@@ -322,6 +322,25 @@ namespace components::compute {
         return it->second.get();
     }
 
+    bool function_registry_t::remove_function(function_uid uid) {
+        return functions_.erase(uid) > 0;
+    }
+
+    bool function_registry_t::remove_function_by_signature(
+        const std::string& name,
+        const std::pmr::vector<types::complex_logical_type>& inputs) {
+        for (auto it = functions_.begin(); it != functions_.end(); ++it) {
+            if (!it->second || it->second->name() != name) continue;
+            for (auto& sig : it->second->get_signatures()) {
+                if (sig.matches_inputs(inputs)) {
+                    functions_.erase(it);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     std::vector<std::pair<std::string, function_uid>> function_registry_t::get_functions() const {
         std::vector<std::pair<std::string, function_uid>> result;
         result.reserve(functions_.size());

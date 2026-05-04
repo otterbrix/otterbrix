@@ -5,30 +5,62 @@
 #include <algorithm>
 
 namespace components::compute {
-    input_type::input_type(type_matcher_fn m)
-        : matcher_(std::move(m)) {}
-
-    bool input_type::matches(const types::complex_logical_type& type) const { return matcher_(type); }
+    bool input_type::matches(const types::complex_logical_type& type) const {
+        using lt = types::logical_type;
+        const auto id = type.type();
+        switch (kind) {
+            case type_matcher_kind::exact:
+                return id == exact_type;
+            case type_matcher_kind::numeric:
+                return types::is_numeric(id);
+            case type_matcher_kind::integer:
+                return id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
+                       id == lt::HUGEINT || id == lt::UTINYINT || id == lt::USMALLINT || id == lt::UINTEGER ||
+                       id == lt::UBIGINT || id == lt::UHUGEINT;
+            case type_matcher_kind::floating:
+                return id == lt::FLOAT || id == lt::DOUBLE;
+            case type_matcher_kind::any_of:
+                return std::find(any_of_list.begin(), any_of_list.end(), id) != any_of_list.end();
+            case type_matcher_kind::always_true:
+                return true;
+        }
+        return false;
+    }
 
     output_type output_type::fixed(fixed_t type) {
         output_type out;
-        out.value_ = std::move(type);
+        out.kind = output_kind::fixed;
+        out.fixed_value = std::move(type);
+        return out;
+    }
+
+    output_type output_type::same_at(std::size_t input_index) {
+        output_type out;
+        out.kind = output_kind::same_type_at_index;
+        out.index = input_index;
         return out;
     }
 
     output_type output_type::computed(type_resolver_fn resolver) {
         output_type out;
-        out.value_ = std::move(resolver);
+        out.kind = output_kind::computed_fn;
+        out.resolver = std::move(resolver);
         return out;
     }
 
     compute_result<fixed_t> output_type::resolve(const std::pmr::vector<fixed_t>& input_types) const {
-        if (std::holds_alternative<fixed_t>(value_)) {
-            return std::get<fixed_t>(value_);
+        switch (kind) {
+            case output_kind::fixed:
+                return fixed_value;
+            case output_kind::same_type_at_index:
+                if (input_types.size() <= index)
+                    return compute_status::invalid("No inputs");
+                return input_types[index];
+            case output_kind::computed_fn:
+                if (resolver) return resolver(input_types);
+                return compute_status::invalid("output_type has no resolver");
         }
-
-        const auto& resolver = std::get<type_resolver_fn>(value_);
-        return resolver(input_types);
+        return compute_status::invalid("output_type unhandled kind");
     }
 
     kernel_signature_t::kernel_signature_t(std::pmr::vector<input_type> input_types,
@@ -48,40 +80,29 @@ namespace components::compute {
         return true;
     }
 
-    type_matcher_fn exact_type_matcher(types::logical_type type) {
-        return [type](const types::complex_logical_type& t) { return t.type() == type; };
+    input_type exact_type_matcher(types::logical_type type) {
+        return input_type{type_matcher_kind::exact, type};
     }
 
-    type_matcher_fn numeric_types_matcher() {
-        return [](const types::complex_logical_type& t) { return types::is_numeric(t.type()); };
+    input_type numeric_types_matcher() {
+        return input_type{type_matcher_kind::numeric, types::logical_type::INVALID};
     }
 
-    type_matcher_fn integer_types_matcher() {
-        return [](const types::complex_logical_type& t) {
-            using lt = types::logical_type;
-            auto id = t.type();
-            return id == lt::TINYINT || id == lt::SMALLINT || id == lt::INTEGER || id == lt::BIGINT ||
-                   id == lt::HUGEINT || id == lt::UTINYINT || id == lt::USMALLINT || id == lt::UINTEGER ||
-                   id == lt::UBIGINT || id == lt::UHUGEINT;
-        };
+    input_type integer_types_matcher() {
+        return input_type{type_matcher_kind::integer, types::logical_type::INVALID};
     }
 
-    type_matcher_fn floating_types_matcher() {
-        return [](const types::complex_logical_type& t) {
-            using lt = types::logical_type;
-            auto id = t.type();
-            return id == lt::FLOAT || id == lt::DOUBLE;
-        };
+    input_type floating_types_matcher() {
+        return input_type{type_matcher_kind::floating, types::logical_type::INVALID};
     }
 
-    type_matcher_fn any_type_matcher(std::pmr::vector<types::logical_type> type_list) {
-        return [list = std::move(type_list)](const types::complex_logical_type& t) {
-            return std::find(list.begin(), list.end(), t.type()) != list.end();
-        };
+    input_type any_type_matcher(std::pmr::vector<types::logical_type> type_list) {
+        std::vector<types::logical_type> list(type_list.begin(), type_list.end());
+        return input_type{type_matcher_kind::any_of, types::logical_type::INVALID, std::move(list)};
     }
 
-    type_matcher_fn always_true_type_matcher() {
-        return [](const types::complex_logical_type&) { return true; };
+    input_type always_true_type_matcher() {
+        return input_type{type_matcher_kind::always_true, types::logical_type::INVALID};
     }
 
     type_resolver_fn same_type_resolver(size_t input_index) {

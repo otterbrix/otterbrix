@@ -18,6 +18,9 @@ namespace configuration {
         bool on{true};
         uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
+        // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL
+        // bytes since the last checkpoint exceed this value. Default 16 MB (4 segments).
+        std::uintmax_t auto_checkpoint_threshold_bytes{16 * 1024 * 1024};
 
         explicit config_wal(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}

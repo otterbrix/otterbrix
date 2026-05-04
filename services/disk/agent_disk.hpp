@@ -1,9 +1,5 @@
 #pragma once
 
-#include "command.hpp"
-#include "disk.hpp"
-#include "result.hpp"
-
 #include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
@@ -11,9 +7,16 @@
 
 #include <components/log/log.hpp>
 #include <core/executor.hpp>
+#include <core/file/file_handle.hpp>
+#include <core/file/local_file_system.hpp>
+#include <filesystem>
+#include <services/wal/base.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace services::disk {
+
+    using path_t = std::filesystem::path;
+    using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
 
     class manager_disk_t;
     using name_t = std::string;
@@ -31,48 +34,18 @@ namespace services::disk {
 
         auto make_type() const noexcept -> const char*;
 
-        unique_future<result_load_t> load(session_id_t session);
-
-        unique_future<void> append_database(command_t command);
-        unique_future<void> remove_database(command_t command);
-
-        unique_future<void> append_collection(command_t command);
-        unique_future<void> remove_collection(command_t command);
-
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
-        unique_future<void> update_catalog_schemas(std::vector<catalog_schema_update_t> schemas);
-
-        unique_future<void> append_sequence(database_name_t database, catalog_sequence_entry_t entry);
-        unique_future<void> remove_sequence(database_name_t database, std::string name);
-        unique_future<void> append_view(database_name_t database, catalog_view_entry_t entry);
-        unique_future<void> remove_view(database_name_t database, std::string name);
-        unique_future<void> append_macro(database_name_t database, catalog_macro_entry_t entry);
-        unique_future<void> remove_macro(database_name_t database, std::string name);
-
-        using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::load,
-                                                            &agent_disk_t::append_database,
-                                                            &agent_disk_t::remove_database,
-                                                            &agent_disk_t::append_collection,
-                                                            &agent_disk_t::remove_collection,
-                                                            &agent_disk_t::fix_wal_id,
-                                                            &agent_disk_t::update_catalog_schemas,
-                                                            &agent_disk_t::append_sequence,
-                                                            &agent_disk_t::remove_sequence,
-                                                            &agent_disk_t::append_view,
-                                                            &agent_disk_t::remove_view,
-                                                            &agent_disk_t::append_macro,
-                                                            &agent_disk_t::remove_macro>;
+        using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::fix_wal_id>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
         const name_t name_;
         log_t log_;
-        disk_t disk_;
-
-        std::pmr::vector<unique_future<void>> pending_void_;
-        std::pmr::vector<unique_future<result_load_t>> pending_load_;
+        path_t path_;
+        core::filesystem::local_file_system_t fs_;
+        file_ptr file_wal_id_;
     };
 
     using agent_disk_ptr = std::unique_ptr<agent_disk_t, actor_zeta::pmr::deleter_t>;

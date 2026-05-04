@@ -16,8 +16,9 @@ namespace components::serializer {
 
     enum class serialization_type : uint8_t
     {
-        logical_node_create_index = 3,
-
+        // logical_node_create_index = 3 retired together with
+        // node_create_index_t::serialize/deserialize. Numeric value preserved as a comment
+        // so anyone reading old WAL/metadata files can still recognize the legacy tag.
         complex_logical_type = 27
     };
 

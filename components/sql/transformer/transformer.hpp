@@ -21,6 +21,16 @@ namespace components::sql::transform {
 
         transform_result transform(Node& node);
 
+        // Parse a bare SQL expression string (e.g. "age > 0") as if it were a WHERE clause.
+        // Used to compile stored CHECK constraint expressions for runtime evaluation.
+        // Returns nullptr expr if unparseable. params holds constants referenced by parameter_id_t
+        // inside the expression — caller must keep it alive for the lifetime of the predicate.
+        struct check_expr_result {
+            expressions::expression_ptr expr;
+            logical_plan::parameter_node_ptr params;
+        };
+        check_expr_result parse_where_expr(const std::string& expr_text);
+
     private:
         logical_plan::node_ptr transform_create_database(CreatedbStmt& node);
         logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
@@ -38,6 +48,13 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_sequence(CreateSeqStmt& node);
         logical_plan::node_ptr transform_create_view(ViewStmt& node);
         logical_plan::node_ptr transform_create_function(CreateFunctionStmt& node);
+        // ALTER TABLE → node_alter_table_t. Multi-clause ALTER TABLE (multiple AT_AddColumn
+        // etc) emits a sequence — currently only first command supported. RENAME TABLE not
+        // here (T_RenameStmt routes separately).
+        logical_plan::node_ptr transform_alter_table(AlterTableStmt& node);
+        // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
+        // Routes here from the top-level transform() switch.
+        logical_plan::node_ptr transform_rename(RenameStmt& node);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

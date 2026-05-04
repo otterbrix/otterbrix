@@ -4,8 +4,10 @@ set(SOURCE_${PROJECT_NAME}
         forward.cpp
         node.cpp
         node_aggregate.cpp
+        node_alter_table.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
+        node_create_constraint.cpp
         node_create_database.cpp
         node_create_index.cpp
         node_create_macro.cpp

@@ -1,7 +1,6 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
-#include <components/catalog/catalog_types.hpp>
 #include <components/catalog/schema.hpp>
 #include <components/catalog/table_metadata.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>

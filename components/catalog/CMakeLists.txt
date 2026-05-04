@@ -15,7 +15,6 @@ set(SOURCE_${PROJECT_NAME}
         computed_schema.cpp
         table_metadata.cpp
         catalog_error.cpp
-        catalog_types.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

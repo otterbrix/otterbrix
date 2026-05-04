@@ -2,7 +2,6 @@
 
 #include "catalog_error.hpp"
 #include "catalog_oids.hpp"
-#include "catalog_types.hpp"
 
 #include <components/cursor/cursor.hpp>
 #include <components/table/column_definition.hpp>
@@ -12,6 +11,9 @@
 #include <unordered_map>
 
 namespace components::catalog {
+    using schema_version_t = uint64_t;
+    using field_id_t = uint64_t;
+
     class schema {
     public:
         using field_description_cref = std::reference_wrapper<const types::field_description>;

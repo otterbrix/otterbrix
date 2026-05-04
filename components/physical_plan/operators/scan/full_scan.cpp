@@ -7,7 +7,8 @@ namespace components::operators {
     std::unique_ptr<table::table_filter_t>
     transform_predicate(const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
-                        const logical_plan::storage_parameters* parameters) {
+                        const logical_plan::storage_parameters* parameters,
+                        core::date::timezone_offset_t session_tz) {
         if (!expression || expression->type() == expressions::compare_type::all_true) {
             return nullptr;
         }
@@ -21,7 +22,8 @@ namespace components::operators {
                     auto child_filter =
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
-                                            parameters);
+                                            parameters,
+                                            session_tz);
                     if (child_filter) {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
@@ -37,7 +39,8 @@ namespace components::operators {
                     auto child_filter =
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
-                                            parameters);
+                                            parameters,
+                                            session_tz);
                     if (child_filter) {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
@@ -54,7 +57,8 @@ namespace components::operators {
                     auto child_filter =
                         transform_predicate(reinterpret_cast<const expressions::compare_expression_ptr&>(child),
                                             types,
-                                            parameters);
+                                            parameters,
+                                            session_tz);
                     if (child_filter) {
                         filter->child_filters.emplace_back(std::move(child_filter));
                     }
@@ -80,7 +84,10 @@ namespace components::operators {
                 if (it == parameters->parameters.end()) {
                     throw std::runtime_error("parameter not found in expression to filter conversion");
                 }
-                return std::make_unique<table::constant_filter_t>(expression->type(), it->second, std::move(indices));
+                const auto& cast_to_type = types::complex_logical_type::type_from_path(types, path);
+                return std::make_unique<table::constant_filter_t>(expression->type(),
+                                                                  it->second.cast_as(cast_to_type, session_tz),
+                                                                  std::move(indices));
             }
         }
     }
@@ -119,7 +126,7 @@ namespace components::operators {
         auto types = co_await std::move(tf);
 
         // Build filter from expression
-        auto filter = transform_predicate(expression_, types, &ctx->parameters);
+        auto filter = transform_predicate(expression_, types, &ctx->parameters, ctx->session_tz);
 
         // Scan from storage
         int64_t offset_val = limit_.offset();

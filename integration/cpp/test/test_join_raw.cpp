@@ -122,8 +122,9 @@ TEST_CASE("integration::cpp::test_raw_join") {
         chunks_by_uid_t chunks;
         chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
         chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {3, 300}}); });
-        chunks.emplace("uid_c",
-                       [res] { return build_pairs(res, "linker", "tail", {{100, 555}, {200, 777}, {300, 999}}); });
+        chunks.emplace("uid_c", [res] {
+            return build_pairs(res, "linker", "tail", {{100, 555}, {200, 777}, {300, 999}});
+        });
         chunks.emplace("uid_d", [res] { return build_pairs(res, "key", "extra", {{1, 7}, {3, 9}}); });
 
         const std::string sql = "SELECT * FROM uid_a.db.sch.a a "

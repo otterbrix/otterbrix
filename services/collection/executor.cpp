@@ -105,7 +105,8 @@ namespace services::collection::executor {
                                                    coll_name,
                                                    index::index_name_t(node_ci->name()),
                                                    node_ci->keys(),
-                                                   node_ci->type());
+                                                   node_ci->type(),
+                                                   context_storage.session_timezone);
                 auto id_index = co_await std::move(ixf);
 
                 if (id_index == components::index::INDEX_ID_UNDEFINED) {
@@ -133,12 +134,13 @@ namespace services::collection::executor {
 
                     if (scan_data) {
                         auto count = scan_data->size();
-                        auto [_ir, irf] = actor_zeta::send(index_address_,
-                                                           &index::manager_index_t::insert_rows,
-                                                           index::execution_context_t{session, txn, coll_name},
-                                                           std::move(scan_data),
-                                                           uint64_t{0},
-                                                           count);
+                        auto [_ir, irf] = actor_zeta::send(
+                            index_address_,
+                            &index::manager_index_t::insert_rows,
+                            index::execution_context_t{session, txn, context_storage.session_timezone, coll_name},
+                            std::move(scan_data),
+                            uint64_t{0},
+                            count);
                         co_await std::move(irf);
                     }
                 }
@@ -275,7 +277,7 @@ namespace services::collection::executor {
             // Step 5: Commit side-effects on storage and index
             auto coll_name = logical_plan->collection_full_name();
             if (result.append_row_count > 0 && commit_id > 0) {
-                components::execution_context_t ctx{session, txn_data, coll_name};
+                components::execution_context_t ctx{session, txn_data, context_storage.session_timezone, coll_name};
                 auto [_ca, caf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_commit_append,
                                                    ctx,
@@ -290,7 +292,7 @@ namespace services::collection::executor {
                 }
             }
             if (result.delete_txn_id != 0 && commit_id > 0) {
-                components::execution_context_t del_ctx{session, txn_data, coll_name};
+                components::execution_context_t del_ctx{session, txn_data, context_storage.session_timezone, coll_name};
                 auto [_cd, cdf] =
                     actor_zeta::send(disk_address_, &disk::manager_disk_t::storage_commit_delete, del_ctx, commit_id);
                 co_await std::move(cdf);
@@ -322,7 +324,10 @@ namespace services::collection::executor {
             trace(log_, "executor::execute_plan: DML error, aborting txn");
             auto coll_name = logical_plan->collection_full_name();
             if (result.append_row_count > 0) {
-                components::execution_context_t abort_ctx{session, txn_data, coll_name};
+                components::execution_context_t abort_ctx{session,
+                                                          txn_data,
+                                                          context_storage.session_timezone,
+                                                          coll_name};
                 auto [_ra, raf] = actor_zeta::send(disk_address_,
                                                    &disk::manager_disk_t::storage_revert_append,
                                                    abort_ctx,
@@ -538,7 +543,10 @@ namespace services::collection::executor {
             case operator_type::insert: {
                 auto& out_chunk = waiting_op->output()->data_chunk();
                 auto* ins = static_cast<operator_insert*>(waiting_op.get());
-                components::execution_context_t exec_ctx{ctx->session, ctx->txn, ins->collection_name()};
+                components::execution_context_t exec_ctx{ctx->session,
+                                                         ctx->txn,
+                                                         ctx->session_tz,
+                                                         ins->collection_name()};
 
                 // Capture WAL data BEFORE storage_append moves it
                 result.wal_insert_data =
@@ -552,7 +560,8 @@ namespace services::collection::executor {
                 auto [_a, af] = actor_zeta::send(disk_address_,
                                                  &disk::manager_disk_t::storage_append,
                                                  exec_ctx,
-                                                 std::move(data_copy));
+                                                 std::move(data_copy),
+                                                 ctx->session_tz);
                 auto [start_row, actual_count] = co_await std::move(af);
 
                 result.append_row_start = static_cast<int64_t>(start_row);
@@ -591,7 +600,10 @@ namespace services::collection::executor {
                 auto& ids = waiting_op->modified()->ids();
                 result.delete_count = waiting_op->modified()->size();
                 size_t modified_size = result.delete_count;
-                components::execution_context_t exec_ctx{ctx->session, ctx->txn, del_op->collection_name()};
+                components::execution_context_t exec_ctx{ctx->session,
+                                                         ctx->txn,
+                                                         ctx->session_tz,
+                                                         del_op->collection_name()};
 
                 // Capture WAL data: row IDs for physical delete
                 result.wal_row_ids.reserve(modified_size);
@@ -650,7 +662,10 @@ namespace services::collection::executor {
             case operator_type::update: {
                 auto* upd = static_cast<operator_update*>(waiting_op.get());
                 auto& out_chunk = waiting_op->output()->data_chunk();
-                components::execution_context_t exec_ctx{ctx->session, ctx->txn, upd->collection_name()};
+                components::execution_context_t exec_ctx{ctx->session,
+                                                         ctx->txn,
+                                                         ctx->session_tz,
+                                                         upd->collection_name()};
 
                 // Capture WAL data: row_ids + updated data for physical update
                 result.wal_row_ids.reserve(out_chunk.size());

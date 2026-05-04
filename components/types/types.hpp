@@ -1,5 +1,6 @@
 #pragma once
 #include "core/date/date_types.hpp"
+#include "types.hpp"
 
 #include <absl/numeric/int128.h>
 #include <array>
@@ -365,6 +366,9 @@ namespace components::types {
         bool is_unnamed() const;
         bool is_nested() const;
 
+        const complex_logical_type& child_type(const std::pmr::vector<size_t>& path) const;
+        static const complex_logical_type& type_from_path(const std::pmr::vector<complex_logical_type>& types,
+                                                          const std::pmr::vector<size_t>& path);
         const complex_logical_type& child_type() const;
         std::vector<complex_logical_type>& child_types();
         const std::vector<complex_logical_type>& child_types() const;
@@ -403,6 +407,9 @@ namespace components::types {
     private:
         logical_type type_ = logical_type::NA;
         std::unique_ptr<logical_type_extension> extension_ = nullptr; // for complex types
+
+        // helper method, so we won't have to copy vector each type, while providing somewhat friendly interface
+        const complex_logical_type& child_type(const size_t* path_data, size_t remaining) const;
     };
 
     struct list_entry_t {
@@ -480,6 +487,8 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
+        bool operator==(const array_logical_type_extension& rhs) const;
+
     private:
         complex_logical_type items_type_;
         uint64_t size_;
@@ -504,6 +513,8 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
+        bool operator==(const map_logical_type_extension& rhs) const;
+
     private:
         complex_logical_type key_;
         complex_logical_type value_;
@@ -524,6 +535,8 @@ namespace components::types {
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
+
+        bool operator==(const list_logical_type_extension& rhs) const;
 
     private:
         complex_logical_type items_type_;
@@ -549,6 +562,8 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
+        bool operator==(const struct_logical_type_extension& rhs) const;
+
     private:
         std::string type_name_;
         std::vector<complex_logical_type> fields_;
@@ -566,6 +581,8 @@ namespace components::types {
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
+
+        bool operator==(const decimal_logical_type_extension& rhs) const;
 
     private:
         physical_type stored_as_;
@@ -585,6 +602,8 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
+        bool operator==(const function_logical_type_extension& rhs) const;
+
     private:
         complex_logical_type return_type_;
         std::vector<complex_logical_type> argument_types_;
@@ -599,6 +618,8 @@ namespace components::types {
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
+
+        bool operator==(const unknown_logical_type_extension& rhs) const;
 
     private:
         std::string type_name_;
@@ -630,5 +651,7 @@ namespace components::types {
                 return false;
         }
     }
+
+    bool operator==(const logical_type_extension& lhs, const logical_type_extension& rhs);
 
 } // namespace components::types

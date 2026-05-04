@@ -418,7 +418,7 @@ namespace otterbrix {
                         switch (r->record_type) {
                             case services::wal::wal_record_type::PHYSICAL_INSERT:
                                 if (r->physical_data) {
-                                    disk_ptr->direct_append_sync(name, *r->physical_data);
+                                    disk_ptr->direct_append_sync(name, *r->physical_data, r->session_tz);
                                 }
                                 break;
                             case services::wal::wal_record_type::PHYSICAL_DELETE:

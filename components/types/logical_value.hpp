@@ -7,6 +7,7 @@
 #include <memory_resource>
 
 #include "types.hpp"
+#include <core/date/date_types.hpp>
 
 namespace components::types {
 
@@ -29,7 +30,7 @@ namespace components::types {
         template<typename T>
         T value() const;
         bool is_null() const noexcept;
-        logical_value_t cast_as(const complex_logical_type& type) const;
+        logical_value_t cast_as(const complex_logical_type& type, core::date::timezone_offset_t session_tz) const;
         void set_alias(const std::string& alias);
 
         bool operator==(const logical_value_t& rhs) const;
@@ -374,10 +375,14 @@ namespace components::types {
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
 
+        bool operator==(const enum_logical_type_extension& rhs) const;
+
     private:
         std::string type_name_;
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
     };
+
+    bool enum_value_matches_string(const logical_value_t& enum_val, std::string_view target);
 
     class user_logical_type_extension : public logical_type_extension {
     public:
@@ -389,6 +394,8 @@ namespace components::types {
         void serialize(serializer::msgpack_serializer_t* serializer) const override;
         static std::unique_ptr<logical_type_extension> deserialize(std::pmr::memory_resource* resource,
                                                                    serializer::msgpack_deserializer_t* deserializer);
+
+        bool operator==(const user_logical_type_extension& rhs) const;
 
     private:
         std::string catalog_;

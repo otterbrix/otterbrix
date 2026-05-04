@@ -27,7 +27,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         types_left,
                                                                         types_right,
-                                                                        &pipeline_context->parameters)
+                                                                        &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(output_->resource());
 
             size_t index = 0;
@@ -66,7 +67,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         types,
                                                                         types,
-                                                                        &pipeline_context->parameters)
+                                                                        &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(left_->output()->resource());
 
             size_t index = 0;

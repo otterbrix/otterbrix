@@ -59,7 +59,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         chunk_left.types(),
                                                                         chunk_right.types(),
-                                                                        &context->parameters)
+                                                                        &context->parameters,
+                                                                        context->session_tz)
                                          : predicates::create_all_true_predicate(output_->resource());
 
             switch (join_type_) {

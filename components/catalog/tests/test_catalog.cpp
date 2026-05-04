@@ -60,7 +60,7 @@ TEST_CASE("components::catalog::schema_test") {
         REQUIRE(get_result(tbl.find_field("flag")) == logical_type::BOOLEAN);
         REQUIRE(get_result(tbl.find_field("number")) == logical_type::INTEGER);
         REQUIRE(get_result(tbl.find_field("name")) == logical_type::STRING_LITERAL);
-        REQUIRE(get_result(tbl.find_field("array")) == logical_type::LIST);
+        REQUIRE(get_result(tbl.find_field("array")).type() == logical_type::LIST);
 
         REQUIRE(get_result(tbl.get_field_description("flag")).get().field_id == 1);
         REQUIRE(get_result(tbl.get_field_description("number")).get().field_id == 2);

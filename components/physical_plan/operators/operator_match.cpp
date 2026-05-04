@@ -31,7 +31,8 @@ namespace components::operators {
                                                                         expression_,
                                                                         types,
                                                                         types,
-                                                                        &pipeline_context->parameters)
+                                                                        &pipeline_context->parameters,
+                                                                        pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(left_->output()->resource());
             vector::indexing_vector_t all_indices(nullptr, nullptr);
             auto results = predicate->batch_check(chunk, chunk, all_indices, all_indices, chunk.size());

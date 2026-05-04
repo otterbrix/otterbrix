@@ -27,7 +27,12 @@ namespace components::operators {
                 if (upsert_) {
                     output_ = operators::make_operator_data(resource(), types_left);
                     for (const auto& expr : updates_) {
-                        expr->execute(chunk_left, chunk_right, 0, 0, &pipeline_context->parameters);
+                        expr->execute(chunk_left,
+                                      chunk_right,
+                                      0,
+                                      0,
+                                      &pipeline_context->parameters,
+                                      pipeline_context->session_tz);
                     }
                     modified_ = operators::make_operator_write_data(resource());
                 }
@@ -41,7 +46,8 @@ namespace components::operators {
                                                                       expr_,
                                                                       types_left,
                                                                       types_right,
-                                                                      &pipeline_context->parameters)
+                                                                      &pipeline_context->parameters,
+                                                                      pipeline_context->session_tz)
                                        : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk_left.size(); i++) {
@@ -60,8 +66,12 @@ namespace components::operators {
                             }
                             bool modified = false;
                             for (const auto& expr : updates_) {
-                                modified |=
-                                    expr->execute(out_chunk, chunk_right, index, j, &pipeline_context->parameters);
+                                modified |= expr->execute(out_chunk,
+                                                          chunk_right,
+                                                          index,
+                                                          j,
+                                                          &pipeline_context->parameters,
+                                                          pipeline_context->session_tz);
                             }
                             if (modified) {
                                 modified_->append(index);
@@ -91,7 +101,8 @@ namespace components::operators {
                                                                       expr_,
                                                                       types,
                                                                       types,
-                                                                      &pipeline_context->parameters)
+                                                                      &pipeline_context->parameters,
+                                                                      pipeline_context->session_tz)
                                        : predicates::create_all_true_predicate(left_->output()->resource());
                 size_t index = 0;
                 for (size_t i = 0; i < chunk.size(); i++) {
@@ -110,8 +121,12 @@ namespace components::operators {
                         }
                         bool modified = false;
                         for (const auto& expr : updates_) {
-                            modified |=
-                                expr->execute(out_chunk, out_chunk, index, index, &pipeline_context->parameters);
+                            modified |= expr->execute(out_chunk,
+                                                      out_chunk,
+                                                      index,
+                                                      index,
+                                                      &pipeline_context->parameters,
+                                                      pipeline_context->session_tz);
                         }
                         if (modified) {
                             modified_->append(index);

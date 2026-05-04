@@ -62,7 +62,8 @@ namespace components::expressions {
                      const vector::data_chunk_t& from,
                      size_t row_to,
                      size_t row_from,
-                     const logical_plan::storage_parameters* parameters);
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz);
 
         update_expr_type type() const noexcept;
         update_expr_ptr& left();
@@ -77,7 +78,8 @@ namespace components::expressions {
                                   const vector::data_chunk_t& from,
                                   size_t row_to,
                                   size_t row_from,
-                                  const logical_plan::storage_parameters* parameters) = 0;
+                                  const logical_plan::storage_parameters* parameters,
+                                  core::date::timezone_offset_t session_tz) = 0;
 
         update_expr_type type_;
         update_expr_ptr left_;
@@ -101,7 +103,8 @@ namespace components::expressions {
                           const vector::data_chunk_t& from,
                           size_t row_to,
                           size_t row_from,
-                          const logical_plan::storage_parameters* parameters) override;
+                          const logical_plan::storage_parameters* parameters,
+                          core::date::timezone_offset_t session_tz) override;
 
     private:
         key_t key_;
@@ -123,7 +126,8 @@ namespace components::expressions {
                           const vector::data_chunk_t& from,
                           size_t row_to,
                           size_t row_from,
-                          const logical_plan::storage_parameters* parameters) override;
+                          const logical_plan::storage_parameters* parameters,
+                          core::date::timezone_offset_t session_tz) override;
 
     private:
         key_t key_;
@@ -144,7 +148,8 @@ namespace components::expressions {
                           const vector::data_chunk_t& from,
                           size_t row_to,
                           size_t row_from,
-                          const logical_plan::storage_parameters* parameters) override;
+                          const logical_plan::storage_parameters* parameters,
+                          core::date::timezone_offset_t session_tz) override;
 
     private:
         core::parameter_id_t id_;
@@ -163,7 +168,8 @@ namespace components::expressions {
                           const vector::data_chunk_t& from,
                           size_t row_to,
                           size_t row_from,
-                          const logical_plan::storage_parameters* parameters) override;
+                          const logical_plan::storage_parameters* parameters,
+                          core::date::timezone_offset_t session_tz) override;
     };
 
     using update_expr_calculate_ptr = boost::intrusive_ptr<update_expr_calculate_t>;

@@ -21,14 +21,15 @@ namespace components::expressions {
                                 const vector::data_chunk_t& from,
                                 size_t row_to,
                                 size_t row_from,
-                                const logical_plan::storage_parameters* parameters) {
+                                const logical_plan::storage_parameters* parameters,
+                                core::date::timezone_offset_t session_tz) {
         if (left_) {
-            left_->execute(to, from, row_to, row_from, parameters);
+            left_->execute(to, from, row_to, row_from, parameters, session_tz);
         }
         if (right_) {
-            right_->execute(to, from, row_to, row_from, parameters);
+            right_->execute(to, from, row_to, row_from, parameters, session_tz);
         }
-        return execute_impl(to, from, row_to, row_from, parameters);
+        return execute_impl(to, from, row_to, row_from, parameters, session_tz);
     }
 
     update_expr_type update_expr_t::type() const noexcept { return type_; }
@@ -109,12 +110,24 @@ namespace components::expressions {
                                          const vector::data_chunk_t&,
                                          size_t row_to,
                                          size_t,
-                                         const logical_plan::storage_parameters*) {
+                                         const logical_plan::storage_parameters*,
+                                         core::date::timezone_offset_t session_tz) {
         if (left_) {
             assert(key_.path().front() != size_t(-1));
             auto prev_value = to.value(key_.path(), row_to);
-            auto res = prev_value != left_->output().value();
-            to.set_value(key_.path(), row_to, left_->output().value());
+            auto new_value = left_->output().value();
+            bool res = true;
+            if (prev_value.is_null() != new_value.is_null()) {
+                auto col_type = to.at(key_.path())->type();
+                new_value = new_value.cast_as(col_type, session_tz);
+            } else {
+                auto promoted_type = types::promote_type(prev_value.type().type(), new_value.type().type());
+
+                prev_value = prev_value.cast_as(promoted_type, session_tz);
+                new_value = new_value.cast_as(promoted_type, session_tz);
+                res = prev_value != new_value;
+            }
+            to.set_value(key_.path(), row_to, new_value);
             return res;
         }
         return false;
@@ -136,7 +149,8 @@ namespace components::expressions {
                                                const vector::data_chunk_t& from,
                                                size_t row_to,
                                                size_t row_from,
-                                               const logical_plan::storage_parameters*) {
+                                               const logical_plan::storage_parameters*,
+                                               core::date::timezone_offset_t) {
         auto side = key_.side();
         assert(side != side_t::undefined && "validation must resolve side before execution");
         if (side == side_t::right) {
@@ -163,7 +177,8 @@ namespace components::expressions {
                                                      const vector::data_chunk_t&,
                                                      size_t,
                                                      size_t,
-                                                     const logical_plan::storage_parameters* parameters) {
+                                                     const logical_plan::storage_parameters* parameters,
+                                                     core::date::timezone_offset_t) {
         output_ = parameters->parameters.at(id_);
         return false;
     }
@@ -238,7 +253,8 @@ namespace components::expressions {
                                                const vector::data_chunk_t&,
                                                size_t,
                                                size_t,
-                                               const logical_plan::storage_parameters*) {
+                                               const logical_plan::storage_parameters*,
+                                               core::date::timezone_offset_t) {
         if (is_unary_update_op(type_)) {
             output_ = apply_unary_update_op(type_, left_->output().value());
         } else {

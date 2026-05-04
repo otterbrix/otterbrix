@@ -26,6 +26,7 @@ namespace components::pipeline {
         actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
 
         table::transaction_data txn{0, 0};
+        core::date::timezone_offset_t session_tz{};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
         context_t(context_t&& context) noexcept;

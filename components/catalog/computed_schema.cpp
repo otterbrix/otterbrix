@@ -16,9 +16,7 @@ namespace components::catalog {
         column_order_.emplace_back(field_name, type);
     }
 
-    void computed_schema::append_n(std::pmr::string field_name,
-                                   const types::complex_logical_type& type,
-                                   size_t /*n*/) {
+    void computed_schema::append_n(std::pmr::string field_name, const types::complex_logical_type& type, size_t /*n*/) {
         append(std::move(field_name), type);
     }
 
@@ -34,9 +32,7 @@ namespace components::catalog {
         }
     }
 
-    void computed_schema::drop_n(std::pmr::string field_name,
-                                  const types::complex_logical_type& type,
-                                  size_t /*n*/) {
+    void computed_schema::drop_n(std::pmr::string field_name, const types::complex_logical_type& type, size_t /*n*/) {
         drop(std::move(field_name), type);
     }
 
@@ -63,8 +59,7 @@ namespace components::catalog {
         return types::complex_logical_type::create_struct("latest_types", std::move(retval));
     }
 
-    bool computed_schema::has_type(const std::pmr::string& field_name,
-                                    const types::complex_logical_type& type) const {
+    bool computed_schema::has_type(const std::pmr::string& field_name, const types::complex_logical_type& type) const {
         auto it = fields_.find(field_name);
         if (it == fields_.end()) {
             return false;

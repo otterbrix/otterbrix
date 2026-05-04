@@ -105,7 +105,9 @@ namespace services::disk {
         storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
 
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
+        storage_append(execution_context_t ctx,
+                       std::unique_ptr<components::vector::data_chunk_t> data,
+                       core::date::timezone_offset_t session_tz);
         actor_zeta::unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,

@@ -165,8 +165,8 @@ TEST_CASE("components::sql::insert_bind") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 123));
-        REQUIRE(chunk.value(1, 0) == v(&resource, 123));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 123l));
+        REQUIRE(chunk.value(1, 0) == v(&resource, 123l));
     }
 
     SECTION("insert multi-bind") {
@@ -189,12 +189,12 @@ TEST_CASE("components::sql::insert_bind") {
         const auto& chunk =
             reinterpret_cast<components::logical_plan::node_data_ptr&>(node->children().front())->data_chunk();
         REQUIRE(chunk.size() == 2);
-        REQUIRE(chunk.value(0, 0) == v(&resource, 1));
+        REQUIRE(chunk.value(0, 0) == v(&resource, 1ul));
         REQUIRE(chunk.value(1, 0) == v(&resource, "Name1"));
-        REQUIRE(chunk.value(2, 0) == v(&resource, 10));
-        REQUIRE(chunk.value(0, 1) == v(&resource, 2));
+        REQUIRE(chunk.value(2, 0) == v(&resource, 10ul));
+        REQUIRE(chunk.value(0, 1) == v(&resource, 2ul));
         REQUIRE(chunk.value(1, 1) == v(&resource, "Name2"));
-        REQUIRE(chunk.value(2, 1) == v(&resource, 20));
+        REQUIRE(chunk.value(2, 1) == v(&resource, 20ul));
     }
 }
 

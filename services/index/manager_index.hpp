@@ -80,7 +80,8 @@ namespace services::index {
                                              collection_full_name_t name,
                                              index_name_t index_name,
                                              components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type);
+                                             components::logical_plan::index_type type,
+                                             core::date::timezone_offset_t session_tz);
         unique_future<void> drop_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 
         // Query (txn-aware)
@@ -90,7 +91,8 @@ namespace services::index {
                                                         components::types::logical_value_t value,
                                                         components::expressions::compare_type compare,
                                                         uint64_t start_time,
-                                                        uint64_t txn_id);
+                                                        uint64_t txn_id,
+                                                        core::date::timezone_offset_t session_tz);
 
         unique_future<bool> has_index(session_id_t session, collection_full_name_t name, index_name_t index_name);
 

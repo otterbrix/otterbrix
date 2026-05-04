@@ -22,14 +22,11 @@ namespace components::catalog {
 
         [[nodiscard]] types::complex_logical_type latest_types_struct() const;
 
-        [[nodiscard]] bool has_type(const std::pmr::string& field_name,
-                                    const types::complex_logical_type& type) const;
+        [[nodiscard]] bool has_type(const std::pmr::string& field_name, const types::complex_logical_type& type) const;
 
     private:
         // field_name -> list of types currently present
-        std::pmr::unordered_map<std::pmr::string,
-                                std::pmr::vector<types::complex_logical_type>>
-            fields_;
+        std::pmr::unordered_map<std::pmr::string, std::pmr::vector<types::complex_logical_type>> fields_;
 
         // Preserves insertion order of (field_name, type) pairs for physical column ordering.
         std::pmr::vector<std::pair<std::pmr::string, types::complex_logical_type>> column_order_;

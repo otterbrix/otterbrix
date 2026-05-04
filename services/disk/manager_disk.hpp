@@ -64,9 +64,7 @@ namespace services::disk {
         storage_mode_t mode() const { return mode_; }
 
         /// Replaces the internal table (used when adding a column to a computing table).
-        void reset_table(std::unique_ptr<components::table::data_table_t> new_table) {
-            table_ = std::move(new_table);
-        }
+        void reset_table(std::unique_ptr<components::table::data_table_t> new_table) { table_ = std::move(new_table); }
 
         /// Checkpoint (disk mode only, no-op for in-memory)
         void checkpoint();
@@ -114,7 +112,9 @@ namespace services::disk {
         void overlay_column_not_null_sync(const collection_full_name_t& name, const std::string& col_name);
 
         // Synchronous direct replay methods for physical WAL (before schedulers start, no MVCC)
-        void direct_append_sync(const collection_full_name_t& name, components::vector::data_chunk_t& data);
+        void direct_append_sync(const collection_full_name_t& name,
+                                components::vector::data_chunk_t& data,
+                                core::date::timezone_offset_t session_tz);
         void direct_delete_sync(const collection_full_name_t& name,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count);
@@ -204,7 +204,9 @@ namespace services::disk {
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
+        storage_append(execution_context_t ctx,
+                       std::unique_ptr<components::vector::data_chunk_t> data,
+                       core::date::timezone_offset_t session_tz);
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,
@@ -318,11 +320,10 @@ namespace services::disk {
 
             /// Add a column to a computing (schema-less) table.
             void add_column(components::table::column_definition_t col_def) {
-                auto new_table =
-                    std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
+                auto new_table = std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
                 table_storage.reset_table(std::move(new_table));
-                storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                          resource);
+                storage =
+                    std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
             }
         };
         std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>
@@ -451,7 +452,6 @@ namespace services::disk {
                                                collection_full_name_t name,
                                                components::table::column_definition_t new_column);
 
-
         // Storage queries
         unique_future<std::pmr::vector<components::types::complex_logical_type>>
         storage_types(session_id_t session, collection_full_name_t name);
@@ -479,7 +479,9 @@ namespace services::disk {
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, collection_full_name_t name, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
+        storage_append(execution_context_t ctx,
+                       std::unique_ptr<components::vector::data_chunk_t> data,
+                       core::date::timezone_offset_t session_tz);
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,
@@ -598,11 +600,10 @@ namespace services::disk {
 
             /// Add a column to a computing (schema-less) table.
             void add_column(components::table::column_definition_t col_def) {
-                auto new_table =
-                    std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
+                auto new_table = std::make_unique<components::table::data_table_t>(table_storage.table(), col_def);
                 table_storage.reset_table(std::move(new_table));
-                storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
-                                                                                          resource);
+                storage =
+                    std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource);
             }
         };
         std::unordered_map<collection_full_name_t, std::unique_ptr<collection_storage_entry_t>, collection_name_hash>

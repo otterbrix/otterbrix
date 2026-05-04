@@ -29,6 +29,7 @@ namespace services::wal {
         std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};
+        core::date::timezone_offset_t session_tz{};
 
         // Error tracking
         bool is_corrupt{false};

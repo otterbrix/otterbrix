@@ -8,13 +8,13 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
-#include <components/logical_plan/node_insert.hpp>
-#include <components/table/column_definition.hpp>
 #include <components/logical_plan/node_drop_database.hpp>
 #include <components/logical_plan/node_drop_macro.hpp>
 #include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
+#include <components/table/column_definition.hpp>
 
 #include <chrono>
 #include <core/executor.hpp>
@@ -416,12 +416,13 @@ namespace services::dispatcher {
                             auto scan_data = co_await std::move(ssf);
                             if (scan_data) {
                                 auto count = scan_data->size();
-                                auto [_ir, irf] = actor_zeta::send(index_address_,
-                                                                   &index::manager_index_t::insert_rows,
-                                                                   index::execution_context_t{session, txn_data, coll},
-                                                                   std::move(scan_data),
-                                                                   uint64_t{0},
-                                                                   count);
+                                auto [_ir, irf] = actor_zeta::send(
+                                    index_address_,
+                                    &index::manager_index_t::insert_rows,
+                                    index::execution_context_t{session, txn_data, catalog_.timezone_offset(), coll},
+                                    std::move(scan_data),
+                                    uint64_t{0},
+                                    count);
                                 co_await std::move(irf);
                             }
                         }
@@ -444,8 +445,7 @@ namespace services::dispatcher {
                     // Dynamic schema: expand schema and rename column aliases to physical names
                     auto& children = logic_plan->children();
                     if (!children.empty() && children.front()->type() == node_type::data_t) {
-                        auto data_node =
-                            boost::static_pointer_cast<node_data_t>(children.front());
+                        auto data_node = boost::static_pointer_cast<node_data_t>(children.front());
                         auto& chunk = data_node->data_chunk();
                         auto& schema = catalog_.get_computing_table_schema(id);
                         uint64_t row_count = chunk.size();
@@ -457,11 +457,10 @@ namespace services::dispatcher {
 
                             std::pmr::string pmr_field(field_name.c_str(), resource());
                             if (!schema.has_type(pmr_field, field_type)) {
-                                components::table::column_definition_t col_def(
-                                    std::string(field_name),
-                                    field_type,
-                                    false,
-                                    std::nullopt);
+                                components::table::column_definition_t col_def(std::string(field_name),
+                                                                               field_type,
+                                                                               false,
+                                                                               std::nullopt);
                                 auto [_ac, acf] = actor_zeta::send(disk_address_,
                                                                    &disk::manager_disk_t::storage_add_column,
                                                                    session,
@@ -478,8 +477,7 @@ namespace services::dispatcher {
                             col.set_type_alias(std::string(field_name));
 
                             // Track for computed_schema refcount update after successful INSERT
-                            update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] +=
-                                row_count;
+                            update_result_[{std::pmr::string(field_name.c_str(), resource()), field_type}] += row_count;
                         }
                     }
                 }

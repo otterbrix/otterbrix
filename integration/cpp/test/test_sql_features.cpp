@@ -1249,6 +1249,123 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         REQUIRE(i1 == *core::date::parse_interval("7 day"));
         REQUIRE(i2 == *core::date::parse_interval("30 day"));
     }
+
+    INFO("DATE column equals TIMESTAMP literal (DATE implicit widening to TIMESTAMP)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM TestDatabase.TestCollection WHERE d = TIMESTAMP '2024-03-15 00:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
+    }
+
+    INFO("DATE column less than TIMESTAMP literal") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM TestDatabase.TestCollection WHERE d < TIMESTAMP '2024-06-01 00:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("TIMESTAMP column less than DATE literal (DATE implicit widening to TIMESTAMP)") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE ts < DATE '2024-06-01';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("TIMESTAMP column greater than DATE literal") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE ts > DATE '2024-06-01';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(1, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-12-31 23:59:59"));
+    }
+
+    INFO("TIMESTAMP_TZ column equals TIMESTAMP literal (TIMESTAMP implicit widening to TIMESTAMP_TZ)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM TestDatabase.TestCollection WHERE tstz = TIMESTAMP '2024-03-15 12:30:45';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("TIMESTAMP_TZ column less than TIMESTAMP literal") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT * FROM TestDatabase.TestCollection WHERE tstz < TIMESTAMP '2024-06-01 00:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("TIME_TZ column equals TIME literal (TIME implicit widening to TIME_TZ)") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE tz = TIME '12:30:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(4, 0).value<core::date::timetz_t>() ==
+                *core::date::parse_timetz("12:30:00+00:00"));
+    }
+
+    INFO("TIME_TZ column greater than TIME literal") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE tz > TIME '08:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("INSERT: DATE into TIMESTAMP, TIMESTAMP into TIMESTAMPTZ, TIME into TIME_TZ") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.TestCollection (d, ts, tstz, t, tz, iv) VALUES ("
+                                           "  DATE '2024-06-15',"
+                                           "  DATE '2024-06-15',"
+                                           "  TIMESTAMP '2024-06-15 06:00:00',"
+                                           "  TIME '15:30:00',"
+                                           "  TIME '15:30:00',"
+                                           "  INTERVAL '5 day'"
+                                           ");");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("INSERT: DATE widened to TIMESTAMP midnight") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(1, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-06-15 00:00:00"));
+    }
+
+    INFO("INSERT: TIMESTAMP widened to TIMESTAMPTZ") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(2, 0).value<core::date::timestamptz_t>() ==
+                *core::date::parse_timestamptz("2024-06-15 06:00:00+00:00"));
+    }
+
+    INFO("INSERT: TIME widened to TIME_TZ with zero offset") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(4, 0).value<core::date::timetz_t>() ==
+                *core::date::parse_timetz("15:30:00+00:00"));
+    }
 }
 
 TEST_CASE("integration::cpp::test_sql_features::decimal_type") {

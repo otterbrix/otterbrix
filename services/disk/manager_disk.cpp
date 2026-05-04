@@ -765,7 +765,8 @@ namespace services::disk {
     } // anonymous namespace
 
     void manager_disk_t::direct_append_sync(const collection_full_name_t& name,
-                                            components::vector::data_chunk_t& data) {
+                                            components::vector::data_chunk_t& data,
+                                            core::date::timezone_offset_t session_tz) {
         auto* s = get_storage(name);
         if (!s || data.size() == 0)
             return;
@@ -823,7 +824,7 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, local.size());
                     for (uint64_t row = 0; row < local.size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
                         } else {
                             casted.validity().set_invalid(row);
                         }
@@ -1075,7 +1076,9 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
-    manager_disk_t::storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data) {
+    manager_disk_t::storage_append(execution_context_t ctx,
+                                   std::unique_ptr<components::vector::data_chunk_t> data,
+                                   core::date::timezone_offset_t session_tz) {
         auto& name = ctx.name;
         auto& txn = ctx.txn;
         auto* s = get_storage(name);
@@ -1103,7 +1106,7 @@ namespace services::disk {
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
                         data->data[col].type().alias() == table_columns[t].name() &&
-                        data->data[col].type() == table_columns[t].type()) {
+                        data->data[col].type().is_convertable_to(table_columns[t].type())) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;
@@ -1215,7 +1218,7 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
                         } else {
                             casted.validity().set_invalid(row);
                         }
@@ -1674,7 +1677,8 @@ namespace services::disk {
 
     manager_disk_empty_t::unique_future<std::pair<uint64_t, uint64_t>>
     manager_disk_empty_t::storage_append(execution_context_t ctx,
-                                         std::unique_ptr<components::vector::data_chunk_t> data) {
+                                         std::unique_ptr<components::vector::data_chunk_t> data,
+                                         core::date::timezone_offset_t session_tz) {
         auto& name = ctx.name;
         auto* s = get_storage(name);
         if (!s || !data || data->size() == 0) {
@@ -1700,7 +1704,7 @@ namespace services::disk {
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
                         data->data[col].type().alias() == table_columns[t].name() &&
-                        data->data[col].type() == table_columns[t].type()) {
+                        data->data[col].type().is_convertable_to(table_columns[t].type())) {
                         expanded_data.push_back(std::move(data->data[col]));
                         found = true;
                         break;
@@ -1805,7 +1809,7 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type));
+                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
                         } else {
                             casted.validity().set_invalid(row);
                         }

@@ -115,6 +115,20 @@ namespace components::table {
                 predicate = static_cast<T>(constant.value<double>());
             } else if (const_type == types::logical_type::FLOAT) {
                 predicate = static_cast<T>(constant.value<float>());
+            } else if constexpr (sizeof(T) == 4) {
+                // INT32 column (DATE = days since epoch). Widen to µs when constant is a µs-based duration.
+                if (const_type == types::logical_type::TIMESTAMP || const_type == types::logical_type::TIMESTAMP_TZ) {
+                    const int64_t as_us = static_cast<int64_t>(value) * int64_t{86400} * int64_t{1000000};
+                    return compare(as_us);
+                }
+                predicate = constant.value<T>();
+            } else if constexpr (sizeof(T) == 8) {
+                // INT64 column (TIME/TIMESTAMP/TIMESTAMP_TZ = µs). Convert DATE constant (days) to µs.
+                if (const_type == types::logical_type::DATE) {
+                    predicate = static_cast<T>(constant.value<int32_t>()) * T{86400} * T{1000000};
+                } else {
+                    predicate = constant.value<T>();
+                }
             } else {
                 predicate = constant.value<T>();
             }

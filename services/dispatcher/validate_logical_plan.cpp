@@ -983,6 +983,23 @@ namespace services::dispatcher {
                                 new_column.set_value(i, *parsed_val);
                             }
                             column = std::move(new_column);
+                        } else if (it->type() == logical_type::DECIMAL &&
+                                   (is_numeric(column.type().type()) ||
+                                    column.type().type() == logical_type::STRING_LITERAL)) {
+                            components::vector::vector_t new_column(resource, *it, data_node->data_chunk().capacity());
+                            for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
+                                auto val = column.value(i).cast_as(*it, catalog.timezone_offset());
+                                if (val.type().type() == logical_type::NA) {
+                                    result =
+                                        core::error_t(core::error_code_t::schema_error,
+                                                      std::pmr::string{"couldn't convert value to decimal type: \'" +
+                                                                           it->alias() + "\'",
+                                                                       resource});
+                                    return false;
+                                }
+                                new_column.set_value(i, val);
+                            }
+                            column = std::move(new_column);
                         } else if (catalog.type_exists(it->type_name())) {
                             // if this is a registered type, then conversion is required
                             if (it->type() == logical_type::STRUCT) {
@@ -990,7 +1007,7 @@ namespace services::dispatcher {
                                                                         *it,
                                                                         data_node->data_chunk().capacity());
                                 for (size_t i = 0; i < data_node->data_chunk().size(); i++) {
-                                    auto val = column.value(i).cast_as(*it);
+                                    auto val = column.value(i).cast_as(*it, catalog.timezone_offset());
                                     if (val.type().type() == logical_type::NA) {
                                         result =
                                             core::error_t(core::error_code_t::schema_error,
@@ -1234,10 +1251,11 @@ namespace services::dispatcher {
                         std::unordered_set<std::string> seen;
                         for (const auto& col : incoming_schema) {
                             if (!seen.insert(col.type.alias()).second) {
-                                return core::error_t(core::error_code_t::schema_error,
-                                                     std::pmr::string{"column '" + col.type.alias() +
-                                                                          "' has multiple types; use explicit type selection",
-                                                                      resource});
+                                return core::error_t(
+                                    core::error_code_t::schema_error,
+                                    std::pmr::string{"column '" + col.type.alias() +
+                                                         "' has multiple types; use explicit type selection",
+                                                     resource});
                             }
                         }
                     }

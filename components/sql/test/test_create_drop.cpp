@@ -147,7 +147,7 @@ TEST_CASE("components::sql::table") {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                if (array->internal_type() != logical_type::DECIMAL)
+                if (array->internal_type().type() != logical_type::DECIMAL)
                     return false;
                 auto decimal = static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
                 return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 && array->size() == 10;

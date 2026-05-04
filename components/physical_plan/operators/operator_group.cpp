@@ -855,6 +855,9 @@ namespace components::operators {
         for (size_t group_idx = 0; group_idx < result.size(); group_idx++) {
             auto left_val = resolve(cmp->left(), group_idx, resolve);
             auto right_val = resolve(cmp->right(), group_idx, resolve);
+            auto promoted_type = types::promote_type(left_val.type().type(), right_val.type().type());
+            left_val = left_val.cast_as(promoted_type, pipeline_context->session_tz);
+            right_val = right_val.cast_as(promoted_type, pipeline_context->session_tz);
             auto cmp_result = left_val.compare(right_val);
             bool passes = false;
             switch (cmp->type()) {

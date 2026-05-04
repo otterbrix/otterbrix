@@ -421,7 +421,7 @@ namespace components::vector {
             return child().set_value(indexing_vector.get_index(index), val);
         }
         if (!val.is_null() && val.type().to_physical_type() != type_.to_physical_type()) {
-            set_value(index, val.cast_as(type_));
+            assert(false && "value has to be casted to vector's type before set_value");
             return;
         }
 

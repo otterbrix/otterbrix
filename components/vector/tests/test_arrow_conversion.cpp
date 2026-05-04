@@ -98,7 +98,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, j);
+                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
                 }
                 std::vector<logical_value_t> value_fiels;
                 value_fiels.emplace_back(&resource, i % 2 != 0);
@@ -213,7 +213,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, j);
+                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
                 }
                 std::vector<logical_value_t> value_fiels;
                 value_fiels.emplace_back(&resource, i % 2 != 0);

@@ -55,7 +55,8 @@ namespace components::operators {
                                          types::logical_value_t{resource_, value_},
                                          compare_type_,
                                          ctx->txn.start_time,
-                                         ctx->txn.transaction_id);
+                                         ctx->txn.transaction_id,
+                                         ctx->session_tz);
         row_ids_vec = co_await std::move(sf);
 
         // Apply offset and limit

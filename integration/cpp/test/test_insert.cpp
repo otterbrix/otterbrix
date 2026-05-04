@@ -70,9 +70,9 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         }
         for (const auto& type : types) {
             columns_value_defaults.emplace_back(type.alias(),
-                                               type,
-                                               false,
-                                               types::logical_value_t{dispatcher->resource(), type});
+                                                type,
+                                                false,
+                                                types::logical_value_t{dispatcher->resource(), type});
         }
         for (const auto& type : types) {
             columns_value_defaults_not_null.emplace_back(type.alias(),

@@ -441,7 +441,7 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
                               ns_oid, std::string("agg"), std::uint64_t{0});
         REQUIRE(rr.found);
         REQUIRE(rr.oid == comp_oid);
-        REQUIRE(rr.relkind == 'g');
+        REQUIRE(rr.relkind == components::catalog::relkind::computed);
         // V4 resolve_table for relkind='g' fills `columns` from pg_computed_column
         // (latest version per attname with refcount > 0). Two appends in fixture →
         // two columns survive restart.
@@ -501,7 +501,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
                              ns_oid, std::string("counter2"), std::uint64_t{0});
         REQUIRE(r.found);
         REQUIRE(r.oid == seq_oid);
-        REQUIRE(r.relkind == 'S');
+        REQUIRE(r.relkind == components::catalog::relkind::sequence);
         auto p = fd2.manager->sequence_params_for(seq_oid);
         REQUIRE(p.has_value());
         REQUIRE(p->seqstart == 5);
@@ -551,7 +551,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
                              ns_oid, std::string("my_view2"), std::uint64_t{0});
         REQUIRE(r.found);
         REQUIRE(r.oid == view_oid);
-        REQUIRE(r.relkind == 'v');
+        REQUIRE(r.relkind == components::catalog::relkind::view);
         auto body = fd2.manager->rewrite_ev_action_for(view_oid);
         REQUIRE(body == view_sql);
     }
@@ -588,7 +588,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
                              ns_oid, std::string("double"), std::uint64_t{0});
         REQUIRE(r.found);
         REQUIRE(r.oid == macro_oid);
-        REQUIRE(r.relkind == 'm');
+        REQUIRE(r.relkind == components::catalog::relkind::macro);
         auto body = fd2.manager->rewrite_ev_action_for(macro_oid);
         REQUIRE(body == macro_body);
     }

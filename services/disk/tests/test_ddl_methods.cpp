@@ -123,7 +123,7 @@ TEST_CASE("services::disk::ddl::create_table_computing_relkind") {
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                          std::string("metrics"), std::uint64_t{0});
     REQUIRE(rr.found);
-    REQUIRE(rr.relkind == 'g');
+    REQUIRE(rr.relkind == components::catalog::relkind::computed);
     (void)rt;
 }
 
@@ -519,7 +519,7 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                          std::string("agg"), std::uint64_t{0});
     REQUIRE(rr.found);
-    REQUIRE(rr.relkind == 'g');
+    REQUIRE(rr.relkind == components::catalog::relkind::computed);
     REQUIRE(rr.columns.empty());
 
     // After ddl_computed_append the field lives in pg_computed_column. V4 resolve_table
@@ -531,7 +531,7 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     auto rr2 = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                           std::string("agg"), std::uint64_t{0});
     REQUIRE(rr2.found);
-    REQUIRE(rr2.relkind == 'g');
+    REQUIRE(rr2.relkind == components::catalog::relkind::computed);
     REQUIRE(rr2.columns.size() == 1);
     REQUIRE(rr2.columns[0].attname == "count");
     REQUIRE(rr2.columns[0].atttypid == components::catalog::well_known_oid::int64_type);

@@ -100,7 +100,7 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
     REQUIRE(r.found);
     REQUIRE(r.oid == created.created_oid);
     REQUIRE(r.namespace_oid == well_known_oid::public_namespace);
-    REQUIRE(r.relkind == 'r');
+    REQUIRE(r.relkind == components::catalog::relkind::regular);
     REQUIRE(r.columns.size() == 2);
 }
 

@@ -22,7 +22,7 @@ namespace components::operators {
                          const std::pmr::vector<types::complex_logical_type>& out_types,
                          const std::vector<size_t>& indices_left,
                          const std::vector<size_t>& indices_right,
-                         std::vector<vector::data_chunk_t>& out_chunks)
+                         chunks_vector_t& out_chunks)
                 : resource_(resource)
                 , out_types_(out_types)
                 , indices_left_(indices_left)
@@ -95,7 +95,7 @@ namespace components::operators {
             const std::pmr::vector<types::complex_logical_type>& out_types_;
             const std::vector<size_t>& indices_left_;
             const std::vector<size_t>& indices_right_;
-            std::vector<vector::data_chunk_t>& out_chunks_;
+            chunks_vector_t& out_chunks_;
             vector::data_chunk_t cur_;
             uint64_t filled_ = 0;
         };
@@ -168,8 +168,8 @@ namespace components::operators {
                                                                     &context->parameters)
                                      : predicates::create_all_true_predicate(left_out->resource());
 
-        std::vector<vector::data_chunk_t> out_chunks;
         auto* res_resource = left_out->resource();
+        chunks_vector_t out_chunks(res_resource);
 
         switch (join_type_) {
             case type::inner:
@@ -204,7 +204,7 @@ namespace components::operators {
     void operator_join_t::inner_join_(const predicates::predicate_ptr& predicate,
                                       pipeline::context_t*,
                                       const std::pmr::vector<types::complex_logical_type>& out_types,
-                                      std::vector<vector::data_chunk_t>& out_chunks) {
+                                      chunks_vector_t& out_chunks) {
         auto& left_chunks = left_->output()->chunks();
         auto& right_chunks = right_->output()->chunks();
         auto* resource = left_->output()->resource();
@@ -236,7 +236,7 @@ namespace components::operators {
     void operator_join_t::outer_full_join_(const predicates::predicate_ptr& predicate,
                                            pipeline::context_t*,
                                            const std::pmr::vector<types::complex_logical_type>& out_types,
-                                           std::vector<vector::data_chunk_t>& out_chunks) {
+                                           chunks_vector_t& out_chunks) {
         auto& left_chunks = left_->output()->chunks();
         auto& right_chunks = right_->output()->chunks();
         auto* resource = left_->output()->resource();
@@ -291,7 +291,7 @@ namespace components::operators {
     void operator_join_t::outer_left_join_(const predicates::predicate_ptr& predicate,
                                            pipeline::context_t*,
                                            const std::pmr::vector<types::complex_logical_type>& out_types,
-                                           std::vector<vector::data_chunk_t>& out_chunks) {
+                                           chunks_vector_t& out_chunks) {
         auto& left_chunks = left_->output()->chunks();
         auto& right_chunks = right_->output()->chunks();
         auto* resource = left_->output()->resource();
@@ -328,7 +328,7 @@ namespace components::operators {
     void operator_join_t::outer_right_join_(const predicates::predicate_ptr& predicate,
                                             pipeline::context_t*,
                                             const std::pmr::vector<types::complex_logical_type>& out_types,
-                                            std::vector<vector::data_chunk_t>& out_chunks) {
+                                            chunks_vector_t& out_chunks) {
         auto& left_chunks = left_->output()->chunks();
         auto& right_chunks = right_->output()->chunks();
         auto* resource = left_->output()->resource();
@@ -364,7 +364,7 @@ namespace components::operators {
 
     void operator_join_t::cross_join_(pipeline::context_t*,
                                       const std::pmr::vector<types::complex_logical_type>& out_types,
-                                      std::vector<vector::data_chunk_t>& out_chunks) {
+                                      chunks_vector_t& out_chunks) {
         auto& left_chunks = left_->output()->chunks();
         auto& right_chunks = right_->output()->chunks();
         auto* resource = left_->output()->resource();

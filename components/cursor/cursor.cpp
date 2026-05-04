@@ -25,7 +25,7 @@ namespace components::cursor {
         , type_data_(resource)
         , error_(core::error_t::no_error()) {}
 
-    cursor_t::cursor_t(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks)
+    cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
         : table_data_(resource, std::pmr::vector<types::complex_logical_type>{resource})
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
@@ -116,7 +116,7 @@ namespace components::cursor {
         return cursor_t_ptr{new cursor_t(resource, std::move(chunk))};
     }
 
-    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks) {
+    cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks) {
         return cursor_t_ptr{new cursor_t(resource, std::move(chunks))};
     }
 

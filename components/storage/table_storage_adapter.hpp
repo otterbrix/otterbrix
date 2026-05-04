@@ -102,7 +102,7 @@ namespace components::storage {
             }
         }
 
-        void scan_batched(std::vector<vector::data_chunk_t>& batches,
+        void scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                           const table::table_filter_t* filter,
                           int64_t limit,
                           const std::vector<size_t>* projected_cols,

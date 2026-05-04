@@ -180,7 +180,7 @@ namespace components::table {
         // projected (sparse) chunk constructor.
         void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                           const std::vector<size_t>* projected_cols,
-                          std::vector<vector::data_chunk_t>& batches,
+                          std::pmr::vector<vector::data_chunk_t>& batches,
                           std::pmr::memory_resource* resource);
         bool scan_committed(vector::data_chunk_t& result, table_scan_type type);
         bool scan_committed(vector::data_chunk_t& result, std::unique_lock<std::mutex>& l, table_scan_type type);

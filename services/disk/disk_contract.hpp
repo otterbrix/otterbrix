@@ -105,7 +105,7 @@ namespace services::disk {
                                components::table::transaction_data txn);
         // Batched scan: returns chunks ≤ DEFAULT_VECTOR_CAPACITY without the concat-then-split
         // round-trip. Empty `projected_cols` means scan all columns.
-        actor_zeta::unique_future<std::vector<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_batched(session_id_t session,
                              collection_full_name_t name,
                              std::unique_ptr<components::table::table_filter_t> filter,

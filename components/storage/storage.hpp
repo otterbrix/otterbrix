@@ -58,7 +58,7 @@ namespace components::storage {
         // avoiding the accumulate-then-split round-trip. `projected_cols == nullptr` means
         // scan all columns; otherwise sparse projection.
         // Default implementation: do a regular scan into one chunk; subclasses can override.
-        virtual void scan_batched(std::vector<vector::data_chunk_t>& batches,
+        virtual void scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                   const table::table_filter_t* filter,
                                   int64_t limit,
                                   const std::vector<size_t>* projected_cols,

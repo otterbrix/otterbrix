@@ -206,7 +206,7 @@ namespace components::table {
 
     void collection_scan_state::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                              const std::vector<size_t>* projected_cols,
-                                             std::vector<vector::data_chunk_t>& batches,
+                                             std::pmr::vector<vector::data_chunk_t>& batches,
                                              std::pmr::memory_resource* resource) {
         while (row_group) {
             vector::data_chunk_t batch =

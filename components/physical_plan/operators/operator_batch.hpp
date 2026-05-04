@@ -9,7 +9,7 @@
 namespace components::operators {
     class operator_batch_t final : public read_only_operator_t {
     public:
-        operator_batch_t(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks);
+        operator_batch_t(std::pmr::memory_resource* resource, chunks_vector_t&& chunks);
 
     private:
         void on_execute_impl(pipeline::context_t*) override {}
@@ -17,8 +17,7 @@ namespace components::operators {
 
     using operator_batch_ptr = boost::intrusive_ptr<operator_batch_t>;
 
-    inline operator_batch_ptr make_operator_batch(std::pmr::memory_resource* resource,
-                                                  std::vector<vector::data_chunk_t>&& chunks) {
+    inline operator_batch_ptr make_operator_batch(std::pmr::memory_resource* resource, chunks_vector_t&& chunks) {
         return {new operator_batch_t(resource, std::move(chunks))};
     }
 } // namespace components::operators

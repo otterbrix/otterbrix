@@ -8,6 +8,7 @@
 
 #include <components/physical_plan/operators/aggregate/operator_aggregate.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 
 namespace components::operators {
 
@@ -122,11 +123,10 @@ namespace components::operators {
 
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        void create_list_rows(const std::vector<vector::data_chunk_t>& in_chunks);
-        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context,
-                                                   std::vector<vector::data_chunk_t>& in_chunks);
+        void create_list_rows(const chunks_vector_t& in_chunks);
+        vector::data_chunk_t calc_aggregate_values(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks);
         vector::data_chunk_t calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
-                                                            std::vector<vector::data_chunk_t>& in_chunks);
+                                                            chunks_vector_t& in_chunks);
         vector::data_chunk_t
         build_result_chunk(size_t num_groups,
                            size_t key_count,

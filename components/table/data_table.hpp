@@ -34,7 +34,7 @@ namespace components::table {
         // Emits ≤DEFAULT_VECTOR_CAPACITY chunks straight from the scan, no concat-then-split.
         void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                           const std::vector<size_t>* projected_cols,
-                          std::vector<vector::data_chunk_t>& batches,
+                          std::pmr::vector<vector::data_chunk_t>& batches,
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
 

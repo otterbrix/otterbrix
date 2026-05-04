@@ -105,7 +105,7 @@ namespace components::operators {
         uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val)
                                          : std::numeric_limits<uint64_t>::max();
 
-        std::vector<vector::data_chunk_t> out_chunks;
+        chunks_vector_t out_chunks(resource_);
         vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t cur_filled = 0;
         uint64_t produced = 0;

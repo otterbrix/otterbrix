@@ -60,7 +60,7 @@ namespace components::operators {
                                                                       &pipeline_context->parameters)
                                        : predicates::create_all_true_predicate(resource);
 
-                std::vector<vector::data_chunk_t> out_chunks;
+                chunks_vector_t out_chunks(resource);
                 out_chunks.reserve(left_chunks.size());
 
                 for (auto& chunk_left : left_chunks) {
@@ -144,7 +144,7 @@ namespace components::operators {
                                                                       &pipeline_context->parameters)
                                        : predicates::create_all_true_predicate(resource);
 
-                std::vector<vector::data_chunk_t> out_chunks;
+                chunks_vector_t out_chunks(resource);
                 out_chunks.reserve(in_chunks.size());
 
                 for (auto& chunk : in_chunks) {

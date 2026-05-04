@@ -355,7 +355,7 @@ namespace components::operators {
             std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
             agg_results.reserve(values_.size());
             for (const auto& value : values_) {
-                std::vector<vector::data_chunk_t> empty_chunks;
+                chunks_vector_t empty_chunks(resource_);
                 value.aggregator->clear();
                 value.aggregator->set_children(make_operator_batch(resource_, std::move(empty_chunks)));
                 value.aggregator->on_execute(pipeline_context);
@@ -394,7 +394,7 @@ namespace components::operators {
         }
     }
 
-    void operator_group_t::create_list_rows(const std::vector<vector::data_chunk_t>& in_chunks) {
+    void operator_group_t::create_list_rows(const chunks_vector_t& in_chunks) {
         if (in_chunks.empty()) {
             return;
         }
@@ -496,7 +496,7 @@ namespace components::operators {
     }
 
     vector::data_chunk_t operator_group_t::calc_aggregate_values(pipeline::context_t* pipeline_context,
-                                                                 std::vector<vector::data_chunk_t>& in_chunks) {
+                                                                 chunks_vector_t& in_chunks) {
         size_t num_groups = group_keys_.size();
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
@@ -633,8 +633,7 @@ namespace components::operators {
     }
 
     vector::data_chunk_t
-    operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
-                                                     std::vector<vector::data_chunk_t>& in_chunks) {
+    operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context, chunks_vector_t& in_chunks) {
         size_t num_groups = group_keys_.size();
         size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
 
@@ -701,7 +700,7 @@ namespace components::operators {
             std::pmr::vector<types::logical_value_t> results(resource_);
             results.reserve(num_groups);
 
-            std::vector<vector::data_chunk_t> group_chunks;
+            chunks_vector_t group_chunks(resource_);
             group_chunks.reserve(num_groups);
             for (size_t i = 0; i < num_groups; i++) {
                 group_chunks.emplace_back(gather_group(row_refs_per_group_[i]));

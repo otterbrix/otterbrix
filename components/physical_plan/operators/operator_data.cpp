@@ -6,8 +6,7 @@
 namespace components::operators {
 
     namespace {
-        vector::data_chunk_t merge_chunks(std::pmr::memory_resource* resource,
-                                          std::vector<vector::data_chunk_t>&& chunks) {
+        vector::data_chunk_t merge_chunks(std::pmr::memory_resource* resource, chunks_vector_t&& chunks) {
             if (chunks.empty()) {
                 std::pmr::vector<types::complex_logical_type> empty_types(resource);
                 return vector::data_chunk_t(resource, empty_types, 0);
@@ -40,21 +39,23 @@ namespace components::operators {
     operator_data_t::operator_data_t(std::pmr::memory_resource* resource,
                                      const std::pmr::vector<types::complex_logical_type>& types,
                                      uint64_t capacity)
-        : resource_(resource) {
+        : resource_(resource)
+        , chunks_(resource) {
         chunks_.emplace_back(resource, types, capacity);
     }
 
     operator_data_t::operator_data_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)
-        : resource_(resource) {
+        : resource_(resource)
+        , chunks_(resource) {
         chunks_.emplace_back(std::move(chunk));
     }
 
-    operator_data_t::operator_data_t(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks)
+    operator_data_t::operator_data_t(std::pmr::memory_resource* resource, chunks_vector_t&& chunks)
         : resource_(resource)
-        , chunks_(std::move(chunks)) {}
+        , chunks_(std::move(chunks), resource) {}
 
     operator_data_t::ptr operator_data_t::copy() const {
-        std::vector<vector::data_chunk_t> new_chunks;
+        chunks_vector_t new_chunks(resource_);
         new_chunks.reserve(chunks_.size());
         for (const auto& chunk : chunks_) {
             vector::data_chunk_t dst{resource_, chunk.types(), chunk.size()};
@@ -102,9 +103,8 @@ namespace components::operators {
         return make_operator_data(resource, std::move(chunks));
     }
 
-    std::vector<vector::data_chunk_t> split_chunk_into_batches(std::pmr::memory_resource* resource,
-                                                               vector::data_chunk_t&& chunk) {
-        std::vector<vector::data_chunk_t> out;
+    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk) {
+        chunks_vector_t out(resource);
         const auto total = chunk.size();
         if (total == 0) {
             out.emplace_back(std::move(chunk));
@@ -115,6 +115,7 @@ namespace components::operators {
             return out;
         }
         const auto batch_size = vector::DEFAULT_VECTOR_CAPACITY;
+        out.reserve((total + batch_size - 1) / batch_size);
         for (uint64_t offset = 0; offset < total; offset += batch_size) {
             auto count = std::min<uint64_t>(batch_size, total - offset);
             out.emplace_back(chunk.partial_copy(resource, offset, count));

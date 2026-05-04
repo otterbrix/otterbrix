@@ -8,6 +8,8 @@
 
 namespace components::operators {
 
+    using chunks_vector_t = std::pmr::vector<vector::data_chunk_t>;
+
     class operator_data_t : public boost::intrusive_ref_counter<operator_data_t> {
     public:
         using ptr = boost::intrusive_ptr<operator_data_t>;
@@ -16,7 +18,7 @@ namespace components::operators {
                         const std::pmr::vector<types::complex_logical_type>& types,
                         uint64_t capacity = vector::DEFAULT_VECTOR_CAPACITY);
         operator_data_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
-        operator_data_t(std::pmr::memory_resource* resource, std::vector<vector::data_chunk_t>&& chunks);
+        operator_data_t(std::pmr::memory_resource* resource, chunks_vector_t&& chunks);
 
         ptr copy() const;
 
@@ -25,8 +27,8 @@ namespace components::operators {
         std::size_t chunk_count() const { return chunks_.size(); }
 
         // Multi-chunk API. Each chunk in the vector must contain ≤ DEFAULT_VECTOR_CAPACITY rows.
-        std::vector<vector::data_chunk_t>& chunks() { return chunks_; }
-        const std::vector<vector::data_chunk_t>& chunks() const { return chunks_; }
+        chunks_vector_t& chunks() { return chunks_; }
+        const chunks_vector_t& chunks() const { return chunks_; }
         void append_chunk(vector::data_chunk_t&& chunk);
 
         // Backward-compat single-chunk API. Lazily concatenates all chunks into one
@@ -39,14 +41,13 @@ namespace components::operators {
 
     private:
         std::pmr::memory_resource* resource_;
-        std::vector<vector::data_chunk_t> chunks_;
+        chunks_vector_t chunks_;
     };
 
     using operator_data_ptr = operator_data_t::ptr;
 
     // Splits a data_chunk_t into ≤DEFAULT_VECTOR_CAPACITY-sized chunks. Input is consumed.
-    std::vector<vector::data_chunk_t> split_chunk_into_batches(std::pmr::memory_resource* resource,
-                                                               vector::data_chunk_t&& chunk);
+    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
 
     // Splits an operator_data_t whose single chunk exceeds DEFAULT_VECTOR_CAPACITY into
     // multiple ≤DEFAULT_VECTOR_CAPACITY chunks. Returns the input unchanged otherwise.
@@ -63,8 +64,7 @@ namespace components::operators {
         return {new operator_data_t(resource, std::move(chunk))};
     }
 
-    inline operator_data_ptr make_operator_data(std::pmr::memory_resource* resource,
-                                                std::vector<vector::data_chunk_t>&& chunks) {
+    inline operator_data_ptr make_operator_data(std::pmr::memory_resource* resource, chunks_vector_t&& chunks) {
         return {new operator_data_t(resource, std::move(chunks))};
     }
 

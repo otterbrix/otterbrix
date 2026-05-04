@@ -178,7 +178,7 @@ namespace components::table {
 
     void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                     const std::vector<size_t>* projected_cols,
-                                    std::vector<vector::data_chunk_t>& batches,
+                                    std::pmr::vector<vector::data_chunk_t>& batches,
                                     table_scan_state& state,
                                     std::pmr::memory_resource* resource) {
         state.table_state.scan_batched(types, projected_cols, batches, resource);

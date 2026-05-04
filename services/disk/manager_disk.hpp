@@ -203,7 +203,7 @@ namespace services::disk {
                                int64_t limit,
                                std::vector<size_t> projected_cols,
                                components::table::transaction_data txn);
-        unique_future<std::vector<components::vector::data_chunk_t>>
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_batched(session_id_t session,
                              collection_full_name_t name,
                              std::unique_ptr<components::table::table_filter_t> filter,
@@ -494,7 +494,7 @@ namespace services::disk {
                                int64_t limit,
                                std::vector<size_t> projected_cols,
                                components::table::transaction_data txn);
-        unique_future<std::vector<components::vector::data_chunk_t>>
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_batched(session_id_t session,
                              collection_full_name_t name,
                              std::unique_ptr<components::table::table_filter_t> filter,

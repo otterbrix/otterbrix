@@ -51,7 +51,7 @@ namespace components::operators {
             sparse = populated_cols.size() != in_chunks.front().column_count();
         }
 
-        std::vector<vector::data_chunk_t> out_chunks;
+        chunks_vector_t out_chunks(resource);
 
         auto predicate = expression_ ? predicates::create_predicate(resource,
                                                                     pipeline_context->function_registry,

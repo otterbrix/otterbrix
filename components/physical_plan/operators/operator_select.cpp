@@ -121,7 +121,7 @@ namespace components::operators {
 
         auto* resource = left_->output()->resource();
         auto& in_chunks = left_->output()->chunks();
-        std::vector<vector::data_chunk_t> out_chunks;
+        chunks_vector_t out_chunks(resource);
         out_chunks.reserve(in_chunks.size());
         for (auto& input : in_chunks) {
             auto result = evaluate(pipeline_context, input);

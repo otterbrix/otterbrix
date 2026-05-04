@@ -3,6 +3,7 @@
 #include "predicates/predicate.hpp"
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <expressions/compare_expression.hpp>
 
@@ -27,22 +28,22 @@ namespace components::operators {
         void inner_join_(const predicates::predicate_ptr&,
                          pipeline::context_t* context,
                          const std::pmr::vector<types::complex_logical_type>& out_types,
-                         std::vector<vector::data_chunk_t>& out_chunks);
+                         chunks_vector_t& out_chunks);
         void outer_full_join_(const predicates::predicate_ptr&,
                               pipeline::context_t* context,
                               const std::pmr::vector<types::complex_logical_type>& out_types,
-                              std::vector<vector::data_chunk_t>& out_chunks);
+                              chunks_vector_t& out_chunks);
         void outer_left_join_(const predicates::predicate_ptr&,
                               pipeline::context_t* context,
                               const std::pmr::vector<types::complex_logical_type>& out_types,
-                              std::vector<vector::data_chunk_t>& out_chunks);
+                              chunks_vector_t& out_chunks);
         void outer_right_join_(const predicates::predicate_ptr&,
                                pipeline::context_t* context,
                                const std::pmr::vector<types::complex_logical_type>& out_types,
-                               std::vector<vector::data_chunk_t>& out_chunks);
+                               chunks_vector_t& out_chunks);
         void cross_join_(pipeline::context_t* context,
                          const std::pmr::vector<types::complex_logical_type>& out_types,
-                         std::vector<vector::data_chunk_t>& out_chunks);
+                         chunks_vector_t& out_chunks);
     };
 
 } // namespace components::operators

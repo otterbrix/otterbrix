@@ -11,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         test_oids.cpp
         test_set_membership_filter.cpp
         test_system_schemas.cpp
+        test_type_spec_roundtrip.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

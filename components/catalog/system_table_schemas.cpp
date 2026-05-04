@@ -264,7 +264,7 @@ namespace components::catalog {
     // Format (recursive, scalar names match pg_type.typname):
     //   scalar            →  bool int1 int2 int4 int8 float4 float8 text
     //                        timestamp date time bytea uuid
-    //   DECIMAL(w,s)
+    //   numeric(w,s)      →  DECIMAL (matches pg_type.typname)
     //   UNKNOWN(name)
     //   LIST(inner)
     //   ARRAY(inner,size)
@@ -347,7 +347,7 @@ namespace components::catalog {
 
         if (t.type() == LT::DECIMAL) {
             const auto* ext = static_cast<const types::decimal_logical_type_extension*>(t.extension());
-            return "DECIMAL(" + std::to_string(ext->width()) + "," + std::to_string(ext->scale()) + ")";
+            return "numeric(" + std::to_string(ext->width()) + "," + std::to_string(ext->scale()) + ")";
         }
         if (t.type() == LT::UNKNOWN) {
             return "UNKNOWN(" + t.type_name() + ")";
@@ -427,7 +427,7 @@ namespace components::catalog {
         }
         ++pos; // consume '('
 
-        if (name == "DECIMAL") {
+        if (name == "numeric" || name == "DECIMAL") {
             std::string w = read_token(s, pos); ++pos; // ','
             std::string sc = read_token(s, pos); ++pos; // ')'
             return types::complex_logical_type::create_decimal(
@@ -574,7 +574,7 @@ namespace components::catalog {
         // If the spec doesn't start with a known flat-text keyword, fall back to msgpack
         // for backward compatibility with existing .otbx files written by older builds.
         static constexpr std::string_view flat_prefixes[] = {
-            "DECIMAL(", "UNKNOWN(", "LIST(", "ARRAY(", "MAP(", "STRUCT(", "UNION(", "VARIANT"
+            "numeric(", "DECIMAL(", "UNKNOWN(", "LIST(", "ARRAY(", "MAP(", "STRUCT(", "UNION(", "VARIANT"
         };
         bool is_flat = false;
         for (auto p : flat_prefixes) {

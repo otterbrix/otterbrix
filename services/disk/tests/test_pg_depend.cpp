@@ -287,3 +287,45 @@ TEST_CASE("services::disk::pg_depend::test_column_level_pg_depend_written") {
                             drop_behavior_t::restrict_);
     REQUIRE(rd_r.created_oid == t_oid);
 }
+
+// 12. Cross-namespace FK: child in ns_b holds a FK referencing parent in ns_a.
+//     DROP TABLE RESTRICT on parent must be blocked by the FK dependency (pg_depend 'n' row).
+//     Regression for P1.1-r2: child_name.schema/database mix-up in fk_validate_parent_delete.
+TEST_CASE("services::disk::pg_depend::cross_namespace_fk_restricts_parent_drop") {
+    fixture fx;
+
+    // Create ns_a with parent table (single BIGINT column).
+    auto rns_a = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_xfk_a"));
+    std::vector<components::table::column_definition_t> parent_cols;
+    parent_cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto parent_res = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns_a.created_oid,
+                                  std::string("parent_xfk"), std::move(parent_cols), catalog::relkind::regular);
+    REQUIRE(parent_res.created_oid >= FIRST_USER_OID);
+
+    // Create ns_b with child table that will hold the FK.
+    auto rns_b = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_xfk_b"));
+    std::vector<components::table::column_definition_t> child_cols;
+    child_cols.emplace_back("parent_id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    auto child_res = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns_b.created_oid,
+                                 std::string("child_xfk"), std::move(child_cols), catalog::relkind::regular);
+    REQUIRE(child_res.created_oid >= FIRST_USER_OID);
+
+    // Create FK constraint: child_xfk.parent_id REFERENCES ns_xfk_a.parent_xfk(id).
+    // ON DELETE RESTRICT (fk_del_action = 'r').
+    // Empty attoid lists — column resolution happens via pg_attribute on FK lookup.
+    auto fk_res = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(),
+                              child_res.created_oid, std::string("fk_xfk_parent"),
+                              catalog::contype::foreign_key, parent_res.created_oid,
+                              std::vector<oid_t>{}, std::vector<oid_t>{},
+                              catalog::fk_match::simple,
+                              catalog::fk_action::restrict_, catalog::fk_action::no_action,
+                              std::string{});
+    REQUIRE(fk_res.created_oid >= FIRST_USER_OID);
+
+    // DROP TABLE RESTRICT on parent must be blocked: FK constraint depends on parent via
+    // pg_depend 'n' (normal) row written by ddl_create_constraint.
+    auto rd = fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), parent_res.created_oid,
+                         drop_behavior_t::restrict_);
+    REQUIRE(rd.status == ddl_status::restrict_blocked);
+    REQUIRE(rd.blocking_oid != INVALID_OID);
+}

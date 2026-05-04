@@ -1540,7 +1540,8 @@ namespace services::disk {
                                 return false;
                             });
                 if (child_ns_name.empty()) continue;
-                child_name.database = child_ns_name;
+                child_name.database   = name.database;   // FK target lives in same database as parent
+                child_name.schema     = child_ns_name;   // namespace name → schema slot
                 child_name.collection = child_relname;
             }
             auto child_storage_it = storages_.find(child_name);

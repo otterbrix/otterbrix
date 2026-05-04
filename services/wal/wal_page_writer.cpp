@@ -11,8 +11,8 @@ wal_page_writer_t::wal_page_writer_t(const std::filesystem::path& path,
                                      size_t max_seg_sz)
     : path_(path)
     , database_name_(db_name)
-    , segment_index_(seg_index)
-    , max_segment_size_(max_seg_sz) {
+    , segment_index_(seg_index) {
+    (void)max_seg_sz;
     // Ensure parent directory exists.
     auto parent = path_.parent_path();
     if (!parent.empty()) {

@@ -66,10 +66,9 @@ namespace services::dispatcher {
 
     class versioned_plan_cache_t {
     public:
-        explicit versioned_plan_cache_t(std::pmr::memory_resource* resource,
+        explicit versioned_plan_cache_t(std::pmr::memory_resource* /*resource*/,
                                          plan_cache_config_t config = {})
-            : resource_(resource)
-            , config_(config) {}
+            : config_(config) {}
 
         // Pin the given session's view to `version`. A session can be re-pinned (replaces
         // the previous binding); double-pin without unpin in between is a no-op vs the new.
@@ -166,7 +165,6 @@ namespace services::dispatcher {
         template<typename Payload>
         using named_map_t = std::unordered_map<std::string, named_entry_t<Payload>>;
 
-        std::pmr::memory_resource* resource_;
         plan_cache_config_t config_;
         // Versions in order; insertion adds, eviction removes oldest unreferenced first.
         std::map<std::uint64_t, plan_map_t> version_to_entries_;

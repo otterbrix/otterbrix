@@ -51,7 +51,6 @@ private:
     std::filesystem::path path_;
     std::string database_name_;
     uint32_t segment_index_;
-    size_t max_segment_size_;
 
     core::filesystem::local_file_system_t fs_;
     std::unique_ptr<core::filesystem::file_handle_t> file_;

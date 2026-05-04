@@ -15,6 +15,11 @@ set(${PROJECT_NAME}_SOURCES
         disk/agent_disk.cpp
         disk/invalidation_ring_buffer.cpp
         disk/manager_disk.cpp
+        disk/manager_disk_io.cpp
+        disk/manager_disk_bootstrap.cpp
+        disk/manager_disk_ddl.cpp
+        disk/manager_disk_resolve.cpp
+        disk/manager_disk_storage.cpp
 
     # dispatcher
        dispatcher/catalog_view.cpp
@@ -64,7 +69,6 @@ target_link_libraries(
         otterbrix::log
         otterbrix::logical_plan
         otterbrix::locks
-        otterbrix::serialization
 
         absl::crc32c
         absl::int128

@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -20,6 +21,7 @@
 // dependency cycle detection, etc.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -121,7 +123,7 @@ TEST_CASE("services::disk::error::drop_namespace_restrict_blocked_by_one_table")
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-               std::string("t"), std::move(cols), char{'r'});
+               std::string("t"), std::move(cols), catalog::relkind::regular);
     auto rd = fx.invoke(&manager_disk_t::ddl_drop_namespace, fx.ctx(),
                           rns.created_oid, drop_behavior_t::restrict_);
     REQUIRE(rd.status == ddl_status::restrict_blocked);
@@ -183,7 +185,7 @@ TEST_CASE("services::disk::error::empty_columns_allowed_for_computing") {
     auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns"));
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
                          std::string("metrics"),
-                         std::vector<components::table::column_definition_t>{}, char{'g'});
+                         std::vector<components::table::column_definition_t>{}, catalog::relkind::computed);
     REQUIRE(rt.created_oid != INVALID_OID);
 }
 

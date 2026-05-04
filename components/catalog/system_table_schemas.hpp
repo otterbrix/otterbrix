@@ -4,6 +4,9 @@
 #include <components/compute/kernel_signature.hpp>
 #include <components/table/column_definition.hpp>
 
+#include <components/types/logical_value.hpp>
+
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,7 +31,7 @@ namespace components::catalog {
     //                       cardinality stats; no row composite types). Carries an otterbrix-
     //                       specific `relstoragemode` ('d'=disk, 'm'=in-memory) instead.
     //   pg_attribute      — no `attstattarget` (no stats target). `attdefval` (raw default
-    //                       expression text) is replaced by `attdefspec` (msgpack-serialized
+    //                       expression text) is replaced by `attdefspec` (flat-text-encoded
     //                       logical_value_t) — strictly richer round-trip. `atttypspec`
     //                       carries the full complex_logical_type tree for non-scalar types.
     //                       `attisdropped` (PG tombstone) prevents attnum reuse.
@@ -105,14 +108,21 @@ namespace components::catalog {
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs);
     std::vector<components::compute::output_type> decode_prorettype(const std::string& spec);
 
-    // Map a built-in components::types::logical_type to its well_known pg_type.oid.
-    // Returns INVALID_OID for unknown / user-defined types — caller should fall back to a
-    // pg_type scan by name. Inverse of `oid_to_builtin_type`.
-    oid_t builtin_type_to_oid(types::logical_type t) noexcept;
+    // Return the canonical pg_type.typname for a built-in logical_type (e.g. INTEGER →
+    // "int4", BIGINT → "int8"). Returns "" for DECIMAL, UNKNOWN, and complex types —
+    // caller should use "numeric" for DECIMAL and type_name() for UNKNOWN.
+    std::string_view logical_type_to_pg_name(types::logical_type t) noexcept;
 
     // Map a well_known pg_type.oid back to its components::types::logical_type. Returns
     // logical_type::UNKNOWN for non-builtin OIDs — caller resolves complex types from
-    // pg_type by name + typdefspec. Inverse of `builtin_type_to_oid`.
+    // pg_type by name + typdefspec.
     types::logical_type oid_to_builtin_type(oid_t oid) noexcept;
+
+    // Encode/decode a column default value (logical_value_t) to flat text for storage in
+    // pg_attribute.attdefspec. Format: "type_name:value" for scalars, "NULL" for null.
+    // Returns "" for complex types (ARRAY/STRUCT/LIST) — treated as no default on decode.
+    std::string encode_default_spec(const types::logical_value_t& v);
+    std::optional<types::logical_value_t>
+        decode_default_spec(std::pmr::memory_resource* resource, const std::string& spec);
 
 } // namespace components::catalog

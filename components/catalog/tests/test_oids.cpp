@@ -1,8 +1,6 @@
 #include <catch2/catch.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/schema.hpp>
 #include <components/catalog/table_id.hpp>
-#include <components/catalog/table_metadata.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 
@@ -142,42 +140,6 @@ TEST_CASE("test_oid_immutability") {
         REQUIRE(tid.oid() == 20000);
     }
 
-    SECTION("table_metadata::set_table_oid") {
-        std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id", components::types::logical_type::BIGINT);
-        std::vector<components::types::field_description> descs;
-        schema sch(&resource, cols, descs);
-        table_metadata meta(&resource, std::move(sch));
-        meta.set_table_oid(30000);
-        REQUIRE_NOTHROW(meta.set_table_oid(30000));
-        REQUIRE_THROWS_AS(meta.set_table_oid(30001), std::logic_error);
-        REQUIRE(meta.table_oid() == 30000);
-    }
-
-    SECTION("table_metadata::set_next_column_oid") {
-        std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id", components::types::logical_type::BIGINT);
-        std::vector<components::types::field_description> descs;
-        schema sch(&resource, cols, descs);
-        table_metadata meta(&resource, std::move(sch));
-        meta.set_next_column_oid(50);
-        REQUIRE_NOTHROW(meta.set_next_column_oid(50));
-        REQUIRE_THROWS_AS(meta.set_next_column_oid(60), std::logic_error);
-        REQUIRE(meta.next_column_oid() == 50);
-    }
-
-    SECTION("schema::set_schema_oid") {
-        std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("id", components::types::logical_type::BIGINT);
-        std::vector<components::types::field_description> descs;
-        schema sch(&resource, cols, descs);
-        sch.set_schema_oid(well_known_oid::public_namespace);
-        REQUIRE_NOTHROW(sch.set_schema_oid(well_known_oid::public_namespace));
-        REQUIRE_THROWS_AS(sch.set_schema_oid(well_known_oid::information_schema_namespace),
-                          std::logic_error);
-        REQUIRE(sch.schema_oid() == well_known_oid::public_namespace);
-    }
-
     SECTION("column_definition_t::set_attoid") {
         components::table::column_definition_t col("price",
                                                    components::types::logical_type::DOUBLE);
@@ -188,69 +150,14 @@ TEST_CASE("test_oid_immutability") {
     }
 }
 
-// 10. table_metadata::next_column_oid advances correctly + table_oid round-trip.
+// 10. table_id OID round-trip.
 //     Doc test alias: test_table_oid_assignment.
 TEST_CASE("test_table_oid_assignment") {
     std::pmr::synchronized_pool_resource resource;
-    std::vector<components::table::column_definition_t> cols;
-    cols.emplace_back("id", components::types::logical_type::BIGINT);
 
-    std::vector<components::types::field_description> descs;
-
-    schema sch(&resource, cols, descs);
-    REQUIRE(sch.schema_oid() == INVALID_OID);
-    sch.set_schema_oid(well_known_oid::public_namespace);
-    REQUIRE(sch.schema_oid() == well_known_oid::public_namespace);
-
-    table_metadata meta(&resource, std::move(sch));
-    REQUIRE(meta.table_oid() == INVALID_OID);
-    meta.set_table_oid(20000);
-    REQUIRE(meta.table_oid() == 20000);
-
-    REQUIRE(meta.next_column_oid() == INVALID_OID);
-    meta.set_next_column_oid(100);
-    REQUIRE(meta.next_column_oid() == 100);
-    REQUIRE(meta.advance_next_column_oid() == 100);
-    REQUIRE(meta.advance_next_column_oid() == 101);
-    REQUIRE(meta.next_column_oid() == 102);
-
-    // table_id OID round-trip.
     collection_full_name_t cfn("main", "users");
     table_id tid(&resource, cfn);
     REQUIRE(tid.oid() == INVALID_OID);
     tid.set_oid(20000);
     REQUIRE(tid.oid() == 20000);
 }
-
-// 12. schema::find_field_by_oid + column_oids() round-trip. Stamps attoid on each
-//     column then verifies the schema can locate columns by OID and report the OIDs
-//     in column order. INVALID_OID never matches; unknown OIDs return nullopt.
-//     Doc reference: catalog-migration-to-postgresql-style.md §527 (Phase-0 P1
-//     "vector<oid_t> column_oids_, lookup by OID").
-TEST_CASE("catalog::schema::find_field_by_oid_and_column_oids") {
-    std::pmr::synchronized_pool_resource resource;
-    std::vector<components::table::column_definition_t> cols;
-    cols.emplace_back("id", components::types::logical_type::BIGINT);
-    cols.emplace_back("name", components::types::logical_type::STRING_LITERAL);
-    cols[0].set_attoid(17000);
-    cols[1].set_attoid(17001);
-    std::vector<components::types::field_description> descs;
-    schema sch(&resource, cols, descs);
-
-    auto by_id = sch.find_field_by_oid(17000);
-    REQUIRE(by_id.has_value());
-    REQUIRE(by_id->get().name() == std::string("id"));
-
-    auto by_name = sch.find_field_by_oid(17001);
-    REQUIRE(by_name.has_value());
-    REQUIRE(by_name->get().name() == std::string("name"));
-
-    REQUIRE_FALSE(sch.find_field_by_oid(INVALID_OID).has_value());
-    REQUIRE_FALSE(sch.find_field_by_oid(99999).has_value());
-
-    auto oids = sch.column_oids();
-    REQUIRE(oids.size() == 2);
-    REQUIRE(oids[0] == 17000);
-    REQUIRE(oids[1] == 17001);
-}
-

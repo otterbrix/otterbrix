@@ -1003,7 +1003,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
 
 TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     // Verifies that ddl_result_t errors are surfaced to the caller rather than
-    // silently discarded via (void)co_await. Exercises:
+    // silently discarded. Exercises:
     //   - ddl_create_table (via CREATE TABLE)
     //   - ddl_add_column / ddl_drop_column (via ALTER TABLE)
     //   - ddl_create_constraint CHECK (via ALTER TABLE ADD CONSTRAINT)

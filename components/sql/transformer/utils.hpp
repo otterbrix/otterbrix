@@ -110,49 +110,6 @@ namespace components::sql::transform {
         throw parser_exception_t{"Unknown comparison operator: " + std::string(str), ""};
     }
 
-    inline types::logical_type get_logical_type(std::string_view str) {
-        static const std::unordered_map<std::string_view, types::logical_type> lookup = {
-            // postgres catalog internal names (produced by the PostgreSQL parser for SQL keywords)
-            {"int2", types::logical_type::SMALLINT},
-            {"int4", types::logical_type::INTEGER},
-            {"int8", types::logical_type::BIGINT},
-            {"int8_t", types::logical_type::BIGINT}, // legacy alias
-            {"bool", types::logical_type::BOOLEAN},
-            {"float4", types::logical_type::FLOAT},
-            {"float8", types::logical_type::DOUBLE},
-            {"bit", types::logical_type::BIT},
-            {"numeric", types::logical_type::DECIMAL},
-            {"text", types::logical_type::STRING_LITERAL},
-            {"varchar", types::logical_type::STRING_LITERAL},
-            {"bpchar", types::logical_type::STRING_LITERAL}, // char(n)
-            {"name", types::logical_type::STRING_LITERAL},   // pg internal name type
-
-            {"double", types::logical_type::DOUBLE},
-            {"tinyint", types::logical_type::TINYINT},
-            {"hugeint", types::logical_type::HUGEINT},
-            {"timestamp_sec", types::logical_type::TIMESTAMP_SEC},
-            {"timestamp_ms", types::logical_type::TIMESTAMP_MS},
-            {"timestamp_us", types::logical_type::TIMESTAMP_US},
-            {"timestamp_ns", types::logical_type::TIMESTAMP_NS},
-            {"blob", types::logical_type::BLOB},
-            {"utinyint", types::logical_type::UTINYINT},
-            {"usmallint", types::logical_type::USMALLINT},
-            {"uinteger", types::logical_type::UINTEGER},
-            {"uint", types::logical_type::UINTEGER},
-            {"ubigint", types::logical_type::UBIGINT},
-            {"uhugeint", types::logical_type::UHUGEINT},
-            {"pointer", types::logical_type::POINTER},
-            {"uuid", types::logical_type::UUID},
-            {"string", types::logical_type::STRING_LITERAL},
-        };
-
-        if (auto it = lookup.find(str); it != lookup.end()) {
-            return it->second;
-        }
-
-        return types::logical_type::UNKNOWN;
-    }
-
     inline bool is_arithmetic_operator(std::string_view op) {
         return op == "+" || op == "-" || op == "*" || op == "/" || op == "%";
     }

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/schema.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/types/types.hpp>

@@ -491,13 +491,8 @@ namespace services::disk {
                 ct.set_alias(a.name);
                 components::table::column_definition_t cd(a.name, ct, a.not_null);
                 if (!a.defspec.empty()) {
-                    try {
-                        std::pmr::string buf(a.defspec, resource());
-                        components::serializer::msgpack_deserializer_t des(buf);
-                        // Deserializer already positioned at root; no advance_array needed.
-                        auto dv = components::types::logical_value_t::deserialize(resource(), &des);
-                        cd.set_default_value(std::move(dv));
-                    } catch (...) {
+                    if (auto dv = components::catalog::decode_default_spec(resource(), a.defspec)) {
+                        cd.set_default_value(std::move(*dv));
                     }
                 }
                 columns.push_back(std::move(cd));

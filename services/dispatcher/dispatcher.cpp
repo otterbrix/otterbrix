@@ -266,7 +266,7 @@ namespace services::dispatcher {
         // For DDL existence checks we need the namespace cached. Pre-fetch the plan's
         // namespace if any so view.try_get_namespace inside check_*_exists hits the cache.
         if (!id.get_namespace().empty()) {
-            (void)co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
+            co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
         }
         switch (logic_plan->type()) {
             case node_type::create_database_t:
@@ -288,7 +288,7 @@ namespace services::dispatcher {
                     auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
                     if (ns_e) {
                         table_ns_oid = ns_e->oid;
-                        (void)co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                        co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
                     }
                 }
                 if (!check_collection_exists(resource(), view, id)) {
@@ -314,7 +314,7 @@ namespace services::dispatcher {
                                                 [&](std::string_view nm) { names.emplace(nm); });
                             for (const auto& nm : names) {
                                 for (auto ns_oid : type_search_path) {
-                                    (void)co_await view.get_type(ctx, ns_oid, nm);
+                                    co_await view.get_type(ctx, ns_oid, nm);
                                 }
                             }
                             error = check_type_exists(resource(), view, col_def.type().type_name(),
@@ -342,7 +342,7 @@ namespace services::dispatcher {
                 if (!id.get_namespace().empty()) {
                     auto* ns_e = view.try_get_namespace(std::string_view(id.get_namespace().front()));
                     if (ns_e) {
-                        (void)co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                        co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
                     }
                 }
                 error = check_collection_exists(resource(), view, id);
@@ -371,7 +371,7 @@ namespace services::dispatcher {
                 // Pre-load the new type's name across the search path so check_type_exists
                 // detects collisions in any of {target, public, pg_catalog}.
                 for (auto ns_oid : type_search_path) {
-                    (void)co_await view.get_type(ctx, ns_oid, std::string(n->type().type_name()));
+                    co_await view.get_type(ctx, ns_oid, std::string(n->type().type_name()));
                 }
                 if (!check_type_exists(resource(), view, n->type().type_name(),
                                          std::span<const components::catalog::oid_t>(type_search_path))) {
@@ -390,7 +390,7 @@ namespace services::dispatcher {
                         }
                         for (const auto& nm : nested_names) {
                             for (auto ns_oid : type_search_path) {
-                                (void)co_await view.get_type(ctx, ns_oid, nm);
+                                co_await view.get_type(ctx, ns_oid, nm);
                             }
                         }
                         for (auto& field : n->type().child_types()) {
@@ -495,7 +495,7 @@ namespace services::dispatcher {
                 }
                 auto type_search_path = build_type_search_path(target_ns);
                 for (auto ns_oid : type_search_path) {
-                    (void)co_await view.get_type(ctx, ns_oid, std::string(n->type().alias()));
+                    co_await view.get_type(ctx, ns_oid, std::string(n->type().alias()));
                 }
                 error = check_type_exists(resource(), view, n->type().alias(),
                                             std::span<const components::catalog::oid_t>(type_search_path));
@@ -558,7 +558,7 @@ namespace services::dispatcher {
         }
 
         if (error) {
-            trace(log_, "manager_dispatcher_t::execute_plan: validation error");
+            trace(log_, "manager_dispatcher_t::execute_plan: validation error: {}", error->get_error().what);
             co_return std::move(error);
         }
 
@@ -984,7 +984,7 @@ namespace services::dispatcher {
         if (!id.get_namespace().empty()) {
             auto* ns_e = co_await view.get_namespace(ctx, std::string(id.get_namespace().front()));
             if (ns_e) {
-                (void)co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
+                co_await view.get_table(ctx, ns_e->oid, std::string(id.table_name()));
             }
         }
         auto error = check_collection_exists(resource(), view, id);
@@ -1304,10 +1304,10 @@ namespace services::dispatcher {
                         auto& col_type = col.type();
                         if (col_type.type() == logical_type::UNKNOWN) {
                             // Lazy disk resolve — populate cache before trying probe.
-                            (void)co_await view.get_type(ddl_ctx,
+                            co_await view.get_type(ddl_ctx,
                                                           components::catalog::well_known_oid::public_namespace,
                                                           std::string(col_type.type_name()));
-                            (void)co_await view.get_type(ddl_ctx,
+                            co_await view.get_type(ddl_ctx,
                                                           components::catalog::well_known_oid::pg_catalog_namespace,
                                                           std::string(col_type.type_name()));
                             const auto* rt = view.try_get_type(
@@ -1327,10 +1327,10 @@ namespace services::dispatcher {
                         if (col_type.type() == logical_type::STRUCT) {
                             for (auto& field : col_type.child_types()) {
                                 if (field.type() == logical_type::UNKNOWN) {
-                                    (void)co_await view.get_type(ddl_ctx,
+                                    co_await view.get_type(ddl_ctx,
                                                                   components::catalog::well_known_oid::public_namespace,
                                                                   std::string(field.type_name()));
-                                    (void)co_await view.get_type(ddl_ctx,
+                                    co_await view.get_type(ddl_ctx,
                                                                   components::catalog::well_known_oid::pg_catalog_namespace,
                                                                   std::string(field.type_name()));
                                     const auto* rt = view.try_get_type(
@@ -1711,7 +1711,7 @@ namespace services::dispatcher {
                                               txn_data.transaction_id,
                                               wal::wal_sync_mode::FULL,
                                               std::string(db.empty() ? "default" : db));
-            (void)co_await std::move(cf);
+            co_await std::move(cf);
         }
         // Auto-checkpoint: if WAL bytes since last checkpoint exceed the configured threshold,
         // trigger checkpoint_all on disk and truncate WAL up to the returned safe wal_id.

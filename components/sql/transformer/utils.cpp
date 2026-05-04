@@ -232,32 +232,28 @@ namespace components::sql::transform {
     types::complex_logical_type get_type(TypeName* type) {
         types::complex_logical_type column;
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
-            if (auto col = get_logical_type(strVal(lsecond(type->names))); col != types::logical_type::DECIMAL) {
-                column = col;
-            } else {
-                if (list_length(type->typmods) != 2) {
-                    throw parser_exception_t{"Incorrect modifiers for DECIMAL, width and scale required", ""};
-                } else if (nodeTag(linitial(type->typmods)) != T_A_Const ||
-                           nodeTag(lsecond(type->typmods)) != T_A_Const) {
+            auto type_name = strVal(lsecond(type->names));
+            // DECIMAL(w,s) is the only type whose typmods carry semantics (precision, scale).
+            // All other types are stored as UNKNOWN(type_name); the disk manager resolves
+            // the actual OID via pg_type scan when writing pg_attribute.atttypid.
+            if (!std::strcmp(type_name, "numeric") && list_length(type->typmods) == 2) {
+                if (nodeTag(linitial(type->typmods)) != T_A_Const ||
+                    nodeTag(lsecond(type->typmods)) != T_A_Const) {
                     throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
                 }
-
                 auto width = pg_ptr_cast<A_Const>(linitial(type->typmods));
                 auto scale = pg_ptr_cast<A_Const>(lsecond(type->typmods));
-
                 if (width->val.type != scale->val.type || width->val.type != T_Integer) {
                     throw parser_exception_t{"Incorrect width or scale for DECIMAL, must be integer", ""};
                 }
                 column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
                                                                      static_cast<uint8_t>(intVal(&scale->val)));
+            } else {
+                column = types::complex_logical_type::create_unknown(type_name);
             }
         } else {
-            types::logical_type t = get_logical_type(linint_name);
-            if (t == types::logical_type::UNKNOWN) {
-                column = types::complex_logical_type::create_unknown(linint_name);
-            } else {
-                column = t;
-            }
+            // Non-pg_catalog prefix (user-defined or other schema) — always create_unknown.
+            column = types::complex_logical_type::create_unknown(linint_name);
         }
 
         if (list_length(type->arrayBounds)) {

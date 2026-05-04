@@ -73,8 +73,6 @@ namespace components::logical_plan {
         return hash_;
     }
 
-    void node_t::serialize(serializer::msgpack_serializer_t* serializer) const { return serialize_impl(serializer); }
-
     std::string node_t::to_string() const { return to_string_impl(); }
 
     std::pmr::memory_resource* node_t::resource() const noexcept { return children_.get_allocator().resource(); }

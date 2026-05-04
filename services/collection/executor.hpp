@@ -2,7 +2,6 @@
 
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/table_metadata.hpp>
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_limit.hpp>

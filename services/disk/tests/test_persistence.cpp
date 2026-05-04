@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/execution_context.hpp>
@@ -28,6 +29,7 @@
 // are already covered there with different names; aliasing is task #7.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -165,14 +167,14 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
         parent_cols.emplace_back("id",
                                   components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rp = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), rns.created_oid,
-                             std::string("parent"), std::move(parent_cols), char{'r'});
+                             std::string("parent"), std::move(parent_cols), catalog::relkind::regular);
         parent_oid = rp.created_oid;
 
         std::vector<components::table::column_definition_t> child_cols;
         child_cols.emplace_back("parent_id",
                                   components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rc = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), rns.created_oid,
-                             std::string("child"), std::move(child_cols), char{'r'});
+                             std::string("child"), std::move(child_cols), catalog::relkind::regular);
         child_oid = rc.created_oid;
 
         // Resolve column attoids — needed by ddl_create_constraint (conkey/confkey are
@@ -191,7 +193,7 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
         auto rcc = fd.invoke(&manager_disk_t::ddl_create_constraint, fd.ctx(),
                               child_oid, std::string("fk_child_parent"), char{'f'},
                               parent_oid, conkey, confkey,
-                              char{'s'}, char{'a'}, char{'a'}, std::string{});
+                              catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
         fk_oid = rcc.created_oid;
         fd.checkpoint();
     }
@@ -236,7 +238,7 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
         cols.emplace_back("name",
                            components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
         auto rt = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                             std::string("widgets"), std::move(cols), char{'r'});
+                             std::string("widgets"), std::move(cols), catalog::relkind::regular);
         table_oid = rt.created_oid;
 
         auto rr = fd.invoke(&manager_disk_t::resolve_table, fd.ctx(),
@@ -288,7 +290,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
         cols1.emplace_back("id",
                             components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt1 = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                              std::string("t_old"), std::move(cols1), char{'r'});
+                              std::string("t_old"), std::move(cols1), catalog::relkind::regular);
         dropped_oid = rt1.created_oid;
 
         // Same-process drop+create: no need for restart. Sanity check first.
@@ -301,7 +303,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
         cols2.emplace_back("id",
                             components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt2 = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                              std::string("t_new"), std::move(cols2), char{'r'});
+                              std::string("t_new"), std::move(cols2), catalog::relkind::regular);
         REQUIRE(rt2.created_oid > dropped_oid);
 
         fd.checkpoint();
@@ -318,7 +320,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
         cols3.emplace_back("id",
                             components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt3 = fd2.invoke(&manager_disk_t::ddl_create_table, fd2.ctx(), ns_oid,
-                               std::string("t_after_restart"), std::move(cols3), char{'r'});
+                               std::string("t_after_restart"), std::move(cols3), catalog::relkind::regular);
         REQUIRE(rt3.created_oid != dropped_oid);
         REQUIRE(rt3.created_oid > dropped_oid);
     }
@@ -348,7 +350,7 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
         cols.emplace_back("id",
                            components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                             std::string("regular_t"), std::move(cols), char{'r'});
+                             std::string("regular_t"), std::move(cols), catalog::relkind::regular);
         reg_oid = rt.created_oid;
 
         auto rc = fd.invoke(&manager_disk_t::ddl_create_computing_table, fd.ctx(),
@@ -608,12 +610,12 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
         std::vector<components::table::column_definition_t> pcols;
         pcols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rp = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                             std::string("parent"), std::move(pcols), char{'r'});
+                             std::string("parent"), std::move(pcols), catalog::relkind::regular);
 
         std::vector<components::table::column_definition_t> ccols;
         ccols.emplace_back("pid", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rc = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), ns_oid,
-                             std::string("child"), std::move(ccols), char{'r'});
+                             std::string("child"), std::move(ccols), catalog::relkind::regular);
 
         // Resolve attoids to wire the FK.
         auto pr = fd.invoke(&manager_disk_t::resolve_table, fd.ctx(), ns_oid,
@@ -628,10 +630,10 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
         // FK: child.pid → parent.id
         fd.invoke(&manager_disk_t::ddl_create_constraint, fd.ctx(),
                    rc.created_oid, std::string("fk_child_pid"),
-                   char{'f'}, rp.created_oid,
+                   catalog::contype::foreign_key, rp.created_oid,
                    std::vector<components::catalog::oid_t>{cr.columns[0].attoid},
                    std::vector<components::catalog::oid_t>{pr.columns[0].attoid},
-                   char{'s'}, char{'a'}, char{'a'}, std::string{});
+                   catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
 
         auto fks_before = fd.manager->fk_constraints_for_table(rc.created_oid);
         REQUIRE(fks_before.size() == 1);
@@ -665,7 +667,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), rns.created_oid,
-                   std::string("t"), std::move(cols), char{'r'});
+                   std::string("t"), std::move(cols), catalog::relkind::regular);
         // View allocates TWO OIDs: one for pg_class, one for pg_rewrite (rule_oid).
         // The rule_oid is the highest; restore must pick it up from pg_rewrite col-0 scan.
         fd.invoke(&manager_disk_t::ddl_create_view, fd.ctx(),
@@ -699,14 +701,14 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("val", components::types::complex_logical_type{components::types::logical_type::INTEGER});
         auto rt = fd.invoke(&manager_disk_t::ddl_create_table, fd.ctx(), rns.created_oid,
-                              std::string("t"), std::move(cols), char{'r'});
+                              std::string("t"), std::move(cols), catalog::relkind::regular);
         table_oid = rt.created_oid;
         auto rc = fd.invoke(&manager_disk_t::ddl_create_constraint, fd.ctx(), table_oid,
                               std::string("val_pos"), char{'c'},
                               INVALID_OID,
                               std::vector<oid_t>{},
                               std::vector<oid_t>{},
-                              char{'s'}, char{'a'}, char{'a'},
+                              catalog::fk_match::simple, catalog::fk_action::no_action, char{'a'},
                               std::string("val > 0"));
         constraint_oid = rc.created_oid;
         REQUIRE(constraint_oid >= FIRST_USER_OID);

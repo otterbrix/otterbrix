@@ -775,6 +775,33 @@ namespace services::disk {
         };
         std::unordered_map<std::uint64_t, std::vector<pending_pg_catalog_append_t>> pending_pg_catalog_appends_;
 
+        // O(1) namespace name ↔ OID indexes. Populated by load_system_tables_sync and every
+        // ddl_create/drop_namespace call. Used by resolve_namespace and the lazy-load path
+        // in resolve_table to avoid per-resolve pg_namespace scans.
+        std::unordered_map<std::string, components::catalog::oid_t> ns_name_to_oid_;
+        std::unordered_map<components::catalog::oid_t, std::string> ns_oid_to_name_;
+
+        // O(1) (namespace_oid, table_name) → {oid, relkind} index.
+        struct table_index_entry_t {
+            components::catalog::oid_t oid{components::catalog::INVALID_OID};
+            char relkind{'r'};
+        };
+        struct ns_table_key_hash_t {
+            std::size_t operator()(const std::pair<components::catalog::oid_t, std::string>& k) const noexcept {
+                std::size_t h = std::hash<std::uint32_t>{}(k.first);
+                h ^= std::hash<std::string>{}(k.second) + 0x9e3779b9u + (h << 6u) + (h >> 2u);
+                return h;
+            }
+        };
+        using ns_table_key_t = std::pair<components::catalog::oid_t, std::string>;
+        std::unordered_map<ns_table_key_t, table_index_entry_t, ns_table_key_hash_t> table_to_oid_;
+        // Reverse map: table OID → key, so ddl_drop_table can erase by OID.
+        std::unordered_map<components::catalog::oid_t, ns_table_key_t> table_oid_to_key_;
+
+        // Helper: rebuild ns and table indexes from pg_namespace/pg_class.
+        // Called by load_system_tables_sync after loading .otbx files, and after WAL replay.
+        void rebuild_lookup_indexes();
+
         components::storage::storage_t* get_storage(const collection_full_name_t& name);
 
         void create_agent(int count_agents);

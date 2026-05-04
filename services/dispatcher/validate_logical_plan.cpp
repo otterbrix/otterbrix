@@ -9,7 +9,6 @@
 #include "resolved_objects.hpp"
 
 #include <components/catalog/table_id.hpp>
-#include <components/catalog/table_metadata.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -1713,7 +1712,7 @@ namespace services::dispatcher {
             for (const auto& name : names) {
                 for (auto ns : search_namespaces) {
                     if (ns == components::catalog::INVALID_OID) continue;
-                    (void)co_await view.get_type(ctx, ns, name);
+                    co_await view.get_type(ctx, ns, name);
                 }
             }
             co_return;

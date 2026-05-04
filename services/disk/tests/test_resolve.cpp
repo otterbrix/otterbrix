@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -14,6 +15,7 @@
 #include <unistd.h>
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -90,7 +92,7 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
 
     auto created = fx.invoke_async(&manager_disk_t::ddl_create_table, fx.ctx(),
                                     well_known_oid::public_namespace, std::string("users"),
-                                    std::move(cols), char{'r'});
+                                    std::move(cols), catalog::relkind::regular);
     REQUIRE(created.created_oid >= FIRST_USER_OID);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
@@ -107,7 +109,7 @@ TEST_CASE("services::disk::resolve::table_misses_in_wrong_namespace") {
     fixture fx;
     fx.invoke_async(&manager_disk_t::ddl_create_table, fx.ctx(),
                     well_known_oid::public_namespace, std::string("users"),
-                    std::vector<components::table::column_definition_t>{}, char{'r'});
+                    std::vector<components::table::column_definition_t>{}, catalog::relkind::regular);
 
     auto r = fx.invoke_async(&manager_disk_t::resolve_table, fx.ctx(),
                               well_known_oid::pg_catalog_namespace, std::string("users"), std::uint64_t{0});

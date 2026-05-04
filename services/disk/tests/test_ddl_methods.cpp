@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -18,6 +19,7 @@
 // and the result becomes visible via resolve_*.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -102,7 +104,7 @@ TEST_CASE("services::disk::ddl::create_table_round_trip") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     REQUIRE(rt.created_oid >= FIRST_USER_OID);
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                          std::string("t"), std::uint64_t{0});
@@ -117,7 +119,7 @@ TEST_CASE("services::disk::ddl::create_table_computing_relkind") {
     auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("nsc"));
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
                          std::string("metrics"),
-                         std::vector<components::table::column_definition_t>{}, char{'g'});
+                         std::vector<components::table::column_definition_t>{}, catalog::relkind::computed);
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                          std::string("metrics"), std::uint64_t{0});
     REQUIRE(rr.found);
@@ -132,7 +134,7 @@ TEST_CASE("services::disk::ddl::create_index_round_trip") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid,
                          rt.created_oid, std::string("idx_id"),
                          std::vector<std::string>{"id"});
@@ -147,7 +149,7 @@ TEST_CASE("services::disk::ddl::index_set_valid_flip") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid,
                          rt.created_oid, std::string("idx_id"),
                          std::vector<std::string>{"id"});
@@ -191,7 +193,7 @@ TEST_CASE("services::disk::ddl::drop_table_visible_to_resolve") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), rt.created_oid,
                drop_behavior_t::cascade_);
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
@@ -223,7 +225,7 @@ TEST_CASE("services::disk::ddl::add_column_round_trip") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     components::table::column_definition_t new_col(
         "added", components::types::complex_logical_type{components::types::logical_type::INTEGER});
     auto r = fx.invoke(&manager_disk_t::ddl_add_column, fx.ctx(), rt.created_oid,
@@ -244,7 +246,7 @@ TEST_CASE("services::disk::ddl::drop_column_tombstone") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_drop_column, fx.ctx(), rt.created_oid,
                std::string("name"), drop_behavior_t::cascade_);
     auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
@@ -262,7 +264,7 @@ TEST_CASE("services::disk::ddl::attnum_never_reused_after_drop") {
     cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     // a=1, b=2 initially. Drop b (tombstone, attnum still 2), add c — c must get attnum 3.
     fx.invoke(&manager_disk_t::ddl_drop_column, fx.ctx(), rt.created_oid, std::string("b"),
                drop_behavior_t::cascade_);
@@ -286,7 +288,7 @@ TEST_CASE("services::disk::ddl::rename_column_keeps_oid") {
     cols.emplace_back("old_name",
                        components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto rs1 = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
                           std::string("t"), std::uint64_t{0});
     REQUIRE(rs1.found);
@@ -309,7 +311,7 @@ TEST_CASE("services::disk::ddl::drop_unknown_column_no_op") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_drop_column, fx.ctx(), rt.created_oid,
                std::string("not_a_column"), drop_behavior_t::cascade_);
     auto rs = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(), rns.created_oid,
@@ -324,11 +326,11 @@ TEST_CASE("services::disk::ddl::create_constraint_round_trip") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto rc = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), rt.created_oid,
-                         std::string("uniq_id"), char{'u'}, INVALID_OID,
+                         std::string("uniq_id"), catalog::contype::unique, INVALID_OID,
                          std::vector<oid_t>{}, std::vector<oid_t>{},
-                         char{'s'}, char{'a'}, char{'a'}, std::string{});
+                         catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
     REQUIRE(rc.created_oid >= FIRST_USER_OID);
     REQUIRE(rc.created_oid != rt.created_oid);
 }
@@ -341,15 +343,15 @@ TEST_CASE("services::disk::ddl::fk_constraint_blocks_ref_table_drop") {
     std::vector<components::table::column_definition_t> parent_cols;
     parent_cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto parent = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                              std::string("parent"), std::move(parent_cols), char{'r'});
+                              std::string("parent"), std::move(parent_cols), catalog::relkind::regular);
     std::vector<components::table::column_definition_t> child_cols;
     child_cols.emplace_back("parent_id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto child = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                             std::string("child"), std::move(child_cols), char{'r'});
+                             std::string("child"), std::move(child_cols), catalog::relkind::regular);
     auto fk = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), child.created_oid,
-                          std::string("fk_parent"), char{'f'}, parent.created_oid,
+                          std::string("fk_parent"), catalog::contype::foreign_key, parent.created_oid,
                           std::vector<oid_t>{}, std::vector<oid_t>{},
-                          char{'s'}, char{'a'}, char{'a'}, std::string{});
+                          catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
     REQUIRE(fk.created_oid >= FIRST_USER_OID);
     // RESTRICT drop of parent: blocked because FK constraint depends on it.
     auto rd = fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), parent.created_oid,
@@ -366,17 +368,17 @@ TEST_CASE("services::disk::ddl::fk_constraint_persists_columns") {
     parent_cols.emplace_back("id",
                               components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto parent = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                              std::string("parent"), std::move(parent_cols), char{'r'});
+                              std::string("parent"), std::move(parent_cols), catalog::relkind::regular);
     std::vector<components::table::column_definition_t> child_cols;
     child_cols.emplace_back("parent_id",
                               components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto child = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                             std::string("child"), std::move(child_cols), char{'r'});
+                             std::string("child"), std::move(child_cols), catalog::relkind::regular);
     std::vector<oid_t> conkey{42};   // synthetic attoid for parent_id in child
     std::vector<oid_t> confkey{7};   // synthetic attoid for id in parent
     fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), child.created_oid,
-               std::string("fk_parent_with_cols"), char{'f'}, parent.created_oid,
-               conkey, confkey, char{'s'}, char{'a'}, char{'a'}, std::string{});
+               std::string("fk_parent_with_cols"), catalog::contype::foreign_key, parent.created_oid,
+               conkey, confkey, catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
     auto fks = fx.manager->fk_constraints_for_table(child.created_oid);
     REQUIRE(fks.size() == 1);
     REQUIRE(fks[0].ref_table_oid == parent.created_oid);
@@ -391,11 +393,11 @@ TEST_CASE("services::disk::ddl::drop_constraint_sweeps_pg_depend") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto rc = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), rt.created_oid,
-                         std::string("ck"), char{'c'}, INVALID_OID,
+                         std::string("ck"), catalog::contype::check, INVALID_OID,
                          std::vector<oid_t>{}, std::vector<oid_t>{},
-                         char{'s'}, char{'a'}, char{'a'}, std::string{});
+                         catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
     auto rd = fx.invoke(&manager_disk_t::ddl_drop_constraint, fx.ctx(), rc.created_oid,
                           drop_behavior_t::cascade_);
     REQUIRE(rd.created_oid == rc.created_oid);
@@ -407,7 +409,7 @@ TEST_CASE("services::disk::ddl::adopt_computing_schema_bumps_version") {
     auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("nsac"));
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
                          std::string("metrics"),
-                         std::vector<components::table::column_definition_t>{}, char{'g'});
+                         std::vector<components::table::column_definition_t>{}, catalog::relkind::computed);
     auto v_before = fx.manager->catalog_version();
     std::vector<components::table::column_definition_t> new_cols;
     new_cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -543,13 +545,13 @@ TEST_CASE("services::disk::ddl::check_constraint_stored") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("age", components::types::complex_logical_type{components::types::logical_type::INTEGER});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto rc = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), rt.created_oid,
                          std::string("age_positive"), char{'c'},
                          components::catalog::INVALID_OID,
                          std::vector<components::catalog::oid_t>{},
                          std::vector<components::catalog::oid_t>{},
-                         char{'s'}, char{'a'}, char{'a'},
+                         catalog::fk_match::simple, catalog::fk_action::no_action, char{'a'},
                          std::string("age > 0"));
     REQUIRE(rc.created_oid >= FIRST_USER_OID);
     auto checks = fx.manager->check_constraints_for_table(rt.created_oid);
@@ -569,7 +571,7 @@ TEST_CASE("services::disk::ddl::drop_column_restrict_blocked_by_index") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid, rt.created_oid,
                std::string("idx_id"), std::vector<std::string>{"id"});
     auto rd = fx.invoke(&manager_disk_t::ddl_drop_column, fx.ctx(), rt.created_oid,
@@ -590,7 +592,7 @@ TEST_CASE("services::disk::ddl::drop_column_cascade_drops_index") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.ctx(), rns.created_oid, rt.created_oid,
                          std::string("idx_id"), std::vector<std::string>{"id"});
     REQUIRE(ri.created_oid >= FIRST_USER_OID);

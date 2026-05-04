@@ -1001,7 +1001,7 @@ namespace services::collection::executor {
                                                 txn_data.transaction_id,
                                                 wal::wal_sync_mode::FULL,
                                                 std::string("pg_catalog"));
-            (void)co_await std::move(pcf);
+            co_await std::move(pcf);
 
             auto db = logical_plan->database_name();
             if (!db.empty() && db != "pg_catalog") {
@@ -1011,7 +1011,7 @@ namespace services::collection::executor {
                                                   txn_data.transaction_id,
                                                   wal::wal_sync_mode::FULL,
                                                   std::string(db));
-                (void)co_await std::move(cf);
+                co_await std::move(cf);
             }
         }
         if (txn_manager_ != nullptr && txn_data.transaction_id != 0) {

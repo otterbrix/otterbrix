@@ -1,8 +1,6 @@
 #include "system_table_schemas.hpp"
 #include "catalog_codes.hpp"
 
-#include <components/serialization/deserializer.hpp>
-#include <components/serialization/serializer.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
@@ -263,7 +261,7 @@ namespace components::catalog {
     // ── flat-text type spec helpers ──────────────────────────────────────────────
     // Format (recursive, scalar names match pg_type.typname):
     //   scalar            →  bool int1 int2 int4 int8 float4 float8 text
-    //                        timestamp date time bytea uuid
+    //                        timestamp bytea uuid
     //   numeric(w,s)      →  DECIMAL (matches pg_type.typname)
     //   UNKNOWN(name)
     //   LIST(inner)
@@ -295,8 +293,6 @@ namespace components::catalog {
             case LT::TIMESTAMP_MS:
             case LT::TIMESTAMP_US:
             case LT::TIMESTAMP_NS:   return "timestamp";
-            case LT::DATE:           return "date";
-            case LT::TIME:           return "time";
             case LT::BLOB:           return "bytea";  // pg: bytea
             case LT::UUID:           return "uuid";
             default:                 return "";
@@ -319,8 +315,6 @@ namespace components::catalog {
         if (n == "float8")    return LT::DOUBLE;
         if (n == "text")      return LT::STRING_LITERAL;
         if (n == "timestamp") return LT::TIMESTAMP_MS;
-        if (n == "date")      return LT::DATE;
-        if (n == "time")      return LT::TIME;
         if (n == "bytea")     return LT::BLOB;
         if (n == "uuid")      return LT::UUID;
         // Legacy aliases written by older builds (before PostgreSQL-style names)
@@ -505,6 +499,7 @@ namespace components::catalog {
             case LT::STRING_LITERAL:
             case LT::TIMESTAMP_SEC: case LT::TIMESTAMP_MS:
             case LT::TIMESTAMP_US: case LT::TIMESTAMP_NS:
+            case LT::BLOB: case LT::UUID:
                 return "";
             default: break;
         }
@@ -571,31 +566,9 @@ namespace components::catalog {
             }
         }
         // Flat-text format for all other types.
-        // If the spec doesn't start with a known flat-text keyword, fall back to msgpack
-        // for backward compatibility with existing .otbx files written by older builds.
-        static constexpr std::string_view flat_prefixes[] = {
-            "numeric(", "DECIMAL(", "UNKNOWN(", "LIST(", "ARRAY(", "MAP(", "STRUCT(", "UNION(", "VARIANT"
-        };
-        bool is_flat = false;
-        for (auto p : flat_prefixes) {
-            if (spec.size() >= p.size() && spec.compare(0, p.size(), p) == 0) {
-                is_flat = true;
-                break;
-            }
-        }
-        if (is_flat) {
-            try {
-                size_t pos = 0;
-                return parse_flat_type(resource, spec, pos);
-            } catch (...) {
-                return types::complex_logical_type{LT::UNKNOWN};
-            }
-        }
-        // Legacy msgpack fallback for files written before the flat-text migration.
         try {
-            std::pmr::string buf(spec, resource);
-            components::serializer::msgpack_deserializer_t des(buf);
-            return types::complex_logical_type::deserialize(resource, &des);
+            size_t pos = 0;
+            return parse_flat_type(resource, spec, pos);
         } catch (...) {
             return types::complex_logical_type{LT::UNKNOWN};
         }
@@ -721,28 +694,8 @@ namespace components::catalog {
         return out;
     }
 
-    oid_t builtin_type_to_oid(types::logical_type t) noexcept {
-        using LT = types::logical_type;
-        using namespace well_known_oid;
-        switch (t) {
-            case LT::BOOLEAN: return boolean_type;
-            case LT::TINYINT:
-            case LT::UTINYINT: return int8_type;
-            case LT::SMALLINT:
-            case LT::USMALLINT: return int16_type;
-            case LT::INTEGER:
-            case LT::UINTEGER: return int32_type;
-            case LT::BIGINT:
-            case LT::UBIGINT: return int64_type;
-            case LT::FLOAT: return float32_type;
-            case LT::DOUBLE: return float64_type;
-            case LT::STRING_LITERAL: return string_type;
-            case LT::TIMESTAMP_SEC:
-            case LT::TIMESTAMP_MS:
-            case LT::TIMESTAMP_US:
-            case LT::TIMESTAMP_NS: return timestamp_type;
-            default: return INVALID_OID;
-        }
+    std::string_view logical_type_to_pg_name(types::logical_type t) noexcept {
+        return scalar_type_to_name(t);
     }
 
     types::logical_type oid_to_builtin_type(oid_t oid) noexcept {
@@ -759,6 +712,80 @@ namespace components::catalog {
             case ns::string_type: return LT::STRING_LITERAL;
             case ns::timestamp_type: return LT::TIMESTAMP_NS;
             default: return LT::UNKNOWN;
+        }
+    }
+
+    std::string encode_default_spec(const types::logical_value_t& v) {
+        if (v.is_null()) return "NULL";
+        using LT = types::logical_type;
+        const auto lt = v.type().type();
+        const auto name = scalar_type_to_name(lt);
+        if (name.empty()) return "";  // complex type — not persisted
+        std::string out(name);
+        out += ':';
+        switch (lt) {
+            case LT::BOOLEAN:
+                out += v.value<bool>() ? '1' : '0';
+                break;
+            case LT::TINYINT:   out += std::to_string(v.value<int8_t>());   break;
+            case LT::UTINYINT:  out += std::to_string(v.value<uint8_t>());  break;
+            case LT::SMALLINT:  out += std::to_string(v.value<int16_t>());  break;
+            case LT::USMALLINT: out += std::to_string(v.value<uint16_t>()); break;
+            case LT::INTEGER:   out += std::to_string(v.value<int32_t>());  break;
+            case LT::UINTEGER:  out += std::to_string(v.value<uint32_t>()); break;
+            case LT::BIGINT:    out += std::to_string(v.value<int64_t>());  break;
+            case LT::UBIGINT:   out += std::to_string(v.value<uint64_t>()); break;
+            case LT::FLOAT:     out += std::to_string(v.value<float>());    break;
+            case LT::DOUBLE:    out += std::to_string(v.value<double>());   break;
+            case LT::STRING_LITERAL:
+                out += v.value<std::string_view>();
+                break;
+            default:
+                return "";
+        }
+        return out;
+    }
+
+    std::optional<types::logical_value_t>
+    decode_default_spec(std::pmr::memory_resource* resource, const std::string& spec) {
+        if (spec.empty() || spec == "NULL") return std::nullopt;
+        const auto colon = spec.find(':');
+        if (colon == std::string::npos) return std::nullopt;
+        const auto type_name = std::string_view(spec).substr(0, colon);
+        const auto val_str   = spec.substr(colon + 1);
+        const auto lt = scalar_name_to_type(type_name);
+        try {
+            using LT = types::logical_type;
+            switch (lt) {
+                case LT::BOOLEAN:
+                    return types::logical_value_t(resource, val_str == "1");
+                case LT::TINYINT:
+                    return types::logical_value_t(resource, static_cast<int8_t>(std::stoi(val_str)));
+                case LT::UTINYINT:
+                    return types::logical_value_t(resource, static_cast<uint8_t>(std::stoul(val_str)));
+                case LT::SMALLINT:
+                    return types::logical_value_t(resource, static_cast<int16_t>(std::stoi(val_str)));
+                case LT::USMALLINT:
+                    return types::logical_value_t(resource, static_cast<uint16_t>(std::stoul(val_str)));
+                case LT::INTEGER:
+                    return types::logical_value_t(resource, std::stoi(val_str));
+                case LT::UINTEGER:
+                    return types::logical_value_t(resource, static_cast<uint32_t>(std::stoul(val_str)));
+                case LT::BIGINT:
+                    return types::logical_value_t(resource, static_cast<int64_t>(std::stoll(val_str)));
+                case LT::UBIGINT:
+                    return types::logical_value_t(resource, static_cast<uint64_t>(std::stoull(val_str)));
+                case LT::FLOAT:
+                    return types::logical_value_t(resource, std::stof(val_str));
+                case LT::DOUBLE:
+                    return types::logical_value_t(resource, std::stod(val_str));
+                case LT::STRING_LITERAL:
+                    return types::logical_value_t(resource, val_str);
+                default:
+                    return std::nullopt;
+            }
+        } catch (...) {
+            return std::nullopt;
         }
     }
 

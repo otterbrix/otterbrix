@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <services/disk/dependency_walker.hpp>
 #include <components/context/execution_context.hpp>
@@ -18,6 +19,7 @@
 // under CASCADE walks pg_depend and recurses; under RESTRICT it refuses if dependents exist.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -76,7 +78,7 @@ namespace {
             std::vector<components::table::column_definition_t> cols;
             cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
             auto rt = invoke(&manager_disk_t::ddl_create_table, ctx(), rns.created_oid,
-                              table_name, std::move(cols), char{'r'});
+                              table_name, std::move(cols), catalog::relkind::regular);
             return {rns.created_oid, rt.created_oid};
         }
     };
@@ -211,6 +213,7 @@ TEST_CASE("services::disk::pg_depend::drop_table_restrict_vs_cascade") {
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
     using namespace services::disk;
+namespace catalog = components::catalog;
 
     constexpr components::catalog::oid_t CLS  = 10;
     constexpr components::catalog::oid_t OID_A = 100;
@@ -236,6 +239,7 @@ TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
 // ===========================================================================
 TEST_CASE("services::disk::pg_depend::test_no_cycle_linear_chain") {
     using namespace services::disk;
+namespace catalog = components::catalog;
 
     constexpr components::catalog::oid_t CLS  = 10;
     constexpr components::catalog::oid_t OID_A = 100; // root (seed)

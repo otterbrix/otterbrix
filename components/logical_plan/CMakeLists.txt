@@ -48,7 +48,6 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::types
         otterbrix::expressions
-        otterbrix::serialization
         otterbrix::table
 
         absl::int128

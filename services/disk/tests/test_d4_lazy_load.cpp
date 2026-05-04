@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -20,6 +21,7 @@
 // requiring the user storage to be present.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
@@ -107,7 +109,7 @@ TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("users"), std::move(cols), char{'r'});
+                         std::string("users"), std::move(cols), catalog::relkind::regular);
     REQUIRE(rt.created_oid >= FIRST_USER_OID);
     // Storage is intentionally NOT in storages_: D4 = lazy. resolve_table is the
     // entry point that promotes a disk-resident .otbx into storages_.
@@ -122,7 +124,7 @@ TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("orders"), std::move(cols), char{'r'});
+                         std::string("orders"), std::move(cols), catalog::relkind::regular);
     auto resolved = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
                                 rns.created_oid, std::string("orders"), std::uint64_t{0});
     REQUIRE(resolved.found);
@@ -138,7 +140,7 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("v", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("temp_t"), std::move(cols), char{'r'});
+                         std::string("temp_t"), std::move(cols), catalog::relkind::regular);
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4c", "main", "temp_t"}));
     fx.invoke(&manager_disk_t::ddl_drop_table, fx.ctx(), rt.created_oid,
                drop_behavior_t::cascade_);
@@ -156,7 +158,7 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("alter_me"), std::move(cols), char{'r'});
+                         std::string("alter_me"), std::move(cols), catalog::relkind::regular);
     REQUIRE_FALSE(fx.manager->has_storage(collection_full_name_t{"ns_d4d", "main", "alter_me"}));
     components::table::column_definition_t new_col(
         "name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
@@ -179,7 +181,7 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-               std::string("readme"), std::move(cols), char{'r'});
+               std::string("readme"), std::move(cols), catalog::relkind::regular);
     for (int i = 0; i < 3; ++i) {
         auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
                            rns.created_oid, std::string("readme"), std::uint64_t{0});
@@ -198,7 +200,7 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     cols.emplace_back("c", components::types::complex_logical_type{components::types::logical_type::DOUBLE});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-                         std::string("multi"), std::move(cols), char{'r'});
+                         std::string("multi"), std::move(cols), catalog::relkind::regular);
     auto r = fx.invoke(&manager_disk_t::resolve_table, fx.ctx(),
                         rns.created_oid, std::string("multi"), std::uint64_t{0});
     REQUIRE(r.found);
@@ -227,7 +229,7 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     // Create the table (writes pg_class/pg_attribute; does NOT load user storage).
     fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
-               std::string("lazy_t"), std::move(cols), char{'r'});
+               std::string("lazy_t"), std::move(cols), catalog::relkind::regular);
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
     REQUIRE_NOTHROW(

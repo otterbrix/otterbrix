@@ -14,6 +14,7 @@ namespace components::catalog {
         inline constexpr char view             = 'v'; // view
         inline constexpr char composite_type   = 'c'; // composite type
         inline constexpr char computed         = 'g'; // computed/virtual table (otterbrix extension)
+        inline constexpr char macro            = 'm'; // pg_rewrite-backed macro
     } // namespace relkind
 
     // pg_constraint.contype
@@ -24,6 +25,12 @@ namespace components::catalog {
         inline constexpr char unique      = 'u';
         inline constexpr char not_null    = 'n';
     } // namespace contype
+
+    // pg_class.relstoragemode (otterbrix-specific: physical storage backing)
+    namespace relstoragemode {
+        inline constexpr char disk      = 'd'; // table.otbx on disk
+        inline constexpr char in_memory = 'm'; // no persistence
+    } // namespace relstoragemode
 
     // pg_constraint.confmatchtype (FK match strategy)
     namespace fk_match {

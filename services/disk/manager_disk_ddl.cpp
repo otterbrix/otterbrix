@@ -54,8 +54,6 @@ namespace services::disk {
                         lookup = col.type().type_name();
                     } else if (lt == types::logical_type::DECIMAL) {
                         lookup = "numeric";
-                    } else if (col.type().has_alias()) {
-                        lookup = col.type().alias();
                     } else {
                         lookup = std::string{logical_type_to_pg_name(lt)};
                     }
@@ -78,13 +76,10 @@ namespace services::disk {
 
                 // (b) atttypspec: text-encoded complex type. Empty for builtin scalars.
                 std::string typspec = encode_type_spec(col.type());
-                // (c) attdefspec: msgpack-encoded default value. Empty when no default.
+                // (c) attdefspec: flat-text encoded default value. Empty when no default.
                 std::string defspec;
                 if (col.has_default_value()) {
-                    components::serializer::msgpack_serializer_t ser(resource());
-                    col.default_value().serialize(&ser);
-                    auto pmr_str = ser.result();
-                    defspec.assign(pmr_str.data(), pmr_str.size());
+                    defspec = components::catalog::encode_default_spec(col.default_value());
                 }
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, attoid));
@@ -2020,8 +2015,6 @@ namespace services::disk {
                 lookup = column.type().type_name();
             } else if (lt == types::logical_type::DECIMAL) {
                 lookup = "numeric";
-            } else if (column.type().has_alias()) {
-                lookup = column.type().alias();
             } else {
                 lookup = std::string{logical_type_to_pg_name(lt)};
             }
@@ -2044,10 +2037,7 @@ namespace services::disk {
         std::string typspec = encode_type_spec(column.type());
         std::string defspec;
         if (column.has_default_value()) {
-            components::serializer::msgpack_serializer_t ser(resource());
-            column.default_value().serialize(&ser);
-            auto pmr_str = ser.result();
-            defspec.assign(pmr_str.data(), pmr_str.size());
+            defspec = components::catalog::encode_default_spec(column.default_value());
         }
 
         if (auto* def = components::catalog::find_system_table("pg_attribute")) {
@@ -2482,8 +2472,6 @@ namespace services::disk {
                         lookup = col.type().type_name();
                     } else if (lt == types::logical_type::DECIMAL) {
                         lookup = "numeric";
-                    } else if (col.type().has_alias()) {
-                        lookup = col.type().alias();
                     } else {
                         lookup = std::string{logical_type_to_pg_name(lt)};
                     }
@@ -2506,10 +2494,7 @@ namespace services::disk {
                 std::string typspec = encode_type_spec(col.type());
                 std::string defspec;
                 if (col.has_default_value()) {
-                    components::serializer::msgpack_serializer_t ser(resource());
-                    col.default_value().serialize(&ser);
-                    auto pmr_str = ser.result();
-                    defspec.assign(pmr_str.data(), pmr_str.size());
+                    defspec = components::catalog::encode_default_spec(col.default_value());
                 }
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, attoid));

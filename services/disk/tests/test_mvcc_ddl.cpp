@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
@@ -26,6 +27,7 @@
 //   contract these tests lock in.
 
 using namespace services::disk;
+namespace catalog = components::catalog;
 using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 using components::table::transaction_data;
@@ -111,7 +113,7 @@ TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_drop_table, fx.auto_ctx(), rt.created_oid,
                drop_behavior_t::cascade_);
     auto rr = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
@@ -129,7 +131,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_delete_invisible_to_other_readers")
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("doomed"), std::move(cols), char{'r'});
+                         std::string("doomed"), std::move(cols), catalog::relkind::regular);
     auto uncommitted = TRANSACTION_ID_START + 13;
     fx.invoke(&manager_disk_t::ddl_drop_table, fx.txn_ctx(uncommitted),
                rt.created_oid, drop_behavior_t::cascade_);
@@ -181,7 +183,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     auto ri = fx.invoke(&manager_disk_t::ddl_create_index, fx.auto_ctx(), rns.created_oid,
                          rt.created_oid, std::string("idx_doomed"),
                          std::vector<std::string>{"id"});
@@ -232,7 +234,7 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     // Create under an explicit (uncommitted) transaction.
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.txn_ctx(txn), rns.created_oid,
-                         std::string("ephemeral"), std::move(cols), char{'r'});
+                         std::string("ephemeral"), std::move(cols), catalog::relkind::regular);
     REQUIRE(rt.created_oid >= FIRST_USER_OID);
     // Before rollback: invisible to other sessions (insert_id >= TRANSACTION_ID_START).
     auto before_other = fx.invoke(&manager_disk_t::resolve_table, fx.auto_ctx(), rns.created_oid,
@@ -259,7 +261,7 @@ TEST_CASE("services::disk::mvcc::drop_cascade_uncommitted_invisible_to_other_rea
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt = fx.invoke(&manager_disk_t::ddl_create_table, fx.auto_ctx(), rns.created_oid,
-                         std::string("t"), std::move(cols), char{'r'});
+                         std::string("t"), std::move(cols), catalog::relkind::regular);
     fx.invoke(&manager_disk_t::ddl_create_index, fx.auto_ctx(), rns.created_oid,
                rt.created_oid, std::string("child_idx"),
                std::vector<std::string>{"id"});

@@ -484,12 +484,9 @@ namespace otterbrix {
             }
         }
 
-        if (!index_definitions.empty()) {
-            if (!wal_records.empty()) {
-                trace(log_,
-                      "spaces::PHASE 3 - Recreating {} indexes after WAL replay",
-                      index_definitions.size());
-            }
+        if (!wal_records.empty()) {
+            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
+        } else if (!index_definitions.empty()) {
             auto session = components::session::session_id_t();
 
             for (auto& index_def : index_definitions) {

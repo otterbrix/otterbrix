@@ -56,15 +56,15 @@ namespace services::index {
 
         // DML: txn-aware bulk index operations
         unique_future<void> insert_rows(execution_context_t ctx,
-                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::vector<components::vector::data_chunk_t> data,
                                         uint64_t start_row_id,
                                         uint64_t count);
         unique_future<void> delete_rows(execution_context_t ctx,
-                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::vector<components::vector::data_chunk_t> data,
                                         std::pmr::vector<int64_t> row_ids);
         unique_future<void> update_rows(execution_context_t ctx,
-                                        std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                        std::vector<components::vector::data_chunk_t> old_data,
+                                        std::vector<components::vector::data_chunk_t> new_data,
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 

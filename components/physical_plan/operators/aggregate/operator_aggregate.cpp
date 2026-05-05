@@ -27,8 +27,7 @@ namespace components::operators::aggregate {
 
     core::result_wrapper_t<compute::datum_t>
     operator_aggregate_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
-        auto* batch = static_cast<operator_batch_t*>(left_.get());
-        auto& chunks = batch->chunks();
+        auto& chunks = left_->output()->chunks();
         std::pmr::vector<types::logical_value_t> results(resource_);
         results.reserve(chunks.size());
         for (size_t i = 0; i < chunks.size(); ++i) {

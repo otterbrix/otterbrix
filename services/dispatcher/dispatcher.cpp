@@ -414,13 +414,16 @@ namespace services::dispatcher {
                                                                coll,
                                                                int64_t{0},
                                                                total);
-                            auto scan_data = co_await std::move(ssf);
-                            if (scan_data) {
-                                auto count = scan_data->size();
+                            auto scan_chunks = co_await std::move(ssf);
+                            uint64_t count = 0;
+                            for (const auto& c : scan_chunks) {
+                                count += c.size();
+                            }
+                            if (count > 0) {
                                 auto [_ir, irf] = actor_zeta::send(index_address_,
                                                                    &index::manager_index_t::insert_rows,
                                                                    index::execution_context_t{session, txn_data, coll},
-                                                                   std::move(scan_data),
+                                                                   std::move(scan_chunks),
                                                                    uint64_t{0},
                                                                    count);
                                 co_await std::move(irf);

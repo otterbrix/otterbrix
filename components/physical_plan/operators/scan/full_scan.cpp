@@ -133,44 +133,41 @@ namespace components::operators {
         // Build filter from expression
         auto filter = transform_predicate(expression_, types, &ctx->parameters);
 
-        // Scan from storage (projected if columns are specified, otherwise full scan)
+        // Scan straight into batched chunks (no concat-then-split round-trip).
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
-        std::unique_ptr<vector::data_chunk_t> data;
-        if (!projected_cols_.empty()) {
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_scan_projected,
-                                             ctx->session,
-                                             name_,
-                                             std::move(filter),
-                                             scan_limit,
-                                             projected_cols_,
-                                             ctx->txn);
-            data = co_await std::move(sf);
-        } else {
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_scan,
-                                             ctx->session,
-                                             name_,
-                                             std::move(filter),
-                                             scan_limit,
-                                             ctx->txn);
-            data = co_await std::move(sf);
+        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_scan_batched,
+                                         ctx->session,
+                                         name_,
+                                         std::move(filter),
+                                         scan_limit,
+                                         projected_cols_,
+                                         ctx->txn);
+        auto batches = co_await std::move(sf);
+
+        // Apply OFFSET by trimming leading rows across the head of the batch list.
+        if (offset_val > 0) {
+            uint64_t remaining = static_cast<uint64_t>(offset_val);
+            size_t skip_count = 0;
+            for (; skip_count < batches.size() && remaining > 0; ++skip_count) {
+                auto sz = batches[skip_count].size();
+                if (sz <= remaining) {
+                    remaining -= sz;
+                    continue;
+                }
+                // Partial trim: keep this batch with the leading `remaining` rows skipped.
+                batches[skip_count] = batches[skip_count].partial_copy(resource_, remaining, sz - remaining);
+                remaining = 0;
+                break;
+            }
+            if (skip_count > 0) {
+                batches.erase(batches.begin(), batches.begin() + static_cast<std::ptrdiff_t>(skip_count));
+            }
         }
 
-        if (data) {
-            if (offset_val > 0 && static_cast<uint64_t>(offset_val) < data->size()) {
-                *data = data->partial_copy(resource_,
-                                           static_cast<uint64_t>(offset_val),
-                                           data->size() - static_cast<uint64_t>(offset_val));
-            } else if (offset_val > 0) {
-                data->set_cardinality(0);
-            }
-            output_ = make_operator_data(resource_, std::move(*data));
-        } else {
-            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
-        }
+        output_ = make_operator_data(resource_, std::move(batches));
         mark_executed();
         co_return;
     }

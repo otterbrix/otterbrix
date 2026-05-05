@@ -53,7 +53,6 @@ namespace components::table {
             const auto& constant = constant_filter.constant;
             const auto& min = statistics_.min_value();
             const auto& max = statistics_.max_value();
-
             switch (filter.filter_type) {
                 case expressions::compare_type::eq:
                     // eq is impossible if constant < min or constant > max

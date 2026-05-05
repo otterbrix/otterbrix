@@ -81,7 +81,7 @@ namespace components::operators {
             auto data = co_await std::move(ff);
 
             if (data) {
-                output_ = make_operator_data(resource_, std::move(*data));
+                output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
             } else {
                 auto [_t2, tf2] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_types,

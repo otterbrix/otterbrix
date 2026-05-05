@@ -15,83 +15,90 @@ namespace components::operators {
         // Predicate matching only — table.delete_rows() is now handled by
         // await_async_and_resume via send(disk_address_, &manager_disk_t::storage_delete_rows).
         if (left_ && left_->output() && right_ && right_->output()) {
-            modified_ = operators::make_operator_write_data(left_->output()->resource());
-            auto& chunk_left = left_->output()->data_chunk();
-            auto& chunk_right = right_->output()->data_chunk();
-            auto types_left = chunk_left.types();
-            auto types_right = chunk_right.types();
-            auto ids_capacity = vector::DEFAULT_VECTOR_CAPACITY;
-            vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, ids_capacity);
-            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+            auto* resource = left_->output()->resource();
+            modified_ = operators::make_operator_write_data(resource);
+            const auto& left_chunks = left_->output()->chunks();
+            const auto& right_chunks = right_->output()->chunks();
+
+            std::pmr::vector<types::complex_logical_type> types_left(resource);
+            std::pmr::vector<types::complex_logical_type> types_right(resource);
+            if (!left_chunks.empty()) {
+                types_left = left_chunks.front().types();
+            }
+            if (!right_chunks.empty()) {
+                types_right = right_chunks.front().types();
+            }
+
+            auto predicate = expression_ ? predicates::create_predicate(resource,
                                                                         pipeline_context->function_registry,
                                                                         expression_,
                                                                         types_left,
                                                                         types_right,
                                                                         &pipeline_context->parameters)
-                                         : predicates::create_all_true_predicate(output_->resource());
+                                         : predicates::create_all_true_predicate(resource);
 
-            size_t index = 0;
-            for (size_t i = 0; i < chunk_left.size(); i++) {
-                auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
-                if (results.has_error()) {
-                    set_error(results.error());
-                    return;
-                }
-                for (size_t j = 0; j < chunk_right.size(); j++) {
-                    if (results.value()[j]) {
-                        ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
-                        if (index >= ids_capacity) {
-                            ids.resize(ids_capacity, ids_capacity * 2);
-                            ids_capacity *= 2;
+            size_t matches = 0;
+            for (const auto& chunk_left : left_chunks) {
+                for (size_t i = 0; i < chunk_left.size(); ++i) {
+                    for (const auto& chunk_right : right_chunks) {
+                        auto results =
+                            predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+                        if (results.has_error()) {
+                            set_error(results.error());
+                            return;
+                        }
+                        for (size_t j = 0; j < chunk_right.size(); ++j) {
+                            if (results.value()[j]) {
+                                modified_->append(static_cast<size_t>(i));
+                                ++matches;
+                            }
                         }
                     }
                 }
             }
-            for (size_t i = 0; i < index; i++) {
-                size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
-                modified_->append(id);
-            }
             for (const auto& type : types_left) {
-                modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
-                    index;
+                modified_->updated_types_map()[{std::pmr::string(type.alias(), resource), type}] += matches;
             }
         } else if (left_ && left_->output()) {
-            modified_ = operators::make_operator_write_data(left_->output()->resource());
-            auto& chunk = left_->output()->data_chunk();
-            auto types = chunk.types();
+            auto* resource = left_->output()->resource();
+            modified_ = operators::make_operator_write_data(resource);
+            const auto& in_chunks = left_->output()->chunks();
 
-            vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
-            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
+            std::pmr::vector<types::complex_logical_type> types(resource);
+            if (!in_chunks.empty()) {
+                types = in_chunks.front().types();
+            }
+
+            auto predicate = expression_ ? predicates::create_predicate(resource,
                                                                         pipeline_context->function_registry,
                                                                         expression_,
                                                                         types,
                                                                         types,
                                                                         &pipeline_context->parameters)
-                                         : predicates::create_all_true_predicate(left_->output()->resource());
+                                         : predicates::create_all_true_predicate(resource);
 
-            size_t index = 0;
-            for (size_t i = 0; i < chunk.size(); i++) {
-                auto res = predicate->check(chunk, i);
-                if (res.has_error()) {
-                    set_error(res.error());
-                    return;
-                }
-                if (res.value()) {
-                    if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        ids.data<int64_t>()[index++] = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-                    } else {
-                        ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
+            size_t matches = 0;
+            for (const auto& chunk : in_chunks) {
+                for (size_t i = 0; i < chunk.size(); ++i) {
+                    auto res = predicate->check(chunk, i);
+                    if (res.has_error()) {
+                        set_error(res.error());
+                        return;
+                    }
+                    if (res.value()) {
+                        size_t id;
+                        if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                            id = static_cast<size_t>(chunk.data.front().indexing().get_index(i));
+                        } else {
+                            id = static_cast<size_t>(chunk.row_ids.data<int64_t>()[i]);
+                        }
+                        modified_->append(id);
+                        ++matches;
                     }
                 }
             }
-            ids.resize(chunk.size(), index);
-            for (size_t i = 0; i < index; i++) {
-                size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
-                modified_->append(id);
-            }
             for (const auto& type : types) {
-                modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
-                    index;
+                modified_->updated_types_map()[{std::pmr::string(type.alias(), resource), type}] += matches;
             }
         }
 

@@ -688,3 +688,129 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->chunk_data().data[2].data<int64_t>()[0] == 1);
     }
 }
+
+// Exercises the DEFAULT_VECTOR_CAPACITY=1024 split across sizes around the boundary.
+// Verifies full-table scan, filter, ORDER BY+LIMIT, and aggregate paths all
+// produce identical results regardless of how many chunks the scan emits.
+TEST_CASE("integration::cpp::test_batch_boundaries") {
+    const auto row_count = GENERATE(1023u, 1024u, 1025u, 1500u, 2048u, 2049u, 3000u);
+
+    auto config = test_create_config("/tmp/test_batch_boundaries_" + std::to_string(row_count));
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->create_database(session, database_name);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->create_collection(session, database_name, collection_name);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+        for (unsigned i = 0; i < row_count; ++i) {
+            query << "('R" << i << "', " << i << ")" << (i + 1 == row_count ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == row_count);
+    }
+
+    INFO("SELECT * returns every row across chunk boundaries") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == row_count);
+    }
+
+    INFO("COUNT aggregates across chunk boundaries") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count);
+    }
+
+    INFO("WHERE filter preserving all rows") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count FROM TestDatabase.TestCollection WHERE count >= 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == row_count);
+    }
+
+    INFO("WHERE filter that crosses the first chunk boundary") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count FROM TestDatabase.TestCollection WHERE count >= 1000;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == (row_count > 1000 ? row_count - 1000 : 0));
+    }
+
+    INFO("ORDER BY + LIMIT pulls the smallest rows regardless of chunking") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count FROM TestDatabase.TestCollection "
+                                           "ORDER BY count ASC LIMIT 5;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        for (size_t i = 0; i < 5; ++i) {
+            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+        }
+    }
+
+    INFO("SUM aggregates across chunk boundaries") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(count + 0) AS s FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        int64_t expected = static_cast<int64_t>(row_count) * (static_cast<int64_t>(row_count) - 1) / 2;
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == expected);
+    }
+
+    INFO("ORDER BY without LIMIT emits sorted output across chunk boundaries") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count FROM TestDatabase.TestCollection ORDER BY count ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == row_count);
+        auto& chunk = cur->chunk_data();
+        for (unsigned i = 0; i < row_count; ++i) {
+            REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+        }
+    }
+
+    INFO("GROUP BY with many groups splits across chunks") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count, COUNT(name) AS cnt FROM TestDatabase.TestCollection "
+                                           "GROUP BY count ORDER BY count ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == row_count);
+        auto& chunk = cur->chunk_data();
+        for (unsigned i = 0; i < row_count; ++i) {
+            REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+            REQUIRE(chunk.data[1].data<int64_t>()[i] == 1);
+        }
+    }
+
+    INFO("DELETE across chunk boundaries removes every matching row") {
+        auto session = otterbrix::session_id_t();
+        auto del = dispatcher->execute_sql(session,
+                                           "DELETE FROM TestDatabase.TestCollection WHERE count >= 1000;");
+        REQUIRE(del->is_success());
+        auto expected_removed = row_count > 1000 ? row_count - 1000 : 0u;
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count - expected_removed);
+    }
+}

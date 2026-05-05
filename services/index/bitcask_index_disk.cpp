@@ -506,8 +506,12 @@ namespace services::index {
 
     void bitcask_index_disk_t::load_entries(entries_t& entries) const {
         std::shared_lock lock(mutex_);
+        size_t total = entries.size();
+        for (const auto& [_, rows] : index_) {
+            total += rows.size();
+        }
+        entries.reserve(total);
         for (const auto& [key, rows] : index_) {
-            entries.reserve(entries.size() + rows.size());
             for (auto row_id : rows) {
                 entries.emplace_back(value_t(resource_, key), row_id);
             }

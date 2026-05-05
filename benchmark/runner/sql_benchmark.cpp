@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -96,6 +97,27 @@ std::string make_group(const std::filesystem::path& path, const std::filesystem:
         return rel.parent_path().string();
     }
     return "sql";
+}
+
+std::optional<uint64_t> parse_expected_rows(const std::string& raw_sql) {
+    std::istringstream iss(raw_sql);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto trimmed = trim(line);
+        if (!trimmed.starts_with("-- @expected_rows ")) {
+            continue;
+        }
+        auto value_str = trim(trimmed.substr(18)); // strlen("-- @expected_rows ")
+        if (value_str.empty()) {
+            return std::nullopt;
+        }
+        try {
+            return static_cast<uint64_t>(std::stoull(value_str));
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
 }
 
 // --- Setup file parsing ---
@@ -214,14 +236,16 @@ sql_benchmark_t::sql_benchmark_t(std::string name,
                                  std::string setup_sql,
                                  std::vector<sql_csv_entry_t> csv_entries,
                                  std::filesystem::path benchmark_dir,
-                                 std::string database)
+                                 std::string database,
+                                 std::optional<uint64_t> expected_rows)
     : name_(std::move(name))
     , group_(std::move(group))
     , sql_(std::move(sql))
     , setup_sql_(std::move(setup_sql))
     , csv_entries_(std::move(csv_entries))
     , benchmark_dir_(std::move(benchmark_dir))
-    , database_(std::move(database)) {}
+    , database_(std::move(database))
+    , expected_rows_(expected_rows) {}
 
 std::string sql_benchmark_t::name() const { return name_; }
 std::string sql_benchmark_t::group() const { return group_; }
@@ -398,6 +422,10 @@ void sql_benchmark_t::run(benchmark_state_t& state) {
     if (cursor->is_error()) {
         throw std::runtime_error("SQL error: " + cursor->get_error().what);
     }
+    if (expected_rows_.has_value() && cursor->size() != expected_rows_.value()) {
+        throw std::runtime_error("Expected rows mismatch: expected " + std::to_string(expected_rows_.value()) +
+                                 ", got " + std::to_string(cursor->size()));
+    }
 }
 
 std::vector<std::unique_ptr<sql_benchmark_t>>
@@ -413,6 +441,7 @@ sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::fi
 
     auto cleaned = strip_comments_and_directives(raw);
     auto queries = split_queries(cleaned);
+    auto expected_rows = parse_expected_rows(raw);
 
     if (queries.empty()) {
         throw std::runtime_error("No SQL queries found in: " + path.string());
@@ -435,14 +464,14 @@ sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::fi
         result.push_back(std::unique_ptr<sql_benchmark_t>(
             new sql_benchmark_t(base_name, group, std::move(queries[0]),
                                 setup.sql, setup.csv_entries, benchmark_dir,
-                                setup.database)));
+                                setup.database, expected_rows)));
     } else {
         for (size_t i = 0; i < queries.size(); ++i) {
             auto name = base_name + "/q" + std::to_string(i + 1);
             result.push_back(std::unique_ptr<sql_benchmark_t>(
                 new sql_benchmark_t(name, group, std::move(queries[i]),
                                     setup.sql, setup.csv_entries, benchmark_dir,
-                                    setup.database)));
+                                    setup.database, expected_rows)));
         }
     }
 

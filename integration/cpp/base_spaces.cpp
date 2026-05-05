@@ -36,8 +36,26 @@ namespace otterbrix {
             }
 
             if (type == components::logical_plan::index_type::hashed) {
-                auto bitcask_data_path = index_path / "bitcask.data";
-                return std::filesystem::exists(bitcask_data_path) && std::filesystem::is_regular_file(bitcask_data_path);
+                // Hash index persistence uses segmented bitcask files:
+                //   bitcask.<segment_id>.data
+                // Keep backward compatibility with legacy bitcask.data if present.
+                const auto legacy_path = index_path / "bitcask.data";
+                if (std::filesystem::exists(legacy_path) && std::filesystem::is_regular_file(legacy_path)) {
+                    return true;
+                }
+
+                for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
+                    if (!entry.is_regular_file()) {
+                        continue;
+                    }
+                    const auto filename = entry.path().filename().string();
+                    if (filename.rfind("bitcask.", 0) == 0 &&
+                        filename.size() > std::string("bitcask..data").size() &&
+                        filename.substr(filename.size() - std::string(".data").size()) == ".data") {
+                        return true;
+                    }
+                }
+                return std::filesystem::is_empty(index_path);
             }
 
             auto metadata_path = index_path / "metadata";

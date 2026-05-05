@@ -1121,12 +1121,13 @@ namespace services::disk {
         if (!s) {
             co_return std::move(result);
         }
-        auto* res = resource();
-        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+        auto types = s->types();
+        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) {
             if (chunk.size() == 0) {
                 return;
             }
-            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+            result->append(chunk, true);
         });
         co_return std::move(result);
     }
@@ -1775,12 +1776,13 @@ namespace services::disk {
         if (!s) {
             co_return std::move(result);
         }
-        auto* res = resource();
-        s->scan_segment(start, count, [&result, res](components::vector::data_chunk_t& chunk) {
+        auto types = s->types();
+        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
+        s->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) {
             if (chunk.size() == 0) {
                 return;
             }
-            result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+            result->append(chunk, true);
         });
         co_return std::move(result);
     }

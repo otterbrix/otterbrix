@@ -29,9 +29,9 @@ namespace configuration {
         std::filesystem::path path{std::filesystem::current_path() / "disk"};
         bool on{true};
         int agent = 2;
-        uint64_t bitcask_flush_threshold{1000};
-        uint64_t bitcask_segment_record_limit{100};
-        uint64_t btree_flush_threshold{1000};
+        uint64_t bitcask_flush_threshold{10000};
+        uint64_t bitcask_segment_record_limit{10000};
+        uint64_t btree_flush_threshold{10000};
 
         explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}

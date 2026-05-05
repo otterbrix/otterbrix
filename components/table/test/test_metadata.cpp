@@ -7,6 +7,7 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/vector/validation.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstring>
@@ -198,6 +199,7 @@ TEST_CASE("metadata: row_group_pointer reads older columnar format") {
         REQUIRE(row_group.columnar_data_pointers[1][0].block_pointer.block_id == 12);
         REQUIRE(row_group.layout_kind == row_group_layout_kind::COLUMNAR);
         REQUIRE_FALSE(row_group.pax_fixed_layout.has_value());
+        REQUIRE_FALSE(row_group.pax_generic_layout.has_value());
     }
 
     cleanup_test_file();
@@ -214,6 +216,7 @@ TEST_CASE("metadata: pax_fixed layout round trip") {
     metadata_manager_t manager(bm);
 
     pax_fixed_row_group_layout_t layout;
+    layout.version = 2;
     layout.rows_per_page = 128;
 
     pax_fixed_page_t first_page;
@@ -227,6 +230,14 @@ TEST_CASE("metadata: pax_fixed layout round trip") {
     first_slice.data_pointer.tuple_count = 128;
     first_slice.data_pointer.block_pointer = block_pointer_t(101, 0);
     first_slice.data_pointer.segment_size = 1024;
+    first_slice.validity_kind = pax_fixed_validity_kind::BITMASK;
+    first_slice.validity_data_pointer = data_pointer_t{};
+    first_slice.validity_data_pointer->row_start = 0;
+    first_slice.validity_data_pointer->tuple_count = 128;
+    first_slice.validity_data_pointer->block_pointer = block_pointer_t(101, 1536);
+    first_slice.validity_data_pointer->compression =
+        components::table::compression::compression_type::VALIDITY_UNCOMPRESSED;
+    first_slice.validity_data_pointer->segment_size = components::vector::validity_mask_t::validity_mask_size(128);
 
     pax_fixed_slice_t second_slice;
     second_slice.column_index = 1;
@@ -235,6 +246,7 @@ TEST_CASE("metadata: pax_fixed layout round trip") {
     second_slice.data_pointer.tuple_count = 128;
     second_slice.data_pointer.block_pointer = block_pointer_t(101, 1024);
     second_slice.data_pointer.segment_size = 512;
+    second_slice.validity_kind = pax_fixed_validity_kind::ALL_VALID;
 
     first_page.slices.push_back(first_slice);
     first_page.slices.push_back(second_slice);
@@ -251,15 +263,170 @@ TEST_CASE("metadata: pax_fixed layout round trip") {
     {
         metadata_reader_t reader(manager, pointer);
         auto restored = pax_fixed_row_group_layout_t::deserialize(reader);
-        REQUIRE(restored.version == 1);
+        REQUIRE(restored.version == 2);
         REQUIRE(restored.rows_per_page == 128);
         REQUIRE(restored.pages.size() == 1);
         REQUIRE(restored.pages[0].tuple_count == 128);
         REQUIRE(restored.pages[0].slices.size() == 2);
         REQUIRE(restored.pages[0].slices[0].column_index == 0);
         REQUIRE(restored.pages[0].slices[0].column_type == pax_fixed_column_type::INT64);
+        REQUIRE(restored.pages[0].slices[0].validity_kind == pax_fixed_validity_kind::BITMASK);
+        REQUIRE(restored.pages[0].slices[0].validity_data_pointer.has_value());
+        REQUIRE(restored.pages[0].slices[0].validity_data_pointer->block_pointer.offset == 1536);
         REQUIRE(restored.pages[0].slices[1].column_index == 1);
         REQUIRE(restored.pages[0].slices[1].data_pointer.block_pointer.offset == 1024);
+        REQUIRE(restored.pages[0].slices[1].validity_kind == pax_fixed_validity_kind::ALL_VALID);
+        REQUIRE_FALSE(restored.pages[0].slices[1].validity_data_pointer.has_value());
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("metadata: pax_fixed v1 layout defaults to all valid validity") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    bm.create_new_database();
+
+    metadata_manager_t manager(bm);
+
+    pax_fixed_row_group_layout_t layout;
+    layout.version = 1;
+    layout.rows_per_page = 128;
+
+    pax_fixed_page_t page;
+    page.row_offset_in_group = 0;
+    page.tuple_count = 64;
+
+    pax_fixed_slice_t slice;
+    slice.column_index = 0;
+    slice.column_type = pax_fixed_column_type::INT32;
+    slice.data_pointer.row_start = 0;
+    slice.data_pointer.tuple_count = 64;
+    slice.data_pointer.block_pointer = block_pointer_t(7, 0);
+    slice.data_pointer.segment_size = 256;
+    page.slices.push_back(slice);
+    layout.pages.push_back(page);
+
+    meta_block_pointer_t pointer;
+    {
+        metadata_writer_t writer(manager);
+        layout.serialize(writer);
+        pointer = writer.get_block_pointer();
+        writer.flush();
+    }
+
+    {
+        metadata_reader_t reader(manager, pointer);
+        auto restored = pax_fixed_row_group_layout_t::deserialize(reader);
+        REQUIRE(restored.version == 1);
+        REQUIRE(restored.pages.size() == 1);
+        REQUIRE(restored.pages[0].slices.size() == 1);
+        REQUIRE(restored.pages[0].slices[0].validity_kind == pax_fixed_validity_kind::ALL_VALID);
+        REQUIRE_FALSE(restored.pages[0].slices[0].validity_data_pointer.has_value());
+    }
+
+    cleanup_test_file();
+}
+
+TEST_CASE("metadata: pax_generic layout round trip") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    bm.create_new_database();
+
+    metadata_manager_t manager(bm);
+
+    pax_generic_row_group_layout_t layout;
+    layout.version = 1;
+    layout.rows_per_page = 128;
+
+    pax_generic_page_t first_page;
+    first_page.row_offset_in_group = 0;
+    first_page.tuple_count = 128;
+
+    pax_generic_slice_t string_slice;
+    string_slice.column_index = 0;
+    string_slice.slice_kind = pax_generic_slice_kind::STRING_VALUES;
+    string_slice.codec_kind = pax_generic_codec_kind::STRING_SEGMENT;
+    string_slice.payload = pax_block_payload_t{};
+    string_slice.payload->main_pointer.row_start = 0;
+    string_slice.payload->main_pointer.tuple_count = 128;
+    string_slice.payload->main_pointer.block_pointer = block_pointer_t(200, 0);
+    string_slice.payload->main_pointer.segment_size = 4096;
+    string_slice.payload->extra_block_ids = {300, 301};
+
+    pax_generic_slice_t validity_slice;
+    validity_slice.column_index = 0;
+    validity_slice.slice_kind = pax_generic_slice_kind::VALIDITY;
+    validity_slice.codec_kind = pax_generic_codec_kind::VALIDITY_BITMASK;
+    validity_slice.payload = pax_block_payload_t{};
+    validity_slice.payload->main_pointer.row_start = 0;
+    validity_slice.payload->main_pointer.tuple_count = 128;
+    validity_slice.payload->main_pointer.block_pointer = block_pointer_t(200, 4096);
+    validity_slice.payload->main_pointer.compression =
+        components::table::compression::compression_type::VALIDITY_UNCOMPRESSED;
+    validity_slice.payload->main_pointer.segment_size = components::vector::validity_mask_t::validity_mask_size(128);
+
+    first_page.slices.push_back(string_slice);
+    first_page.slices.push_back(validity_slice);
+
+    pax_generic_page_t second_page;
+    second_page.row_offset_in_group = 128;
+    second_page.tuple_count = 16;
+
+    pax_generic_slice_t second_string_slice;
+    second_string_slice.column_index = 0;
+    second_string_slice.slice_kind = pax_generic_slice_kind::STRING_VALUES;
+    second_string_slice.codec_kind = pax_generic_codec_kind::STRING_SEGMENT;
+    second_string_slice.payload = pax_block_payload_t{};
+    second_string_slice.payload->main_pointer.row_start = 128;
+    second_string_slice.payload->main_pointer.tuple_count = 16;
+    second_string_slice.payload->main_pointer.block_pointer = block_pointer_t(201, 0);
+    second_string_slice.payload->main_pointer.segment_size = 256;
+
+    pax_generic_slice_t second_validity_slice;
+    second_validity_slice.column_index = 0;
+    second_validity_slice.slice_kind = pax_generic_slice_kind::VALIDITY;
+    second_validity_slice.codec_kind = pax_generic_codec_kind::VALIDITY_ALL_INVALID;
+
+    second_page.slices.push_back(second_string_slice);
+    second_page.slices.push_back(second_validity_slice);
+
+    layout.pages.push_back(first_page);
+    layout.pages.push_back(second_page);
+
+    meta_block_pointer_t pointer;
+    {
+        metadata_writer_t writer(manager);
+        layout.serialize(writer);
+        pointer = writer.get_block_pointer();
+        writer.flush();
+    }
+
+    {
+        metadata_reader_t reader(manager, pointer);
+        auto restored = pax_generic_row_group_layout_t::deserialize(reader);
+        REQUIRE(restored.version == 1);
+        REQUIRE(restored.rows_per_page == 128);
+        REQUIRE(restored.pages.size() == 2);
+        REQUIRE(restored.pages[0].slices.size() == 2);
+        REQUIRE(restored.pages[0].slices[0].slice_kind == pax_generic_slice_kind::STRING_VALUES);
+        REQUIRE(restored.pages[0].slices[0].codec_kind == pax_generic_codec_kind::STRING_SEGMENT);
+        REQUIRE(restored.pages[0].slices[0].payload.has_value());
+        REQUIRE(restored.pages[0].slices[0].payload->main_pointer.block_pointer.block_id == 200);
+        REQUIRE(restored.pages[0].slices[0].payload->extra_block_ids == std::vector<uint32_t>{300, 301});
+        REQUIRE(restored.pages[0].slices[1].slice_kind == pax_generic_slice_kind::VALIDITY);
+        REQUIRE(restored.pages[0].slices[1].codec_kind == pax_generic_codec_kind::VALIDITY_BITMASK);
+        REQUIRE(restored.pages[0].slices[1].payload.has_value());
+        REQUIRE(restored.pages[0].slices[1].payload->main_pointer.segment_size ==
+                components::vector::validity_mask_t::validity_mask_size(128));
+        REQUIRE(restored.pages[1].slices[1].codec_kind == pax_generic_codec_kind::VALIDITY_ALL_INVALID);
+        REQUIRE_FALSE(restored.pages[1].slices[1].payload.has_value());
     }
 
     cleanup_test_file();

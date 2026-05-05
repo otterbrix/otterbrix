@@ -563,6 +563,7 @@ namespace components::table {
             throw std::logic_error("scan_vector called with SCAN_FLAT_VECTOR but result is not a flat vector");
         }
         state.previous_states.clear();
+        state.overflow_states.clear();
         if (!state.initialized) {
             assert(state.current);
             state.current->initialize_scan(state);

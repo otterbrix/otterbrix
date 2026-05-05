@@ -75,8 +75,8 @@ namespace components::table {
         }
 
         void read_string_marker(std::byte* target, uint32_t& block_id, int32_t& offset) {
-            memcpy(&block_id, target, sizeof(uint64_t));
-            target += sizeof(uint64_t);
+            memcpy(&block_id, target, sizeof(uint32_t));
+            target += sizeof(uint32_t);
             memcpy(&offset, target, sizeof(int32_t));
         }
 
@@ -109,12 +109,45 @@ namespace components::table {
             return std::string_view(reinterpret_cast<char*>(ptr + sizeof(uint32_t)), str_length);
         }
 
-        std::string_view fetch_string(string_dictionary_container_t dict,
+        storage::buffer_handle_t& get_or_pin_overflow_scan_handle(column_segment_t& segment,
+                                                                  column_scan_state& state,
+                                                                  uint32_t block_id) {
+            auto entry = state.overflow_states.find(block_id);
+            if (entry != state.overflow_states.end()) {
+                return *entry->second;
+            }
+
+            auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
+            auto block = string_state.handle(segment.block_manager(), block_id);
+            auto handle = segment.block_manager().buffer_manager.pin(block);
+            handle.set_ownership(block);
+            auto stored = std::make_unique<storage::buffer_handle_t>(std::move(handle));
+            auto* result = stored.get();
+            state.overflow_states.emplace(block_id, std::move(stored));
+            return *result;
+        }
+
+        std::string_view fetch_string(column_segment_t& segment,
+                                      string_dictionary_container_t dict,
                                       std::byte* base_ptr,
                                       string_location_t location,
-                                      uint32_t string_length) {
-            if (location.offset == 0) {
+                                      uint32_t string_length,
+                                      column_scan_state* scan_state,
+                                      column_fetch_state* fetch_state) {
+            if (location.block_id == INVALID_BLOCK && location.offset == 0) {
                 return std::string_view(nullptr, 0);
+            }
+            if (location.block_id != INVALID_BLOCK) {
+                if (fetch_state) {
+                    auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
+                    auto block = string_state.handle(segment.block_manager(), location.block_id);
+                    auto& overflow_handle = fetch_state->get_or_insert_handle(block);
+                    return read_string_with_length(overflow_handle.ptr(), location.offset);
+                }
+                if (scan_state) {
+                    auto& overflow_handle = get_or_pin_overflow_scan_handle(segment, *scan_state, location.block_id);
+                    return read_string_with_length(overflow_handle.ptr(), location.offset);
+                }
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }
@@ -122,11 +155,13 @@ namespace components::table {
                                                 string_dictionary_container_t dict,
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
-                                                uint32_t string_length) {
+                                                uint32_t string_length,
+                                                column_scan_state* scan_state = nullptr,
+                                                column_fetch_state* fetch_state = nullptr) {
             auto block_size = segment.block_manager().block_size();
             assert(dict_offset <= static_cast<int32_t>(block_size));
             string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
-            return fetch_string(dict, base_ptr, location, string_length);
+            return fetch_string(segment, dict, base_ptr, location, string_length, scan_state, fetch_state);
         }
 
         void write_string_memory(column_segment_t& segment,
@@ -228,7 +263,8 @@ namespace components::table {
             } else {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
-            result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+            result_data[result_idx] =
+                fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length, nullptr, &state);
         }
 
         template<typename T>
@@ -271,7 +307,8 @@ namespace components::table {
             }
 
             const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
+            return const_filter.compare(
+                fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length, nullptr, &state));
         }
 
         struct standard_fixed_size_t {
@@ -369,9 +406,11 @@ namespace components::table {
         }
 
         void write_string_marker(std::byte* target, uint64_t block_id, int64_t offset) {
-            memcpy(target, &block_id, sizeof(uint64_t));
-            target += sizeof(uint64_t);
-            memcpy(target, &offset, sizeof(int64_t));
+            auto marker_block_id = static_cast<uint32_t>(block_id);
+            auto marker_offset = static_cast<int32_t>(offset);
+            memcpy(target, &marker_block_id, sizeof(uint32_t));
+            target += sizeof(uint32_t);
+            memcpy(target, &marker_offset, sizeof(int32_t));
         }
 
         uint64_t
@@ -851,7 +890,9 @@ namespace components::table {
                                                                         dict,
                                                                         baseptr,
                                                                         base_data[static_cast<uint64_t>(start) + i],
-                                                                        string_length);
+                                                                        string_length,
+                                                                        &state,
+                                                                        nullptr);
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
             }
         }

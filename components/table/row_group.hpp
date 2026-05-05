@@ -10,6 +10,7 @@ namespace components::vector {
 
 namespace components::table {
     class row_version_manager_t;
+    struct row_group_test_access_t;
 
     constexpr static uint64_t MAX_ROW_GROUP_SIZE = uint64_t(1) << 30;
 
@@ -23,6 +24,7 @@ namespace components::table {
     class row_group_t : public segment_base_t<row_group_t> {
     public:
         friend class column_data_t;
+        friend struct row_group_test_access_t;
 
         row_group_t(collection_t* collection, int64_t start, uint64_t count);
         ~row_group_t() = default;
@@ -35,6 +37,7 @@ namespace components::table {
         std::vector<std::shared_ptr<column_data_t>> columns_;
         storage::row_group_layout_kind layout_kind_ = storage::row_group_layout_kind::COLUMNAR;
         std::optional<storage::pax_fixed_row_group_layout_t> pax_fixed_layout_;
+        std::optional<storage::pax_generic_row_group_layout_t> pax_generic_layout_;
 
     public:
         void move_to_collection(collection_t* collection, int64_t new_start);
@@ -127,6 +130,7 @@ namespace components::table {
                              vector::indexing_vector_t& indexing,
                              const table_filter_t* filter,
                              uint64_t& approved_tuple_count);
+        bool try_scan_pax_fixed_projected(collection_scan_state& state, vector::data_chunk_t& result);
 
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);

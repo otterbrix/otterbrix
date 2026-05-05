@@ -7,6 +7,7 @@
 #include "update_segment.hpp"
 
 namespace components::table {
+    class row_group_t;
 
     struct persistent_column_data_t;
 
@@ -29,6 +30,7 @@ namespace components::table {
         friend class column_segment_t;
         friend class column_data_checkpointer_t;
         friend class column_checkpoint_state_t;
+        friend class row_group_t;
 
     public:
         column_data_t(std::pmr::memory_resource* resource,

@@ -200,6 +200,7 @@ namespace components::table {
         bool initialized = false;
         bool segment_checked = false;
         std::vector<std::unique_ptr<storage::buffer_handle_t>> previous_states;
+        std::unordered_map<uint64_t, std::unique_ptr<storage::buffer_handle_t>> overflow_states;
         uint64_t last_offset = 0;
         uint64_t result_offset = 0;
         std::vector<bool> scan_child_column;
@@ -214,6 +215,8 @@ namespace components::table {
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
 
         storage::buffer_handle_t& get_or_insert_handle(column_segment_t& segment);
+        storage::buffer_handle_t& get_or_insert_handle(const std::shared_ptr<storage::block_handle_t>& block);
+        storage::buffer_handle_t& get_or_insert_handle(storage::block_manager_t& manager, uint64_t block_id);
     };
 
     struct string_block_t {
@@ -241,6 +244,8 @@ namespace components::table {
 
     struct uncompressed_string_segment_state : public compressed_segment_state {
         ~uncompressed_string_segment_state() override;
+
+        std::vector<uint32_t> additional_blocks() const override { return on_disk_blocks; }
 
         std::unique_ptr<string_block_t> head;
         std::unordered_map<uint32_t, string_block_t*> overflow_blocks;

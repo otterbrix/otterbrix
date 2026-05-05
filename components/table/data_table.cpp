@@ -487,6 +487,11 @@ namespace components::table {
                         throw std::logic_error("missing pax_fixed layout metadata for PAX row group");
                     }
                     rgp.pax_fixed_layout->serialize(writer);
+                } else if (rgp.layout_kind == storage::row_group_layout_kind::PAX_GENERIC) {
+                    if (!rgp.pax_generic_layout.has_value()) {
+                        throw std::logic_error("missing pax_generic layout metadata for PAX row group");
+                    }
+                    rgp.pax_generic_layout->serialize(writer);
                 }
             }
         }
@@ -536,8 +541,14 @@ namespace components::table {
                 row_group_pointers[i].layout_kind = layout_kind;
                 if (layout_kind == storage::row_group_layout_kind::PAX_FIXED) {
                     row_group_pointers[i].pax_fixed_layout = storage::pax_fixed_row_group_layout_t::deserialize(reader);
+                    row_group_pointers[i].pax_generic_layout.reset();
+                } else if (layout_kind == storage::row_group_layout_kind::PAX_GENERIC) {
+                    row_group_pointers[i].pax_generic_layout =
+                        storage::pax_generic_row_group_layout_t::deserialize(reader);
+                    row_group_pointers[i].pax_fixed_layout.reset();
                 } else {
                     row_group_pointers[i].pax_fixed_layout.reset();
+                    row_group_pointers[i].pax_generic_layout.reset();
                 }
             }
         }

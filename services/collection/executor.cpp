@@ -42,7 +42,6 @@ components::logical_plan::node_type find_effective_dml_type(
     while (n) {
         switch (n->type()) {
         case node_type::check_constraint_t:
-        case node_type::sequence_t:
             if (!n->children().empty()) {
                 n = n->children().front().get();
                 continue;

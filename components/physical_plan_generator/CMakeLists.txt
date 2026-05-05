@@ -12,9 +12,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
         impl/create_plan_check_constraint.cpp
-        impl/create_plan_primitive_write.cpp
-        impl/create_plan_primitive_delete.cpp
-        impl/create_plan_sequence.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

@@ -29,11 +29,8 @@ namespace components::operators {
         join,
         aggregate,
         raw_data,
-        // Constraint / DDL operators (Etap 4)
-        check_constraint,
-        primitive_write,
-        primitive_delete,
-        sequence
+        // Constraint operator (Etap 4)
+        check_constraint
     };
 
     inline bool is_scan(operator_type t) {

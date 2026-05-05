@@ -1521,6 +1521,31 @@ namespace services::dispatcher {
                                 }
                             }
 
+                            // validate_static_nulls: for literal VALUES, reject null in NOT NULL cols
+                            if (node->children().front()->type() == node_type::data_t && tbl_ins) {
+                                const auto* dat = reinterpret_cast<const node_data_t*>(
+                                    node->children().front().get());
+                                const auto& chunk = dat->data_chunk();
+                                const auto& cat_cols = tbl_ins->columns;
+                                for (size_t ci = 0; ci < incoming_schema.value().size(); ++ci) {
+                                    size_t tbl_idx = insert_node->key_translation().empty()
+                                                         ? ci
+                                                         : insert_node->key_translation()[ci].path().front();
+                                    if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
+                                        continue;
+                                    for (std::uint64_t row = 0; row < chunk.size(); ++row) {
+                                        if (!chunk.data[ci].validity().row_is_valid(row)) {
+                                            return schema_result<named_schema>{
+                                                resource,
+                                                components::cursor::error_t{
+                                                    error_code_t::schema_error,
+                                                    "insert_node: NULL value for NOT NULL column '" +
+                                                        cat_cols[tbl_idx].attname + "'"}};
+                                        }
+                                    }
+                                }
+                            }
+
                             if (!unchecked_columns.empty()) {
                                 const auto& cat_columns = tbl_ins ? tbl_ins->columns : std::vector<resolved_column_t>{};
                                 for (auto index : unchecked_columns) {

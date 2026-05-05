@@ -80,18 +80,10 @@ namespace services::collection::executor {
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn);
 
-        // Variant E: DDL pipeline. Routes the plan to the appropriate ddl_* on the disk
-        // actor, wraps the call with a real transaction (begin → ddl_* → commit) so the
-        // pg_catalog mutations land in MVCC + WAL atomically.
-        unique_future<execute_result_t> execute_ddl_plan(components::session::session_id_t session,
-                                                          components::logical_plan::node_ptr logical_plan,
-                                                          components::table::transaction_data txn);
-
         unique_future<function_result_t> register_udf(components::session::session_id_t session,
                                                       components::compute::function_ptr function);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan,
-                                                            &executor_t::execute_ddl_plan,
                                                             &executor_t::register_udf>;
 
         auto make_type() const noexcept -> const char*;

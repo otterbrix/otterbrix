@@ -568,7 +568,7 @@ namespace services::dispatcher {
         // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
         // Must run after validate_schema so catalog_view cache is warm.
         {
-            auto [_e, ef] = enrich_plan(logic_plan, view, disk_address_, ctx, resource());
+            auto ef = enrich_plan(logic_plan, view, disk_address_, ctx, resource());
             co_await std::move(ef);
         }
         // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.

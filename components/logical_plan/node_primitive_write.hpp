@@ -19,6 +19,7 @@ namespace components::logical_plan {
         components::catalog::oid_t               table_oid() const { return table_oid_; }
         components::vector::data_chunk_t&        row()             { return row_; }
         const components::vector::data_chunk_t&  row()       const { return row_; }
+        components::vector::data_chunk_t         take_row()        { return std::move(row_); }
 
     private:
         hash_t      hash_impl()      const override;

@@ -3,7 +3,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/types/logical_value.hpp>
 
-#include <stdexcept>
+#include <cassert>
 
 namespace components::catalog {
 
@@ -47,7 +47,7 @@ vector::data_chunk_t build_pg_class_row(
     const pg_class_build_t&    p)
 {
     const auto* def = find_system_table("pg_class");
-    if (!def) return vector::data_chunk_t{};
+    assert(def && "system table schema missing — bootstrap not called");
 
     auto chunk = one_row_chunk(resource, def->columns);
     chunk.set_value(0, 0, lv_oid(resource, p.table_oid));
@@ -89,7 +89,7 @@ vector::data_chunk_t build_pg_constraint_row(
     const pg_constraint_build_t&  p)
 {
     const auto* def = find_system_table("pg_constraint");
-    if (!def) return vector::data_chunk_t{};
+    assert(def && "system table schema missing — bootstrap not called");
 
     auto chunk = one_row_chunk(resource, def->columns);
     chunk.set_value( 0, 0, lv_oid(resource, p.con_oid));
@@ -115,7 +115,7 @@ vector::data_chunk_t build_pg_depend_row(
     std::int32_t refobjsubid)
 {
     const auto* def = find_system_table("pg_depend");
-    if (!def) return vector::data_chunk_t{};
+    assert(def && "system table schema missing — bootstrap not called");
 
     auto chunk = one_row_chunk(resource, def->columns);
     chunk.set_value(0, 0, lv_oid(resource, classid));
@@ -134,7 +134,7 @@ vector::data_chunk_t build_pg_namespace_row(
     const std::string&         nspname)
 {
     const auto* def = find_system_table("pg_namespace");
-    if (!def) return vector::data_chunk_t{};
+    assert(def && "system table schema missing — bootstrap not called");
 
     auto chunk = one_row_chunk(resource, def->columns);
     chunk.set_value(0, 0, lv_oid(resource, ns_oid));

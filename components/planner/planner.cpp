@@ -14,7 +14,7 @@
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
 
-#include <boost/smart_ptr/make_intrusive.hpp>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 
 namespace components::planner {
 
@@ -33,8 +33,8 @@ namespace components::planner {
 
             // FK parent-existence checks.
             for (const auto& fk : ins->outgoing_fks()) {
-                auto fk_node = boost::make_intrusive<logical_plan::node_fk_check_t>(
-                    r, ins->collection_full_name(), fk);
+                auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
+                    r, ins->collection_full_name(), fk));
                 fk_node->append_child(current);
                 current = std::move(fk_node);
             }
@@ -42,17 +42,17 @@ namespace components::planner {
             // CHECK constraint evaluation.
             for (const auto& expr : ins->check_exprs()) {
                 auto pred = catalog::compile_check(r, expr, {});
-                auto chk = boost::make_intrusive<logical_plan::node_check_constraint_t>(
-                    r, ins->collection_full_name(), std::move(pred), expr);
+                auto chk = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
+                    r, ins->collection_full_name(), std::move(pred), expr));
                 chk->append_child(current);
                 current = std::move(chk);
             }
 
             // NOT NULL check.
             if (!ins->not_null_cols().empty()) {
-                auto nn = boost::make_intrusive<logical_plan::node_not_null_check_t>(
+                auto nn = boost::intrusive_ptr(new logical_plan::node_not_null_check_t(
                     r, ins->collection_full_name(),
-                    std::vector<std::string>(ins->not_null_cols()));
+                    std::vector<std::string>(ins->not_null_cols())));
                 nn->append_child(current);
                 current = std::move(nn);
             }
@@ -60,8 +60,8 @@ namespace components::planner {
             // DEFAULT apply.
             if (ins->has_defaults()) {
                 std::vector<logical_plan::node_default_apply_t::default_entry_t> defs;
-                auto da = boost::make_intrusive<logical_plan::node_default_apply_t>(
-                    r, ins->collection_full_name(), std::move(defs));
+                auto da = boost::intrusive_ptr(new logical_plan::node_default_apply_t(
+                    r, ins->collection_full_name(), std::move(defs)));
                 da->append_child(current);
                 current = std::move(da);
             }
@@ -78,24 +78,24 @@ namespace components::planner {
             node_ptr current = node;
 
             for (const auto& fk : upd->outgoing_fks()) {
-                auto fk_node = boost::make_intrusive<logical_plan::node_fk_check_t>(
-                    r, upd->collection_full_name(), fk);
+                auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
+                    r, upd->collection_full_name(), fk));
                 fk_node->append_child(current);
                 current = std::move(fk_node);
             }
 
             for (const auto& expr : upd->check_exprs()) {
                 auto pred = catalog::compile_check(r, expr, {});
-                auto chk = boost::make_intrusive<logical_plan::node_check_constraint_t>(
-                    r, upd->collection_full_name(), std::move(pred), expr);
+                auto chk = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
+                    r, upd->collection_full_name(), std::move(pred), expr));
                 chk->append_child(current);
                 current = std::move(chk);
             }
 
             if (!upd->not_null_cols().empty()) {
-                auto nn = boost::make_intrusive<logical_plan::node_not_null_check_t>(
+                auto nn = boost::intrusive_ptr(new logical_plan::node_not_null_check_t(
                     r, upd->collection_full_name(),
-                    std::vector<std::string>(upd->not_null_cols()));
+                    std::vector<std::string>(upd->not_null_cols())));
                 nn->append_child(current);
                 current = std::move(nn);
             }
@@ -111,12 +111,12 @@ namespace components::planner {
             auto* del = static_cast<logical_plan::node_delete_t*>(node.get());
             if (del->referencing_fks().empty()) return node;
 
-            auto seq = boost::make_intrusive<logical_plan::node_sequence_t>(
-                r, del->collection_full_name());
+            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(
+                r, del->collection_full_name()));
             seq->append_child(node);
             for (const auto& fk : del->referencing_fks()) {
-                auto casc = boost::make_intrusive<logical_plan::node_fk_cascade_t>(
-                    r, del->collection_full_name(), fk);
+                auto casc = boost::intrusive_ptr(new logical_plan::node_fk_cascade_t(
+                    r, del->collection_full_name(), fk));
                 seq->append_child(std::move(casc));
             }
             return seq;

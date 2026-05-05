@@ -9,7 +9,7 @@
 // Completed in Etap 3.5 when the planner is rewritten.
 
 #include <components/catalog/constraint_evaluator.hpp>
-#include <components/types/complex_logical_type.hpp>
+#include <components/types/types.hpp>
 
 #include <memory_resource>
 #include <string>

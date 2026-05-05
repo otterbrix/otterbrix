@@ -52,9 +52,6 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_insert>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_update>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_parent_delete>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_commit_append>,
@@ -98,7 +95,6 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::recent_invalidations_since>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::commit_pg_catalog_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::get_check_constraints>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -321,22 +317,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_append, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_insert>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::fk_validate_insert, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_update>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::fk_validate_update, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::fk_validate_parent_delete>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::fk_validate_parent_delete, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::get_check_constraints>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::get_check_constraints, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>: {

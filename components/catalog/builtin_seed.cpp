@@ -3,7 +3,7 @@
 
 namespace components::catalog {
 
-    using wk = well_known_oid;
+    namespace wk = well_known_oid;
 
     ns_seed_row_t builtin_database_row() {
         return {wk::main_database, "main"};

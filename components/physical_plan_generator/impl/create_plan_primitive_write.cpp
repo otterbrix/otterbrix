@@ -14,7 +14,7 @@ namespace services::planner::impl {
                 context.resource,
                 context.log.clone(),
                 n->table_oid(),
-                n->row()));
+                n->take_row()));
     }
 
 } // namespace services::planner::impl

@@ -1,12 +1,20 @@
 #include "create_plan.hpp"
 
 #include "impl/create_plan_aggregate.hpp"
+#include "impl/create_plan_check_constraint.hpp"
 #include "impl/create_plan_data.hpp"
+#include "impl/create_plan_default_apply.hpp"
 #include "impl/create_plan_delete.hpp"
+#include "impl/create_plan_fk_cascade.hpp"
+#include "impl/create_plan_fk_check.hpp"
 #include "impl/create_plan_group.hpp"
 #include "impl/create_plan_insert.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
+#include "impl/create_plan_not_null_check.hpp"
+#include "impl/create_plan_primitive_delete.hpp"
+#include "impl/create_plan_primitive_write.hpp"
+#include "impl/create_plan_sequence.hpp"
 #include "impl/create_plan_sort.hpp"
 #include "impl/create_plan_update.hpp"
 
@@ -40,6 +48,22 @@ namespace services::planner {
                 return impl::create_plan_update(context, node);
             case node_type::join_t:
                 return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
+            case node_type::not_null_check_t:
+                return impl::create_plan_not_null_check(context, function_registry, node, params);
+            case node_type::check_constraint_t:
+                return impl::create_plan_check_constraint(context, function_registry, node, params);
+            case node_type::default_apply_t:
+                return impl::create_plan_default_apply(context, function_registry, node, params);
+            case node_type::fk_check_t:
+                return impl::create_plan_fk_check(context, function_registry, node, params);
+            case node_type::fk_cascade_t:
+                return impl::create_plan_fk_cascade(context, function_registry, node, params);
+            case node_type::primitive_write_t:
+                return impl::create_plan_primitive_write(context, node);
+            case node_type::primitive_delete_t:
+                return impl::create_plan_primitive_delete(context, node);
+            case node_type::sequence_t:
+                return impl::create_plan_sequence(context, function_registry, node, params);
             default:
                 break;
         }

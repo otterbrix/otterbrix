@@ -28,7 +28,16 @@ namespace components::operators {
         sort,
         join,
         aggregate,
-        raw_data
+        raw_data,
+        // Constraint / DDL operators (E3.5 / Etap 4)
+        not_null_check,
+        check_constraint,
+        default_apply,
+        fk_check,
+        fk_cascade,
+        primitive_write,
+        primitive_delete,
+        sequence
     };
 
     inline bool is_scan(operator_type t) {

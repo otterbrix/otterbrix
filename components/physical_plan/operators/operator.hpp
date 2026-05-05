@@ -29,12 +29,8 @@ namespace components::operators {
         join,
         aggregate,
         raw_data,
-        // Constraint / DDL operators (E3.5 / Etap 4)
-        not_null_check,
+        // Constraint / DDL operators (Etap 4)
         check_constraint,
-        default_apply,
-        fk_check,
-        fk_cascade,
         primitive_write,
         primitive_delete,
         sequence

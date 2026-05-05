@@ -33,11 +33,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_sort.cpp
         operators/operator_join.cpp
 
-        operators/operator_not_null_check.cpp
         operators/operator_check_constraint.cpp
-        operators/operator_default_apply.cpp
-        operators/operator_fk_check.cpp
-        operators/operator_fk_cascade.cpp
         operators/operator_primitive_write.cpp
         operators/operator_primitive_delete.cpp
         operators/operator_sequence.cpp

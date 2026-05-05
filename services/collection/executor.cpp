@@ -31,21 +31,17 @@ using namespace components::cursor;
 
 namespace {
 
-// Walk through planner-added constraint wrapper nodes (not_null_check, check_constraint,
-// default_apply, fk_check, fk_cascade, sequence) to find the base DML node type.
+// Walk through planner-added constraint wrapper nodes (check_constraint,
+// sequence) to find the base DML node type.
 // Needed because the planner may wrap insert/update/delete with constraint nodes,
-// changing the top-level type from insert_t to e.g. not_null_check_t.
+// changing the top-level type from insert_t to e.g. check_constraint_t.
 components::logical_plan::node_type find_effective_dml_type(
     const components::logical_plan::node_ptr& plan) {
     using namespace components::logical_plan;
     auto* n = plan.get();
     while (n) {
         switch (n->type()) {
-        case node_type::not_null_check_t:
         case node_type::check_constraint_t:
-        case node_type::default_apply_t:
-        case node_type::fk_check_t:
-        case node_type::fk_cascade_t:
         case node_type::sequence_t:
             if (!n->children().empty()) {
                 n = n->children().front().get();
@@ -291,7 +287,7 @@ namespace services::collection::executor {
 
         // Determine if this is a DML operation.
         // find_effective_dml_type unwraps planner-added constraint wrapper nodes so
-        // that is_dml is correct even when the plan is wrapped by not_null_check etc.
+        // that is_dml is correct even when the plan is wrapped by check_constraint etc.
         const auto effective_type = find_effective_dml_type(logical_plan);
         bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
                        effective_type == node_type::delete_t);
@@ -345,7 +341,6 @@ namespace services::collection::executor {
                             trace(log_, "executor::execute_plan: INSERT produced 0 rows, skipping WAL");
                             break;
                         }
-                        // FK enforcement is now handled by operator_fk_check_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_insert");
                         auto [_w1, wf1] = actor_zeta::send(wal_address_,
                                                            &wal::manager_wal_replicate_t::write_physical_insert,
@@ -363,7 +358,6 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::update_t: {
-                        // FK enforcement is now handled by operator_fk_check_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_update");
                         auto upd_count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w2, wf2] = actor_zeta::send(wal_address_,
@@ -382,7 +376,6 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::delete_t: {
-                        // FK cascade/restrict is now handled by operator_fk_cascade_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_delete");
                         auto count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w3, wf3] = actor_zeta::send(wal_address_,

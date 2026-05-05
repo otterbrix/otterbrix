@@ -1,22 +1,31 @@
 #pragma once
 
-#include <components/physical_plan/operators/operator.hpp>
 #include <components/catalog/constraint_evaluator.hpp>
+#include <components/physical_plan/operators/operator.hpp>
+
+#include <string>
+#include <vector>
 
 namespace components::operators {
 
+    // Checks NOT NULL columns and evaluates CHECK constraint predicates.
     class operator_check_constraint_t final : public read_write_operator_t {
     public:
-        operator_check_constraint_t(std::pmr::memory_resource* resource,
-                                     log_t log,
-                                     catalog::row_predicate_fn predicate,
-                                     std::string conexpr);
+        struct check_entry_t {
+            components::catalog::row_predicate_fn predicate;
+            std::string                           conexpr;
+        };
+
+        operator_check_constraint_t(std::pmr::memory_resource*  resource,
+                                     log_t                       log,
+                                     std::vector<std::string>    not_null_columns,
+                                     std::vector<check_entry_t>  checks);
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        catalog::row_predicate_fn predicate_;
-        std::string               conexpr_;
+        std::vector<std::string>   not_null_columns_;
+        std::vector<check_entry_t> checks_;
     };
 
 } // namespace components::operators

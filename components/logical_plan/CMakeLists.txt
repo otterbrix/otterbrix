@@ -16,7 +16,6 @@ set(SOURCE_${PROJECT_NAME}
         node_create_type.cpp
         node_create_view.cpp
         node_data.cpp
-        node_default_apply.cpp
         node_delete.cpp
         node_drop_collection.cpp
         node_drop_database.cpp
@@ -25,8 +24,6 @@ set(SOURCE_${PROJECT_NAME}
         node_drop_sequence.cpp
         node_drop_type.cpp
         node_drop_view.cpp
-        node_fk_cascade.cpp
-        node_fk_check.cpp
         node_function.cpp
         node_group.cpp
         node_having.cpp
@@ -34,7 +31,6 @@ set(SOURCE_${PROJECT_NAME}
         node_join.cpp
         node_limit.cpp
         node_match.cpp
-        node_not_null_check.cpp
         node_primitive_delete.cpp
         node_primitive_write.cpp
         node_sequence.cpp

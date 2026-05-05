@@ -11,11 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sort.cpp
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
-        impl/create_plan_not_null_check.cpp
         impl/create_plan_check_constraint.cpp
-        impl/create_plan_default_apply.cpp
-        impl/create_plan_fk_check.cpp
-        impl/create_plan_fk_cascade.cpp
         impl/create_plan_primitive_write.cpp
         impl/create_plan_primitive_delete.cpp
         impl/create_plan_sequence.cpp

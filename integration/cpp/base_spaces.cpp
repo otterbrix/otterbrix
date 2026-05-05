@@ -36,14 +36,6 @@ namespace otterbrix {
             }
 
             if (type == components::logical_plan::index_type::hashed) {
-                // Hash index persistence uses segmented bitcask files:
-                //   bitcask.<segment_id>.data
-                // Keep backward compatibility with legacy bitcask.data if present.
-                const auto legacy_path = index_path / "bitcask.data";
-                if (std::filesystem::exists(legacy_path) && std::filesystem::is_regular_file(legacy_path)) {
-                    return true;
-                }
-
                 for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
                     if (!entry.is_regular_file()) {
                         continue;

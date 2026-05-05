@@ -4,7 +4,6 @@ set(SOURCE_${PROJECT_NAME}
         builtin_seed.cpp
         cascade_planner.cpp
         catalog_oids.cpp
-        constraint_evaluator.cpp
         dependency_walker.cpp
         helpers.cpp
         system_table_schemas.cpp

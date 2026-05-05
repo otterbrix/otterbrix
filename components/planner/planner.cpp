@@ -17,8 +17,7 @@ namespace components::planner {
 
             auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                 r, ins->collection_full_name(),
-                std::vector<std::string>(ins->not_null_cols()),
-                {}));
+                std::vector<std::string>(ins->not_null_cols())));
             cc->append_child(node);
             return cc;
         }

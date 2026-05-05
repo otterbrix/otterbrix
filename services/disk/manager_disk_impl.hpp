@@ -8,6 +8,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <array>
+#include <components/catalog/builtin_seed.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>

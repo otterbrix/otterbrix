@@ -1,6 +1,7 @@
 project(catalog CXX)
 
 set(SOURCE_${PROJECT_NAME}
+        builtin_seed.cpp
         catalog_oids.cpp
         dependency_walker.cpp
         system_table_schemas.cpp

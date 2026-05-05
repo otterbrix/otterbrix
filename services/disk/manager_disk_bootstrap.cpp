@@ -54,29 +54,21 @@ namespace services::disk {
         }
         trace(log_, "manager_disk_t::bootstrap_system_tables_sync : seeding well-known rows");
 
-        namespace ns = components::catalog::well_known_oid;
-        const auto pg_catalog_oid = ns::pg_catalog_namespace;
+        const auto pg_catalog_oid = catalog::well_known_oid::pg_catalog_namespace;
 
-        // pg_database: single default "main" row. Additional databases get OIDs from
-        // oid_generator (>= FIRST_USER_OID) via ddl_create_database.
-        if (auto* def = components::catalog::find_system_table("pg_database")) {
+        // pg_database: single default "main" row.
+        if (auto* def = catalog::find_system_table("pg_database")) {
+            const auto db = catalog::builtin_database_row();
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
-                chunk.set_value(0, 0, lv_oid(res, ns::main_database));
-                chunk.set_value(1, 0, lv_str(res, std::string("main")));
+                chunk.set_value(0, 0, lv_oid(res, db.oid));
+                chunk.set_value(1, 0, lv_str(res, std::string(db.name)));
             });
             direct_append_sync(pg_database_name, row);
         }
 
-        // pg_namespace: 3 standard schemas.
-        if (auto* def = components::catalog::find_system_table("pg_namespace")) {
-            struct ns_row {
-                components::catalog::oid_t oid;
-                const char* name;
-            };
-            const ns_row rows[] = {{ns::pg_catalog_namespace, "pg_catalog"},
-                                   {ns::public_namespace, "public"},
-                                   {ns::information_schema_namespace, "information_schema"}};
-            for (const auto& nrow : rows) {
+        // pg_namespace: pg_catalog, public, information_schema.
+        if (auto* def = catalog::find_system_table("pg_namespace")) {
+            for (const auto& nrow : catalog::builtin_namespace_rows()) {
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, nrow.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(nrow.name)));
@@ -85,57 +77,9 @@ namespace services::disk {
             }
         }
 
-        // pg_type: 14 builtin scalar types, all in pg_catalog namespace.
-        if (auto* def = components::catalog::find_system_table("pg_type")) {
-            struct t_row {
-                components::catalog::oid_t oid;
-                const char* name;
-            };
-            const t_row rows[] = {
-                // Canonical otterbrix names
-                {ns::boolean_type,   "bool"},
-                {ns::int8_type,      "int1"},      // 1-byte signed; no standard PG equivalent
-                {ns::int16_type,     "int16"},
-                {ns::int32_type,     "int32"},
-                {ns::int64_type,     "int64"},
-                {ns::float32_type,   "float32"},
-                {ns::float64_type,   "float64"},
-                {ns::string_type,    "string"},
-                {ns::timestamp_type, "timestamp"},
-                {ns::date_type,      "date"},
-                {ns::time_type,      "time"},
-                {ns::blob_type,      "blob"},
-                {ns::numeric_type,   "numeric"},
-                {ns::uuid_type,      "uuid"},
-                // PostgreSQL internal typnames (produced by the SQL parser for SQL keywords)
-                {ns::int16_type,     "int2"},       // SMALLINT
-                {ns::int32_type,     "int4"},       // INTEGER
-                {ns::int64_type,     "int8"},       // BIGINT (PG: int8 = 8-byte int)
-                {ns::int64_type,     "int8_t"},     // legacy alias
-                {ns::float32_type,   "float4"},
-                {ns::float64_type,   "float8"},
-                {ns::string_type,    "text"},
-                {ns::string_type,    "varchar"},
-                {ns::string_type,    "bpchar"},     // char(n)
-                {ns::string_type,    "name"},       // pg internal name type
-                {ns::blob_type,      "bytea"},
-                // SQL-facing user aliases
-                {ns::boolean_type,   "boolean"},
-                {ns::int8_type,      "tinyint"},
-                {ns::int16_type,     "smallint"},
-                {ns::int32_type,     "integer"},
-                {ns::int32_type,     "int"},
-                {ns::int64_type,     "bigint"},
-                {ns::float64_type,   "double"},
-                {ns::float64_type,   "double precision"},
-                {ns::numeric_type,   "decimal"},
-                // Timestamp variants
-                {ns::timestamp_type, "timestamp_sec"},
-                {ns::timestamp_type, "timestamp_ms"},
-                {ns::timestamp_type, "timestamp_us"},
-                {ns::timestamp_type, "timestamp_ns"},
-            };
-            for (const auto& trow : rows) {
+        // pg_type: all builtin scalar types and aliases.
+        if (auto* def = catalog::find_system_table("pg_type")) {
+            for (const auto& trow : catalog::builtin_type_rows()) {
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, trow.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(trow.name)));
@@ -145,16 +89,9 @@ namespace services::disk {
             }
         }
 
-        // pg_proc: 5 builtin aggregates.
-        if (auto* def = components::catalog::find_system_table("pg_proc")) {
-            struct fn_row {
-                components::catalog::oid_t oid;
-                const char* name;
-            };
-            const fn_row rows[] = {{ns::fn_count, "count"}, {ns::fn_sum, "sum"},
-                                   {ns::fn_avg, "avg"},     {ns::fn_min, "min"},
-                                   {ns::fn_max, "max"}};
-            for (const auto& frow : rows) {
+        // pg_proc: count, sum, avg, min, max.
+        if (auto* def = catalog::find_system_table("pg_proc")) {
+            for (const auto& frow : catalog::builtin_proc_rows()) {
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {
                     chunk.set_value(0, 0, lv_oid(res, frow.oid));
                     chunk.set_value(1, 0, lv_str(res, std::string(frow.name)));

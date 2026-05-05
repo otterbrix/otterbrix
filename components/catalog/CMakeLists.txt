@@ -6,6 +6,7 @@ set(SOURCE_${PROJECT_NAME}
         catalog_oids.cpp
         constraint_evaluator.cpp
         dependency_walker.cpp
+        pg_catalog_decoders.cpp
         helpers.cpp
         system_table_schemas.cpp
         table_id.cpp

@@ -165,9 +165,6 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         revert_pg_catalog_appends(execution_context_t ctx);
 
-        actor_zeta::unique_future<std::vector<check_constraint_info_t>>
-        get_check_constraints(execution_context_t ctx, collection_full_name_t name);
-
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
         actor_zeta::unique_future<void>
@@ -203,21 +200,6 @@ namespace services::disk {
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
 
-        // FK enforcement hooks (Plan §M7 / #100). std::optional<std::string> = nullopt on success,
-        // violation message on failure. Keeps executor's INSERT/UPDATE/DELETE paths abort-on-violation.
-        actor_zeta::unique_future<std::optional<std::string>>
-        fk_validate_insert(execution_context_t ctx,
-                           collection_full_name_t name,
-                           std::unique_ptr<components::vector::data_chunk_t> chunk);
-        actor_zeta::unique_future<std::optional<std::string>>
-        fk_validate_update(execution_context_t ctx,
-                           collection_full_name_t name,
-                           std::unique_ptr<components::vector::data_chunk_t> chunk);
-        actor_zeta::unique_future<std::optional<std::string>>
-        fk_validate_parent_delete(execution_context_t ctx,
-                                   collection_full_name_t name,
-                                   std::unique_ptr<components::vector::data_chunk_t> chunk_to_delete);
-
         actor_zeta::unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,
@@ -250,9 +232,6 @@ namespace services::disk {
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,
-                                                            &disk_contract::fk_validate_insert,
-                                                            &disk_contract::fk_validate_update,
-                                                            &disk_contract::fk_validate_parent_delete,
                                                             &disk_contract::storage_update,
                                                             &disk_contract::storage_delete_rows,
                                                             // MVCC commit/revert
@@ -298,8 +277,7 @@ namespace services::disk {
                                                             &disk_contract::list_tables_in_namespace,
                                                             &disk_contract::recent_invalidations_since,
                                                             &disk_contract::commit_pg_catalog_appends,
-                                                            &disk_contract::revert_pg_catalog_appends,
-                                                            &disk_contract::get_check_constraints>;
+                                                            &disk_contract::revert_pg_catalog_appends>;
 
         disk_contract() = delete;
     };

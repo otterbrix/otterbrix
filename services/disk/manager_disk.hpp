@@ -158,23 +158,6 @@ namespace services::disk {
         // no .otbx exists (in-memory table, handled by WAL replay's create_storage path).
         void load_storage_for_wal_replay_sync(const collection_full_name_t& name);
 
-        // FK enforcement support — fetch foreign-key constraints whose conrelid matches.
-        // Used by executor INSERT/UPDATE/DELETE pre-commit hooks to validate referential integrity.
-        // matchtype/deltype/updtype default to 's'/'a'/'a' (MATCH SIMPLE / NO ACTION) when
-        // the corresponding pg_constraint columns are null/empty — preserves backward compat
-        // with existing rows pre-#131.
-        struct fk_constraint_info_t {
-            components::catalog::oid_t constraint_oid{0};
-            components::catalog::oid_t ref_table_oid{0};
-            std::string conkey;       // CSV of attoids in conrelid
-            std::string confkey;      // CSV of attoids in confrelid
-            char matchtype{'s'};      // 's' SIMPLE / 'f' FULL / 'p' PARTIAL
-            char deltype{'a'};        // 'a' NO ACTION / 'r' RESTRICT / 'c' CASCADE / 'n' SET NULL / 'd' SET DEFAULT
-            char updtype{'a'};        // same alphabet as deltype
-        };
-        std::vector<fk_constraint_info_t> fk_constraints_for_table(components::catalog::oid_t table_oid);
-        std::vector<fk_constraint_info_t> fk_constraints_referencing(components::catalog::oid_t ref_table_oid);
-
         // Synchronous pg_constraint scan — returns CHECK constraint exprs for table_oid.
         std::vector<check_constraint_info_t> check_constraints_for_table(components::catalog::oid_t table_oid);
 
@@ -535,38 +518,6 @@ namespace services::disk {
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx, std::unique_ptr<components::vector::data_chunk_t> data);
 
-        // FK enforcement hook for executor INSERT/UPDATE/DELETE.
-        // Returns std::nullopt if no FK violations, or a message describing the first violation.
-        // Today this performs single-column FK existence checks against the parent table:
-        //   - resolves table_oid from `name` via pg_class
-        //   - reads fk_constraints_for_table(table_oid)
-        //   - for each FK with a single conkey: maps conkey→chunk-column-index via pg_attribute
-        //     ordering by attnum, then for each row scans the parent table for a matching key
-        // Limitations called out for follow-up: composite FKs (multi-attoid conkey/confkey),
-        // MATCH FULL/PARTIAL semantics, deferred constraints, and parent-side DELETE checks
-        // (use fk_constraints_referencing) all return ok unconditionally for now.
-        unique_future<std::optional<std::string>>
-        fk_validate_insert(execution_context_t ctx,
-                           collection_full_name_t name,
-                           std::unique_ptr<components::vector::data_chunk_t> chunk);
-
-        // FK validation for UPDATE — same semantics as INSERT (post-update chunk's FK columns
-        // must reference existing parent rows). Separate dispatch entry so the call site is
-        // self-documenting and so future divergence (e.g. RI_RESTRICT vs RI_NO_ACTION on
-        // updated key cols) doesn't silently change behavior.
-        unique_future<std::optional<std::string>>
-        fk_validate_update(execution_context_t ctx,
-                           collection_full_name_t name,
-                           std::unique_ptr<components::vector::data_chunk_t> chunk);
-
-        // Parent-side FK enforcement for DELETE — for each constraint that references this
-        // table, scan the child relation for any row whose conkey columns match the rows
-        // being deleted. RESTRICT semantics; CASCADE delegates to a future deferred-delete
-        // path. Returns the first child→parent link discovered.
-        unique_future<std::optional<std::string>>
-        fk_validate_parent_delete(execution_context_t ctx,
-                                   collection_full_name_t name,
-                                   std::unique_ptr<components::vector::data_chunk_t> chunk_to_delete);
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::vector::vector_t row_ids,
@@ -578,12 +529,6 @@ namespace services::disk {
         storage_commit_append(execution_context_t ctx, uint64_t commit_id, int64_t row_start, uint64_t count);
         unique_future<void> storage_revert_append(execution_context_t ctx, int64_t row_start, uint64_t count);
         unique_future<void> storage_commit_delete(execution_context_t ctx, uint64_t commit_id);
-
-        // Async accessor for CHECK constraints — resolves table_oid from name then
-        // delegates to the synchronous check_constraints_for_table. Used by executor
-        // to retrieve conexpr strings before CHECK validation at INSERT/UPDATE time.
-        unique_future<std::vector<check_constraint_info_t>>
-        get_check_constraints(execution_context_t ctx, collection_full_name_t name);
 
         using dispatch_traits = actor_zeta::implements<disk_contract,
                                                        &manager_disk_t::flush,
@@ -605,9 +550,6 @@ namespace services::disk {
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
-                                                       &manager_disk_t::fk_validate_insert,
-                                                       &manager_disk_t::fk_validate_update,
-                                                       &manager_disk_t::fk_validate_parent_delete,
                                                        &manager_disk_t::storage_update,
                                                        &manager_disk_t::storage_delete_rows,
                                                        // MVCC commit/revert
@@ -654,8 +596,7 @@ namespace services::disk {
                                                        &manager_disk_t::list_tables_in_namespace,
                                                        &manager_disk_t::recent_invalidations_since,
                                                        &manager_disk_t::commit_pg_catalog_appends,
-                                                       &manager_disk_t::revert_pg_catalog_appends,
-                                                       &manager_disk_t::get_check_constraints>;
+                                                       &manager_disk_t::revert_pg_catalog_appends>;
 
     private:
         std::pmr::memory_resource* resource_;

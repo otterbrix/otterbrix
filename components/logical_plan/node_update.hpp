@@ -4,7 +4,6 @@
 #include "node_limit.hpp"
 #include "node_match.hpp"
 
-#include <components/catalog/results/fk_result.hpp>
 #include <components/expressions/update_expression.hpp>
 
 namespace components::logical_plan {
@@ -24,13 +23,11 @@ namespace components::logical_plan {
         const collection_full_name_t& collection_from() const;
 
         // Catalog metadata attached by the dispatcher's enrich pass.
-        void set_outgoing_fks(std::vector<catalog::resolved_fk_t> v) { outgoing_fks_ = std::move(v); }
-        void set_check_exprs(std::vector<std::string> v)              { check_exprs_  = std::move(v); }
-        void set_not_null_cols(std::vector<std::string> v)            { not_null_cols_ = std::move(v); }
+        void set_check_exprs(std::vector<std::string> v)   { check_exprs_  = std::move(v); }
+        void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
 
-        const std::vector<catalog::resolved_fk_t>& outgoing_fks()  const { return outgoing_fks_; }
-        const std::vector<std::string>&             check_exprs()   const { return check_exprs_; }
-        const std::vector<std::string>&             not_null_cols() const { return not_null_cols_; }
+        const std::vector<std::string>& check_exprs()   const { return check_exprs_; }
+        const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
 
     private:
         collection_full_name_t collection_from_;
@@ -40,9 +37,8 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::vector<catalog::resolved_fk_t> outgoing_fks_;
-        std::vector<std::string>            check_exprs_;
-        std::vector<std::string>            not_null_cols_;
+        std::vector<std::string> check_exprs_;
+        std::vector<std::string> not_null_cols_;
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

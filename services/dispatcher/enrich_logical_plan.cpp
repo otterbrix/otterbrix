@@ -10,16 +10,14 @@ namespace services::dispatcher {
 
     namespace {
 
-        // Fill NOT NULL / DEFAULT metadata from the cached resolved_table_t.
+        // Fill NOT NULL metadata from the cached resolved_table_t.
         void fill_column_meta(const resolved_table_t& tbl,
                               std::vector<std::string>& nn_out,
-                              bool& has_def_out,
                               bool include_all_notnull = false) {
             for (const auto& col : tbl.columns) {
                 if (col.attnotnull && (include_all_notnull || !col.atthasdefault)) {
                     nn_out.push_back(col.attname);
                 }
-                if (col.atthasdefault) has_def_out = true;
             }
         }
 
@@ -32,11 +30,8 @@ namespace services::dispatcher {
             if (!tbl) return;
 
             std::vector<std::string> nn_cols;
-            bool has_def = false;
-            fill_column_meta(*tbl, nn_cols, has_def, /*include_all_notnull=*/false);
+            fill_column_meta(*tbl, nn_cols, /*include_all_notnull=*/false);
             node->set_not_null_cols(std::move(nn_cols));
-            node->set_has_defaults(has_def);
-            // CHECK exprs: populated via catalog_view when check_constraints added to resolved_table_t.
         }
 
         void enrich_update_sync(components::logical_plan::node_update_t* node,
@@ -48,8 +43,7 @@ namespace services::dispatcher {
             if (!tbl) return;
 
             std::vector<std::string> nn_cols;
-            bool has_def = false;
-            fill_column_meta(*tbl, nn_cols, has_def, /*include_all_notnull=*/true);
+            fill_column_meta(*tbl, nn_cols, /*include_all_notnull=*/true);
             node->set_not_null_cols(std::move(nn_cols));
         }
 
@@ -72,7 +66,6 @@ namespace services::dispatcher {
             enrich_update_sync(static_cast<node_update_t*>(root.get()), view);
             break;
         case node_type::delete_t:
-            // referencing_fks left empty until disk scan_by_key primitive is available.
             break;
         default:
             break;

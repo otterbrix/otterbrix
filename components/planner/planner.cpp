@@ -1,7 +1,5 @@
 #include "planner.hpp"
 
-#include <catalog/check_predicate_compiler.hpp>
-
 #include <logical_plan/node_check_constraint.hpp>
 #include <logical_plan/node_insert.hpp>
 #include <logical_plan/node_update.hpp>
@@ -15,34 +13,24 @@ namespace components::planner {
 
         node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
-
-            std::vector<logical_plan::node_check_constraint_t::check_entry_t> checks;
-            for (const auto& expr : ins->check_exprs()) {
-                checks.push_back({catalog::compile_check(r, expr, {}), expr});
-            }
-            if (ins->not_null_cols().empty() && checks.empty()) return node;
+            if (ins->not_null_cols().empty()) return node;
 
             auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                 r, ins->collection_full_name(),
                 std::vector<std::string>(ins->not_null_cols()),
-                std::move(checks)));
+                {}));
             cc->append_child(node);
             return cc;
         }
 
         node_ptr rewrite_update(std::pmr::memory_resource* r, node_ptr node) {
             auto* upd = static_cast<logical_plan::node_update_t*>(node.get());
-
-            std::vector<logical_plan::node_check_constraint_t::check_entry_t> checks;
-            for (const auto& expr : upd->check_exprs()) {
-                checks.push_back({catalog::compile_check(r, expr, {}), expr});
-            }
-            if (upd->not_null_cols().empty() && checks.empty()) return node;
+            if (upd->not_null_cols().empty()) return node;
 
             auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                 r, upd->collection_full_name(),
                 std::vector<std::string>(upd->not_null_cols()),
-                std::move(checks)));
+                {}));
             cc->append_child(node);
             return cc;
         }

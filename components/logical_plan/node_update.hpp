@@ -23,10 +23,8 @@ namespace components::logical_plan {
         const collection_full_name_t& collection_from() const;
 
         // Catalog metadata attached by the dispatcher's enrich pass.
-        void set_check_exprs(std::vector<std::string> v)   { check_exprs_  = std::move(v); }
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
 
-        const std::vector<std::string>& check_exprs()   const { return check_exprs_; }
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
 
     private:
@@ -37,7 +35,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::vector<std::string> check_exprs_;
         std::vector<std::string> not_null_cols_;
     };
 

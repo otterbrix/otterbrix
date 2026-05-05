@@ -1062,22 +1062,8 @@ namespace services::disk {
             co_return std::nullopt;
         }
 
-        // Helper: parse CSV of integers into vector<attoid>.
-        auto parse_csv = [](const std::string& s) -> std::vector<components::catalog::oid_t> {
-            std::vector<components::catalog::oid_t> out;
-            std::size_t i = 0;
-            while (i < s.size()) {
-                std::size_t j = s.find(',', i);
-                std::string_view tok(s.data() + i, (j == std::string::npos ? s.size() : j) - i);
-                if (!tok.empty()) {
-                    try { out.push_back(static_cast<components::catalog::oid_t>(std::stoul(std::string(tok)))); }
-                    catch (...) { /* malformed → skip */ }
-                }
-                if (j == std::string::npos) break;
-                i = j + 1;
-            }
-            return out;
-        };
+        // Helper: parse CSV of integers into vector<attoid> — see catalog::parse_oid_csv.
+        const auto parse_csv = [](const std::string& s) { return catalog::parse_oid_csv(s); };
 
         // Helper: build (attoid → chunk_column_index) for table_oid by scanning pg_attribute
         // sorted by attnum (1-based ordinal). Column N in the chunk corresponds to the Nth
@@ -1428,23 +1414,8 @@ namespace services::disk {
             if (child_table_oid == components::catalog::INVALID_OID) continue;
 
             // Parse conkey/confkey CSV — supports composite (multi-column) keys.
-            std::vector<components::catalog::oid_t> conkey;
-            std::vector<components::catalog::oid_t> confkey;
-            auto parse_csv = [](const std::string& s, std::vector<components::catalog::oid_t>& out) {
-                std::size_t i = 0;
-                while (i < s.size()) {
-                    std::size_t j = s.find(',', i);
-                    std::string_view tok(s.data() + i, (j == std::string::npos ? s.size() : j) - i);
-                    if (!tok.empty()) {
-                        try { out.push_back(static_cast<components::catalog::oid_t>(std::stoul(std::string(tok)))); }
-                        catch (...) {}
-                    }
-                    if (j == std::string::npos) break;
-                    i = j + 1;
-                }
-            };
-            parse_csv(fk.conkey, conkey);
-            parse_csv(fk.confkey, confkey);
+            auto conkey  = catalog::parse_oid_csv(fk.conkey);
+            auto confkey = catalog::parse_oid_csv(fk.confkey);
             if (conkey.empty() || conkey.size() != confkey.size()) continue;
 
             // Build attoid → chunk-column-index for both child and parent.
@@ -1869,16 +1840,8 @@ namespace services::disk {
         trace(log_, "manager_disk_t::ddl_create_constraint : {} on {} type='{}' ref={} -> oid {}",
               constraint_name, table_oid, contype, ref_table_oid, constraint_oid);
         // Encode column lists as CSV of attoids — mirrors pg_index.indkey encoding.
-        auto encode_oids = [](const std::vector<components::catalog::oid_t>& oids) {
-            std::string out;
-            for (size_t i = 0; i < oids.size(); ++i) {
-                if (i) out += ',';
-                out += std::to_string(oids[i]);
-            }
-            return out;
-        };
-        const std::string conkey_str = encode_oids(fk_column_attoids);
-        const std::string confkey_str = encode_oids(ref_column_attoids);
+        const std::string conkey_str  = catalog::encode_oid_csv(fk_column_attoids);
+        const std::string confkey_str = catalog::encode_oid_csv(ref_column_attoids);
         if (auto* def = components::catalog::find_system_table("pg_constraint")) {
             const std::string contype_str(1, contype);
             auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto* res) {

@@ -2,6 +2,7 @@ project(catalog CXX)
 
 set(SOURCE_${PROJECT_NAME}
         catalog_oids.cpp
+        dependency_walker.cpp
         system_table_schemas.cpp
         table_id.cpp
 )

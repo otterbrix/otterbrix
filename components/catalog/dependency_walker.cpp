@@ -1,21 +1,21 @@
 #include "dependency_walker.hpp"
 
-namespace services::disk {
+namespace components::catalog {
 
     namespace {
         // DFS traversal with cycle detection via tri-color marks:
         //   white = unvisited, gray = on current stack, black = fully processed.
         // Hitting gray = back-edge = cycle. Hitting black = re-rooted path, skip.
         struct walk_state {
-            std::unordered_set<components::catalog::oid_t> gray;
-            std::unordered_set<components::catalog::oid_t> black;
+            std::unordered_set<oid_t> gray;
+            std::unordered_set<oid_t> black;
             std::vector<dependency_t> order; // dependents-first; seed pushed last by caller
         };
 
         void dfs(walk_state& st,
                  const fetch_deps_fn& fetch_deps,
-                 components::catalog::oid_t cls,
-                 components::catalog::oid_t oid) {
+                 oid_t cls,
+                 oid_t oid) {
             if (st.black.count(oid))
                 return;
             if (st.gray.count(oid))
@@ -33,12 +33,12 @@ namespace services::disk {
     } // namespace
 
     std::vector<dependency_t>
-    topological_drop_order(components::catalog::oid_t seed_cls,
-                            components::catalog::oid_t seed_oid,
-                            const fetch_deps_fn& fetch_deps) {
+    topological_drop_order(oid_t seed_cls,
+                           oid_t seed_oid,
+                           const fetch_deps_fn& fetch_deps) {
         walk_state st;
         dfs(st, fetch_deps, seed_cls, seed_oid);
         return std::move(st.order);
     }
 
-} // namespace services::disk
+} // namespace components::catalog

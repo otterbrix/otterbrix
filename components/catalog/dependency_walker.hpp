@@ -7,7 +7,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace services::disk {
+namespace components::catalog {
 
     // pg_depend.deptype semantics (mirrors PostgreSQL):
     //   'n' — normal: external dependency; DROP RESTRICT blocks, DROP CASCADE cascades.
@@ -40,34 +40,34 @@ namespace services::disk {
     // This walker DOES NOT itself mutate state — it only computes the drop order. Each ddl_drop_*
     // remains responsible for its own MVCC delete + invalidation event emission.
     struct dependency_t {
-        components::catalog::oid_t classid{0};   // catalog hosting dependent (e.g. pg_class.oid)
-        components::catalog::oid_t objid{0};     // dependent's own oid
-        components::catalog::oid_t refclassid{0}; // catalog hosting referenced (e.g. pg_namespace.oid)
-        components::catalog::oid_t refobjid{0};   // referenced object's oid
-        char deptype{'n'};                         // 'n' normal, 'a' auto, 'i' internal, 'p' pin
+        oid_t classid{0};   // catalog hosting dependent (e.g. pg_class.oid)
+        oid_t objid{0};     // dependent's own oid
+        oid_t refclassid{0}; // catalog hosting referenced (e.g. pg_namespace.oid)
+        oid_t refobjid{0};   // referenced object's oid
+        char deptype{'n'};   // 'n' normal, 'a' auto, 'i' internal, 'p' pin
     };
 
     class cycle_detected_error : public std::runtime_error {
     public:
-        explicit cycle_detected_error(components::catalog::oid_t at)
+        explicit cycle_detected_error(oid_t at)
             : std::runtime_error("pg_depend cycle detected at oid " + std::to_string(at))
             , offending_oid_(at) {}
-        components::catalog::oid_t offending_oid() const noexcept { return offending_oid_; }
+        oid_t offending_oid() const noexcept { return offending_oid_; }
 
     private:
-        components::catalog::oid_t offending_oid_;
+        oid_t offending_oid_;
     };
 
     // The fetch_deps callback should return all pg_depend rows where (refclassid, refobjid)
     // matches the supplied (cls, oid). Implemented over manager_disk_t::collect_dependents.
     using fetch_deps_fn =
-        std::function<std::vector<dependency_t>(components::catalog::oid_t cls, components::catalog::oid_t oid)>;
+        std::function<std::vector<dependency_t>(oid_t cls, oid_t oid)>;
 
     // Walk from (seed_cls, seed_oid). Returns dependents in reverse topological order:
     // children before parents, seed at end. Throws cycle_detected_error on back-edges.
     std::vector<dependency_t>
-    topological_drop_order(components::catalog::oid_t seed_cls,
-                            components::catalog::oid_t seed_oid,
-                            const fetch_deps_fn& fetch_deps);
+    topological_drop_order(oid_t seed_cls,
+                           oid_t seed_oid,
+                           const fetch_deps_fn& fetch_deps);
 
-} // namespace services::disk
+} // namespace components::catalog

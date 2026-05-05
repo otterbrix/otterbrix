@@ -3,7 +3,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <services/disk/dependency_walker.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>

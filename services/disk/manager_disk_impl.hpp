@@ -12,7 +12,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>
 #include <limits>
-#include <services/disk/dependency_walker.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <unordered_set>
 
@@ -25,6 +25,13 @@ namespace detail {
     // Namespace aliases brought in scope via "using namespace detail"
     namespace types   = components::types;
     namespace catalog = components::catalog;
+
+    // Bring dependency_walker types into services::disk scope (via "using namespace detail").
+    using components::catalog::dependency_t;
+    using components::catalog::cycle_detected_error;
+    using components::catalog::topological_drop_order;
+    using components::catalog::fetch_deps_fn;
+    namespace deptype = components::catalog::deptype;
 
     // ---------------------------------------------------------------------------
     // Logical value constructors (shortcuts for single-row pg_catalog writes)

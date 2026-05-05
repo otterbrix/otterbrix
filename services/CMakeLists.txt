@@ -11,7 +11,6 @@ set(${PROJECT_NAME}_SOURCES
         collection/executor.cpp
 
     # disk
-        disk/dependency_walker.cpp
         disk/agent_disk.cpp
         disk/invalidation_ring_buffer.cpp
         disk/manager_disk.cpp

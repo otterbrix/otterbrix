@@ -9,7 +9,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
-#include <services/disk/dependency_walker.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>

@@ -2,7 +2,7 @@
 
 #include <limits>
 #include "agent_disk.hpp"
-#include "dependency_walker.hpp"
+#include <components/catalog/dependency_walker.hpp>
 #include "disk_contract.hpp"
 #include <actor-zeta/actor/basic_actor.hpp>
 #include <actor-zeta/actor/dispatch.hpp>
@@ -697,8 +697,8 @@ namespace services::disk {
         // Scan pg_depend, return all rows with matching (refclassid, refobjid). The result
         // is the set of objects that DEPEND ON the (refclassid, refobjid) tuple — i.e. the
         // dependents that must be dropped first under CASCADE or block under RESTRICT.
-        std::vector<dependency_t> collect_dependents(components::catalog::oid_t refclassid,
-                                                      components::catalog::oid_t refobjid);
+        std::vector<components::catalog::dependency_t> collect_dependents(components::catalog::oid_t refclassid,
+                                                                         components::catalog::oid_t refobjid);
         // MVCC-delete every row in `name` whose column at `oid_col_idx` equals `target_oid`.
         // Issued under txn so the delete tombstones are visible only to this transaction
         // until commit. Used for both pg_class/pg_namespace/pg_type/pg_proc/pg_index drops.

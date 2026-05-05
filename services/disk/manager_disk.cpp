@@ -6,7 +6,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>
 #include <limits>
-#include <services/disk/dependency_walker.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <unordered_set>
 

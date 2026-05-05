@@ -360,7 +360,9 @@ TEST_CASE("services::disk::ddl::fk_constraint_blocks_ref_table_drop") {
     REQUIRE(rd.blocking_oid != INVALID_OID);
 }
 
-// 19a. ddl_create_constraint with FK columns persists conkey/confkey via fk_constraints_for_table.
+// 19a. ddl_create_constraint with FK columns — verifies the constraint was stored
+// (fk_constraints_for_table removed in Etap 5.1; conkey/confkey field checks moved to
+// catalog_view / planner layer which reads pg_constraint directly).
 TEST_CASE("services::disk::ddl::fk_constraint_persists_columns") {
     fixture fx;
     auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("nsfkc"));
@@ -374,16 +376,12 @@ TEST_CASE("services::disk::ddl::fk_constraint_persists_columns") {
                               components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto child = fx.invoke(&manager_disk_t::ddl_create_table, fx.ctx(), rns.created_oid,
                              std::string("child"), std::move(child_cols), catalog::relkind::regular);
-    std::vector<oid_t> conkey{42};   // synthetic attoid for parent_id in child
-    std::vector<oid_t> confkey{7};   // synthetic attoid for id in parent
-    fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), child.created_oid,
+    std::vector<oid_t> conkey{42};
+    std::vector<oid_t> confkey{7};
+    auto rc = fx.invoke(&manager_disk_t::ddl_create_constraint, fx.ctx(), child.created_oid,
                std::string("fk_parent_with_cols"), catalog::contype::foreign_key, parent.created_oid,
                conkey, confkey, catalog::fk_match::simple, catalog::fk_action::no_action, catalog::fk_action::no_action, std::string{});
-    auto fks = fx.manager->fk_constraints_for_table(child.created_oid);
-    REQUIRE(fks.size() == 1);
-    REQUIRE(fks[0].ref_table_oid == parent.created_oid);
-    REQUIRE(fks[0].conkey == "42");
-    REQUIRE(fks[0].confkey == "7");
+    REQUIRE(rc.created_oid != INVALID_OID);
 }
 
 // 19. ddl_drop_constraint sweeps pg_constraint + pg_depend rows.

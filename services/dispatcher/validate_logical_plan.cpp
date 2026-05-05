@@ -8,6 +8,7 @@
 #include "logical_plan/node_update.hpp"
 #include "resolved_objects.hpp"
 
+#include <components/catalog/cascade_planner.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
@@ -25,6 +26,8 @@
 #include <list>
 #include <queue>
 #include <set>
+#include <unordered_set>
+#include <vector>
 
 namespace services::dispatcher {
 
@@ -1788,6 +1791,73 @@ namespace services::dispatcher {
             }
         }
         co_return validate_schema_sync(resource, view, node, parameters);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_drop_restrict (E3.2)
+    // -----------------------------------------------------------------------
+    components::cursor::cursor_t_ptr
+    validate_drop_restrict(std::pmr::memory_resource*                resource,
+                           components::catalog::oid_t                seed_classid,
+                           components::catalog::oid_t                seed_oid,
+                           const components::catalog::fetch_deps_fn& fetch_deps)
+    {
+        using namespace components::catalog;
+        using namespace components::cursor;
+        auto plan = plan_drop(seed_classid, seed_oid,
+                              services::disk::drop_behavior_t::restrict_,
+                              fetch_deps);
+        if (plan.status == services::disk::ddl_status::restrict_blocked) {
+            return make_cursor(resource, error_code_t::other_error,
+                               "DROP RESTRICT: object OID " +
+                                   std::to_string(plan.blocking_oid) +
+                                   " depends on the target");
+        }
+        return make_cursor(resource, operation_status_t::success);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_type_recursion (E3.3)
+    // -----------------------------------------------------------------------
+    components::cursor::cursor_t_ptr
+    validate_type_recursion(std::pmr::memory_resource*                     resource,
+                            const catalog_view_t&                          view,
+                            const components::types::complex_logical_type& root_type)
+    {
+        using namespace components::cursor;
+        // DFS through user-type references; detect revisit (cycle).
+        std::unordered_set<std::string> visited;
+        std::vector<std::string>        work;
+
+        // Collect top-level names from root_type.
+        walk_user_type_refs(root_type, [&](std::string_view n) {
+            work.emplace_back(n);
+        });
+
+        while (!work.empty()) {
+            auto name = std::move(work.back());
+            work.pop_back();
+            if (visited.count(name)) {
+                return make_cursor(resource, error_code_t::other_error,
+                                   "type recursion detected: '" + name + "'");
+            }
+            visited.insert(name);
+
+            // Probe the cached view for this type (public namespace first, then pg_catalog).
+            const resolved_type_t* rt = nullptr;
+            for (auto ns : {components::catalog::well_known_oid::public_namespace,
+                             components::catalog::well_known_oid::pg_catalog_namespace}) {
+                rt = view.try_get_type(ns, std::string_view(name));
+                if (rt) break;
+            }
+            if (!rt) continue; // unknown type — caught by validate_types; skip here
+
+            // Walk this type's definition for further child references.
+            walk_user_type_refs(rt->type, [&](std::string_view child) {
+                work.emplace_back(child);
+            });
+        }
+        return make_cursor(resource, operation_status_t::success);
     }
 
 } // namespace services::dispatcher

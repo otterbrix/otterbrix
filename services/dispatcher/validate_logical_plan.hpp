@@ -3,6 +3,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -111,5 +112,23 @@ namespace services::dispatcher {
                          const catalog_view_t& view,
                          components::logical_plan::node_t* node,
                          const components::logical_plan::storage_parameters& parameters);
+
+    // validate_drop_restrict: check that no 'n'-type pg_depend rows block a RESTRICT drop.
+    // fetch_deps is a closure over the pg_depend snapshot (provided by caller from
+    // catalog_view or disk). Returns nullptr on success, error cursor on RESTRICT violation.
+    components::cursor::cursor_t_ptr
+    validate_drop_restrict(std::pmr::memory_resource*               resource,
+                           components::catalog::oid_t               seed_classid,
+                           components::catalog::oid_t               seed_oid,
+                           const components::catalog::fetch_deps_fn& fetch_deps);
+
+    // validate_type_recursion: for CREATE TABLE / CREATE TYPE nodes, detect circular user-
+    // defined type references (e.g. STRUCT A { b: B } and STRUCT B { a: A }).
+    // Returns nullptr on success, error cursor if a cycle is detected.
+    // view must have the existing user types pre-loaded (via prior co_await get_type calls).
+    components::cursor::cursor_t_ptr
+    validate_type_recursion(std::pmr::memory_resource*                      resource,
+                            const catalog_view_t&                           view,
+                            const components::types::complex_logical_type&  root_type);
 
 } // namespace services::dispatcher

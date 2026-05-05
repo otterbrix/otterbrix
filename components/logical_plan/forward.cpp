@@ -70,6 +70,10 @@ namespace components::logical_plan {
                 return "alter_table_t";
             case node_type::create_constraint_t:
                 return "create_constraint_t";
+            case node_type::check_constraint_t:
+                return "check_constraint_t";
+            case node_type::sequence_t:
+                return "sequence_t";
             default:
                 return "unused";
         }

@@ -39,8 +39,10 @@ namespace components::logical_plan {
         having_t,
         alter_table_t,
         create_constraint_t,
-        // Planner-emitted rewrite node
+        // Planner-emitted rewrite nodes
         check_constraint_t,
+        // DDL sequencing node
+        sequence_t,
         unused
     };
 

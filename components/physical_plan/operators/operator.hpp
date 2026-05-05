@@ -30,7 +30,9 @@ namespace components::operators {
         aggregate,
         raw_data,
         // Constraint operator (Etap 4)
-        check_constraint
+        check_constraint,
+        // DDL sequencing operator
+        sequence
     };
 
     inline bool is_scan(operator_type t) {

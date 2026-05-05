@@ -4,10 +4,12 @@ set(SOURCE_${PROJECT_NAME}
         builtin_seed.cpp
         cascade_planner.cpp
         catalog_oids.cpp
+        check_predicate_compiler.cpp
         constraint_evaluator.cpp
+        ddl_metadata_builder.cpp
         dependency_walker.cpp
-        pg_catalog_decoders.cpp
         helpers.cpp
+        pg_catalog_decoders.cpp
         system_table_schemas.cpp
         table_id.cpp
 )

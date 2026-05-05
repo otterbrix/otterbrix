@@ -224,16 +224,11 @@ namespace services::disk {
             return;
         }
 
-        const collection_full_name_t scanned[] = {
-            pg_database_name,  pg_namespace_name, pg_class_name,     pg_attribute_name,
-            pg_type_name,      pg_proc_name,      pg_index_name,
-            pg_constraint_name, pg_computed_column_name,
-            pg_sequence_name,  pg_rewrite_name,
-        };
         components::catalog::oid_t high_water = components::catalog::FIRST_USER_OID - 1;
         std::pmr::synchronized_pool_resource scan_resource;
 
-        for (const auto& name : scanned) {
+        for (const auto& tbl : catalog::all_system_tables()) {
+            const collection_full_name_t name{"pg_catalog", "main", std::string(tbl.name)};
             auto it = storages_.find(name);
             if (it == storages_.end()) {
                 continue;

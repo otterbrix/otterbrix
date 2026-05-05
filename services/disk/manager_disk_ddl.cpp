@@ -416,13 +416,9 @@ namespace services::disk {
         // Deletes: ddl_drop_* paths use direct_delete_sync which tombstones rows with
         // delete_id=txn_id. Walk every pg_catalog.* storage and flip tombstones tagged
         // by this txn to commit_id. commit_all_deletes is a no-op when no row matches.
-        const std::array<const collection_full_name_t*, 11> pg_storages{
-            &pg_namespace_name,    &pg_class_name,  &pg_attribute_name,
-            &pg_type_name,         &pg_proc_name,   &pg_index_name,
-            &pg_depend_name,       &pg_constraint_name, &pg_computed_column_name,
-            &pg_sequence_name,     &pg_rewrite_name};
-        for (const auto* sn : pg_storages) {
-            auto* s = get_storage(*sn);
+        for (const auto& tbl : catalog::all_system_tables()) {
+            const collection_full_name_t sn{"pg_catalog", "main", std::string(tbl.name)};
+            auto* s = get_storage(sn);
             if (s) {
                 s->commit_all_deletes(txn_id, commit_id);
             }

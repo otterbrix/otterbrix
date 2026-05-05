@@ -1194,7 +1194,7 @@ namespace services::disk {
             // Hoisted outside the per-row loop: pool slabs are reused across rows without
             // repeated OS allocation, but pool lifetime matches the FK constraint block.
             std::pmr::synchronized_pool_resource scan_resource;
-            const bool match_partial = (fk.matchtype == catalog::fk_match::partial);
+            const char fk_matchtype = fk.matchtype;
             for (uint64_t r = 0; r < chunk->size(); ++r) {
                 // Build the FK tuple for this row.
                 //   MATCH SIMPLE ('s', default): any NULL component → row passes (skipped).
@@ -1209,21 +1209,14 @@ namespace services::disk {
                     if (v.is_null()) ++null_count;
                     fk_tuple.push_back(std::move(v));
                 }
-                const bool all_null = (null_count == fk_tuple.size());
-                if (fk.matchtype == catalog::fk_match::full) {
-                    if (all_null) continue;
-                    if (null_count > 0) {
-                        std::string msg = "INSERT into " + name.database + "." + name.collection +
-                                           " violates FK MATCH FULL (oid=" +
-                                           std::to_string(fk.constraint_oid) +
-                                           ") — partial NULL in FK columns";
-                        co_return std::optional<std::string>(std::move(msg));
-                    }
-                } else if (fk.matchtype == catalog::fk_match::partial) {
-                    if (all_null) continue;
-                    // Partial-NULL OK: matched parent must agree on non-NULL components only.
-                } else {
-                    if (null_count > 0) continue; // SIMPLE: any NULL → row passes
+                const auto null_result = catalog::classify_fk_null(fk.matchtype, null_count, fk_tuple.size());
+                if (null_result == catalog::fk_null_result::pass) continue;
+                if (null_result == catalog::fk_null_result::reject_partial) {
+                    std::string msg = "INSERT into " + name.database + "." + name.collection +
+                                       " violates FK MATCH FULL (oid=" +
+                                       std::to_string(fk.constraint_oid) +
+                                       ") — partial NULL in FK columns";
+                    co_return std::optional<std::string>(std::move(msg));
                 }
 
                 bool found = false;
@@ -1235,7 +1228,7 @@ namespace services::disk {
                                  // MATCH PARTIAL: skip predicate for NULL FK components (those
                                  // act as wildcards on the parent side per SQL spec).
                                  for (uint64_t k = 0; k < fk_tuple.size(); ++k) {
-                                     if (match_partial && fk_tuple[k].is_null()) {
+                                     if (catalog::is_fk_wildcard_col(fk_matchtype, fk_tuple[k].is_null())) {
                                          continue;
                                      }
                                      auto pv = c.value(k, i);
@@ -1533,9 +1526,10 @@ namespace services::disk {
             // deleted-child chunk before direct_delete_sync, recursively calling
             // fk_validate_parent_delete on the child collection with that chunk, plus depth-
             // capped cycle detection (visited (table_oid, conkey) set). Rare in practice.
-            const bool cascade = (fk.deltype == catalog::fk_action::cascade);
-            const bool set_null = (fk.deltype == catalog::fk_action::set_null);
-            const bool collecting = cascade || set_null;
+            const auto del_action = catalog::classify_action(fk.deltype);
+            const bool cascade = (del_action == catalog::cascade_action_t::cascade);
+            const bool set_null = (del_action == catalog::cascade_action_t::set_null);
+            const bool collecting = catalog::action_requires_collection(del_action);
             std::pmr::vector<std::int64_t> action_rows(resource());
             // Hoisted outside the per-row loop; pool slabs are reused across parent rows.
             std::pmr::synchronized_pool_resource scan_resource;

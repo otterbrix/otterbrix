@@ -39,6 +39,15 @@ namespace components::logical_plan {
         having_t,
         alter_table_t,
         create_constraint_t,
+        // Planner-emitted rewrite nodes (Etap 3.5+)
+        not_null_check_t,
+        default_apply_t,
+        check_constraint_t,
+        fk_check_t,
+        fk_cascade_t,
+        primitive_write_t,
+        primitive_delete_t,
+        sequence_t,
         unused
     };
 

@@ -2,22 +2,16 @@
 
 #include <components/logical_plan/node.hpp>
 
-// V4 catalog facade. Planner currently doesn't read it — the parameter is wired so
-// future passes (e.g. type-aware folding, schema-aware rewrites) can pull schemas
-// without re-routing the plumbing. Forward-declared to keep planner free of any
-// dispatcher-layer includes; only services that already depend on dispatcher need
-// to know the concrete type.
-namespace services::dispatcher {
-    class catalog_view_t;
-}
-
 namespace components::planner {
 
     class planner_t {
     public:
-        auto create_plan(std::pmr::memory_resource* resource,
-                         logical_plan::node_ptr node,
-                         const services::dispatcher::catalog_view_t* catalog = nullptr)
+        // Logical plan rewrite (Phase 1.5).
+        // Walks the plan tree and inserts constraint nodes driven by catalog
+        // metadata that the dispatcher's enrich pass has already written into
+        // the node fields.  No external catalog context needed.
+        auto create_plan(std::pmr::memory_resource*  resource,
+                         logical_plan::node_ptr      node)
             -> logical_plan::node_ptr;
     };
 

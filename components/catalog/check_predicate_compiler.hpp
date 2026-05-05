@@ -9,7 +9,6 @@
 // Completed in Etap 3.5 when the planner is rewritten.
 
 #include <components/catalog/constraint_evaluator.hpp>
-#include <components/compute/function.hpp>
 #include <components/types/complex_logical_type.hpp>
 
 #include <memory_resource>
@@ -21,9 +20,10 @@ namespace components::catalog {
     // Parse and compile a SQL CHECK expression for the given column types.
     // Returns a predicate that returns true for rows that pass the CHECK.
     // Returns an always-true predicate if conexpr is empty or parsing fails.
+    // The function_registry used for expression evaluation is the process-global
+    // default (function_registry_t::get_default()); callers do not supply it.
     row_predicate_fn compile_check(
         std::pmr::memory_resource*                      resource,
-        const compute::function_registry_t&             functions,
         const std::string&                              conexpr,
         const std::vector<types::complex_logical_type>& col_types);
 

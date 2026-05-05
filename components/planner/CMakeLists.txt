@@ -19,6 +19,7 @@ target_link_libraries(
         otterbrix::types
         otterbrix::expressions
         otterbrix::logical_plan
+        otterbrix::catalog
         otterbrix::vector
 
         absl::int128

@@ -11,14 +11,17 @@ namespace components::catalog {
 
     row_predicate_fn compile_check(
         std::pmr::memory_resource*,
-        const compute::function_registry_t&,
         const std::string&                              conexpr,
         const std::vector<types::complex_logical_type>&)
     {
         if (conexpr.empty()) {
             return [](const vector::data_chunk_t&, std::uint64_t) { return true; };
         }
-        // Stub: always-true. Replaced in Etap 3.5.
+        // Stub: always-true. Full implementation (Etap 3.5):
+        //   1. transformer::parse_where_expr(conexpr)
+        //   2. resolve key_t paths against col_types
+        //   3. operators::predicates::create_predicate(resource, functions, expr, col_types, params)
+        //   4. return [pred](chunk, row) { return pred->check(chunk, row); }
         return [](const vector::data_chunk_t&, std::uint64_t) { return true; };
     }
 

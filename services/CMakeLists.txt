@@ -23,6 +23,7 @@ set(${PROJECT_NAME}_SOURCES
     # dispatcher
        dispatcher/catalog_view.cpp
        dispatcher/dispatcher.cpp
+       dispatcher/enrich_logical_plan.cpp
        dispatcher/validate_logical_plan.cpp
        dispatcher/versioned_plan_cache.cpp
 

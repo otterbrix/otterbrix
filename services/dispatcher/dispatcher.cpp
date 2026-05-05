@@ -27,6 +27,8 @@
 #include <components/planner/optimizer.hpp>
 #include <components/planner/planner.hpp>
 
+#include "enrich_logical_plan.hpp"
+
 #include <services/collection/context_storage.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -257,9 +259,10 @@ namespace services::dispatcher {
             }
         }
 
-        auto logic_plan = create_logic_plan(plan);
-        // Optimizer: constant folding, etc. The catalog facade is reserved for future
-        // schema-aware optimizer rules; today neither planner nor optimizer dereferences it.
+        // Save original node type — used after planner rewrite to dispatch DDL/DML paths.
+        const auto original_type = plan->type();
+        auto logic_plan = std::move(plan);
+        // Optimizer: constant folding, etc.
         logic_plan = components::planner::optimize(resource(), logic_plan, nullptr, params.get());
         table_id id(resource(), logic_plan->collection_full_name());
         cursor_t_ptr error;
@@ -562,6 +565,18 @@ namespace services::dispatcher {
             co_return std::move(error);
         }
 
+        // Enrich DML node fields with catalog metadata (NOT NULL, DEFAULT, CHECK exprs).
+        // Must run after validate_schema so catalog_view cache is warm.
+        {
+            auto [_e, ef] = enrich_plan(logic_plan, view, disk_address_, ctx, resource());
+            co_await std::move(ef);
+        }
+        // Logical plan rewrite: insert constraint wrapper nodes driven by enriched fields.
+        {
+            components::planner::planner_t planner;
+            logic_plan = planner.create_plan(resource(), std::move(logic_plan));
+        }
+
         // DDL needs a real (non-zero) txn so that mid-DDL crash → WAL replay rolls back
         // partially-written pg_catalog.* records.
         components::table::transaction_data txn_data{0, 0};
@@ -688,7 +703,9 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::execute_plan: result received, success: {}", result->is_success());
 
         if (result->is_success()) {
-            const auto t = logic_plan->type();
+            // Use original_type for dispatch: planner may have wrapped DML nodes,
+            // changing logic_plan->type() to a constraint wrapper type.
+            const auto t = original_type;
             const bool is_ddl = t == node_type::create_database_t || t == node_type::drop_database_t ||
                                  t == node_type::create_collection_t || t == node_type::drop_collection_t ||
                                  t == node_type::create_sequence_t || t == node_type::drop_sequence_t ||
@@ -1231,12 +1248,10 @@ namespace services::dispatcher {
     }
 
     node_ptr manager_dispatcher_t::create_logic_plan(node_ptr plan) {
+        // Retained for any callers outside execute_plan; the primary path now
+        // calls planner_t::create_plan directly after enrich_plan.
         components::planner::planner_t planner;
-        // V4 transition: catalog snapshot is no longer threaded into planner. The catalog
-        // facade parameter on create_plan is reserved for future schema-aware passes; for
-        // now planner doesn't read the catalog. Task #33 will swap this signature to take
-        // catalog_view_t directly.
-        return planner.create_plan(resource(), std::move(plan), nullptr);
+        return planner.create_plan(resource(), std::move(plan));
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>

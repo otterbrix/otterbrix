@@ -3,6 +3,7 @@
 #include "validate_logical_plan.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/oid_batch.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 
@@ -50,6 +51,25 @@ using namespace components::types;
 namespace services::dispatcher {
 
     namespace {
+
+        // Returns the number of OIDs the planner will need to rewrite a DDL node.
+        // Generous overestimate — wasted OIDs are acceptable (same as PostgreSQL).
+        std::size_t estimate_ddl_oid_count(const node_ptr& node) {
+            switch (node->type()) {
+            case node_type::create_collection_t: {
+                auto* cc = static_cast<const node_create_collection_t*>(node.get());
+                // 1 pg_class + N pg_attribute + M pg_constraint (FK/CHECK/PK) + 4 headroom
+                return 1 + cc->column_definitions().size() * 2 + 8;
+            }
+            case node_type::create_constraint_t:
+                return 2;
+            case node_type::alter_table_t:
+                return 4;
+            default:
+                return 0;
+            }
+        }
+
         // Build the namespace search path for type-name resolution at DDL/DML validation:
         // [target_ns, public, pg_catalog], deduplicated. target_ns is the user-specified
         // schema (CREATE TABLE mydb.foo → mydb); INVALID_OID means no qualifier given.
@@ -1260,6 +1280,20 @@ namespace services::dispatcher {
                                               components::table::transaction_data txn_data,
                                               catalog_view_t& view) {
         components::execution_context_t ddl_ctx{session, txn_data, {}};
+
+        // Pre-allocate OIDs so the planner can build pg_* rows synchronously.
+        components::catalog::oid_batch_t oid_batch;
+        if (const std::size_t need = estimate_ddl_oid_count(logical_plan); need > 0) {
+            auto [_, fut] = actor_zeta::send(disk_address_,
+                                             &disk::manager_disk_t::allocate_oids_batch,
+                                             need);
+            oid_batch.oids = co_await std::move(fut);
+        }
+        {
+            components::planner::planner_t planner;
+            logical_plan = planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
+        }
+
         switch (logical_plan->type()) {
             case node_type::create_database_t: {
                 auto [_d, df] = actor_zeta::send(disk_address_,

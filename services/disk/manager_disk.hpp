@@ -288,6 +288,14 @@ namespace services::disk {
         unique_future<void>
         revert_pg_catalog_appends(execution_context_t ctx);
 
+        // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
+        // dispatcher before invoking planner_t::create_plan for DDL statements, so that
+        // the planner can build pg_class / pg_attribute rows without needing async access
+        // to the disk actor. Wasted OIDs (plan rejected before execution) are acceptable —
+        // same trade-off as PostgreSQL's pre-allocation approach.
+        unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_batch(std::size_t count);
+
         // Async DDL API: coroutine wrappers dispatched through actor messaging
         // (`co_await actor_zeta::send(disk, &ddl_*, ...)`). Each method takes
         // execution_context_t and routes every system-table append/delete through
@@ -596,7 +604,8 @@ namespace services::disk {
                                                        &manager_disk_t::list_tables_in_namespace,
                                                        &manager_disk_t::recent_invalidations_since,
                                                        &manager_disk_t::commit_pg_catalog_appends,
-                                                       &manager_disk_t::revert_pg_catalog_appends>;
+                                                       &manager_disk_t::revert_pg_catalog_appends,
+                                                       &manager_disk_t::allocate_oids_batch>;
 
     private:
         std::pmr::memory_resource* resource_;

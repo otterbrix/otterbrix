@@ -493,4 +493,14 @@ namespace services::disk {
 
     // --- Direct replay methods (synchronous, no MVCC, for physical WAL replay) ---
 
+    manager_disk_t::unique_future<std::vector<components::catalog::oid_t>>
+    manager_disk_t::allocate_oids_batch(std::size_t count) {
+        std::vector<components::catalog::oid_t> batch;
+        batch.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            batch.push_back(oid_gen_.allocate());
+        }
+        co_return batch;
+    }
+
 } // namespace services::disk

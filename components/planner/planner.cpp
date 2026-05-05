@@ -1,5 +1,6 @@
 #include "planner.hpp"
 
+#include <components/catalog/oid_batch.hpp>
 #include <logical_plan/node_check_constraint.hpp>
 #include <logical_plan/node_insert.hpp>
 #include <logical_plan/node_update.hpp>
@@ -54,6 +55,14 @@ namespace components::planner {
     auto planner_t::create_plan(std::pmr::memory_resource* resource,
                                  logical_plan::node_ptr node)
         -> logical_plan::node_ptr {
+        return walk(resource, std::move(node));
+    }
+
+    auto planner_t::create_plan(std::pmr::memory_resource* resource,
+                                 logical_plan::node_ptr node,
+                                 catalog::oid_batch_t /*oid_batch*/)
+        -> logical_plan::node_ptr {
+        // oid_batch is consumed by DDL rewrites (rewrite_create_table etc.) once implemented.
         return walk(resource, std::move(node));
     }
 

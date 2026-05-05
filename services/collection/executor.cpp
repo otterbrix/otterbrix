@@ -8,6 +8,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_sync_mode.hpp>
 
+#include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
@@ -24,38 +25,40 @@
 #include <components/physical_plan/operators/operator_update.hpp>
 #include <components/physical_plan/operators/predicates/predicate.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
-#include <components/sql/transformer/transformer.hpp>
-#include <components/expressions/compare_expression.hpp>
 #include <core/executor.hpp>
 
 using namespace components::cursor;
 
 namespace {
-// Resolve key_t string storage (column names) to numeric path indices using the
-// chunk schema.  Must be called on expressions produced by parse_where_expr before
-// passing them to create_predicate, because the SQL transformer builds key_t with
-// only string storage but no path indices.
-void resolve_check_key_paths(const components::expressions::expression_ptr& expr,
-                              const components::vector::data_chunk_t& chunk) {
-    namespace expr_ns = components::expressions;
-    if (!expr || expr->group() != expr_ns::expression_group::compare) {
-        return;
-    }
-    auto* comp = static_cast<expr_ns::compare_expression_t*>(expr.get());
-    for (const auto& child : comp->children()) {
-        resolve_check_key_paths(child, chunk);
-    }
-    auto resolve = [&](expr_ns::param_storage& ps) {
-        if (std::holds_alternative<expr_ns::key_t>(ps)) {
-            auto& key = std::get<expr_ns::key_t>(ps);
-            if (key.path().empty() && !key.storage().empty()) {
-                key.set_path(chunk.sub_column_indices(key.storage()));
+
+// Walk through planner-added constraint wrapper nodes (not_null_check, check_constraint,
+// default_apply, fk_check, fk_cascade, sequence) to find the base DML node type.
+// Needed because the planner may wrap insert/update/delete with constraint nodes,
+// changing the top-level type from insert_t to e.g. not_null_check_t.
+components::logical_plan::node_type find_effective_dml_type(
+    const components::logical_plan::node_ptr& plan) {
+    using namespace components::logical_plan;
+    auto* n = plan.get();
+    while (n) {
+        switch (n->type()) {
+        case node_type::not_null_check_t:
+        case node_type::check_constraint_t:
+        case node_type::default_apply_t:
+        case node_type::fk_check_t:
+        case node_type::fk_cascade_t:
+        case node_type::sequence_t:
+            if (!n->children().empty()) {
+                n = n->children().front().get();
+                continue;
             }
+            return n->type();
+        default:
+            return n->type();
         }
-    };
-    resolve(comp->left());
-    resolve(comp->right());
+    }
+    return node_type::unused;
 }
+
 } // namespace
 
 namespace services::collection::executor {
@@ -286,9 +289,12 @@ namespace services::collection::executor {
             co_return execute_result_t{make_cursor(resource(), operation_status_t::success), {}};
         }
 
-        // Determine if this is a DML operation
-        bool is_dml = (logical_plan->type() == node_type::insert_t || logical_plan->type() == node_type::update_t ||
-                       logical_plan->type() == node_type::delete_t);
+        // Determine if this is a DML operation.
+        // find_effective_dml_type unwraps planner-added constraint wrapper nodes so
+        // that is_dml is correct even when the plan is wrapped by not_null_check etc.
+        const auto effective_type = find_effective_dml_type(logical_plan);
+        bool is_dml = (effective_type == node_type::insert_t || effective_type == node_type::update_t ||
+                       effective_type == node_type::delete_t);
 
         // Step 1: Begin transaction for DML (executor owns full lifecycle)
         // Direct call to txn_manager_ avoids static_cast to dispatcher and bypasses actor mutex.
@@ -327,101 +333,19 @@ namespace services::collection::executor {
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data);
 
         if (is_dml && result.cursor->is_success()) {
-            // CHECK constraint enforcement — runs regardless of WAL being enabled.
-            if (disk_address_ != actor_zeta::address_t::empty_address()) {
-                auto check_type = logical_plan->type();
-                const components::vector::data_chunk_t* check_src = nullptr;
-                if (check_type == node_type::insert_t && result.wal_insert_data &&
-                    result.append_row_count > 0)
-                    check_src = result.wal_insert_data.get();
-                else if (check_type == node_type::update_t && result.wal_update_data)
-                    check_src = result.wal_update_data.get();
-                if (check_src) {
-                    components::execution_context_t chk_ctx{session, txn_data, result.wal_collection};
-                    auto [_cc, ccf] = actor_zeta::send(disk_address_,
-                                                        &disk::manager_disk_t::get_check_constraints,
-                                                        chk_ctx,
-                                                        result.wal_collection);
-                    auto checks = co_await std::move(ccf);
-                    if (!checks.empty()) {
-                        auto col_count = check_src->column_count();
-                        for (const auto& c : checks) {
-                            if (c.conexpr.empty()) continue;
-                            components::operators::predicates::predicate_ptr pred;
-                            auto cache_it = check_pred_cache_.find(c.constraint_oid);
-                            if (cache_it != check_pred_cache_.end()
-                                && cache_it->second.conexpr == c.conexpr
-                                && cache_it->second.column_count == col_count
-                                && cache_it->second.catalog_version == c.catalog_version) {
-                                pred = cache_it->second.pred;
-                            } else {
-                                components::sql::transform::transformer chk_t(resource());
-                                auto [expr, params] = chk_t.parse_where_expr(c.conexpr);
-                                if (!expr) continue;
-                                resolve_check_key_paths(expr, *check_src);
-                                pred = components::operators::predicates::create_predicate(
-                                    resource(), &function_registry_, expr,
-                                    check_src->types(), check_src->types(),
-                                    &params->parameters());
-                                if (check_pred_cache_.size() >= kCheckPredCacheMax) {
-                                    check_pred_cache_.clear();
-                                }
-                                check_pred_cache_.insert_or_assign(
-                                    c.constraint_oid,
-                                    check_pred_entry_t{c.conexpr, col_count, c.catalog_version, pred});
-                            }
-                            for (uint64_t r = 0; r < check_src->size(); ++r) {
-                                if (!pred->check(*check_src, r)) {
-                                    txn_manager_->abort(session);
-                                    co_return execute_result_t{
-                                        make_cursor(resource(), error_code_t::other_error,
-                                                     std::string("CHECK constraint violation: ") + c.conexpr),
-                                        {}};
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // CHECK constraint enforcement is now handled by operator_check_constraint_t
+            // (planner-inserted into the physical plan). No post-execution disk round-trip needed.
+
             // Step 3: WAL DATA (physical format — stores post-compute data for direct replay)
             if (wal_address_ != actor_zeta::address_t::empty_address()) {
                 auto& cname = result.wal_collection;
-                switch (logical_plan->type()) {
+                switch (effective_type) {
                     case node_type::insert_t: {
                         if (result.append_row_count == 0 || !result.wal_insert_data) {
                             trace(log_, "executor::execute_plan: INSERT produced 0 rows, skipping WAL");
                             break;
                         }
-                        // FK enforcement hook (Plan #100). Currently a no-op stub on the disk
-                        // side; the call shape is in place so wiring real enforcement requires
-                        // only changing the disk method's body. We deep-copy the chunk for the
-                        // hook so the original `wal_insert_data` survives for the WAL write below.
-                        // Skip when wal address is empty (no WAL = no parent storage either).
-                        if (wal_address_ != actor_zeta::address_t::empty_address() && result.wal_insert_data) {
-                            const auto& src = *result.wal_insert_data;
-                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
-                                resource(), src.types(), src.size());
-                            fk_chunk->set_cardinality(src.size());
-                            for (uint64_t col = 0; col < src.column_count(); ++col) {
-                                for (uint64_t r = 0; r < src.size(); ++r) {
-                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
-                                }
-                            }
-                            components::execution_context_t fk_ctx{session, txn_data, cname};
-                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
-                                                                 &disk::manager_disk_t::fk_validate_insert,
-                                                                 fk_ctx,
-                                                                 cname,
-                                                                 std::move(fk_chunk));
-                            auto fk_result = co_await std::move(fkf);
-                            if (fk_result) {
-                                txn_manager_->abort(session);
-                                co_return execute_result_t{
-                                    make_cursor(resource(), error_code_t::other_error,
-                                                 std::string("FK violation: ") + *fk_result),
-                                    {}};
-                            }
-                        }
+                        // FK enforcement is now handled by operator_fk_check_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_insert");
                         auto [_w1, wf1] = actor_zeta::send(wal_address_,
                                                            &wal::manager_wal_replicate_t::write_physical_insert,
@@ -439,33 +363,7 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::update_t: {
-                        // FK enforcement on UPDATE — same shape as INSERT path. The post-update
-                        // chunk's FK columns must reference an existing parent row.
-                        if (result.wal_update_data) {
-                            const auto& src = *result.wal_update_data;
-                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
-                                resource(), src.types(), src.size());
-                            fk_chunk->set_cardinality(src.size());
-                            for (uint64_t col = 0; col < src.column_count(); ++col) {
-                                for (uint64_t r = 0; r < src.size(); ++r) {
-                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
-                                }
-                            }
-                            components::execution_context_t fk_ctx{session, txn_data, cname};
-                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
-                                                                 &disk::manager_disk_t::fk_validate_update,
-                                                                 fk_ctx,
-                                                                 cname,
-                                                                 std::move(fk_chunk));
-                            auto fk_result = co_await std::move(fkf);
-                            if (fk_result) {
-                                txn_manager_->abort(session);
-                                co_return execute_result_t{
-                                    make_cursor(resource(), error_code_t::other_error,
-                                                 std::string("FK violation: ") + *fk_result),
-                                    {}};
-                            }
-                        }
+                        // FK enforcement is now handled by operator_fk_check_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_update");
                         auto upd_count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w2, wf2] = actor_zeta::send(wal_address_,
@@ -484,35 +382,7 @@ namespace services::collection::executor {
                         break;
                     }
                     case node_type::delete_t: {
-                        // FK parent-DELETE check — for each row to be deleted, ensure no child
-                        // table references it (RESTRICT). The deleted-rows chunk currently
-                        // isn't materialized in execute_sub_plan_; we pass wal_update_data when
-                        // the planner included a SELECT preview, otherwise skip enforcement.
-                        if (result.wal_update_data) {
-                            const auto& src = *result.wal_update_data;
-                            auto fk_chunk = std::make_unique<components::vector::data_chunk_t>(
-                                resource(), src.types(), src.size());
-                            fk_chunk->set_cardinality(src.size());
-                            for (uint64_t col = 0; col < src.column_count(); ++col) {
-                                for (uint64_t r = 0; r < src.size(); ++r) {
-                                    fk_chunk->data[col].set_value(r, src.data[col].value(r));
-                                }
-                            }
-                            components::execution_context_t fk_ctx{session, txn_data, cname};
-                            auto [_fk, fkf] = actor_zeta::send(disk_address_,
-                                                                 &disk::manager_disk_t::fk_validate_parent_delete,
-                                                                 fk_ctx,
-                                                                 cname,
-                                                                 std::move(fk_chunk));
-                            auto fk_result = co_await std::move(fkf);
-                            if (fk_result) {
-                                txn_manager_->abort(session);
-                                co_return execute_result_t{
-                                    make_cursor(resource(), error_code_t::other_error,
-                                                 std::string("FK violation: ") + *fk_result),
-                                    {}};
-                            }
-                        }
+                        // FK cascade/restrict is now handled by operator_fk_cascade_t (stub, Etap 5).
                         trace(log_, "executor::execute_plan: WAL physical_delete");
                         auto count = static_cast<uint64_t>(result.wal_row_ids.size());
                         auto [_w3, wf3] = actor_zeta::send(wal_address_,

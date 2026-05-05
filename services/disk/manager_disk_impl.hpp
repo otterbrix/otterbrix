@@ -10,7 +10,6 @@
 #include <array>
 #include <components/catalog/builtin_seed.hpp>
 #include <components/catalog/catalog_codes.hpp>
-#include <components/catalog/fk_rules.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <fstream>

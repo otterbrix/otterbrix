@@ -25,7 +25,7 @@ namespace components::catalog {
 
         // Non-INVALID_OID when RESTRICT is blocked: OID of the blocking dependent.
         oid_t blocking_oid{INVALID_OID};
-        services::disk::ddl_status status{services::disk::ddl_status::ok};
+        ddl_status status{ddl_status::ok};
     };
 
     // Plan a DROP starting from (seed_classid, seed_oid) with the given behavior.
@@ -39,7 +39,7 @@ namespace components::catalog {
     //           exists; cascade_ → compute full topological drop order.
     cascade_plan_t plan_drop(oid_t seed_classid,
                               oid_t seed_oid,
-                              services::disk::drop_behavior_t behavior,
+                              drop_behavior_t behavior,
                               const fetch_deps_fn& fetch_deps);
 
 } // namespace components::catalog

@@ -9,7 +9,27 @@
 #include <unordered_map>
 #include <vector>
 
+namespace components::catalog {
+
+    enum class drop_behavior_t : std::uint8_t {
+        restrict_ = 0,
+        cascade_  = 1,
+    };
+
+    enum class ddl_status : std::uint8_t {
+        ok               = 0,
+        restrict_blocked = 1,
+        cycle_detected   = 2,
+        not_found        = 3,
+    };
+
+} // namespace components::catalog
+
 namespace services::disk {
+
+    // Aliases so existing disk/dispatcher/executor callers compile unchanged.
+    using drop_behavior_t = components::catalog::drop_behavior_t;
+    using ddl_status      = components::catalog::ddl_status;
 
     enum class invalidation_kind : std::uint8_t {
         relation_dropped = 1,
@@ -35,18 +55,6 @@ namespace services::disk {
         macro_dropped = 21,
         database_added = 22,
         database_dropped = 23,
-    };
-
-    enum class drop_behavior_t : std::uint8_t {
-        restrict_ = 0,
-        cascade_ = 1,
-    };
-
-    enum class ddl_status : std::uint8_t {
-        ok = 0,
-        restrict_blocked = 1,  // DROP blocked by an external 'n' dependency
-        cycle_detected   = 2,  // pg_depend cycle detected; cascade aborted
-        not_found        = 3,  // target OID does not exist in pg_catalog
     };
 
     struct invalidation_event_t {

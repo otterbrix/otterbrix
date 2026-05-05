@@ -2,7 +2,6 @@
 
 #include "catalog_view.hpp"
 
-#include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 
@@ -10,41 +9,36 @@ namespace services::dispatcher {
 
     namespace {
 
-        // Fill NOT NULL metadata from the cached resolved_table_t.
-        void fill_column_meta(const resolved_table_t& tbl,
-                              std::vector<std::string>& nn_out,
-                              bool include_all_notnull = false) {
+        void fill_not_null(const resolved_table_t& tbl,
+                           std::vector<std::string>& out,
+                           bool include_with_defaults) {
             for (const auto& col : tbl.columns) {
-                if (col.attnotnull && (include_all_notnull || !col.atthasdefault)) {
-                    nn_out.push_back(col.attname);
+                if (col.attnotnull && (include_with_defaults || !col.atthasdefault)) {
+                    out.push_back(col.attname);
                 }
             }
         }
 
-        void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                                catalog_view_t& view) {
+        void enrich_insert(components::logical_plan::node_insert_t* node, catalog_view_t& view) {
             const auto& coll = node->collection_full_name();
             const auto* ns = view.try_get_namespace(coll.database);
             if (!ns) return;
             const auto* tbl = view.try_get_table(ns->oid, coll.collection);
             if (!tbl) return;
-
-            std::vector<std::string> nn_cols;
-            fill_column_meta(*tbl, nn_cols, /*include_all_notnull=*/false);
-            node->set_not_null_cols(std::move(nn_cols));
+            std::vector<std::string> nn;
+            fill_not_null(*tbl, nn, /*include_with_defaults=*/false);
+            node->set_not_null_cols(std::move(nn));
         }
 
-        void enrich_update_sync(components::logical_plan::node_update_t* node,
-                                catalog_view_t& view) {
+        void enrich_update(components::logical_plan::node_update_t* node, catalog_view_t& view) {
             const auto& coll = node->collection_full_name();
             const auto* ns = view.try_get_namespace(coll.database);
             if (!ns) return;
             const auto* tbl = view.try_get_table(ns->oid, coll.collection);
             if (!tbl) return;
-
-            std::vector<std::string> nn_cols;
-            fill_column_meta(*tbl, nn_cols, /*include_all_notnull=*/true);
-            node->set_not_null_cols(std::move(nn_cols));
+            std::vector<std::string> nn;
+            fill_not_null(*tbl, nn, /*include_with_defaults=*/true);
+            node->set_not_null_cols(std::move(nn));
         }
 
     } // anonymous namespace
@@ -57,15 +51,12 @@ namespace services::dispatcher {
                 std::pmr::memory_resource* /*resource*/) {
         using namespace components::logical_plan;
         if (!root) co_return;
-
         switch (root->type()) {
         case node_type::insert_t:
-            enrich_insert_sync(static_cast<node_insert_t*>(root.get()), view);
+            enrich_insert(static_cast<node_insert_t*>(root.get()), view);
             break;
         case node_type::update_t:
-            enrich_update_sync(static_cast<node_update_t*>(root.get()), view);
-            break;
-        case node_type::delete_t:
+            enrich_update(static_cast<node_update_t*>(root.get()), view);
             break;
         default:
             break;

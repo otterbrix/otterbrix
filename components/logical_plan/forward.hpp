@@ -43,6 +43,9 @@ namespace components::logical_plan {
         check_constraint_t,
         // DDL sequencing node
         sequence_t,
+        // DDL primitive write/delete (planner-built pg_catalog rows)
+        primitive_write_t,
+        primitive_delete_t,
         unused
     };
 

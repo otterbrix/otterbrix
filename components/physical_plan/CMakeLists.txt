@@ -35,6 +35,7 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/operator_check_constraint.cpp
         operators/operator_sequence.cpp
+        operators/operator_primitive_write.cpp
 
         operators/arithmetic_eval.cpp
 )

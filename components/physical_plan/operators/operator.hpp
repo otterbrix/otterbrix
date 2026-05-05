@@ -32,7 +32,9 @@ namespace components::operators {
         // Constraint operator (Etap 4)
         check_constraint,
         // DDL sequencing operator
-        sequence
+        sequence,
+        // DDL primitive write (planner-built pg_catalog row)
+        primitive_write
     };
 
     inline bool is_scan(operator_type t) {

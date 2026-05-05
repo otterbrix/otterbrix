@@ -3,6 +3,7 @@
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_check_constraint.hpp"
 #include "impl/create_plan_sequence.hpp"
+#include "impl/create_plan_primitive_write.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
 #include "impl/create_plan_group.hpp"
@@ -46,6 +47,8 @@ namespace services::planner {
                 return impl::create_plan_check_constraint(context, function_registry, node, params);
             case node_type::sequence_t:
                 return impl::create_plan_sequence(context, function_registry, node, params);
+            case node_type::primitive_write_t:
+                return impl::create_plan_primitive_write(context, node);
             default:
                 break;
         }

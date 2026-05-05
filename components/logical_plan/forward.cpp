@@ -74,6 +74,10 @@ namespace components::logical_plan {
                 return "check_constraint_t";
             case node_type::sequence_t:
                 return "sequence_t";
+            case node_type::primitive_write_t:
+                return "primitive_write_t";
+            case node_type::primitive_delete_t:
+                return "primitive_delete_t";
             default:
                 return "unused";
         }

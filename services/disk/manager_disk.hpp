@@ -296,6 +296,13 @@ namespace services::disk {
         unique_future<std::vector<components::catalog::oid_t>>
         allocate_oids_batch(std::size_t count);
 
+        // WAL-safe append of a single pre-built row into a pg_catalog table.
+        // Called by operator_primitive_write when executing planner-emitted DDL plans.
+        // Semantics: WAL physical_insert + direct_append_sync (same as internal DDL methods).
+        unique_future<void> append_pg_catalog_row(execution_context_t ctx,
+                                                   const collection_full_name_t& name,
+                                                   components::vector::data_chunk_t row);
+
         // Async DDL API: coroutine wrappers dispatched through actor messaging
         // (`co_await actor_zeta::send(disk, &ddl_*, ...)`). Each method takes
         // execution_context_t and routes every system-table append/delete through
@@ -605,7 +612,8 @@ namespace services::disk {
                                                        &manager_disk_t::recent_invalidations_since,
                                                        &manager_disk_t::commit_pg_catalog_appends,
                                                        &manager_disk_t::revert_pg_catalog_appends,
-                                                       &manager_disk_t::allocate_oids_batch>;
+                                                       &manager_disk_t::allocate_oids_batch,
+                                                       &manager_disk_t::append_pg_catalog_row>;
 
     private:
         std::pmr::memory_resource* resource_;
@@ -634,15 +642,6 @@ namespace services::disk {
                                                           std::vector<components::table::column_definition_t> columns,
                                                           char relkind);
 
-        // Crash-safe pg_catalog row append: WAL physical_insert + direct_append_sync
-        // atomic combo for runtime DDL writes. Used by every ddl_* method that mutates
-        // pg_catalog under non-zero ctx.txn — WAL is durable before the storage update
-        // is exposed. Bootstrap (txn={0,0}) skips the WAL leg because the WAL actor isn't
-        // started yet. Coroutine-only: direct_append_sync is sync and can't co_await
-        // wal.send(), so the WAL write happens here then control yields back into the caller.
-        unique_future<void> append_pg_catalog_row(execution_context_t ctx,
-                                                   const collection_full_name_t& name,
-                                                   components::vector::data_chunk_t row);
 
         // Scan pg_depend, return all rows with matching (refclassid, refobjid). The result
         // is the set of objects that DEPEND ON the (refclassid, refobjid) tuple — i.e. the

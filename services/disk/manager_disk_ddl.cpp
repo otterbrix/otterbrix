@@ -73,6 +73,9 @@ namespace services::disk {
                     }
                 }
                 col.set_atttypid(atttypid);
+                trace(log_, "create_relation_impl: col={} type={} atttypid={}",
+                      col.name(), static_cast<int>(col.type().type()),
+                      static_cast<unsigned>(atttypid));
 
                 // (b) atttypspec: text-encoded complex type. Empty for builtin scalars.
                 std::string typspec = encode_type_spec(col.type());
@@ -1658,6 +1661,9 @@ namespace services::disk {
                 co_await append_pg_catalog_row(ctx, pg_attribute_name, std::move(row));
             }
         }
+        // Rebuild the in-memory lookup index so that subsequent resolve_table calls see
+        // relkind='r' (not the stale 'g') and read columns from pg_attribute.
+        rebuild_lookup_indexes();
         co_return finalize_ddl(make_ddl_result(resource(), table_oid, invalidation_kind::computing_schema_changed,
                                                  components::catalog::INVALID_OID, version));
     }

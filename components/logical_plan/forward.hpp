@@ -41,6 +41,8 @@ namespace components::logical_plan {
         create_constraint_t,
         // Planner-emitted rewrite nodes
         check_constraint_t,
+        fk_check_t,
+        fk_cascade_t,
         // DDL sequencing node
         sequence_t,
         // DDL primitive write/delete (planner-built pg_catalog rows)

@@ -72,6 +72,10 @@ namespace components::logical_plan {
                 return "create_constraint_t";
             case node_type::check_constraint_t:
                 return "check_constraint_t";
+            case node_type::fk_check_t:
+                return "fk_check_t";
+            case node_type::fk_cascade_t:
+                return "fk_cascade_t";
             case node_type::sequence_t:
                 return "sequence_t";
             case node_type::primitive_write_t:

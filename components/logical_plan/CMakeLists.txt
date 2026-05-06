@@ -6,6 +6,8 @@ set(SOURCE_${PROJECT_NAME}
         node_aggregate.cpp
         node_alter_table.cpp
         node_check_constraint.cpp
+        node_fk_check.cpp
+        node_fk_cascade.cpp
         node_sequence.cpp
         node_primitive_write.cpp
         node_checkpoint.cpp

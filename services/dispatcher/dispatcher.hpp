@@ -157,7 +157,7 @@ namespace services::dispatcher {
         actor_zeta::address_t index_address;
         actor_zeta::address_t wal_address;
         components::table::transaction_manager_t& txn_manager;
-        const std::pmr::set<components::logical_plan::collection_full_name_t>& collections;
+        const std::pmr::set<collection_full_name_t>& collections;
         std::pmr::memory_resource* resource;
     };
 

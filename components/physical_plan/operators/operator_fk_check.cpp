@@ -63,7 +63,7 @@ namespace components::operators {
             }
 
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                              &disk::manager_disk_t::scan_by_table_oid,
+                                              &services::disk::manager_disk_t::scan_by_table_oid,
                                               exec_ctx,
                                               fk_.parent_table_oid,
                                               std::vector<std::string>(fk_.parent_col_names),

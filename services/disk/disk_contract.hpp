@@ -159,6 +159,14 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         revert_pg_catalog_appends(execution_context_t ctx);
 
+        actor_zeta::unique_future<std::vector<components::catalog::oid_t>>
+        allocate_oids_batch(std::size_t count);
+
+        actor_zeta::unique_future<void>
+        append_pg_catalog_row(execution_context_t ctx,
+                              collection_full_name_t name,
+                              components::vector::data_chunk_t row);
+
         // Pure storage scan: row_ids of committed+txn-visible rows in `name` where
         // every key_col_names[i] == key_values[i].  No FK/semantic knowledge.
         actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
@@ -307,6 +315,8 @@ namespace services::disk {
                                                             &disk_contract::recent_invalidations_since,
                                                             &disk_contract::commit_pg_catalog_appends,
                                                             &disk_contract::revert_pg_catalog_appends,
+                                                            &disk_contract::allocate_oids_batch,
+                                                            &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::scan_by_key,
                                                             &disk_contract::point_lookup_by_index,
                                                             &disk_contract::read_rows_by_key,

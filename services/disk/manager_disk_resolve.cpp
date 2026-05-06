@@ -525,7 +525,6 @@ namespace services::disk {
 
         // Map each key column name to its table column index.
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
-        std::pmr::synchronized_pool_resource fres;
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
             std::size_t col_idx = all_cols.size();
             for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
@@ -535,7 +534,7 @@ namespace services::disk {
                 }
             }
             if (col_idx == all_cols.size()) co_return out; // unknown column → empty result
-            std::pmr::vector<uint64_t> idx_vec(&fres);
+            std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
             filter->child_filters.push_back(
                 std::make_unique<components::table::constant_filter_t>(
@@ -662,14 +661,13 @@ namespace services::disk {
         const auto& all_cols = tbl.columns();
 
         auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
-        std::pmr::synchronized_pool_resource fres;
         for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
             std::size_t col_idx = all_cols.size();
             for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
                 if (all_cols[ci].name() == key_col_names[ki]) { col_idx = ci; break; }
             }
             if (col_idx == all_cols.size()) co_return out;
-            std::pmr::vector<uint64_t> idx_vec(&fres);
+            std::pmr::vector<uint64_t> idx_vec(resource());
             idx_vec.push_back(static_cast<uint64_t>(col_idx));
             filter->child_filters.push_back(
                 std::make_unique<components::table::constant_filter_t>(

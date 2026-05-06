@@ -703,7 +703,7 @@ namespace services::dispatcher {
                 trace(log_, "manager_dispatcher_t::execute_plan: DDL {} via execute_ddl",
                       to_string(t));
                 auto ddl_cursor = co_await execute_ddl(session, logic_plan, txn_data, view,
-                    {disk_address_, index_address_, wal_address_, txn_manager_, collections_, resource()});
+                    ddl_context_t{disk_address_, index_address_, wal_address_, txn_manager_, collections_, resource()});
                 if (!ddl_cursor->is_success())
                     co_return ddl_cursor;
                 co_return result;

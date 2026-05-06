@@ -1,6 +1,7 @@
 #include "dispatcher.hpp"
 #include "catalog_view.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/oid_batch.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_collection.hpp>

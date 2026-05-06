@@ -52,7 +52,7 @@ namespace services::dispatcher {
         }
 
         // Returns the table OID for a DML node by looking up namespace + table in the cache.
-        components::catalog::oid_t resolve_table_oid(const components::base::collection_full_name_t& coll,
+        components::catalog::oid_t resolve_table_oid(const collection_full_name_t& coll,
                                                        catalog_view_t& view) {
             const auto* ns = view.try_get_namespace(coll.database);
             if (!ns) return components::catalog::INVALID_OID;

@@ -95,6 +95,12 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::recent_invalidations_since>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::commit_pg_catalog_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::point_lookup_by_index>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -492,6 +498,30 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_pg_catalog_appends>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::revert_pg_catalog_appends, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::allocate_oids_batch, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::append_pg_catalog_row, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_key>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_key, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::point_lookup_by_index>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::point_lookup_by_index, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_rows_by_key>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::read_rows_by_key, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::scan_by_table_oid>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::scan_by_table_oid, msg);
                 break;
             }
             default:

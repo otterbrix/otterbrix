@@ -358,7 +358,7 @@ namespace services::disk {
     // WAL and storage ends, avoiding a round-trip through the executor.
     manager_disk_t::unique_future<void>
     manager_disk_t::append_pg_catalog_row(execution_context_t ctx,
-                                            const collection_full_name_t& name,
+                                            collection_full_name_t name,
                                             components::vector::data_chunk_t row) {
         const bool wal_available = (manager_wal_ != actor_zeta::address_t::empty_address());
         if (wal_available) {

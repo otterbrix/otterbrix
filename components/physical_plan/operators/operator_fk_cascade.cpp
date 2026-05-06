@@ -48,7 +48,7 @@ namespace components::operators {
             }
 
             auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                              &disk::manager_disk_t::scan_by_table_oid,
+                                              &services::disk::manager_disk_t::scan_by_table_oid,
                                               exec_ctx,
                                               fk_.child_table_oid,
                                               std::vector<std::string>(fk_.child_col_names),
@@ -63,7 +63,7 @@ namespace components::operators {
                 co_return;
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                const components::base::collection_full_name_t child_coll{
+                const collection_full_name_t child_coll{
                     fk_.child_database, fk_.child_schema, fk_.child_collection_name};
                 execution_context_t del_ctx{ctx->session, ctx->txn, child_coll};
 
@@ -74,7 +74,7 @@ namespace components::operators {
                     row_ids_vec.data<int64_t>()[i] = child_ids[i];
                 }
                 auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
-                                                    &disk::manager_disk_t::storage_delete_rows,
+                                                    &services::disk::manager_disk_t::storage_delete_rows,
                                                     del_ctx,
                                                     std::move(row_ids_vec),
                                                     static_cast<uint64_t>(child_ids.size()));

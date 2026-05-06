@@ -285,7 +285,7 @@ namespace services::disk {
         // Called by operator_primitive_write when executing planner-emitted DDL plans.
         // Semantics: WAL physical_insert + direct_append_sync (same as internal DDL methods).
         unique_future<void> append_pg_catalog_row(execution_context_t ctx,
-                                                   const collection_full_name_t& name,
+                                                   collection_full_name_t name,
                                                    components::vector::data_chunk_t row);
 
         // Pure storage scan: row_ids of txn-visible rows in `name` where

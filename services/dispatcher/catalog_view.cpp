@@ -312,10 +312,10 @@ namespace services::dispatcher {
             return out;
         }
 
-        const components::base::collection_full_name_t pg_constraint_coll{"pg_catalog", "main", "pg_constraint"};
-        const components::base::collection_full_name_t pg_attribute_coll{"pg_catalog", "main", "pg_attribute"};
-        const components::base::collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
-        const components::base::collection_full_name_t pg_namespace_coll{"pg_catalog", "main", "pg_namespace"};
+        const collection_full_name_t pg_constraint_coll{"pg_catalog", "main", "pg_constraint"};
+        const collection_full_name_t pg_attribute_coll{"pg_catalog", "main", "pg_attribute"};
+        const collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
+        const collection_full_name_t pg_namespace_coll{"pg_catalog", "main", "pg_namespace"};
 
         // pg_class column indices.
         constexpr uint64_t kClsOid          = 0;

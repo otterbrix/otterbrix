@@ -2,6 +2,7 @@
 
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace services::dispatcher {
@@ -136,10 +137,13 @@ namespace services::dispatcher {
         payload.namespace_oid = result.namespace_oid;
         payload.name = std::move(result.name);
         payload.typdefspec = std::move(result.typdefspec);
-        // Phase E.2: decode the type tree. Built-in types have empty typdefspec — leave
-        // payload.type at default (UNKNOWN); validate paths look up built-ins by name.
         if (!payload.typdefspec.empty()) {
             payload.type = components::catalog::decode_type_spec(resource_, payload.typdefspec);
+        } else {
+            const auto lt = components::catalog::oid_to_builtin_type(payload.oid);
+            if (lt != components::types::logical_type::UNKNOWN) {
+                payload.type = components::types::complex_logical_type{lt};
+            }
         }
         cache_.store_type(namespace_oid, name, pinned_version_, std::move(payload));
         co_return cache_.probe_type(namespace_oid, name, pinned_version_);
@@ -278,14 +282,16 @@ namespace services::dispatcher {
     namespace {
         // pg_constraint column indices (from system_table_schemas.cpp pg_constraint_columns).
         constexpr uint64_t kConOid       = 0;  // constraint OID
+        constexpr uint64_t kConname      = 1;  // constraint name
         constexpr uint64_t kConrelid     = 2;  // child table OID
-        constexpr uint64_t kContype      = 3;  // 'f' = FK
+        constexpr uint64_t kContype      = 3;  // 'f' = FK, 'c' = CHECK
         constexpr uint64_t kConfrelid    = 4;  // parent table OID
         constexpr uint64_t kConkey       = 5;  // CSV of child attoids
         constexpr uint64_t kConfkey      = 6;  // CSV of parent attoids
         constexpr uint64_t kConfmatch    = 7;
         constexpr uint64_t kConfdeltype  = 8;
         constexpr uint64_t kConfupdtype  = 9;
+        constexpr uint64_t kConexpr      = 10; // CHECK expression SQL text (NULL for non-CHECK)
 
         // pg_attribute column indices.
         constexpr uint64_t kAttoid  = 0;
@@ -500,6 +506,45 @@ namespace services::dispatcher {
     catalog_view_t::try_get_fks_referencing(components::catalog::oid_t table_oid) const noexcept {
         auto it = fk_referencing_.find(table_oid);
         return it != fk_referencing_.end() ? &it->second : nullptr;
+    }
+
+    catalog_view_t::unique_future<std::vector<std::pair<std::string, std::string>>>
+    catalog_view_t::get_check_exprs(components::execution_context_t ctx,
+                                     components::catalog::oid_t table_oid) {
+        std::vector<std::pair<std::string, std::string>> result;
+        if (disk_address_ == actor_zeta::address_t::empty_address()) {
+            co_return result;
+        }
+
+        // Scan pg_constraint for rows where conrelid == table_oid and contype == 'c'.
+        components::types::logical_value_t table_lv(resource_, table_oid);
+        auto [_, fut_con] = actor_zeta::send(disk_address_,
+                                              &disk::manager_disk_t::read_rows_by_key,
+                                              ctx,
+                                              pg_constraint_coll,
+                                              std::vector<std::string>{"conrelid"},
+                                              std::vector<components::types::logical_value_t>{table_lv});
+        auto con_rows = co_await std::move(fut_con);
+
+        for (const auto& row : con_rows) {
+            if (row.size() <= kConexpr) continue;
+            if (row[kContype].is_null()) continue;
+            const auto contype_sv = row[kContype].value<std::string_view>();
+            if (contype_sv.empty() ||
+                contype_sv[0] != static_cast<char>(components::logical_plan::constraint_kind::check)) {
+                continue;
+            }
+            if (row[kConexpr].is_null()) continue;
+            const auto conexpr_sv = row[kConexpr].value<std::string_view>();
+            if (conexpr_sv.empty()) continue;
+            std::string name;
+            if (!row[kConname].is_null()) {
+                name = std::string(row[kConname].value<std::string_view>());
+            }
+            result.emplace_back(std::move(name), std::string(conexpr_sv));
+        }
+
+        co_return result;
     }
 
 } // namespace services::dispatcher

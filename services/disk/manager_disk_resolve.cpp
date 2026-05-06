@@ -642,4 +642,77 @@ namespace services::disk {
         co_return row_ids[0];
     }
 
+    // ---------------------------------------------------------------------------
+    // read_rows_by_key — full row-data variant of scan_by_key.
+    // ---------------------------------------------------------------------------
+
+    manager_disk_t::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+    manager_disk_t::read_rows_by_key(execution_context_t ctx,
+                                       collection_full_name_t name,
+                                       std::vector<std::string> key_col_names,
+                                       std::vector<components::types::logical_value_t> key_values) {
+        using row_t = std::vector<components::types::logical_value_t>;
+        std::vector<row_t> out;
+        if (key_col_names.size() != key_values.size() || key_col_names.empty()) co_return out;
+
+        auto it = storages_.find(name);
+        if (it == storages_.end()) co_return out;
+
+        auto& tbl = it->second->table_storage.table();
+        const auto& all_cols = tbl.columns();
+
+        auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+        std::pmr::synchronized_pool_resource fres;
+        for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
+            std::size_t col_idx = all_cols.size();
+            for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
+                if (all_cols[ci].name() == key_col_names[ki]) { col_idx = ci; break; }
+            }
+            if (col_idx == all_cols.size()) co_return out;
+            std::pmr::vector<uint64_t> idx_vec(&fres);
+            idx_vec.push_back(static_cast<uint64_t>(col_idx));
+            filter->child_filters.push_back(
+                std::make_unique<components::table::constant_filter_t>(
+                    components::expressions::compare_type::eq,
+                    key_values[ki],
+                    std::move(idx_vec)));
+        }
+
+        auto types = it->second->storage->types();
+        components::vector::data_chunk_t chunk(resource(), types);
+        it->second->storage->scan(chunk, filter.get(), -1, ctx.txn);
+
+        for (uint64_t i = 0; i < chunk.size(); ++i) {
+            row_t row;
+            row.reserve(chunk.column_count());
+            for (uint64_t c = 0; c < chunk.column_count(); ++c) {
+                row.push_back(chunk.value(c, i));
+            }
+            out.push_back(std::move(row));
+        }
+        co_return out;
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_by_table_oid — OID-keyed variant of scan_by_key.
+    // ---------------------------------------------------------------------------
+
+    manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
+    manager_disk_t::scan_by_table_oid(execution_context_t ctx,
+                                        components::catalog::oid_t table_oid,
+                                        std::vector<std::string> key_col_names,
+                                        std::vector<components::types::logical_value_t> key_values) {
+        std::pmr::vector<std::int64_t> out(resource());
+        auto key_it = table_oid_to_key_.find(table_oid);
+        if (key_it == table_oid_to_key_.end()) co_return out;
+
+        const auto& [ns_oid, tbl_name] = key_it->second;
+        auto ns_it = ns_oid_to_name_.find(ns_oid);
+        if (ns_it == ns_oid_to_name_.end()) co_return out;
+
+        collection_full_name_t full{ns_it->second, "main", tbl_name};
+        out = co_await scan_by_key(ctx, std::move(full), std::move(key_col_names), std::move(key_values));
+        co_return out;
+    }
+
 } // namespace services::disk

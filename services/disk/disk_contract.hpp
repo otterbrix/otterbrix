@@ -175,6 +175,25 @@ namespace services::disk {
                               components::catalog::oid_t index_oid,
                               std::vector<components::types::logical_value_t> key_values);
 
+        // Pure row-data scan: returns the full column values for every txn-visible row
+        // in `name` where key_col_names[i] == key_values[i].  Same filter semantics as
+        // scan_by_key but returns complete row data instead of row_ids.
+        // Outer vector = rows, inner vector = column values in schema order.
+        actor_zeta::unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+        read_rows_by_key(execution_context_t ctx,
+                         collection_full_name_t name,
+                         std::vector<std::string> key_col_names,
+                         std::vector<components::types::logical_value_t> key_values);
+
+        // OID-keyed scan: row_ids of txn-visible rows in the table with the given OID
+        // where key_col_names[i] == key_values[i].  Resolves table_oid → full name
+        // internally; returns empty on unknown OID.  Used by operator_fk_check_t.
+        actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
+        scan_by_table_oid(execution_context_t ctx,
+                          components::catalog::oid_t table_oid,
+                          std::vector<std::string> key_col_names,
+                          std::vector<components::types::logical_value_t> key_values);
+
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
         actor_zeta::unique_future<void>
@@ -289,7 +308,9 @@ namespace services::disk {
                                                             &disk_contract::commit_pg_catalog_appends,
                                                             &disk_contract::revert_pg_catalog_appends,
                                                             &disk_contract::scan_by_key,
-                                                            &disk_contract::point_lookup_by_index>;
+                                                            &disk_contract::point_lookup_by_index,
+                                                            &disk_contract::read_rows_by_key,
+                                                            &disk_contract::scan_by_table_oid>;
 
         disk_contract() = delete;
     };

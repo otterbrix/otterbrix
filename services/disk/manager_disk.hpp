@@ -303,6 +303,23 @@ namespace services::disk {
                               components::catalog::oid_t index_oid,
                               std::vector<components::types::logical_value_t> key_values);
 
+        // Full row-data scan: returns all column values for every txn-visible row
+        // where key_col_names[i] == key_values[i]. Same filter as scan_by_key but
+        // returns complete row data instead of row_ids.
+        unique_future<std::vector<std::vector<components::types::logical_value_t>>>
+        read_rows_by_key(execution_context_t ctx,
+                          collection_full_name_t name,
+                          std::vector<std::string> key_col_names,
+                          std::vector<components::types::logical_value_t> key_values);
+
+        // OID-keyed scan: resolves table_oid → collection internally, then scans.
+        // Returns row_ids of matching txn-visible rows. Empty on unknown OID.
+        unique_future<std::pmr::vector<std::int64_t>>
+        scan_by_table_oid(execution_context_t ctx,
+                           components::catalog::oid_t table_oid,
+                           std::vector<std::string> key_col_names,
+                           std::vector<components::types::logical_value_t> key_values);
+
         // Async DDL API: coroutine wrappers dispatched through actor messaging
         // (`co_await actor_zeta::send(disk, &ddl_*, ...)`). Each method takes
         // execution_context_t and routes every system-table append/delete through
@@ -612,7 +629,9 @@ namespace services::disk {
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
                                                        &manager_disk_t::scan_by_key,
-                                                       &manager_disk_t::point_lookup_by_index>;
+                                                       &manager_disk_t::point_lookup_by_index,
+                                                       &manager_disk_t::read_rows_by_key,
+                                                       &manager_disk_t::scan_by_table_oid>;
 
     private:
         std::pmr::memory_resource* resource_;

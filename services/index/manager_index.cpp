@@ -1,6 +1,9 @@
 #include "manager_index.hpp"
 
+#include "bitcask_index_disk.hpp"
+
 #include <actor-zeta/spawn.hpp>
+#include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <components/serialization/deserializer.hpp>
@@ -90,6 +93,9 @@ namespace services::index {
                                      actor_zeta::scheduler_raw scheduler,
                                      log_t& log,
                                      std::filesystem::path path_db,
+                                     uint64_t bitcask_flush_threshold,
+                                     uint64_t bitcask_segment_record_limit,
+                                     uint64_t btree_flush_threshold,
                                      run_fn_t run_fn)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
@@ -97,6 +103,9 @@ namespace services::index {
         , run_fn_(std::move(run_fn))
         , log_(log)
         , path_db_(std::move(path_db))
+        , bitcask_flush_threshold_(bitcask_flush_threshold)
+        , bitcask_segment_record_limit_(bitcask_segment_record_limit)
+        , btree_flush_threshold_(btree_flush_threshold)
         , engines_(resource)
         , metafile_indexes_(nullptr)
         , pending_void_(resource) {
@@ -287,39 +296,53 @@ namespace services::index {
                     components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
                 break;
             }
+            case components::logical_plan::index_type::hashed: {
+                id_index = components::index::make_index<components::index::hash_single_field_index_t>(
+                    engine, index_name, keys);
+                break;
+            }
             default:
                 trace(log_, "manager_index_t::create_index: unsupported index type");
                 co_return components::index::INDEX_ID_UNDEFINED;
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Load index data from btree (persistent storage)
+            // Load index data from persistent storage
             if (!path_db_.empty()) {
-                auto btree_path = path_db_ / name.database / name.collection / index_name;
-                if (std::filesystem::exists(btree_path / "metadata")) {
+                auto index_path = path_db_ / name.database / name.collection / index_name;
+                auto* idx = components::index::search_index(engine, keys);
+                if (idx) {
                     try {
-                        core::filesystem::local_file_system_t fs;
-                        auto db =
-                            std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
-                        db->load();
+                        if (type == components::logical_plan::index_type::hashed) {
+                            auto disk_index = bitcask_index_disk_t(
+                                index_path, resource_, bitcask_flush_threshold_, bitcask_segment_record_limit_);
+                            bitcask_index_disk_t::entries_t raw(resource_);
+                            disk_index.load_entries(raw);
+                            for (auto& [key, row_id] : raw) {
+                                idx->insert(key, static_cast<int64_t>(row_id));
+                            }
+                            trace(log_, "create_index: loaded {} entries from bitcask", raw.size());
+                        } else if (std::filesystem::exists(index_path / "metadata")) {
+                            core::filesystem::local_file_system_t fs;
+                            auto db =
+                                std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, index_path, item_key_getter);
+                            db->load();
 
-                        if (db->size() > 0) {
-                            struct pv_entry {
-                                components::types::physical_value key;
-                                int64_t row_id;
-                            };
-                            std::pmr::vector<pv_entry> raw(resource_);
-                            db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                                auto item = core::b_plus_tree::btree_t::item_data{
-                                    static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                    static_cast<uint32_t>(sz)};
-                                return {item_key_getter(item),
-                                        static_cast<int64_t>(
-                                            id_getter(item).value<components::types::physical_type::UINT64>())};
-                            });
+                            if (db->size() > 0) {
+                                struct pv_entry {
+                                    components::types::physical_value key;
+                                    int64_t row_id;
+                                };
+                                std::pmr::vector<pv_entry> raw(resource_);
+                                db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
+                                    auto item = core::b_plus_tree::btree_t::item_data{
+                                        static_cast<core::b_plus_tree::data_ptr_t>(data),
+                                        static_cast<uint32_t>(sz)};
+                                    return {item_key_getter(item),
+                                            static_cast<int64_t>(
+                                                id_getter(item).value<components::types::physical_type::UINT64>())};
+                                });
 
-                            auto* idx = components::index::search_index(engine, keys);
-                            if (idx) {
                                 for (auto& e : raw) {
                                     idx->insert(reverse_convert(resource_, e.key), e.row_id);
                                 }
@@ -327,7 +350,7 @@ namespace services::index {
                             }
                         }
                     } catch (const std::exception& e) {
-                        trace(log_, "create_index: btree load failed: {}", e.what());
+                        trace(log_, "create_index: persistent load failed: {}", e.what());
                     }
                 }
             }
@@ -335,8 +358,16 @@ namespace services::index {
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 try {
-                    auto agent =
-                        actor_zeta::spawn<index_agent_disk_t>(resource_, path_db_, name, std::string(index_name), log_);
+                    auto agent = actor_zeta::spawn<index_agent_disk_t>(
+                        resource_,
+                        path_db_,
+                        name,
+                        std::string(index_name),
+                        type,
+                        bitcask_flush_threshold_,
+                        bitcask_segment_record_limit_,
+                        btree_flush_threshold_,
+                        log_);
 
                     // Link disk agent with in-memory index
                     auto* idx = components::index::search_index(engine, keys);

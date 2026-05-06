@@ -1,4 +1,4 @@
-#include "index_disk.hpp"
+#include "btree_index_disk.hpp"
 
 #include <components/types/logical_value_msgpack.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
@@ -59,17 +59,20 @@ namespace services::index {
         }
     }
 
-    index_disk_t::index_disk_t(const path_t& path, std::pmr::memory_resource* resource)
-        : path_(path)
+    btree_index_disk_t::btree_index_disk_t(const path_t& path,
+                                           std::pmr::memory_resource* resource,
+                                           uint64_t flush_threshold)
+        : index_disk_t(flush_threshold)
+        , path_(path)
         , resource_(resource)
         , fs_(core::filesystem::local_file_system_t())
         , db_(std::make_unique<btree_t>(resource_, fs_, path, item_key_getter)) {
         db_->load();
     }
 
-    index_disk_t::~index_disk_t() = default;
+    btree_index_disk_t::~btree_index_disk_t() = default;
 
-    void index_disk_t::insert(const value_t& key, size_t value) {
+    void btree_index_disk_t::insert(const value_t& key, size_t value) {
         auto values = find(key);
         if (std::find(values.begin(), values.end(), value) == values.end()) {
             values.push_back(value);
@@ -79,20 +82,18 @@ namespace services::index {
             packer.pack(key);
             packer.pack(value);
             db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
-            dirty_ = true;
-            ++ops_since_flush_;
+            mark_operation_dirty();
             flush_if_needed();
         }
     }
 
-    void index_disk_t::remove(value_t key) {
+    void btree_index_disk_t::remove(value_t key) {
         db_->remove_index(convert(key));
-        dirty_ = true;
-        ++ops_since_flush_;
+        mark_operation_dirty();
         flush_if_needed();
     }
 
-    void index_disk_t::remove(const value_t& key, size_t row_id) {
+    void btree_index_disk_t::remove(const value_t& key, size_t row_id) {
         auto values = find(key);
         if (!values.empty()) {
             values.erase(std::remove(values.begin(), values.end(), row_id), values.end());
@@ -102,27 +103,25 @@ namespace services::index {
             packer.pack(key);
             packer.pack(row_id);
             db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
-            dirty_ = true;
-            ++ops_since_flush_;
+            mark_operation_dirty();
             flush_if_needed();
         }
     }
 
-    void index_disk_t::flush_if_needed() {
-        if (ops_since_flush_ >= flush_threshold_) {
+    void btree_index_disk_t::flush_if_needed() {
+        if (should_flush()) {
             force_flush();
         }
     }
 
-    void index_disk_t::force_flush() {
-        if (dirty_ && db_) {
+    void btree_index_disk_t::force_flush() {
+        if (is_dirty() && db_) {
             db_->flush();
-            dirty_ = false;
-            ops_since_flush_ = 0;
+            reset_flush_state();
         }
     }
 
-    void index_disk_t::find(const value_t& value, result& res) const {
+    void btree_index_disk_t::find(const value_t& value, result& res) const {
         auto index = convert(value);
         size_t count = db_->item_count(index);
         res.reserve(count);
@@ -131,13 +130,13 @@ namespace services::index {
         }
     }
 
-    index_disk_t::result index_disk_t::find(const value_t& value) const {
-        index_disk_t::result res;
+    btree_index_disk_t::result btree_index_disk_t::find(const value_t& value) const {
+        btree_index_disk_t::result res;
         find(value, res);
         return res;
     }
 
-    void index_disk_t::lower_bound(const value_t& value, result& res) const {
+    void btree_index_disk_t::lower_bound(const value_t& value, result& res) const {
         auto max_index = convert(value);
         db_->scan_ascending(
             std::numeric_limits<btree_t::index_t>::min(),
@@ -151,13 +150,13 @@ namespace services::index {
             [&max_index](const auto& index, const auto&) { return index != max_index; });
     }
 
-    index_disk_t::result index_disk_t::lower_bound(const value_t& value) const {
-        index_disk_t::result res;
+    btree_index_disk_t::result btree_index_disk_t::lower_bound(const value_t& value) const {
+        btree_index_disk_t::result res;
         lower_bound(value, res);
         return res;
     }
 
-    void index_disk_t::upper_bound(const value_t& value, result& res) const {
+    void btree_index_disk_t::upper_bound(const value_t& value, result& res) const {
         auto min_index = convert(value);
         db_->scan_decending(
             convert(value),
@@ -171,13 +170,13 @@ namespace services::index {
             [&min_index](const auto& index, const auto&) { return index != min_index; });
     }
 
-    index_disk_t::result index_disk_t::upper_bound(const value_t& value) const {
-        index_disk_t::result res;
+    btree_index_disk_t::result btree_index_disk_t::upper_bound(const value_t& value) const {
+        btree_index_disk_t::result res;
         upper_bound(value, res);
         return res;
     }
 
-    void index_disk_t::drop() {
+    void btree_index_disk_t::drop() {
         db_.reset();
         core::filesystem::remove_directory(fs_, path_);
     }

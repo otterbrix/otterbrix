@@ -30,12 +30,28 @@ namespace otterbrix {
             std::vector<services::disk::catalog_column_entry_t> columns;
         };
 
-        bool is_index_valid(const std::filesystem::path& index_path) {
+        bool is_index_valid(const std::filesystem::path& index_path, components::logical_plan::index_type type) {
             if (!std::filesystem::exists(index_path) || !std::filesystem::is_directory(index_path)) {
                 return false;
             }
+
+            if (type == components::logical_plan::index_type::hashed) {
+                for (const auto& entry : std::filesystem::directory_iterator(index_path)) {
+                    if (!entry.is_regular_file()) {
+                        continue;
+                    }
+                    const auto filename = entry.path().filename().string();
+                    if (filename.rfind("bitcask.", 0) == 0 &&
+                        filename.size() > std::string("bitcask..data").size() &&
+                        filename.substr(filename.size() - std::string(".data").size()) == ".data") {
+                        return true;
+                    }
+                }
+                return std::filesystem::is_empty(index_path);
+            }
+
             auto metadata_path = index_path / "metadata";
-            if (!std::filesystem::exists(metadata_path)) {
+            if (!std::filesystem::exists(metadata_path) || !std::filesystem::is_regular_file(metadata_path)) {
                 return false;
             }
             if (std::filesystem::file_size(metadata_path) == 0) {
@@ -90,7 +106,7 @@ namespace otterbrix {
 
                     auto index_path = disk_path / index_ptr->collection_full_name().database /
                                       index_ptr->collection_full_name().collection / index_ptr->name();
-                    if (is_index_valid(index_path)) {
+                    if (is_index_valid(index_path, index_ptr->type())) {
                         debug(log,
                               "read_index_definitions: found valid index: {} on {}",
                               index_ptr->name(),
@@ -231,8 +247,13 @@ namespace otterbrix {
         trace(log_, "spaces::manager_disk finish");
 
         trace(log_, "spaces::manager_index start");
-        manager_index_ =
-            actor_zeta::spawn<services::index::manager_index_t>(&resource, scheduler_.get(), log_, config.disk.path);
+        manager_index_ = actor_zeta::spawn<services::index::manager_index_t>(&resource,
+                                                                              scheduler_.get(),
+                                                                              log_,
+                                                                              config.disk.path,
+                                                                              config.disk.bitcask_flush_threshold,
+                                                                              config.disk.bitcask_segment_record_limit,
+                                                                              config.disk.btree_flush_threshold);
         auto manager_index_address = manager_index_->address();
         trace(log_, "spaces::manager_index finish");
 

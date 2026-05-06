@@ -178,6 +178,8 @@ namespace components::types {
                 default:
                     assert(false && "complex_logical_type copy: unimplemented extension type");
             }
+        } else {
+            extension_.reset();
         }
         return *this;
     }

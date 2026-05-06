@@ -328,6 +328,14 @@ namespace components::catalog {
         if (n == "boolean")   return LT::BOOLEAN;
         if (n == "integer")   return LT::INTEGER;
         if (n == "bigint")    return LT::BIGINT;
+        // SQL standard aliases the parser emits when no pg_catalog prefix is used
+        if (n == "double")    return LT::DOUBLE;
+        if (n == "float")     return LT::FLOAT;
+        if (n == "smallint")  return LT::SMALLINT;
+        if (n == "tinyint")   return LT::TINYINT;
+        if (n == "varchar")   return LT::STRING_LITERAL;
+        // Grammar-internal names (SystemTypeName → pg_catalog.<name>)
+        if (n == "int8_t")    return LT::BIGINT;   // BIGINT keyword in parser/gram.y
         return LT::UNKNOWN;
     }
 
@@ -713,6 +721,10 @@ namespace components::catalog {
             case ns::timestamp_type: return LT::TIMESTAMP_NS;
             default: return LT::UNKNOWN;
         }
+    }
+
+    types::logical_type pg_name_to_logical_type(std::string_view name) noexcept {
+        return scalar_name_to_type(name);
     }
 
     std::string encode_default_spec(const types::logical_value_t& v) {

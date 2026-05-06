@@ -3,6 +3,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/oid_batch.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
@@ -36,7 +37,7 @@ namespace services::dispatcher {
                 node_ptr logical_plan,
                 components::table::transaction_data txn_data,
                 catalog_view_t& view,
-                const ddl_context_t& dctx) {
+                ddl_context_t dctx) {
         components::execution_context_t ddl_ctx{session, txn_data, {}};
 
         if (const std::size_t need = estimate_ddl_oid_count(logical_plan); need > 0) {
@@ -95,6 +96,18 @@ namespace services::dispatcher {
             }
             case node_type::create_collection_t: {
                 auto cc = boost::static_pointer_cast<node_create_collection_t>(logical_plan);
+                // Resolve UNKNOWN type aliases ("string"→STRING_LITERAL, "boolean"→BOOLEAN, etc.)
+                // before pg_type lookup — canonical names are in pg_type, not legacy aliases.
+                auto resolve_unknown_type = [](components::types::complex_logical_type& col_type) -> bool {
+                    const auto builtin = components::catalog::pg_name_to_logical_type(col_type.type_name());
+                    if (builtin != components::types::logical_type::UNKNOWN) {
+                        const std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
+                        col_type = components::types::complex_logical_type{builtin};
+                        if (!alias.empty()) col_type.set_alias(alias);
+                        return true;
+                    }
+                    return false;
+                };
                 if (cc->column_definitions().empty()) {
                     auto [_cs, csf] = actor_zeta::send(dctx.disk_address,
                                                        &disk::manager_disk_t::create_storage,
@@ -107,49 +120,81 @@ namespace services::dispatcher {
                     for (auto& col : storage_columns) {
                         auto& col_type = col.type();
                         if (col_type.type() == components::types::logical_type::UNKNOWN) {
-                            co_await view.get_type(ddl_ctx,
-                                                          components::catalog::well_known_oid::public_namespace,
-                                                          std::string(col_type.type_name()));
-                            co_await view.get_type(ddl_ctx,
-                                                          components::catalog::well_known_oid::pg_catalog_namespace,
-                                                          std::string(col_type.type_name()));
-                            const auto* rt = view.try_get_type(
-                                components::catalog::well_known_oid::public_namespace,
-                                std::string_view(col_type.type_name()));
-                            if (!rt) {
-                                rt = view.try_get_type(
-                                    components::catalog::well_known_oid::pg_catalog_namespace,
+                            if (!resolve_unknown_type(col_type)) {
+                                co_await view.get_type(ddl_ctx,
+                                                              components::catalog::well_known_oid::public_namespace,
+                                                              std::string(col_type.type_name()));
+                                co_await view.get_type(ddl_ctx,
+                                                              components::catalog::well_known_oid::pg_catalog_namespace,
+                                                              std::string(col_type.type_name()));
+                                const auto* rt = view.try_get_type(
+                                    components::catalog::well_known_oid::public_namespace,
                                     std::string_view(col_type.type_name()));
-                            }
-                            if (rt) {
-                                std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
-                                col_type = rt->type;
-                                if (!alias.empty()) col_type.set_alias(alias);
+                                if (!rt) {
+                                    rt = view.try_get_type(
+                                        components::catalog::well_known_oid::pg_catalog_namespace,
+                                        std::string_view(col_type.type_name()));
+                                }
+                                if (rt) {
+                                    std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
+                                    col_type = rt->type;
+                                    if (!alias.empty()) col_type.set_alias(alias);
+                                }
                             }
                         }
                         if (col_type.type() == components::types::logical_type::STRUCT) {
                             for (auto& field : col_type.child_types()) {
                                 if (field.type() == components::types::logical_type::UNKNOWN) {
+                                    if (!resolve_unknown_type(field)) {
+                                        co_await view.get_type(ddl_ctx,
+                                                                      components::catalog::well_known_oid::public_namespace,
+                                                                      std::string(field.type_name()));
+                                        co_await view.get_type(ddl_ctx,
+                                                                      components::catalog::well_known_oid::pg_catalog_namespace,
+                                                                      std::string(field.type_name()));
+                                        const auto* rt = view.try_get_type(
+                                            components::catalog::well_known_oid::public_namespace,
+                                            std::string_view(field.type_name()));
+                                        if (!rt) {
+                                            rt = view.try_get_type(
+                                                components::catalog::well_known_oid::pg_catalog_namespace,
+                                                std::string_view(field.type_name()));
+                                        }
+                                        if (rt) {
+                                            std::string fa = field.has_alias() ? field.alias() : std::string{};
+                                            field = rt->type;
+                                            if (!fa.empty()) field.set_alias(fa);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (col_type.type() == components::types::logical_type::ARRAY) {
+                            const auto* arr_ext = static_cast<const components::types::array_logical_type_extension*>(
+                                col_type.extension());
+                            auto inner = arr_ext->internal_type();
+                            const size_t sz = arr_ext->size();
+                            if (inner.type() == components::types::logical_type::UNKNOWN) {
+                                if (!resolve_unknown_type(inner)) {
                                     co_await view.get_type(ddl_ctx,
                                                                   components::catalog::well_known_oid::public_namespace,
-                                                                  std::string(field.type_name()));
+                                                                  std::string(inner.type_name()));
                                     co_await view.get_type(ddl_ctx,
                                                                   components::catalog::well_known_oid::pg_catalog_namespace,
-                                                                  std::string(field.type_name()));
+                                                                  std::string(inner.type_name()));
                                     const auto* rt = view.try_get_type(
                                         components::catalog::well_known_oid::public_namespace,
-                                        std::string_view(field.type_name()));
+                                        std::string_view(inner.type_name()));
                                     if (!rt) {
                                         rt = view.try_get_type(
                                             components::catalog::well_known_oid::pg_catalog_namespace,
-                                            std::string_view(field.type_name()));
+                                            std::string_view(inner.type_name()));
                                     }
-                                    if (rt) {
-                                        std::string fa = field.has_alias() ? field.alias() : std::string{};
-                                        field = rt->type;
-                                        if (!fa.empty()) field.set_alias(fa);
-                                    }
+                                    if (rt) inner = rt->type;
                                 }
+                                std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
+                                col_type = components::types::complex_logical_type::create_array(inner, sz);
+                                if (!alias.empty()) col_type.set_alias(alias);
                             }
                         }
                     }
@@ -189,37 +234,63 @@ namespace services::dispatcher {
                         for (auto& col : ddl_cols) {
                             auto& col_type = col.type();
                             if (col_type.type() == components::types::logical_type::UNKNOWN) {
-                                const auto* rt = view.try_get_type(
-                                    components::catalog::well_known_oid::public_namespace,
-                                    std::string_view(col_type.type_name()));
-                                if (!rt) {
-                                    rt = view.try_get_type(
-                                        components::catalog::well_known_oid::pg_catalog_namespace,
+                                if (!resolve_unknown_type(col_type)) {
+                                    const auto* rt = view.try_get_type(
+                                        components::catalog::well_known_oid::public_namespace,
                                         std::string_view(col_type.type_name()));
-                                }
-                                if (rt) {
-                                    std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
-                                    col_type = rt->type;
-                                    if (!alias.empty()) col_type.set_alias(alias);
+                                    if (!rt) {
+                                        rt = view.try_get_type(
+                                            components::catalog::well_known_oid::pg_catalog_namespace,
+                                            std::string_view(col_type.type_name()));
+                                    }
+                                    if (rt) {
+                                        std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
+                                        col_type = rt->type;
+                                        if (!alias.empty()) col_type.set_alias(alias);
+                                    }
                                 }
                             }
                             if (col_type.type() == components::types::logical_type::STRUCT) {
                                 for (auto& field : col_type.child_types()) {
                                     if (field.type() == components::types::logical_type::UNKNOWN) {
+                                        if (!resolve_unknown_type(field)) {
+                                            const auto* rt = view.try_get_type(
+                                                components::catalog::well_known_oid::public_namespace,
+                                                std::string_view(field.type_name()));
+                                            if (!rt) {
+                                                rt = view.try_get_type(
+                                                    components::catalog::well_known_oid::pg_catalog_namespace,
+                                                    std::string_view(field.type_name()));
+                                            }
+                                            if (rt) {
+                                                std::string fa = field.has_alias() ? field.alias() : std::string{};
+                                                field = rt->type;
+                                                if (!fa.empty()) field.set_alias(fa);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (col_type.type() == components::types::logical_type::ARRAY) {
+                                const auto* arr_ext = static_cast<const components::types::array_logical_type_extension*>(
+                                    col_type.extension());
+                                auto inner = arr_ext->internal_type();
+                                const size_t sz = arr_ext->size();
+                                if (inner.type() == components::types::logical_type::UNKNOWN) {
+                                    if (!resolve_unknown_type(inner)) {
                                         const auto* rt = view.try_get_type(
                                             components::catalog::well_known_oid::public_namespace,
-                                            std::string_view(field.type_name()));
+                                            std::string_view(inner.type_name()));
                                         if (!rt) {
                                             rt = view.try_get_type(
                                                 components::catalog::well_known_oid::pg_catalog_namespace,
-                                                std::string_view(field.type_name()));
+                                                std::string_view(inner.type_name()));
                                         }
-                                        if (rt) {
-                                            std::string fa = field.has_alias() ? field.alias() : std::string{};
-                                            field = rt->type;
-                                            if (!fa.empty()) field.set_alias(fa);
-                                        }
+                                        if (rt) inner = rt->type;
                                     }
+                                    std::string alias = col_type.has_alias() ? col_type.alias() : std::string{};
+                                    col_type = components::types::complex_logical_type::create_array(inner, sz);
+                                    if (!alias.empty()) col_type.set_alias(alias);
                                 }
                             }
                         }
@@ -385,11 +456,25 @@ namespace services::dispatcher {
                         for (const auto& sub : alter->subcommands()) {
                             switch (sub.kind) {
                                 case alter_table_kind::add_column: {
+                                    // SQL transformer emits UNKNOWN(pg_name) for built-in types.
+                                    // Resolve to the proper logical_type before disk sees it,
+                                    // since add_column calls type_.size() which asserts on INVALID.
+                                    auto col = sub.column;
+                                    if (col.type().type() == components::types::logical_type::UNKNOWN) {
+                                        auto lt = components::catalog::pg_name_to_logical_type(
+                                            col.type().type_name());
+                                        if (lt != components::types::logical_type::UNKNOWN) {
+                                            col = components::table::column_definition_t{
+                                                std::string(col.name()),
+                                                components::types::complex_logical_type{lt},
+                                                col.is_not_null()};
+                                        }
+                                    }
                                     auto [_da, daf] = actor_zeta::send(dctx.disk_address,
                                                                         &disk::manager_disk_t::ddl_add_column,
                                                                         ddl_ctx,
                                                                         rt.oid,
-                                                                        sub.column);
+                                                                        std::move(col));
                                     if (auto r = co_await std::move(daf); r.failed()) {
                                         if (txn_data.transaction_id != 0) dctx.txn_manager.abort(session);
                                         co_return make_ddl_error_cursor(dctx.resource, r);

@@ -1132,8 +1132,6 @@ namespace services::disk {
                                     components::table::column_definition_t column) {
         const auto attoid = oid_gen_.allocate();
         const auto version = ++catalog_version_;
-        trace(log_, "manager_disk_t::ddl_add_column : {}.{} -> attoid {}",
-              table_oid, column.name(), attoid);
         // Walk pg_attribute to find max(attnum) for this table; next attnum is
         // max+1 and never reuses a dropped value, even after tombstone.
         std::int32_t next_attnum = 1;

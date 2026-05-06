@@ -2,6 +2,7 @@
 
 #include "catalog_view.hpp"
 
+#include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_update.hpp>
 
@@ -41,6 +42,16 @@ namespace services::dispatcher {
             node->set_not_null_cols(std::move(nn));
         }
 
+        void enrich_create_collection(components::logical_plan::node_create_collection_t* node,
+                                      catalog_view_t& view) {
+            const auto& coll = node->collection_full_name();
+            // Resolve the namespace OID from the database name so the planner can build
+            // pg_depend rows without an async disk round-trip.
+            const auto* ns = view.try_get_namespace(coll.database);
+            if (!ns) return;
+            node->set_namespace_oid(ns->oid);
+        }
+
     } // anonymous namespace
 
     actor_zeta::unique_future<void>
@@ -57,6 +68,9 @@ namespace services::dispatcher {
             break;
         case node_type::update_t:
             enrich_update(static_cast<node_update_t*>(root.get()), view);
+            break;
+        case node_type::create_collection_t:
+            enrich_create_collection(static_cast<node_create_collection_t*>(root.get()), view);
             break;
         default:
             break;

@@ -2,6 +2,7 @@
 
 #include "node.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
@@ -28,6 +29,12 @@ namespace components::logical_plan {
 
         bool is_disk_storage() const { return disk_storage_; }
 
+        // Namespace OID set by the enrich phase (dispatcher resolves the namespace name
+        // from the catalog and calls set_namespace_oid before handing the plan to the
+        // planner).  Returns INVALID_OID (0) when not yet enriched.
+        components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
+        void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -35,6 +42,7 @@ namespace components::logical_plan {
         std::vector<table::column_definition_t> column_definitions_;
         std::vector<table::table_constraint_t> constraints_;
         bool disk_storage_{false};
+        components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
     };
 
     using node_create_collection_ptr = boost::intrusive_ptr<node_create_collection_t>;

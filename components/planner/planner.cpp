@@ -71,6 +71,9 @@ namespace components::planner {
         }
 
         // DDL-aware walk: handles DDL nodes in addition to DML rewrites.
+        // CREATE TABLE rewrite is intentionally absent: storage creation is still
+        // coupled to ddl_create_table in execute_ddl_inline and must be decoupled
+        // before the planner can emit the full sequence autonomously.
         node_ptr walk_ddl(std::pmr::memory_resource* r,
                            node_ptr node,
                            catalog::oid_batch_t& oid_batch) {
@@ -80,8 +83,6 @@ namespace components::planner {
                 return rewrite_insert(r, node);
             case node_type::update_t:
                 return rewrite_update(r, node);
-            case node_type::create_collection_t:
-                return rewrite_create_table(r, node, oid_batch);
             default:
                 for (auto& child : node->children()) {
                     child = walk_ddl(r, child, oid_batch);

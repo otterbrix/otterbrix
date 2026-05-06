@@ -20,6 +20,8 @@
 #include <components/logical_plan/node_drop_macro.hpp>
 #include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_primitive_write.hpp>
+#include <components/logical_plan/node_sequence.hpp>
 
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
@@ -54,20 +56,12 @@ namespace services::dispatcher {
 
         // Returns the number of OIDs the planner will need to rewrite a DDL node.
         // Generous overestimate — wasted OIDs are acceptable (same as PostgreSQL).
-        std::size_t estimate_ddl_oid_count(const node_ptr& node) {
-            switch (node->type()) {
-            case node_type::create_collection_t: {
-                auto* cc = static_cast<const node_create_collection_t*>(node.get());
-                // 1 pg_class + N pg_attribute + M pg_constraint (FK/CHECK/PK) + 4 headroom
-                return 1 + cc->column_definitions().size() * 2 + 8;
-            }
-            case node_type::create_constraint_t:
-                return 2;
-            case node_type::alter_table_t:
-                return 4;
-            default:
-                return 0;
-            }
+        // Returns the number of OIDs the DDL planner needs to pre-allocate for this node.
+        // Only non-zero when walk_ddl has an active rewrite case for the node type.
+        std::size_t estimate_ddl_oid_count(const node_ptr& /*node*/) {
+            // No DDL node types have an active planner rewrite yet — storage creation
+            // is still coupled to disk-side DDL methods (e.g. ddl_create_table).
+            return 0;
         }
 
         // Build the namespace search path for type-name resolution at DDL/DML validation:
@@ -1281,15 +1275,14 @@ namespace services::dispatcher {
                                               catalog_view_t& view) {
         components::execution_context_t ddl_ctx{session, txn_data, {}};
 
-        // Pre-allocate OIDs so the planner can build pg_* rows synchronously.
-        components::catalog::oid_batch_t oid_batch;
+        // When the DDL node type needs OIDs (e.g. future CREATE TABLE planner rewrite),
+        // pre-allocate them and let the DDL-aware planner overload build pg_* rows.
         if (const std::size_t need = estimate_ddl_oid_count(logical_plan); need > 0) {
             auto [_, fut] = actor_zeta::send(disk_address_,
                                              &disk::manager_disk_t::allocate_oids_batch,
                                              need);
+            components::catalog::oid_batch_t oid_batch;
             oid_batch.oids = co_await std::move(fut);
-        }
-        {
             components::planner::planner_t planner;
             logical_plan = planner.create_plan(resource(), std::move(logical_plan), std::move(oid_batch));
         }
@@ -1739,6 +1732,24 @@ namespace services::dispatcher {
                             if (txn_data.transaction_id != 0) txn_manager_.abort(session);
                             co_return make_ddl_error_cursor(resource(), r);
                         }
+                    }
+                }
+                break;
+            }
+            case node_type::sequence_t: {
+                // Planner-emitted DDL sequence (e.g. CREATE TABLE → pg_catalog rows).
+                // Each child is a node_primitive_write_t; execute them inline rather than
+                // routing through the executor pool (sequence has no collection name).
+                using namespace logical_plan;
+                for (auto& child : logical_plan->children()) {
+                    if (child->type() == node_type::primitive_write_t) {
+                        auto* pw = static_cast<node_primitive_write_t*>(child.get());
+                        auto [_w, wf] = actor_zeta::send(disk_address_,
+                                                          &disk::manager_disk_t::append_pg_catalog_row,
+                                                          ddl_ctx,
+                                                          pw->catalog_table(),
+                                                          std::move(pw->row()));
+                        co_await std::move(wf);
                     }
                 }
                 break;

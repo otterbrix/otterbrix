@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <variant>
 
@@ -128,12 +130,6 @@ namespace services::dispatcher {
 
         components::logical_plan::node_ptr create_logic_plan(components::logical_plan::node_ptr plan);
 
-        unique_future<components::cursor::cursor_t_ptr>
-        execute_ddl_inline(components::session::session_id_t session,
-                           components::logical_plan::node_ptr logical_plan,
-                           components::table::transaction_data txn,
-                           catalog_view_t& view);
-
         services::collection::executor::execute_result_t
         create_database_(components::logical_plan::node_ptr logical_plan);
         services::collection::executor::execute_result_t
@@ -151,5 +147,42 @@ namespace services::dispatcher {
 
         actor_zeta::behavior_t current_behavior_;
     };
+
+    // -------------------------------------------------------------------------
+    // DDL execution helpers (implemented in ddl.cpp)
+    // -------------------------------------------------------------------------
+
+    struct ddl_context_t {
+        actor_zeta::address_t disk_address;
+        actor_zeta::address_t index_address;
+        actor_zeta::address_t wal_address;
+        components::table::transaction_manager_t& txn_manager;
+        const std::pmr::set<components::logical_plan::collection_full_name_t>& collections;
+        std::pmr::memory_resource* resource;
+    };
+
+    inline components::cursor::cursor_t_ptr
+    make_ddl_error_cursor(std::pmr::memory_resource* res, const disk::ddl_result_t& r) {
+        std::string msg;
+        if (r.status == disk::ddl_status::restrict_blocked) {
+            msg = "cannot drop: other objects depend on it (blocking oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == disk::ddl_status::cycle_detected) {
+            msg = "cannot drop: dependency cycle detected (at oid " +
+                  std::to_string(static_cast<unsigned>(r.blocking_oid)) + ")";
+        } else if (r.status == disk::ddl_status::not_found) {
+            msg = "object does not exist";
+        } else {
+            msg = "DDL operation failed";
+        }
+        return components::cursor::make_cursor(res, components::cursor::error_code_t::other_error, msg);
+    }
+
+    actor_zeta::unique_future<components::cursor::cursor_t_ptr>
+    execute_ddl(components::session::session_id_t session,
+                components::logical_plan::node_ptr logical_plan,
+                components::table::transaction_data txn_data,
+                catalog_view_t& view,
+                const ddl_context_t& dctx);
 
 } // namespace services::dispatcher

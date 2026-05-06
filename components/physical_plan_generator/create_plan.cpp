@@ -2,6 +2,8 @@
 
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_check_constraint.hpp"
+#include "impl/create_plan_fk_check.hpp"
+#include "impl/create_plan_fk_cascade.hpp"
 #include "impl/create_plan_sequence.hpp"
 #include "impl/create_plan_primitive_write.hpp"
 #include "impl/create_plan_data.hpp"
@@ -45,6 +47,10 @@ namespace services::planner {
                 return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
             case node_type::check_constraint_t:
                 return impl::create_plan_check_constraint(context, function_registry, node, params);
+            case node_type::fk_check_t:
+                return impl::create_plan_fk_check(context, function_registry, node, params);
+            case node_type::fk_cascade_t:
+                return impl::create_plan_fk_cascade(context, function_registry, node, params);
             case node_type::sequence_t:
                 return impl::create_plan_sequence(context, function_registry, node, params);
             case node_type::primitive_write_t:

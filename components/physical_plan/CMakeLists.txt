@@ -34,6 +34,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_join.cpp
 
         operators/operator_check_constraint.cpp
+        operators/operator_fk_check.cpp
+        operators/operator_fk_cascade.cpp
         operators/operator_sequence.cpp
         operators/operator_primitive_write.cpp
 

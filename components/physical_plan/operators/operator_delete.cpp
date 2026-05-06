@@ -51,6 +51,7 @@ namespace components::operators {
                     index;
             }
         } else if (left_ && left_->output()) {
+            output_ = left_->output(); // pass-through for downstream fk_cascade operators
             modified_ = operators::make_operator_write_data(left_->output()->resource());
             auto& chunk = left_->output()->data_chunk();
             auto types = chunk.types();

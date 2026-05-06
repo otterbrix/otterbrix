@@ -4,6 +4,9 @@
 #include <catalog/oid_batch.hpp>
 #include <logical_plan/node_check_constraint.hpp>
 #include <logical_plan/node_create_collection.hpp>
+#include <logical_plan/node_delete.hpp>
+#include <logical_plan/node_fk_cascade.hpp>
+#include <logical_plan/node_fk_check.hpp>
 #include <logical_plan/node_insert.hpp>
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
@@ -17,25 +20,63 @@ namespace components::planner {
 
         node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
-            if (ins->not_null_cols().empty()) return node;
+            node_ptr cur = node;
 
-            auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                r, ins->collection_full_name(),
-                std::vector<std::string>(ins->not_null_cols())));
-            cc->append_child(node);
-            return cc;
+            // Wrap with FK check nodes (outermost = last FK, so checks run innermost-first).
+            for (const auto& fk : ins->outgoing_fks()) {
+                auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
+                    r, ins->collection_full_name(), fk));
+                fk_node->append_child(cur);
+                cur = fk_node;
+            }
+
+            // Wrap with NOT NULL check (outer relative to original insert, inner to FK check).
+            if (!ins->not_null_cols().empty()) {
+                auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
+                    r, ins->collection_full_name(),
+                    std::vector<std::string>(ins->not_null_cols())));
+                cc->append_child(cur);
+                cur = cc;
+            }
+
+            return cur;
         }
 
         node_ptr rewrite_update(std::pmr::memory_resource* r, node_ptr node) {
             auto* upd = static_cast<logical_plan::node_update_t*>(node.get());
-            if (upd->not_null_cols().empty()) return node;
+            node_ptr cur = node;
 
-            auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
-                r, upd->collection_full_name(),
-                std::vector<std::string>(upd->not_null_cols()),
-                {}));
-            cc->append_child(node);
-            return cc;
+            for (const auto& fk : upd->outgoing_fks()) {
+                auto fk_node = boost::intrusive_ptr(new logical_plan::node_fk_check_t(
+                    r, upd->collection_full_name(), fk));
+                fk_node->append_child(cur);
+                cur = fk_node;
+            }
+
+            if (!upd->not_null_cols().empty()) {
+                auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
+                    r, upd->collection_full_name(),
+                    std::vector<std::string>(upd->not_null_cols())));
+                cc->append_child(cur);
+                cur = cc;
+            }
+
+            return cur;
+        }
+
+        node_ptr rewrite_delete(std::pmr::memory_resource* r, node_ptr node) {
+            auto* del = static_cast<logical_plan::node_delete_t*>(node.get());
+            if (del->referencing_fks().empty()) return node;
+
+            // Each cascade node wraps the previous (outermost handles last FK first).
+            node_ptr cur = node;
+            for (const auto& fk : del->referencing_fks()) {
+                auto cascade = boost::intrusive_ptr(new logical_plan::node_fk_cascade_t(
+                    r, del->collection_full_name(), fk));
+                cascade->append_child(cur);
+                cur = cascade;
+            }
+            return cur;
         }
 
         node_ptr walk(std::pmr::memory_resource* r, node_ptr node) {
@@ -45,6 +86,8 @@ namespace components::planner {
                 return rewrite_insert(r, node);
             case node_type::update_t:
                 return rewrite_update(r, node);
+            case node_type::delete_t:
+                return rewrite_delete(r, node);
             default:
                 for (auto& child : node->children()) {
                     child = walk(r, child);
@@ -83,6 +126,8 @@ namespace components::planner {
                 return rewrite_insert(r, node);
             case node_type::update_t:
                 return rewrite_update(r, node);
+            case node_type::delete_t:
+                return rewrite_delete(r, node);
             default:
                 for (auto& child : node->children()) {
                     child = walk_ddl(r, child, oid_batch);

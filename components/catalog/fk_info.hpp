@@ -18,6 +18,13 @@ namespace components::catalog {
         std::vector<std::string> child_col_names;
         // Corresponding column names in parent table for existence check.
         std::vector<std::string> parent_col_names;
+        // Resolved at enrich time: child table's {database, schema, collection}.
+        // Used by operator_fk_cascade_t to call storage_delete_rows / storage_update
+        // without a round-trip back to disk for the name resolution.
+        std::string child_database;
+        std::string child_schema;
+        std::string child_collection_name;
+
         char matchtype{'s'};    // confmatchtype: 's' SIMPLE, 'f' FULL, 'p' PARTIAL
         char del_action{'a'};   // confdeltype: 'a' NO ACTION, 'r' RESTRICT, 'c' CASCADE, ...
         char upd_action{'a'};   // confupdtype: same alphabet as del_action

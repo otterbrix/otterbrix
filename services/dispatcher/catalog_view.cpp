@@ -314,6 +314,17 @@ namespace services::dispatcher {
 
         const components::base::collection_full_name_t pg_constraint_coll{"pg_catalog", "main", "pg_constraint"};
         const components::base::collection_full_name_t pg_attribute_coll{"pg_catalog", "main", "pg_attribute"};
+        const components::base::collection_full_name_t pg_class_coll{"pg_catalog", "main", "pg_class"};
+        const components::base::collection_full_name_t pg_namespace_coll{"pg_catalog", "main", "pg_namespace"};
+
+        // pg_class column indices.
+        constexpr uint64_t kClsOid          = 0;
+        constexpr uint64_t kClsRelname      = 1;
+        constexpr uint64_t kClsRelnamespace = 2;
+
+        // pg_namespace column indices.
+        constexpr uint64_t kNsOid     = 0;
+        constexpr uint64_t kNsNspname = 1;
     } // anonymous namespace
 
     catalog_view_t::unique_future<std::vector<resolved_fk_t>>
@@ -444,6 +455,31 @@ namespace services::dispatcher {
                                                        std::vector<components::types::logical_value_t>{parent_lv});
             auto parent_attr = co_await std::move(fut_attr_p);
             fk.parent_col_names = attoids_to_names(parent_attr, parent_attoids);
+
+            // Resolve child table collection name: pg_class + pg_namespace.
+            components::types::logical_value_t child_oid_lv(resource_, fk.child_table_oid);
+            auto [_c, fut_cls] = actor_zeta::send(disk_address_,
+                                                   &disk::manager_disk_t::read_rows_by_key,
+                                                   ctx, pg_class_coll,
+                                                   std::vector<std::string>{"oid"},
+                                                   std::vector<components::types::logical_value_t>{child_oid_lv});
+            auto cls_rows = co_await std::move(fut_cls);
+            if (!cls_rows.empty() && cls_rows[0].size() > kClsRelname) {
+                fk.child_collection_name = std::string(cls_rows[0][kClsRelname].value<std::string_view>());
+                fk.child_schema = "main";
+                const auto ns_oid = static_cast<components::catalog::oid_t>(
+                    cls_rows[0][kClsRelnamespace].value<std::uint32_t>());
+                components::types::logical_value_t ns_oid_lv(resource_, ns_oid);
+                auto [_d, fut_ns] = actor_zeta::send(disk_address_,
+                                                      &disk::manager_disk_t::read_rows_by_key,
+                                                      ctx, pg_namespace_coll,
+                                                      std::vector<std::string>{"oid"},
+                                                      std::vector<components::types::logical_value_t>{ns_oid_lv});
+                auto ns_rows = co_await std::move(fut_ns);
+                if (!ns_rows.empty() && ns_rows[0].size() > kNsNspname) {
+                    fk.child_database = std::string(ns_rows[0][kNsNspname].value<std::string_view>());
+                }
+            }
 
             if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
                 result.push_back(std::move(fk));

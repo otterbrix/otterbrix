@@ -29,8 +29,10 @@ namespace components::operators {
         join,
         aggregate,
         raw_data,
-        // Constraint operator (Etap 4)
+        // Constraint operators
         check_constraint,
+        fk_check,
+        fk_cascade,
         // DDL sequencing operator
         sequence,
         // DDL primitive write (planner-built pg_catalog row)

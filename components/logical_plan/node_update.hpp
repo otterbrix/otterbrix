@@ -4,6 +4,7 @@
 #include "node_limit.hpp"
 #include "node_match.hpp"
 
+#include <components/catalog/fk_info.hpp>
 #include <components/expressions/update_expression.hpp>
 
 namespace components::logical_plan {
@@ -24,8 +25,10 @@ namespace components::logical_plan {
 
         // Catalog metadata attached by the dispatcher's enrich pass.
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
-
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
+
+        void set_outgoing_fks(std::vector<catalog::fk_info_t> v) { outgoing_fks_ = std::move(v); }
+        const std::vector<catalog::fk_info_t>& outgoing_fks() const { return outgoing_fks_; }
 
     private:
         collection_full_name_t collection_from_;
@@ -36,6 +39,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         std::vector<std::string> not_null_cols_;
+        std::vector<catalog::fk_info_t> outgoing_fks_;
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

@@ -2,6 +2,7 @@
 
 #include "node.hpp"
 
+#include <components/catalog/fk_info.hpp>
 #include <components/vector/data_chunk.hpp>
 
 namespace components::logical_plan {
@@ -15,8 +16,10 @@ namespace components::logical_plan {
 
         // Catalog metadata attached by the dispatcher's enrich pass.
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
-
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
+
+        void set_outgoing_fks(std::vector<catalog::fk_info_t> v) { outgoing_fks_ = std::move(v); }
+        const std::vector<catalog::fk_info_t>& outgoing_fks() const { return outgoing_fks_; }
 
     private:
         hash_t hash_impl() const override;
@@ -25,6 +28,7 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::key_t> key_translation_;
 
         std::vector<std::string> not_null_cols_;
+        std::vector<catalog::fk_info_t> outgoing_fks_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

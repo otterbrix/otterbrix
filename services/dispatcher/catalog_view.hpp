@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace services::dispatcher {
@@ -95,6 +96,27 @@ namespace services::dispatcher {
         try_get_function(std::string_view name,
                           std::span<const components::catalog::oid_t> arg_type_oids) const noexcept;
 
+        // FK snapshot getters.  Both async variants call disk.read_rows_by_key on
+        // pg_constraint + pg_attribute to build fully-resolved resolved_fk_t entries
+        // and store them in the per-txn fk_outgoing_ / fk_referencing_ maps.
+        // The sync probes hit those maps without any disk round-trip.
+        //
+        // get_fks_outgoing: FKs where table_oid is the CHILD (for INSERT/UPDATE checks).
+        // get_fks_referencing: FKs where table_oid is the PARENT (for DELETE cascade).
+        unique_future<std::vector<resolved_fk_t>>
+        get_fks_outgoing(components::execution_context_t ctx,
+                          components::catalog::oid_t table_oid);
+
+        unique_future<std::vector<resolved_fk_t>>
+        get_fks_referencing(components::execution_context_t ctx,
+                             components::catalog::oid_t table_oid);
+
+        const std::vector<resolved_fk_t>*
+        try_get_fks_outgoing(components::catalog::oid_t table_oid) const noexcept;
+
+        const std::vector<resolved_fk_t>*
+        try_get_fks_referencing(components::catalog::oid_t table_oid) const noexcept;
+
         // Inspectors.
         std::uint64_t pinned_version() const noexcept { return pinned_version_; }
         actor_zeta::address_t disk_address() const noexcept { return disk_address_; }
@@ -105,6 +127,10 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_;
         std::uint64_t pinned_version_;
         std::pmr::memory_resource* resource_;
+
+        // Per-txn FK snapshots (not in versioned_plan_cache — keyed by table_oid).
+        std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_outgoing_;
+        std::unordered_map<components::catalog::oid_t, std::vector<resolved_fk_t>> fk_referencing_;
     };
 
 } // namespace services::dispatcher

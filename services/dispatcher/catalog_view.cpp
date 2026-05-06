@@ -1,5 +1,6 @@
 #include "catalog_view.hpp"
 
+#include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -270,6 +271,199 @@ namespace services::dispatcher {
     catalog_view_t::try_get_function(std::string_view name,
                                        std::span<const components::catalog::oid_t> arg_type_oids) const noexcept {
         return const_cast<versioned_plan_cache_t&>(cache_).probe_function(name, arg_type_oids, pinned_version_);
+    }
+
+    // ── FK snapshot helpers ──────────────────────────────────────────────────────
+
+    namespace {
+        // pg_constraint column indices (from system_table_schemas.cpp pg_constraint_columns).
+        constexpr uint64_t kConOid       = 0;  // constraint OID
+        constexpr uint64_t kConrelid     = 2;  // child table OID
+        constexpr uint64_t kContype      = 3;  // 'f' = FK
+        constexpr uint64_t kConfrelid    = 4;  // parent table OID
+        constexpr uint64_t kConkey       = 5;  // CSV of child attoids
+        constexpr uint64_t kConfkey      = 6;  // CSV of parent attoids
+        constexpr uint64_t kConfmatch    = 7;
+        constexpr uint64_t kConfdeltype  = 8;
+        constexpr uint64_t kConfupdtype  = 9;
+
+        // pg_attribute column indices.
+        constexpr uint64_t kAttoid  = 0;
+        constexpr uint64_t kAttname = 2;
+
+        // Resolve a list of attoids to column names using full pg_attribute rows for
+        // a given table.  `attr_rows` is the result of read_rows_by_key on pg_attribute
+        // filtered by attrelid == table_oid.
+        std::vector<std::string>
+        attoids_to_names(const std::vector<std::vector<components::types::logical_value_t>>& attr_rows,
+                          const std::vector<components::catalog::oid_t>& attoids) {
+            std::vector<std::string> out;
+            out.reserve(attoids.size());
+            for (const auto& wanted_oid : attoids) {
+                for (const auto& row : attr_rows) {
+                    if (row.size() <= kAttname) continue;
+                    auto row_attoid = static_cast<components::catalog::oid_t>(row[kAttoid].value<std::uint32_t>());
+                    if (row_attoid == wanted_oid) {
+                        out.emplace_back(std::string(row[kAttname].value<std::string_view>()));
+                        break;
+                    }
+                }
+            }
+            return out;
+        }
+
+        const components::base::collection_full_name_t pg_constraint_coll{"pg_catalog", "main", "pg_constraint"};
+        const components::base::collection_full_name_t pg_attribute_coll{"pg_catalog", "main", "pg_attribute"};
+    } // anonymous namespace
+
+    catalog_view_t::unique_future<std::vector<resolved_fk_t>>
+    catalog_view_t::get_fks_outgoing(components::execution_context_t ctx,
+                                       components::catalog::oid_t table_oid) {
+        if (auto it = fk_outgoing_.find(table_oid); it != fk_outgoing_.end()) {
+            co_return it->second;
+        }
+        std::vector<resolved_fk_t> result;
+        if (disk_address_ == actor_zeta::address_t::empty_address()) {
+            fk_outgoing_[table_oid] = result;
+            co_return result;
+        }
+
+        // Scan pg_constraint for rows where conrelid == table_oid.
+        components::types::logical_value_t table_lv(resource_, table_oid);
+        auto [_, fut_con] = actor_zeta::send(disk_address_,
+                                              &disk::manager_disk_t::read_rows_by_key,
+                                              ctx,
+                                              pg_constraint_coll,
+                                              std::vector<std::string>{"conrelid"},
+                                              std::vector<components::types::logical_value_t>{table_lv});
+        auto con_rows = co_await std::move(fut_con);
+
+        for (const auto& row : con_rows) {
+            if (row.size() <= kConfupdtype) continue;
+            if (row[kContype].is_null()) continue;
+            const auto contype_sv = row[kContype].value<std::string_view>();
+            if (contype_sv.empty() || contype_sv[0] != 'f') continue;
+
+            resolved_fk_t fk;
+            fk.constraint_oid = static_cast<components::catalog::oid_t>(row[kConOid].value<std::uint32_t>());
+            fk.child_table_oid  = table_oid;
+            fk.parent_table_oid = static_cast<components::catalog::oid_t>(row[kConfrelid].value<std::uint32_t>());
+            fk.matchtype  = row[kConfmatch].is_null()   ? 's' : row[kConfmatch].value<std::string_view>()[0];
+            fk.del_action = row[kConfdeltype].is_null() ? 'a' : row[kConfdeltype].value<std::string_view>()[0];
+            fk.upd_action = row[kConfupdtype].is_null() ? 'a' : row[kConfupdtype].value<std::string_view>()[0];
+
+            const auto child_attoids  = components::catalog::parse_oid_csv(
+                row[kConkey].is_null()   ? std::string{} : std::string(row[kConkey].value<std::string_view>()));
+            const auto parent_attoids = components::catalog::parse_oid_csv(
+                row[kConfkey].is_null()  ? std::string{} : std::string(row[kConfkey].value<std::string_view>()));
+
+            // Load pg_attribute rows for child table to resolve attoids → names.
+            components::types::logical_value_t child_lv(resource_, table_oid);
+            auto [_a, fut_attr_c] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::read_rows_by_key,
+                                                       ctx, pg_attribute_coll,
+                                                       std::vector<std::string>{"attrelid"},
+                                                       std::vector<components::types::logical_value_t>{child_lv});
+            auto child_attr = co_await std::move(fut_attr_c);
+            fk.child_col_names = attoids_to_names(child_attr, child_attoids);
+
+            // Load pg_attribute rows for parent table.
+            components::types::logical_value_t parent_lv(resource_, fk.parent_table_oid);
+            auto [_b, fut_attr_p] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::read_rows_by_key,
+                                                       ctx, pg_attribute_coll,
+                                                       std::vector<std::string>{"attrelid"},
+                                                       std::vector<components::types::logical_value_t>{parent_lv});
+            auto parent_attr = co_await std::move(fut_attr_p);
+            fk.parent_col_names = attoids_to_names(parent_attr, parent_attoids);
+
+            if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
+                result.push_back(std::move(fk));
+            }
+        }
+
+        fk_outgoing_[table_oid] = result;
+        co_return result;
+    }
+
+    catalog_view_t::unique_future<std::vector<resolved_fk_t>>
+    catalog_view_t::get_fks_referencing(components::execution_context_t ctx,
+                                          components::catalog::oid_t table_oid) {
+        if (auto it = fk_referencing_.find(table_oid); it != fk_referencing_.end()) {
+            co_return it->second;
+        }
+        std::vector<resolved_fk_t> result;
+        if (disk_address_ == actor_zeta::address_t::empty_address()) {
+            fk_referencing_[table_oid] = result;
+            co_return result;
+        }
+
+        // Scan pg_constraint for rows where confrelid == table_oid (this table is parent).
+        components::types::logical_value_t table_lv(resource_, table_oid);
+        auto [_, fut_con] = actor_zeta::send(disk_address_,
+                                              &disk::manager_disk_t::read_rows_by_key,
+                                              ctx,
+                                              pg_constraint_coll,
+                                              std::vector<std::string>{"confrelid"},
+                                              std::vector<components::types::logical_value_t>{table_lv});
+        auto con_rows = co_await std::move(fut_con);
+
+        for (const auto& row : con_rows) {
+            if (row.size() <= kConfupdtype) continue;
+            if (row[kContype].is_null()) continue;
+            const auto contype_sv = row[kContype].value<std::string_view>();
+            if (contype_sv.empty() || contype_sv[0] != 'f') continue;
+
+            resolved_fk_t fk;
+            fk.constraint_oid   = static_cast<components::catalog::oid_t>(row[kConOid].value<std::uint32_t>());
+            fk.child_table_oid  = static_cast<components::catalog::oid_t>(row[kConrelid].value<std::uint32_t>());
+            fk.parent_table_oid = table_oid;
+            fk.matchtype  = row[kConfmatch].is_null()   ? 's' : row[kConfmatch].value<std::string_view>()[0];
+            fk.del_action = row[kConfdeltype].is_null() ? 'a' : row[kConfdeltype].value<std::string_view>()[0];
+            fk.upd_action = row[kConfupdtype].is_null() ? 'a' : row[kConfupdtype].value<std::string_view>()[0];
+
+            const auto child_attoids  = components::catalog::parse_oid_csv(
+                row[kConkey].is_null()   ? std::string{} : std::string(row[kConkey].value<std::string_view>()));
+            const auto parent_attoids = components::catalog::parse_oid_csv(
+                row[kConfkey].is_null()  ? std::string{} : std::string(row[kConfkey].value<std::string_view>()));
+
+            components::types::logical_value_t child_lv(resource_, fk.child_table_oid);
+            auto [_a, fut_attr_c] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::read_rows_by_key,
+                                                       ctx, pg_attribute_coll,
+                                                       std::vector<std::string>{"attrelid"},
+                                                       std::vector<components::types::logical_value_t>{child_lv});
+            auto child_attr = co_await std::move(fut_attr_c);
+            fk.child_col_names = attoids_to_names(child_attr, child_attoids);
+
+            components::types::logical_value_t parent_lv(resource_, table_oid);
+            auto [_b, fut_attr_p] = actor_zeta::send(disk_address_,
+                                                       &disk::manager_disk_t::read_rows_by_key,
+                                                       ctx, pg_attribute_coll,
+                                                       std::vector<std::string>{"attrelid"},
+                                                       std::vector<components::types::logical_value_t>{parent_lv});
+            auto parent_attr = co_await std::move(fut_attr_p);
+            fk.parent_col_names = attoids_to_names(parent_attr, parent_attoids);
+
+            if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
+                result.push_back(std::move(fk));
+            }
+        }
+
+        fk_referencing_[table_oid] = result;
+        co_return result;
+    }
+
+    const std::vector<resolved_fk_t>*
+    catalog_view_t::try_get_fks_outgoing(components::catalog::oid_t table_oid) const noexcept {
+        auto it = fk_outgoing_.find(table_oid);
+        return it != fk_outgoing_.end() ? &it->second : nullptr;
+    }
+
+    const std::vector<resolved_fk_t>*
+    catalog_view_t::try_get_fks_referencing(components::catalog::oid_t table_oid) const noexcept {
+        auto it = fk_referencing_.find(table_oid);
+        return it != fk_referencing_.end() ? &it->second : nullptr;
     }
 
 } // namespace services::dispatcher

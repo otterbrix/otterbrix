@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/fk_info.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/types/types.hpp>
@@ -105,5 +106,9 @@ namespace services::dispatcher {
             return sizeof(resolved_type_t) + name.capacity() + typdefspec.capacity() + 64;
         }
     };
+
+    // Alias — dispatcher layer uses fk_info_t from catalog component. Kept here
+    // for backward-compatibility of call sites that refer to resolved_fk_t.
+    using resolved_fk_t = components::catalog::fk_info_t;
 
 } // namespace services::dispatcher

@@ -503,4 +503,143 @@ namespace services::disk {
         co_return batch;
     }
 
+    // ---------------------------------------------------------------------------
+    // scan_by_key — pure storage primitive, no FK/semantic knowledge.
+    // ---------------------------------------------------------------------------
+
+    manager_disk_t::unique_future<std::pmr::vector<std::int64_t>>
+    manager_disk_t::scan_by_key(execution_context_t ctx,
+                                 collection_full_name_t name,
+                                 std::vector<std::string> key_col_names,
+                                 std::vector<components::types::logical_value_t> key_values) {
+        std::pmr::vector<std::int64_t> out(resource());
+        if (key_col_names.size() != key_values.size() || key_col_names.empty()) {
+            co_return out;
+        }
+
+        auto it = storages_.find(name);
+        if (it == storages_.end()) co_return out;
+
+        auto& tbl = it->second->table_storage.table();
+        const auto& all_cols = tbl.columns();
+
+        // Map each key column name to its table column index.
+        auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
+        std::pmr::synchronized_pool_resource fres;
+        for (std::size_t ki = 0; ki < key_col_names.size(); ++ki) {
+            std::size_t col_idx = all_cols.size();
+            for (std::size_t ci = 0; ci < all_cols.size(); ++ci) {
+                if (all_cols[ci].name() == key_col_names[ki]) {
+                    col_idx = ci;
+                    break;
+                }
+            }
+            if (col_idx == all_cols.size()) co_return out; // unknown column → empty result
+            std::pmr::vector<uint64_t> idx_vec(&fres);
+            idx_vec.push_back(static_cast<uint64_t>(col_idx));
+            filter->child_filters.push_back(
+                std::make_unique<components::table::constant_filter_t>(
+                    components::expressions::compare_type::eq,
+                    key_values[ki],
+                    std::move(idx_vec)));
+        }
+
+        auto types = it->second->storage->types();
+        components::vector::data_chunk_t chunk(resource(), types);
+        it->second->storage->scan(chunk, filter.get(), -1, ctx.txn);
+        for (uint64_t i = 0; i < chunk.size(); ++i) {
+            out.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+        }
+        co_return out;
+    }
+
+    // ---------------------------------------------------------------------------
+    // point_lookup_by_index — look up first matching row via pg_index metadata.
+    // Falls back to a sequential scan (no real B-tree yet).
+    // ---------------------------------------------------------------------------
+
+    manager_disk_t::unique_future<std::optional<std::int64_t>>
+    manager_disk_t::point_lookup_by_index(execution_context_t ctx,
+                                           components::catalog::oid_t index_oid,
+                                           std::vector<components::types::logical_value_t> key_values) {
+        // 1. Scan pg_index for the row with indexrelid == index_oid.
+        //    pg_index cols: 0=indexrelid, 1=indrelid, 2=indkey(csv), 3=indisvalid
+        auto idx_it = storages_.find(pg_index_name);
+        if (idx_it == storages_.end()) co_return std::nullopt;
+
+        catalog::oid_t indrelid{0};
+        std::string indkey_csv;
+        bool found_index = false;
+        {
+            std::pmr::synchronized_pool_resource sr;
+            inline_scan(idx_it->second->table_storage.table(), {0, 1, 2, 3}, &sr,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto oid_v = chunk.value(0, i);
+                            if (oid_v.is_null()) return true;
+                            if (static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>()) != index_oid)
+                                return true;
+                            auto valid_v = chunk.value(3, i);
+                            if (!valid_v.is_null() && !valid_v.value<bool>()) return false; // indisvalid=false
+                            auto rel_v = chunk.value(1, i);
+                            if (!rel_v.is_null())
+                                indrelid = static_cast<catalog::oid_t>(rel_v.value<std::uint32_t>());
+                            auto key_v = chunk.value(2, i);
+                            if (!key_v.is_null())
+                                indkey_csv = std::string(key_v.value<std::string_view>());
+                            found_index = true;
+                            return false;
+                        });
+        }
+        if (!found_index) co_return std::nullopt;
+
+        // 2. Parse indkey CSV to get ordered attoid list.
+        const auto attoids = catalog::parse_oid_csv(indkey_csv);
+        if (attoids.empty() || attoids.size() != key_values.size()) co_return std::nullopt;
+
+        // 3. Find collection name for indrelid via reverse lookup.
+        auto key_it = table_oid_to_key_.find(indrelid);
+        if (key_it == table_oid_to_key_.end()) co_return std::nullopt;
+        const auto& [ns_oid, tbl_name] = key_it->second;
+        auto ns_name_it = ns_oid_to_name_.find(ns_oid);
+        if (ns_name_it == ns_oid_to_name_.end()) co_return std::nullopt;
+        collection_full_name_t tbl_full{ns_name_it->second, "main", tbl_name};
+
+        // 4. Scan pg_attribute to map each attoid → column name (for indrelid).
+        //    pg_attribute cols: 0=attoid, 1=attrelid, 2=attname, ...
+        std::unordered_map<catalog::oid_t, std::string> attoid_to_name;
+        auto pa_it = storages_.find(pg_attribute_name);
+        if (pa_it == storages_.end()) co_return std::nullopt;
+        {
+            std::pmr::synchronized_pool_resource sr;
+            inline_scan(pa_it->second->table_storage.table(), {0, 1, 2}, &sr,
+                        [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                            auto rel_v = chunk.value(1, i);
+                            if (rel_v.is_null()) return true;
+                            if (static_cast<catalog::oid_t>(rel_v.value<std::uint32_t>()) != indrelid)
+                                return true;
+                            auto att_v = chunk.value(0, i);
+                            auto nm_v  = chunk.value(2, i);
+                            if (!att_v.is_null() && !nm_v.is_null()) {
+                                attoid_to_name[static_cast<catalog::oid_t>(att_v.value<std::uint32_t>())] =
+                                    std::string(nm_v.value<std::string_view>());
+                            }
+                            return true;
+                        });
+        }
+
+        // 5. Map attoids → column names in indkey order.
+        std::vector<std::string> col_names;
+        col_names.reserve(attoids.size());
+        for (auto ao : attoids) {
+            auto nm_it = attoid_to_name.find(ao);
+            if (nm_it == attoid_to_name.end()) co_return std::nullopt;
+            col_names.push_back(nm_it->second);
+        }
+
+        // 6. scan_by_key on the user table.
+        auto row_ids = co_await scan_by_key(ctx, tbl_full, std::move(col_names), std::move(key_values));
+        if (row_ids.empty()) co_return std::nullopt;
+        co_return row_ids[0];
+    }
+
 } // namespace services::disk

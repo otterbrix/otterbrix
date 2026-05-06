@@ -158,21 +158,6 @@ namespace services::disk {
         // no .otbx exists (in-memory table, handled by WAL replay's create_storage path).
         void load_storage_for_wal_replay_sync(const collection_full_name_t& name);
 
-        // Synchronous pg_constraint scan — returns CHECK constraint exprs for table_oid.
-        std::vector<check_constraint_info_t> check_constraints_for_table(components::catalog::oid_t table_oid);
-
-        // Synchronous pg_sequence scan — returns parameters for seq_oid, or nullopt if absent.
-        struct sequence_params_t {
-            std::int64_t seqstart{1};
-            std::int64_t seqincrement{1};
-            std::int64_t seqmin{1};
-            std::int64_t seqmax{std::numeric_limits<std::int64_t>::max()};
-            bool seqcycle{false};
-            std::int64_t seqlast{1};
-        };
-        std::optional<sequence_params_t> sequence_params_for(components::catalog::oid_t seq_oid);
-        // Synchronous pg_rewrite scan — returns ev_action for relation_oid, or "" if absent.
-        std::string rewrite_ev_action_for(components::catalog::oid_t relation_oid);
         // Synchronous storage creation for initialization (before schedulers start).
         void create_storage_with_columns_sync(const collection_full_name_t& name,
                                               std::vector<components::table::column_definition_t> columns);
@@ -302,6 +287,21 @@ namespace services::disk {
         unique_future<void> append_pg_catalog_row(execution_context_t ctx,
                                                    const collection_full_name_t& name,
                                                    components::vector::data_chunk_t row);
+
+        // Pure storage scan: row_ids of txn-visible rows in `name` where
+        // key_col_names[i] == key_values[i] for every i.
+        unique_future<std::pmr::vector<std::int64_t>>
+        scan_by_key(execution_context_t ctx,
+                    collection_full_name_t name,
+                    std::vector<std::string> key_col_names,
+                    std::vector<components::types::logical_value_t> key_values);
+
+        // Index lookup: first txn-visible row_id in the table indexed by index_oid
+        // where indexed columns == key_values (indkey order). nullopt on no match.
+        unique_future<std::optional<std::int64_t>>
+        point_lookup_by_index(execution_context_t ctx,
+                              components::catalog::oid_t index_oid,
+                              std::vector<components::types::logical_value_t> key_values);
 
         // Async DDL API: coroutine wrappers dispatched through actor messaging
         // (`co_await actor_zeta::send(disk, &ddl_*, ...)`). Each method takes
@@ -458,9 +458,6 @@ namespace services::disk {
                                                        components::catalog::oid_t function_oid,
                                                        drop_behavior_t behavior = drop_behavior_t::restrict_);
 
-        // Overlay NOT NULL from catalog onto storage column definitions (after WAL replay)
-        void overlay_column_not_null_sync(const collection_full_name_t& name, const std::string& col_name);
-
         // Synchronous direct replay methods for physical WAL (before schedulers start).
         // The txn overload takes an explicit transaction_data: pass {0, 0} for
         // committed-at-txn=0 semantics, or an active transaction for MVCC-aware appends.
@@ -613,7 +610,9 @@ namespace services::disk {
                                                        &manager_disk_t::commit_pg_catalog_appends,
                                                        &manager_disk_t::revert_pg_catalog_appends,
                                                        &manager_disk_t::allocate_oids_batch,
-                                                       &manager_disk_t::append_pg_catalog_row>;
+                                                       &manager_disk_t::append_pg_catalog_row,
+                                                       &manager_disk_t::scan_by_key,
+                                                       &manager_disk_t::point_lookup_by_index>;
 
     private:
         std::pmr::memory_resource* resource_;

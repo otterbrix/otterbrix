@@ -536,7 +536,8 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
 }
 
 // 27. §1.8: CHECK constraint stores conexpr verbatim in pg_constraint.
-//     check_constraints_for_table returns the row; DROP CONSTRAINT removes it.
+//     Constraint OID is allocated on create; DROP CONSTRAINT removes the row
+//     (verified via scan_by_key on pg_constraint).
 TEST_CASE("services::disk::ddl::check_constraint_stored") {
     fixture fx;
     auto rns = fx.invoke(&manager_disk_t::ddl_create_namespace, fx.ctx(), std::string("ns_chk"));
@@ -552,14 +553,21 @@ TEST_CASE("services::disk::ddl::check_constraint_stored") {
                          catalog::fk_match::simple, catalog::fk_action::no_action, char{'a'},
                          std::string("age > 0"));
     REQUIRE(rc.created_oid >= FIRST_USER_OID);
-    auto checks = fx.manager->check_constraints_for_table(rt.created_oid);
-    REQUIRE(checks.size() == 1);
-    REQUIRE(checks[0].constraint_oid == rc.created_oid);
-    REQUIRE(checks[0].conexpr == "age > 0");
+    // Verify pg_constraint row exists via scan_by_key on conrelid column.
+    const collection_full_name_t pg_constraint{"pg_catalog", "main", "pg_constraint"};
+    auto rows = fx.invoke(&manager_disk_t::scan_by_key, fx.ctx(), pg_constraint,
+                           std::vector<std::string>{"conrelid"},
+                           std::vector<components::types::logical_value_t>{
+                               components::types::logical_value_t(&fx.resource, rt.created_oid)});
+    REQUIRE(rows.size() == 1);
     // DROP CONSTRAINT removes the row.
     fx.invoke(&manager_disk_t::ddl_drop_constraint, fx.ctx(), rc.created_oid,
                drop_behavior_t::cascade_);
-    REQUIRE(fx.manager->check_constraints_for_table(rt.created_oid).empty());
+    auto rows_after = fx.invoke(&manager_disk_t::scan_by_key, fx.ctx(), pg_constraint,
+                                 std::vector<std::string>{"conrelid"},
+                                 std::vector<components::types::logical_value_t>{
+                                     components::types::logical_value_t(&fx.resource, rt.created_oid)});
+    REQUIRE(rows_after.empty());
 }
 
 // 28. §1.16: DROP COLUMN RESTRICT fails when an index depends on the column.

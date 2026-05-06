@@ -29,12 +29,6 @@ namespace services::disk {
     using session_id_t = components::session::session_id_t;
     using execution_context_t = components::execution_context_t;
 
-    struct check_constraint_info_t {
-        components::catalog::oid_t constraint_oid{0};
-        std::string conexpr;
-        std::uint64_t catalog_version{0};
-    };
-
     struct disk_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -165,6 +159,22 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         revert_pg_catalog_appends(execution_context_t ctx);
 
+        // Pure storage scan: row_ids of committed+txn-visible rows in `name` where
+        // every key_col_names[i] == key_values[i].  No FK/semantic knowledge.
+        actor_zeta::unique_future<std::pmr::vector<std::int64_t>>
+        scan_by_key(execution_context_t ctx,
+                    collection_full_name_t name,
+                    std::vector<std::string> key_col_names,
+                    std::vector<components::types::logical_value_t> key_values);
+
+        // Index-based lookup: find first txn-visible row in the table indexed by
+        // `index_oid` where indexed columns == key_values (in indkey order).
+        // Returns nullopt when collection unknown, no match, or indisvalid=false.
+        actor_zeta::unique_future<std::optional<std::int64_t>>
+        point_lookup_by_index(execution_context_t ctx,
+                              components::catalog::oid_t index_oid,
+                              std::vector<components::types::logical_value_t> key_values);
+
         // Storage management
         actor_zeta::unique_future<void> create_storage(session_id_t session, collection_full_name_t name);
         actor_zeta::unique_future<void>
@@ -277,7 +287,9 @@ namespace services::disk {
                                                             &disk_contract::list_tables_in_namespace,
                                                             &disk_contract::recent_invalidations_since,
                                                             &disk_contract::commit_pg_catalog_appends,
-                                                            &disk_contract::revert_pg_catalog_appends>;
+                                                            &disk_contract::revert_pg_catalog_appends,
+                                                            &disk_contract::scan_by_key,
+                                                            &disk_contract::point_lookup_by_index>;
 
         disk_contract() = delete;
     };

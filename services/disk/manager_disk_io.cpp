@@ -356,12 +356,6 @@ namespace services::disk {
         }
     }
 
-    void manager_disk_t::overlay_column_not_null_sync(const collection_full_name_t& name, const std::string& col_name) {
-        auto* s = get_storage(name);
-        if (s)
-            s->overlay_not_null(col_name);
-    }
-
     // Shared helpers for catalog row construction. Used by bootstrap_system_tables_sync
     // and by the ddl_*_sync methods further below. Single anonymous namespace shared by both.
 } // namespace services::disk

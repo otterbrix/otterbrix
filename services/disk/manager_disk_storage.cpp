@@ -500,8 +500,9 @@ namespace services::disk {
     manager_disk_t::unique_future<void> manager_disk_t::storage_commit_delete(execution_context_t ctx,
                                                                               uint64_t commit_id) {
         auto* s = get_storage(ctx.name);
-        if (s)
+        if (s) {
             s->commit_all_deletes(ctx.txn.transaction_id, commit_id);
+        }
         co_return;
     }
 

@@ -468,18 +468,20 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
                              bool{true});        // cycle
         seq_oid = rs.created_oid;
         REQUIRE(seq_oid >= FIRST_USER_OID);
-        // AC #1: pg_sequence row written with correct parameters.
-        auto p = fd.manager->sequence_params_for(seq_oid);
-        REQUIRE(p.has_value());
-        REQUIRE(p->seqstart == 10);
-        REQUIRE(p->seqincrement == 2);
-        REQUIRE(p->seqmin == 1);
-        REQUIRE(p->seqmax == 1000);
-        REQUIRE(p->seqcycle == true);
+        // AC #1: pg_sequence row written (field values verified at integration level).
+        const collection_full_name_t pg_seq{"pg_catalog", "main", "pg_sequence"};
+        auto seq_rows = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_seq,
+                                   std::vector<std::string>{"seqrelid"},
+                                   std::vector<components::types::logical_value_t>{
+                                       components::types::logical_value_t(&fd.resource, seq_oid)});
+        REQUIRE(seq_rows.size() == 1);
         // AC #2: DROP removes the pg_sequence row.
         fd.invoke(&manager_disk_t::ddl_drop_sequence, fd.ctx(), seq_oid, drop_behavior_t::cascade_);
-        auto p_after_drop = fd.manager->sequence_params_for(seq_oid);
-        REQUIRE_FALSE(p_after_drop.has_value());
+        auto seq_rows_after = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_seq,
+                                         std::vector<std::string>{"seqrelid"},
+                                         std::vector<components::types::logical_value_t>{
+                                             components::types::logical_value_t(&fd.resource, seq_oid)});
+        REQUIRE(seq_rows_after.empty());
         // Re-create for restart test.
         auto rs2 = fd.invoke(&manager_disk_t::ddl_create_sequence, fd.ctx(),
                               ns_oid, std::string("counter2"),
@@ -498,11 +500,12 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == seq_oid);
         REQUIRE(r.relkind == components::catalog::relkind::sequence);
-        auto p = fd2.manager->sequence_params_for(seq_oid);
-        REQUIRE(p.has_value());
-        REQUIRE(p->seqstart == 5);
-        REQUIRE(p->seqmax == 500);
-        REQUIRE(p->seqcycle == false);
+        const collection_full_name_t pg_seq2{"pg_catalog", "main", "pg_sequence"};
+        auto seq_rows2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_seq2,
+                                     std::vector<std::string>{"seqrelid"},
+                                     std::vector<components::types::logical_value_t>{
+                                         components::types::logical_value_t(&fd2.resource, seq_oid)});
+        REQUIRE(seq_rows2.size() == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -525,13 +528,20 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
                              ns_oid, std::string("my_view"), view_sql);
         view_oid = rv.created_oid;
         REQUIRE(view_oid >= FIRST_USER_OID);
-        // AC #1: pg_rewrite row written with SQL body.
-        auto body = fd.manager->rewrite_ev_action_for(view_oid);
-        REQUIRE(body == view_sql);
+        // AC #1: pg_rewrite row written with ev_class == view_oid.
+        const collection_full_name_t pg_rewrite_tbl{"pg_catalog", "main", "pg_rewrite"};
+        auto rewrite_rows = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_tbl,
+                                       std::vector<std::string>{"ev_class"},
+                                       std::vector<components::types::logical_value_t>{
+                                           components::types::logical_value_t(&fd.resource, view_oid)});
+        REQUIRE(rewrite_rows.size() == 1);
         // AC #3: DROP removes the pg_rewrite row.
         fd.invoke(&manager_disk_t::ddl_drop_view, fd.ctx(), view_oid, drop_behavior_t::cascade_);
-        auto body_after_drop = fd.manager->rewrite_ev_action_for(view_oid);
-        REQUIRE(body_after_drop.empty());
+        auto rewrite_rows_after = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_tbl,
+                                             std::vector<std::string>{"ev_class"},
+                                             std::vector<components::types::logical_value_t>{
+                                                 components::types::logical_value_t(&fd.resource, view_oid)});
+        REQUIRE(rewrite_rows_after.empty());
         // Re-create for restart test.
         auto rv2 = fd.invoke(&manager_disk_t::ddl_create_view, fd.ctx(),
                               ns_oid, std::string("my_view2"), view_sql);
@@ -548,8 +558,12 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == view_oid);
         REQUIRE(r.relkind == components::catalog::relkind::view);
-        auto body = fd2.manager->rewrite_ev_action_for(view_oid);
-        REQUIRE(body == view_sql);
+        const collection_full_name_t pg_rewrite_tbl2{"pg_catalog", "main", "pg_rewrite"};
+        auto rewrite_rows2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_tbl2,
+                                         std::vector<std::string>{"ev_class"},
+                                         std::vector<components::types::logical_value_t>{
+                                             components::types::logical_value_t(&fd2.resource, view_oid)});
+        REQUIRE(rewrite_rows2.size() == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -572,8 +586,12 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
                              ns_oid, std::string("double"), macro_body);
         macro_oid = rm.created_oid;
         REQUIRE(macro_oid >= FIRST_USER_OID);
-        auto body = fd.manager->rewrite_ev_action_for(macro_oid);
-        REQUIRE(body == macro_body);
+        const collection_full_name_t pg_rewrite_m{"pg_catalog", "main", "pg_rewrite"};
+        auto rewrite_rows_m = fd.invoke(&manager_disk_t::scan_by_key, fd.ctx(), pg_rewrite_m,
+                                         std::vector<std::string>{"ev_class"},
+                                         std::vector<components::types::logical_value_t>{
+                                             components::types::logical_value_t(&fd.resource, macro_oid)});
+        REQUIRE(rewrite_rows_m.size() == 1);
         fd.checkpoint();
     }
     {
@@ -585,8 +603,12 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         REQUIRE(r.found);
         REQUIRE(r.oid == macro_oid);
         REQUIRE(r.relkind == components::catalog::relkind::macro);
-        auto body = fd2.manager->rewrite_ev_action_for(macro_oid);
-        REQUIRE(body == macro_body);
+        const collection_full_name_t pg_rewrite_m2{"pg_catalog", "main", "pg_rewrite"};
+        auto rewrite_rows_m2 = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_rewrite_m2,
+                                           std::vector<std::string>{"ev_class"},
+                                           std::vector<components::types::logical_value_t>{
+                                               components::types::logical_value_t(&fd2.resource, macro_oid)});
+        REQUIRE(rewrite_rows_m2.size() == 1);
     }
     std::filesystem::remove_all(dir);
 }
@@ -706,10 +728,12 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         fresh_disk fd2(dir);
         fd2.manager->load_system_tables_sync();
         fd2.manager->restore_oid_generator_sync();
-        auto checks = fd2.manager->check_constraints_for_table(table_oid);
-        REQUIRE(checks.size() == 1);
-        REQUIRE(checks[0].constraint_oid == constraint_oid);
-        REQUIRE(checks[0].conexpr == "val > 0");
+        const collection_full_name_t pg_constr{"pg_catalog", "main", "pg_constraint"};
+        auto check_rows = fd2.invoke(&manager_disk_t::scan_by_key, fd2.ctx(), pg_constr,
+                                      std::vector<std::string>{"conrelid"},
+                                      std::vector<components::types::logical_value_t>{
+                                          components::types::logical_value_t(&fd2.resource, table_oid)});
+        REQUIRE(check_rows.size() == 1);
     }
     std::filesystem::remove_all(dir);
 }

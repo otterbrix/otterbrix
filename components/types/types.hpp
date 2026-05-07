@@ -1,6 +1,7 @@
 #pragma once
 #include "core/date/date_types.hpp"
 #include "types.hpp"
+#include <core/arithmetic_op.hpp>
 
 #include <absl/numeric/int128.h>
 #include <array>
@@ -337,6 +338,42 @@ namespace components::types {
                 std::max<uint8_t>(static_cast<uint8_t>(static_cast<uint8_t>(type1) - signage_difference),
                                   static_cast<uint8_t>(type2)));
         }
+    }
+
+    // Returns the output logical_type for an arithmetic operation on two operand types.
+    // Handles numeric promotion and temporal arithmetic rules (date/time ± interval, etc.).
+    // Returns logical_type::NA for unsupported combinations.
+    constexpr logical_type arithmetic_result_type(logical_type lhs, logical_type rhs, vector::arithmetic_op op) {
+        if (is_numeric(lhs) && is_numeric(rhs)) {
+            return promote_type(lhs, rhs);
+        }
+        auto is_temporal = [](logical_type t) constexpr {
+            return t == logical_type::DATE || t == logical_type::TIME || t == logical_type::TIME_TZ ||
+                   t == logical_type::TIMESTAMP || t == logical_type::TIMESTAMP_TZ;
+        };
+        if (op == vector::arithmetic_op::add || op == vector::arithmetic_op::subtract) {
+            if (is_temporal(lhs) && rhs == logical_type::INTERVAL) {
+                return lhs;
+            }
+            if (op == vector::arithmetic_op::add && lhs == logical_type::INTERVAL && is_temporal(rhs)) {
+                return rhs;
+            }
+            if (lhs == logical_type::INTERVAL && rhs == logical_type::INTERVAL) {
+                return logical_type::INTERVAL;
+            }
+            if (op == vector::arithmetic_op::subtract && is_temporal(lhs) && is_temporal(rhs)) {
+                return logical_type::INTERVAL;
+            }
+        }
+        if (op == vector::arithmetic_op::multiply || op == vector::arithmetic_op::divide) {
+            if (lhs == logical_type::INTERVAL && is_numeric(rhs)) {
+                return logical_type::INTERVAL;
+            }
+            if (op == vector::arithmetic_op::multiply && is_numeric(lhs) && rhs == logical_type::INTERVAL) {
+                return logical_type::INTERVAL;
+            }
+        }
+        return logical_type::NA;
     }
 
     class complex_logical_type {

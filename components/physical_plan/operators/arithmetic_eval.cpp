@@ -75,14 +75,10 @@ namespace components::operators {
                         if (inner_op.value().vec) {
                             computed = vector::compute_unary_neg(resource, *inner_op.value().vec, count);
                         } else {
-                            auto neg_val =
-                                types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
-                                                                 *inner_op.value().scalar);
                             uint64_t out_count = count > 0 ? count : 1;
-                            computed = vector::vector_t(resource, neg_val.type(), out_count);
-                            for (uint64_t i = 0; i < out_count; i++) {
-                                computed.set_value(i, neg_val);
-                            }
+                            vector::vector_t scalar_vec(resource, *inner_op.value().scalar, out_count);
+                            scalar_vec.flatten(out_count);
+                            computed = vector::compute_unary_neg(resource, scalar_vec, out_count);
                         }
                         for (auto& t : sub_temps) {
                             temp_vecs.emplace_back(std::move(t));
@@ -131,32 +127,10 @@ namespace components::operators {
                     } else {
                         auto lval = *left_op.value().scalar;
                         auto rval = *right_op.value().scalar;
-                        types::logical_value_t result_val(resource,
-                                                          types::complex_logical_type{types::logical_type::NA});
-                        switch (scalar_expr->type()) {
-                            case expressions::scalar_type::add:
-                                result_val = types::logical_value_t::sum(lval, rval);
-                                break;
-                            case expressions::scalar_type::subtract:
-                                result_val = types::logical_value_t::subtract(lval, rval);
-                                break;
-                            case expressions::scalar_type::multiply:
-                                result_val = types::logical_value_t::mult(lval, rval);
-                                break;
-                            case expressions::scalar_type::divide:
-                                result_val = types::logical_value_t::divide(lval, rval);
-                                break;
-                            case expressions::scalar_type::mod:
-                                result_val = types::logical_value_t::modulus(lval, rval);
-                                break;
-                            default:
-                                break;
-                        }
                         uint64_t out_count = count > 0 ? count : 1;
-                        computed = vector::vector_t(resource, result_val.type(), out_count);
-                        for (uint64_t i = 0; i < out_count; i++) {
-                            computed.set_value(i, result_val);
-                        }
+                        vector::vector_t left_vec(resource, lval, out_count);
+                        left_vec.flatten(out_count);
+                        computed = vector::compute_vector_scalar_arithmetic(resource, op, left_vec, rval, out_count);
                     }
                     for (auto& t : sub_temps) {
                         temp_vecs.emplace_back(std::move(t));
@@ -351,14 +325,10 @@ namespace components::operators {
             if (operand_res.value().vec) {
                 return vector::compute_unary_neg(resource, *operand_res.value().vec, count);
             } else {
-                auto neg_val = types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
-                                                                *operand_res.value().scalar);
                 uint64_t out_count = count > 0 ? count : 1;
-                vector::vector_t output(resource, neg_val.type(), out_count);
-                for (uint64_t i = 0; i < out_count; i++) {
-                    output.set_value(i, neg_val);
-                }
-                return output;
+                vector::vector_t scalar_vec(resource, *operand_res.value().scalar, out_count);
+                scalar_vec.flatten(out_count);
+                return vector::compute_unary_neg(resource, scalar_vec, out_count);
             }
         }
 
@@ -419,32 +389,10 @@ namespace components::operators {
                                          std::pmr::string{"division by zero", resource});
                 }
             }
-            types::logical_value_t result_val(resource, types::complex_logical_type{types::logical_type::NA});
-            switch (op) {
-                case expressions::scalar_type::add:
-                    result_val = types::logical_value_t::sum(lval, rval);
-                    break;
-                case expressions::scalar_type::subtract:
-                    result_val = types::logical_value_t::subtract(lval, rval);
-                    break;
-                case expressions::scalar_type::multiply:
-                    result_val = types::logical_value_t::mult(lval, rval);
-                    break;
-                case expressions::scalar_type::divide:
-                    result_val = types::logical_value_t::divide(lval, rval);
-                    break;
-                case expressions::scalar_type::mod:
-                    result_val = types::logical_value_t::modulus(lval, rval);
-                    break;
-                default:
-                    break;
-            }
             uint64_t out_count = count > 0 ? count : 1;
-            vector::vector_t output(resource, result_val.type(), out_count);
-            for (uint64_t i = 0; i < out_count; i++) {
-                output.set_value(i, result_val);
-            }
-            return output;
+            vector::vector_t left_vec(resource, lval, out_count);
+            left_vec.flatten(out_count);
+            return vector::compute_vector_scalar_arithmetic(resource, arith_op, left_vec, rval, out_count);
         }
     }
 

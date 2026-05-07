@@ -1,6 +1,7 @@
 #include "update_expression.hpp"
 
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/arithmetic.hpp>
 
 namespace components::expressions {
 
@@ -191,22 +192,33 @@ namespace components::expressions {
     }
 
     namespace {
-        // Binary arithmetic dispatch for update expressions.
-        // Covers basic arithmetic (add/sub/mult/div/mod), exponent, and bitwise ops.
+        std::optional<vector::arithmetic_op> to_arith_op(update_expr_type type) {
+            switch (type) {
+                case update_expr_type::add:
+                    return vector::arithmetic_op::add;
+                case update_expr_type::sub:
+                    return vector::arithmetic_op::subtract;
+                case update_expr_type::mult:
+                    return vector::arithmetic_op::multiply;
+                case update_expr_type::div:
+                    return vector::arithmetic_op::divide;
+                case update_expr_type::mod:
+                    return vector::arithmetic_op::mod;
+                default:
+                    return std::nullopt;
+            }
+        }
+
         types::logical_value_t apply_binary_update_op(update_expr_type type,
                                                       const types::logical_value_t& left,
                                                       const types::logical_value_t& right) {
+            if (auto op = to_arith_op(type)) {
+                auto* resource = left.resource();
+                vector::vector_t left_vec(resource, left, 1);
+                left_vec.flatten(1);
+                return vector::compute_vector_scalar_arithmetic(resource, *op, left_vec, right, 1).value(0);
+            }
             switch (type) {
-                case update_expr_type::add:
-                    return types::logical_value_t::sum(left, right);
-                case update_expr_type::sub:
-                    return types::logical_value_t::subtract(left, right);
-                case update_expr_type::mult:
-                    return types::logical_value_t::mult(left, right);
-                case update_expr_type::div:
-                    return types::logical_value_t::divide(left, right);
-                case update_expr_type::mod:
-                    return types::logical_value_t::modulus(left, right);
                 case update_expr_type::exp:
                     return types::logical_value_t::exponent(left, right);
                 case update_expr_type::AND:

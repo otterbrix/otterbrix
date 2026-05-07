@@ -967,7 +967,7 @@ namespace components::types {
         }
     }
 
-    // for now, we are not supporting date/time conversion, so timezone won't be used
+    // session timezone cancels out in arithmetics, so we don't have to pass it
     constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
 
     logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1013,8 +1013,78 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<std::string>);
             default:
-                throw std::runtime_error("logical_value_t::sum unable to process given types");
+                break;
         }
+        // Temporal arithmetic (scalar-scalar path used by predicate evaluation)
+        using namespace core::date;
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        // DATE + INTERVAL → DATE
+        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
+            const auto d = value1.value<date_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, iv.month.count());
+            sd += std::chrono::days{iv.day.count()};
+            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
+        }
+        // INTERVAL + DATE → DATE
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::DATE) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // TIMESTAMP/TZ + INTERVAL → TIMESTAMP/TZ
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
+            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                            : value1.value<timestamptz_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto [d, tod] = split_timestamp(ts);
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, iv.month.count());
+            sd += std::chrono::days{iv.day.count()};
+            const auto result = from_sys_days_us(sd, tod + iv.time);
+            if (t1 == logical_type::TIMESTAMP) {
+                return logical_value_t{r, timestamp_t{result}};
+            }
+            return logical_value_t{r, timestamptz_t{result}};
+        }
+        // INTERVAL + TIMESTAMP/TZ → TIMESTAMP/TZ
+        if (t1 == logical_type::INTERVAL && (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // INTERVAL + INTERVAL → INTERVAL
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
+            const auto iv1 = value1.value<interval_t>();
+            const auto iv2 = value2.value<interval_t>();
+            return logical_value_t{r, interval_t{iv1.time + iv2.time, iv1.day + iv2.day, iv1.month + iv2.month}};
+        }
+        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
+        // TIME + INTERVAL → TIME (wrap-around)
+        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
+            auto result = (value1.value<core::date::time_t>().value + value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, core::date::time_t{result}};
+        }
+        // INTERVAL + TIME → TIME (commutative)
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME) {
+            return logical_value_t::sum(value2, value1);
+        }
+        // TIME_TZ + INTERVAL → TIME_TZ (apply to local time, preserve offset)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
+            const auto tz = value1.value<timetz_t>();
+            auto result = (tz.time + value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, timetz_t{result, tz.zone}};
+        }
+        // INTERVAL + TIME_TZ → TIME_TZ (commutative)
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME_TZ) {
+            return logical_value_t::sum(value2, value1);
+        }
+        throw std::runtime_error("logical_value_t::sum unable to process given types");
     }
 
     logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1058,8 +1128,91 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::subtract unable to process given types");
+                break;
         }
+        using namespace core::date;
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        constexpr auto one_day = std::chrono::duration_cast<microseconds>(days{1});
+        // DATE - INTERVAL → DATE
+        if (t1 == logical_type::DATE && t2 == logical_type::INTERVAL) {
+            const auto iv = value2.value<interval_t>();
+            auto sd = pg_epoch + std::chrono::days{value1.value<date_t>().value.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, -iv.month.count());
+            sd -= std::chrono::days{iv.day.count()};
+            return logical_value_t{r, date_t{days{static_cast<int32_t>((sd - pg_epoch).count())}}};
+        }
+        // TIMESTAMP/TZ - INTERVAL → TIMESTAMP/TZ
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) && t2 == logical_type::INTERVAL) {
+            const auto ts = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                            : value1.value<timestamptz_t>().value;
+            const auto iv = value2.value<interval_t>();
+            auto [d, tod] = split_timestamp(ts);
+            auto sd = pg_epoch + std::chrono::days{d.count()};
+            if (iv.month.count())
+                sd = apply_months(sd, -iv.month.count());
+            sd -= std::chrono::days{iv.day.count()};
+            const auto result = from_sys_days_us(sd, tod - iv.time);
+            if (t1 == logical_type::TIMESTAMP) {
+                return logical_value_t{r, timestamp_t{result}};
+            }
+            return logical_value_t{r, timestamptz_t{result}};
+        }
+        // TIME - INTERVAL → TIME (wrap-around)
+        if (t1 == logical_type::TIME && t2 == logical_type::INTERVAL) {
+            auto result = (value1.value<core::date::time_t>().value - value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, core::date::time_t{result}};
+        }
+        // TIME_TZ - INTERVAL → TIME_TZ (wrap-around, preserve offset)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::INTERVAL) {
+            const auto tz = value1.value<timetz_t>();
+            auto result = (tz.time - value2.value<interval_t>().time) % one_day;
+            if (result.count() < 0)
+                result += one_day;
+            return logical_value_t{r, timetz_t{result, tz.zone}};
+        }
+        // INTERVAL - INTERVAL → INTERVAL
+        if (t1 == logical_type::INTERVAL && t2 == logical_type::INTERVAL) {
+            const auto iv1 = value1.value<interval_t>();
+            const auto iv2 = value2.value<interval_t>();
+            return logical_value_t{r, interval_t{iv1.time - iv2.time, iv1.day - iv2.day, iv1.month - iv2.month}};
+        }
+        // DATE - DATE → INTERVAL (days component)
+        if (t1 == logical_type::DATE && t2 == logical_type::DATE) {
+            return logical_value_t{
+                r,
+                interval_t{microseconds{0}, value1.value<date_t>().value - value2.value<date_t>().value, months{0}}};
+        }
+        // TIMESTAMP/TZ - TIMESTAMP/TZ → INTERVAL (µs component)
+        if ((t1 == logical_type::TIMESTAMP || t1 == logical_type::TIMESTAMP_TZ) &&
+            (t2 == logical_type::TIMESTAMP || t2 == logical_type::TIMESTAMP_TZ)) {
+            const auto ts1 = (t1 == logical_type::TIMESTAMP) ? value1.value<timestamp_t>().value
+                                                             : value1.value<timestamptz_t>().value;
+            const auto ts2 = (t2 == logical_type::TIMESTAMP) ? value2.value<timestamp_t>().value
+                                                             : value2.value<timestamptz_t>().value;
+            return logical_value_t{r, interval_t{ts1 - ts2, days{0}, months{0}}};
+        }
+        // TIME - TIME → INTERVAL
+        if (t1 == logical_type::TIME && t2 == logical_type::TIME) {
+            return logical_value_t{
+                r,
+                interval_t{value1.value<core::date::time_t>().value - value2.value<core::date::time_t>().value,
+                           days{0},
+                           months{0}}};
+        }
+        // TIME_TZ - TIME_TZ → INTERVAL (UTC-normalized)
+        if (t1 == logical_type::TIME_TZ && t2 == logical_type::TIME_TZ) {
+            const auto tz1 = value1.value<timetz_t>();
+            const auto tz2 = value2.value<timetz_t>();
+            const auto utc1 = tz1.time - std::chrono::duration_cast<microseconds>(tz1.zone);
+            const auto utc2 = tz2.time - std::chrono::duration_cast<microseconds>(tz2.zone);
+            return logical_value_t{r, interval_t{utc1 - utc2, days{0}, months{0}}};
+        }
+        throw std::runtime_error("logical_value_t::subtract unable to process given types");
     }
 
     logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1103,8 +1256,52 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::mult unable to process given types");
+                break;
         }
+        auto* r = value1.resource() ? value1.resource() : value2.resource();
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        auto as_double = [](const logical_value_t& v) -> double {
+            switch (v.type().type()) {
+                case logical_type::TINYINT:
+                    return static_cast<double>(v.value<int8_t>());
+                case logical_type::UTINYINT:
+                    return static_cast<double>(v.value<uint8_t>());
+                case logical_type::SMALLINT:
+                    return static_cast<double>(v.value<int16_t>());
+                case logical_type::USMALLINT:
+                    return static_cast<double>(v.value<uint16_t>());
+                case logical_type::INTEGER:
+                    return static_cast<double>(v.value<int32_t>());
+                case logical_type::UINTEGER:
+                    return static_cast<double>(v.value<uint32_t>());
+                case logical_type::BIGINT:
+                    return static_cast<double>(v.value<int64_t>());
+                case logical_type::UBIGINT:
+                    return static_cast<double>(v.value<uint64_t>());
+                case logical_type::FLOAT:
+                    return static_cast<double>(v.value<float>());
+                case logical_type::DOUBLE:
+                    return v.value<double>();
+                default:
+                    return 0.0;
+            }
+        };
+        using namespace core::date;
+        // INTERVAL * numeric → INTERVAL
+        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
+            const double f = as_double(value2);
+            const auto iv = value1.value<interval_t>();
+            return logical_value_t{r,
+                                   interval_t{microseconds{std::llround(iv.time.count() * f)},
+                                              days{static_cast<int32_t>(std::llround(iv.day.count() * f))},
+                                              months{static_cast<int32_t>(std::llround(iv.month.count() * f))}}};
+        }
+        // numeric * INTERVAL → INTERVAL (commutative)
+        if (is_numeric(t1) && t2 == logical_type::INTERVAL) {
+            return logical_value_t::mult(value2, value1);
+        }
+        throw std::runtime_error("logical_value_t::mult unable to process given types");
     }
 
     logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
@@ -1158,8 +1355,48 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::divide unable to process given types");
+                break;
         }
+        // INTERVAL / numeric → INTERVAL
+        // (division by zero already handled above — value2 == zero returns null)
+        const auto t1 = value1.type().type();
+        const auto t2 = value2.type().type();
+        if (t1 == logical_type::INTERVAL && is_numeric(t2)) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            const double f = [&]() -> double {
+                switch (t2) {
+                    case logical_type::TINYINT:
+                        return static_cast<double>(value2.value<int8_t>());
+                    case logical_type::UTINYINT:
+                        return static_cast<double>(value2.value<uint8_t>());
+                    case logical_type::SMALLINT:
+                        return static_cast<double>(value2.value<int16_t>());
+                    case logical_type::USMALLINT:
+                        return static_cast<double>(value2.value<uint16_t>());
+                    case logical_type::INTEGER:
+                        return static_cast<double>(value2.value<int32_t>());
+                    case logical_type::UINTEGER:
+                        return static_cast<double>(value2.value<uint32_t>());
+                    case logical_type::BIGINT:
+                        return static_cast<double>(value2.value<int64_t>());
+                    case logical_type::UBIGINT:
+                        return static_cast<double>(value2.value<uint64_t>());
+                    case logical_type::FLOAT:
+                        return static_cast<double>(value2.value<float>());
+                    case logical_type::DOUBLE:
+                        return value2.value<double>();
+                    default:
+                        return 0.0;
+                }
+            }();
+            using namespace core::date;
+            const auto iv = value1.value<interval_t>();
+            return logical_value_t{r,
+                                   interval_t{microseconds{std::llround(iv.time.count() / f)},
+                                              days{static_cast<int32_t>(std::llround(iv.day.count() / f))},
+                                              months{static_cast<int32_t>(std::llround(iv.month.count() / f))}}};
+        }
+        throw std::runtime_error("logical_value_t::divide unable to process given types");
     }
 
     logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {

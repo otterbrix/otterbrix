@@ -800,6 +800,23 @@ namespace services::dispatcher {
     } // namespace impl
 
     namespace {
+        components::vector::arithmetic_op scalar_to_arith_op(components::expressions::scalar_type t) {
+            switch (t) {
+                case components::expressions::scalar_type::add:
+                    return components::vector::arithmetic_op::add;
+                case components::expressions::scalar_type::subtract:
+                    return components::vector::arithmetic_op::subtract;
+                case components::expressions::scalar_type::multiply:
+                    return components::vector::arithmetic_op::multiply;
+                case components::expressions::scalar_type::divide:
+                    return components::vector::arithmetic_op::divide;
+                case components::expressions::scalar_type::mod:
+                    return components::vector::arithmetic_op::mod;
+                default:
+                    return components::vector::arithmetic_op::add;
+            }
+        }
+
         complex_logical_type resolve_case_type(std::pmr::memory_resource* resource,
                                                scalar_expression_t* s,
                                                const named_schema& incoming_schema,
@@ -833,7 +850,8 @@ namespace services::dispatcher {
                 if (s->params().size() >= 2) {
                     auto lt = resolve_arith_type(resource, s->params()[0], incoming_schema, parameters, resolve_error);
                     auto rt = resolve_arith_type(resource, s->params()[1], incoming_schema, parameters, resolve_error);
-                    return complex_logical_type(promote_type(lt.type(), rt.type()));
+                    return complex_logical_type(
+                        arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type())));
                 }
             }
             assert(false);
@@ -1332,7 +1350,10 @@ namespace services::dispatcher {
                                     if (!sub_s->params().empty()) {
                                         auto lt = self(sub_s->params()[0], self);
                                         auto rt = sub_s->params().size() > 1 ? self(sub_s->params()[1], self) : lt;
-                                        return complex_logical_type(promote_type(lt.type(), rt.type()));
+                                        return complex_logical_type(
+                                            arithmetic_result_type(lt.type(),
+                                                                   rt.type(),
+                                                                   scalar_to_arith_op(sub_s->type())));
                                     }
                                 }
                                 assert(false);
@@ -1349,7 +1370,8 @@ namespace services::dispatcher {
                             auto rt = scalar_expr->params().size() > 1
                                           ? resolve_type(scalar_expr->params()[1], resolve_type)
                                           : lt;
-                            result_type = complex_logical_type(promote_type(lt.type(), rt.type()));
+                            result_type = complex_logical_type(
+                                arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(scalar_expr->type())));
                         }
                         if (!scalar_expr->key().is_null()) {
                             result_type.set_alias(scalar_expr->key().as_string());
@@ -1476,7 +1498,10 @@ namespace services::dispatcher {
                                             if (resolve_error.contains_error()) {
                                                 return resolve_error;
                                             }
-                                            function_input_types.emplace_back(promote_type(lt.type(), rt.type()));
+                                            function_input_types.emplace_back(
+                                                arithmetic_result_type(lt.type(),
+                                                                       rt.type(),
+                                                                       scalar_to_arith_op(sub_scalar->type())));
                                         } else {
                                             return core::error_t(
                                                 core::error_code_t::invalid_parameter,

@@ -1164,3 +1164,360 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
         }
     }
 }
+
+TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_enforcement");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.departments (id bigint, name text);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.employees "
+                "(id bigint, dept_id bigint, name text);")->is_success());
+        }
+        {
+            // Add FK constraint: employees.dept_id REFERENCES departments.id
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.employees ADD CONSTRAINT fk_dept "
+                "FOREIGN KEY (dept_id) REFERENCES TestDatabase.departments (id);")->is_success());
+        }
+    }
+
+    INFO("insert into parent table") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.departments (id, name) VALUES (1, 'Engineering');");
+            INFO("dept insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.departments (id, name) VALUES (2, 'HR');");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("insert child row referencing existing parent: success") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.employees (id, dept_id, name) VALUES (1, 1, 'Alice');");
+            INFO("employee insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("insert child row referencing non-existent parent: error") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.employees (id, dept_id, name) VALUES (2, 99, 'Bob');");
+            REQUIRE(cur->is_error());
+        }
+    }
+
+    INFO("insert child with NULL FK (SIMPLE match): passes") {
+        {
+            auto session = otterbrix::session_id_t();
+            // NULL dept_id — SIMPLE matchtype skips FK check for NULL
+            auto cur = dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.employees (id, name) VALUES (3, 'Charlie');");
+            INFO("null fk insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_cascade_restrict");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+        }
+        {
+            // RESTRICT: delete parent fails if child references it
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_parent "
+                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                "ON DELETE RESTRICT;")->is_success());
+        }
+        // Seed data
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1);")->is_success());
+        }
+    }
+
+    INFO("delete parent with referencing child: RESTRICT blocks it") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            REQUIRE(cur->is_error());
+        }
+    }
+
+    INFO("delete parent without referencing children: success") {
+        {
+            // Add an unreferenced parent row
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.parent (id, val) VALUES (2, 'p2');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "DELETE FROM TestDatabase.parent WHERE id = 2;");
+            INFO("unreferenced delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_match_full");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.parent (a bigint, b bigint);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.child (x bigint, y bigint);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_full "
+                "FOREIGN KEY (x, y) REFERENCES TestDatabase.parent (a, b) MATCH FULL;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.parent (a, b) VALUES (1, 2);")->is_success());
+        }
+    }
+
+    INFO("all-NULL FK columns: passes (MATCH FULL skips check)") {
+        auto session = otterbrix::session_id_t();
+        // Both x and y are absent (NULL) — MATCH FULL: all-NULL skips the check
+        auto cur = dispatcher->execute_sql(session,
+            "INSERT INTO TestDatabase.child (x, y) VALUES (NULL, NULL);");
+        INFO("all-null error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("partial-NULL FK columns: rejected (MATCH FULL requires all-or-none)") {
+        // x=1 present, y absent (NULL) — partial null under MATCH FULL → error
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+            "INSERT INTO TestDatabase.child (x) VALUES (1);");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("no-NULL FK matching existing parent: passes") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+            "INSERT INTO TestDatabase.child (x, y) VALUES (1, 2);");
+        INFO("full match error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("no-NULL FK not matching any parent: rejected") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+            "INSERT INTO TestDatabase.child (x, y) VALUES (1, 99);");
+        REQUIRE(cur->is_error());
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_cascade_delete");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_cascade "
+                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                "ON DELETE CASCADE;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1), (12, 2);")->is_success());
+        }
+    }
+
+    INFO("delete parent cascades to child rows") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            INFO("cascade delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+        {
+            // child rows 10 and 11 (parent_id=1) must be gone; row 12 (parent_id=2) survives
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "SELECT id FROM TestDatabase.child;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+    }
+
+    INFO("remaining child row still references surviving parent") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+            "SELECT id FROM TestDatabase.child WHERE parent_id = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_set_null");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_setnull "
+                "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                "ON DELETE SET NULL;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session,
+                "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1);")->is_success());
+        }
+    }
+
+    INFO("delete parent NULLs FK column in child rows") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "DELETE FROM TestDatabase.parent WHERE id = 1;");
+            INFO("set null delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+        }
+        {
+            // Child rows survive, but parent_id must now be NULL
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                "SELECT id FROM TestDatabase.child WHERE parent_id IS NULL;");
+            INFO("null check error: " << (cur->is_error() ? cur->get_error().what : "none"));
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+    }
+
+    INFO("parent is gone, child rows are still present") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
